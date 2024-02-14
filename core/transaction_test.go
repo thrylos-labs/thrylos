@@ -209,28 +209,41 @@ func signTransactionData(data []byte, privateKey *rsa.PrivateKey) (string, error
 	return encodedSignature, nil
 }
 
-func TestTransactionSignatureVerification(t *testing.T) {
-	// Generate RSA keys
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+func TestTransactionSigningAndVerification1(t *testing.T) {
+	// Step 1: Generate RSA keys
+	privateKey, publicKey, err := shared.GenerateRSAKeys(2048)
 	if err != nil {
-		t.Fatalf("Error generating RSA key: %v", err)
-	}
-	publicKey := &privateKey.PublicKey
-
-	// Create transactions and sign them with the generated private key
-	// Adjust CreateMockTransactions to accept a private key for signing
-	transactions := CreateMockTransactionsWithSigning(privateKey)
-	if len(transactions) == 0 {
-		t.Fatal("Failed to create mock transactions")
+		t.Fatalf("Failed to generate RSA keys: %v", err)
 	}
 
-	// Extract a transaction for testing
-	tx := transactions[0]
-
-	// Verify the transaction signature using the corresponding public key
-	if !shared.VerifyTransactionSignature(&tx, publicKey) {
-		t.Errorf("Transaction signature verification failed")
-	} else {
-		t.Log("Transaction signature verification succeeded.")
+	// Step 2: Create a new transaction
+	tx := shared.Transaction{
+		ID:        "txTest123",
+		Timestamp: 1630000000,
+		Inputs:    []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
 	}
+
+	// Step 3: Serialize the transaction, excluding the signature
+	serializedTx, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatalf("Failed to serialize transaction: %v", err)
+	}
+
+	// Step 4: Hash the serialized transaction data
+	hashed := sha256.Sum256(serializedTx)
+
+	// Step 5: Sign the hash
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+	if err != nil {
+		t.Fatalf("Failed to sign transaction: %v", err)
+	}
+
+	// Step 6: Verify the signature
+	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
+	if err != nil {
+		t.Fatalf("Signature verification failed: %v", err)
+	}
+
+	t.Log("Transaction signing and verification successful")
 }

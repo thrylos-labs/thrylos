@@ -289,11 +289,11 @@ func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner st
 	return nil
 }
 
-func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) error {
+func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error) {
 	// Get all UTXOs
 	allUTXOs, err := bdb.GetAllUTXOs()
 	if err != nil {
-		return err
+		return false, fmt.Errorf("Get all UTXO not found")
 	}
 
 	// Get UTXOs for the user using the shared.GetUTXOsForUser function
@@ -313,7 +313,7 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 
 	// Check for insufficient funds
 	if inputAmount < amount {
-		return errors.New("Insufficient funds")
+		return false, fmt.Errorf("Insufficient funds")
 	}
 
 	txID := "someTransactionID" // Replace with logic to generate a unique transaction ID
@@ -331,13 +331,13 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 
 	tx, err := shared.CreateAndSignTransaction(txID, inputs, outputs, privKey)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("create and sign transaction failed")
 	}
 
 	// Assuming GetUTXOs returns a map
 	availableUTXOs, err := bdb.GetUTXOs()
 	if err != nil {
-		return err
+		return false, fmt.Errorf("Available UTXO failed")
 	}
 
 	getPublicKeyFunc := func(address string) (*rsa.PublicKey, error) {
@@ -345,17 +345,21 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 	}
 
 	// Validate and Verify the transaction before adding it to the blockchain
-	if !shared.ValidateTransaction(tx, availableUTXOs) || !shared.VerifyTransaction(tx, availableUTXOs, getPublicKeyFunc) {
-		return errors.New("Transaction validation or verification failed")
+	isValid, err := shared.VerifyTransaction(tx, availableUTXOs, getPublicKeyFunc)
+	if err != nil {
+		return false, fmt.Errorf("transaction verification failed: %v", err)
+	}
+	if !isValid {
+		return false, fmt.Errorf("transaction is not valid")
 	}
 
 	if err := bdb.AddTransaction(tx); err != nil {
-		return err
+		return false, fmt.Errorf("Add transaction failed")
 	}
 
 	err = bdb.UpdateUTXOs(inputs, outputs)
 	if err != nil {
-		return err
+		return false, fmt.Errorf("Update utxo failed")
 	}
 
 	// Assuming MarkUTXOAsSpent and AddUTXO are methods on BlockchainDB or its interface
@@ -365,11 +369,11 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 	for _, out := range outputs {
 		err := bdb.AddUTXO(out) // Assuming AddUTXO returns an error
 		if err != nil {
-			return err // Handle the error appropriately
+			return false, fmt.Errorf("Add utxo failed")
 		}
 	}
 
-	return nil
+	return false, fmt.Errorf("nill")
 }
 
 func (bdb *BlockchainDB) GetPublicKey(address string) (*rsa.PublicKey, error) {
@@ -512,9 +516,9 @@ func (bdb *BlockchainDB) ValidateTransaction(tx shared.Transaction) (bool, error
 			return false, fmt.Errorf("error retrieving public key: %v", err)
 		}
 
-		// Adjusted to pass tx directly
-		if !shared.VerifyTransactionSignature(&tx, publicKey) {
-			return false, errors.New("invalid signature")
+		// Adjusted to handle error from VerifyTransactionSignature correctly
+		if err := shared.VerifyTransactionSignature(&tx, publicKey); err != nil {
+			return false, fmt.Errorf("invalid signature: %v", err)
 		}
 
 		// Here you can also check if the input amounts are correct,
@@ -527,32 +531,28 @@ func (bdb *BlockchainDB) ValidateTransaction(tx shared.Transaction) (bool, error
 	return true, nil
 }
 
-func (bdb *BlockchainDB) VerifyTransaction(tx shared.Transaction) bool {
+func (bdb *BlockchainDB) VerifyTransaction(tx shared.Transaction) (bool, error) {
 	// 1. Verify the signature of the transaction
 	if len(tx.Inputs) == 0 {
-		fmt.Println("Transaction has no inputs.")
-		return false
+		return false, errors.New("Transaction has no inputs")
 	}
 	senderAddress := tx.Inputs[0].OwnerAddress // Assuming all inputs come from the same address
 
 	// Use the database function to retrieve the public key based on the address.
 	senderPublicKey, err := bdb.RetrievePublicKeyFromAddress(senderAddress)
 	if err != nil {
-		fmt.Printf("Error retrieving public key for address %s: %v\n", senderAddress, err)
-		return false
+		return false, fmt.Errorf("Error retrieving public key for address %s: %v", senderAddress, err)
 	}
 
-	// Adjusted to pass tx directly
-	if !shared.VerifyTransactionSignature(&tx, senderPublicKey) {
-		fmt.Println("Transaction signature verification failed.")
-		return false
+	// Adjusted to handle error from VerifyTransactionSignature correctly
+	if err := shared.VerifyTransactionSignature(&tx, senderPublicKey); err != nil {
+		return false, fmt.Errorf("Transaction signature verification failed: %v", err)
 	}
 
 	// Fetch all available UTXOs
 	availableUTXOs, err := bdb.GetAllUTXOs()
 	if err != nil {
-		fmt.Printf("Error fetching UTXOs: %v\n", err)
-		return false
+		return false, fmt.Errorf("Error fetching UTXOs: %v", err)
 	}
 
 	// 2. Check the UTXOs to verify they exist and calculate the input sum
@@ -560,8 +560,7 @@ func (bdb *BlockchainDB) VerifyTransaction(tx shared.Transaction) bool {
 	for _, input := range tx.Inputs {
 		utxo, exists := availableUTXOs[input.TransactionID+strconv.Itoa(input.Index)]
 		if !exists {
-			fmt.Printf("Input UTXO %s not found\n", input.TransactionID+strconv.Itoa(input.Index))
-			return false
+			return false, fmt.Errorf("Input UTXO %s not found", input.TransactionID+strconv.Itoa(input.Index))
 		}
 		inputSum += utxo.Amount
 	}
@@ -574,9 +573,8 @@ func (bdb *BlockchainDB) VerifyTransaction(tx shared.Transaction) bool {
 
 	// 4. Verify if the input sum matches the output sum
 	if inputSum != outputSum {
-		fmt.Printf("Failed to validate transaction %s: Input sum (%d) does not match output sum (%d).\n", tx.ID, inputSum, outputSum)
-		return false
+		return false, fmt.Errorf("Failed to validate transaction %s: Input sum (%d) does not match output sum (%d)", tx.ID, inputSum, outputSum)
 	}
 
-	return true
+	return true, nil
 }

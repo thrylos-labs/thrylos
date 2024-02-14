@@ -205,18 +205,28 @@ func (bc *Blockchain) GetLastBlock() (*Block, error) {
 
 // VerifyTransaction checks the validity of a transaction against the current state of the blockchain,
 // including signature verification and double spending checks. It's essential for maintaining the
-// trustworthiness and consistency of the blockchain ledger.
-func (bc *Blockchain) VerifyTransaction(tx shared.Transaction) bool {
+// Example snippet for VerifyTransaction method adjustment
+func (bc *Blockchain) VerifyTransaction(tx shared.Transaction) (bool, error) {
 	getPublicKeyFunc := func(address string) (*rsa.PublicKey, error) {
 		return bc.Database.RetrievePublicKeyFromAddress(address)
 	}
 
-	return shared.VerifyTransaction(tx, bc.UTXOs, getPublicKeyFunc)
+	// Adjusted to handle both returned values from VerifyTransaction
+	isValid, err := shared.VerifyTransaction(tx, bc.UTXOs, getPublicKeyFunc)
+	if err != nil {
+		fmt.Printf("Error during transaction verification: %v\n", err)
+		return false, err
+	}
+	if !isValid {
+		fmt.Println("Signature verification failed or transaction is invalid")
+		return false, nil // Assuming you want to return an error indicating invalid transaction
+	}
+	return true, nil
 }
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.
 // If the timestamp is 0, the current system time is used as the block's timestamp.
-func (bc *Blockchain) AddBlock(transactions []shared.Transaction, validator string, prevHash string, optionalTimestamp ...int64) error {
+func (bc *Blockchain) AddBlock(transactions []shared.Transaction, validator string, prevHash string, optionalTimestamp ...int64) (bool, error) {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
@@ -240,7 +250,7 @@ func (bc *Blockchain) AddBlock(transactions []shared.Transaction, validator stri
 
 		newBlock := bc.CreateBlock(transactions, validator, prevHash, timestamp)
 		if newBlock == nil {
-			return fmt.Errorf("failed to create a new block")
+			return false, fmt.Errorf("failed to create a new block")
 		}
 
 		if selectedFork != nil {
@@ -251,13 +261,17 @@ func (bc *Blockchain) AddBlock(transactions []shared.Transaction, validator stri
 				Blocks: []*Block{newBlock},
 			})
 		}
-		return nil
+		return true, nil
 	}
 
 	// Verify transactions.
 	for _, tx := range transactions {
-		if !bc.VerifyTransaction(tx) {
-			return fmt.Errorf("transaction verification failed: %s", tx.ID)
+		isValid, err := bc.VerifyTransaction(tx)
+		if err != nil {
+			return false, fmt.Errorf("error verifying transaction %s: %v", tx.ID, err)
+		}
+		if !isValid {
+			return false, fmt.Errorf("transaction verification failed: %s", tx.ID)
 		}
 	}
 
@@ -277,23 +291,23 @@ func (bc *Blockchain) AddBlock(transactions []shared.Transaction, validator stri
 	prevBlock := bc.Blocks[len(bc.Blocks)-1]
 	newBlock := bc.CreateBlock(transactions, validator, prevHash, timestamp)
 	if newBlock == nil || !bc.ValidateBlock(newBlock, prevBlock) {
-		return fmt.Errorf("failed to create or validate a new block")
+		return false, fmt.Errorf("failed to create or validate a new block")
 	}
 
 	// Serialize and insert the new block into the database.
 	blockData, err := newBlock.Serialize()
 	if err != nil {
-		return fmt.Errorf("failed to serialize new block: %v", err)
+		return false, fmt.Errorf("failed to serialize new block: %v", err)
 	}
 	if err := bc.Database.InsertBlock(blockData); err != nil {
-		return fmt.Errorf("failed to insert block into database: %v", err)
+		return false, fmt.Errorf("failed to insert block into database: %v", err)
 	}
 
 	// Update the blockchain with the new block and timestamp.
 	bc.Blocks = append(bc.Blocks, newBlock)
 	bc.lastTimestamp = timestamp
 
-	return nil
+	return true, nil
 }
 
 // RewardValidator rewards the validator with new tokens

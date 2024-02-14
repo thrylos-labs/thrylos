@@ -1,66 +1,82 @@
-package core_test
+package core
 
 import (
 	"Thrylos/shared"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"fmt"
+	"crypto/sha256"
+	"encoding/json"
 	"testing"
 )
 
-// Generates RSA key pairs for testing purposes.
-func generateTestKeyPairs() (*rsa.PrivateKey, *rsa.PublicKey, error) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+// setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.
+func setupTestBlockchain(t *testing.T) *Blockchain {
+	// Initialize the blockchain. This might involve creating a genesis block,
+	// setting up a test database, or other initial setup required for your blockchain.
+	bc, err := NewBlockchain()
 	if err != nil {
-		return nil, nil, fmt.Errorf("error generating RSA key pair: %v", err)
+		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
 	}
-	return privKey, &privKey.PublicKey, nil
+
+	// Example: Adding a genesis block explicitly if your NewBlockchain
+	// function does not automatically do this. Adjust as needed.
+	if len(bc.Blocks) == 0 {
+		genesis := NewGenesisBlock()
+		bc.Blocks = append(bc.Blocks, genesis)
+		// If your blockchain implementation directly interacts with a database,
+		// you might also need to insert the genesis block into the database here.
+	}
+
+	return bc
 }
 
-// Creates mock transactions and verifies their signature.
-func CreateMockTransactions(t *testing.T) ([]shared.Transaction, error) {
-	privKey, pubKey, err := generateTestKeyPairs()
+func TestGenesisBlockCreation(t *testing.T) {
+	bc, err := NewBlockchain()
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate key pairs: %v", err)
+		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
-
-	inputUTXO := shared.UTXO{
-		ID:            "utxo1",
-		TransactionID: "tx0",
-		Index:         0,
-		OwnerAddress:  "Alice",
-		Amount:        100,
+	if bc.Blocks[0] != bc.Genesis {
+		t.Errorf("Genesis block is not the first block in the blockchain")
 	}
-
-	outputUTXO := shared.UTXO{
-		ID:            "utxo2",
-		TransactionID: "tx1",
-		Index:         0,
-		OwnerAddress:  "Bob",
-		Amount:        100,
-	}
-
-	// Create and sign the transaction
-	tx, err := shared.CreateAndSignTransaction("tx1", []shared.UTXO{inputUTXO}, []shared.UTXO{outputUTXO}, privKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create and sign transaction: %v", err)
-	}
-
-	// Verify the transaction signature
-	isValid := shared.VerifyTransactionSignature(&tx, pubKey)
-	if !isValid {
-		t.Errorf("Transaction signature verification failed")
-		return nil, fmt.Errorf("transaction signature verification failed")
-	}
-
-	return []shared.Transaction{tx}, nil
+	// Additional checks can include validating genesis block's specific properties.
 }
 
-// Example test function that uses CreateMockTransactions
-func TestTransactionSignatureVerification(t *testing.T) {
-	_, err := CreateMockTransactions(t)
+func TestTransactionSigningAndVerification(t *testing.T) {
+	// Step 1: Generate RSA keys
+	privateKey, publicKey, err := shared.GenerateRSAKeys(2048)
 	if err != nil {
-		t.Fatalf("CreateMockTransactions failed: %v", err)
+		t.Fatalf("Failed to generate RSA keys: %v", err)
 	}
-	// You can further test the transactions returned by CreateMockTransactions here
+
+	// Step 2: Create a new transaction
+	tx := shared.Transaction{
+		ID:        "txTest123",
+		Timestamp: 1630000000,
+		Inputs:    []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
+	}
+
+	// Step 3: Serialize the transaction, excluding the signature
+	serializedTx, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatalf("Failed to serialize transaction: %v", err)
+	}
+
+	// Step 4: Hash the serialized transaction data
+	hashed := sha256.Sum256(serializedTx)
+
+	// Step 5: Sign the hash
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+	if err != nil {
+		t.Fatalf("Failed to sign transaction: %v", err)
+	}
+
+	// Step 6: Verify the signature
+	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
+	if err != nil {
+		t.Fatalf("Signature verification failed: %v", err)
+	}
+
+	t.Log("Transaction signing and verification successful")
 }

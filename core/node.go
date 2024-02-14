@@ -171,7 +171,7 @@ func (node *Node) VerifyAndProcessTransaction(tx shared.Transaction) error {
 	}
 
 	// Verify the transaction signature
-	if !shared.VerifyTransactionSignature(&tx, senderPublicKey) {
+	if err := shared.VerifyTransactionSignature(&tx, senderPublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed")
 	}
 
@@ -358,12 +358,21 @@ func (node *Node) Start() {
 			return
 		}
 
-		if err := node.Blockchain.AddBlock(block.Transactions, block.Validator, block.PrevHash, block.Timestamp); err != nil {
+		success, err := node.Blockchain.AddBlock(block.Transactions, block.Validator, block.PrevHash, block.Timestamp)
+		if err != nil {
+			// If there's an error, respond with an internal server error status and the error message
 			http.Error(w, fmt.Sprintf("Failed to add block: %v", err), http.StatusInternalServerError)
 			return
 		}
+		if !success {
+			// If the block was not successfully added for some reason (e.g., validation failure),
+			// you might want to respond accordingly. Adjust this based on your application's needs.
+			http.Error(w, "Failed to add block due to validation or other issues", http.StatusBadRequest)
+			return
+		}
 
-		w.WriteHeader(http.StatusCreated) // Indicate successful addition
+		// If successful, respond with a status indicating the block was created.
+		w.WriteHeader(http.StatusCreated)
 	})
 
 	mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {

@@ -13,7 +13,7 @@ type BlockchainDBInterface interface {
 
 	// SendTransaction creates and processes a transaction from a sender to a recipient for a specified amount.
 	// It signs the transaction using the sender's private key.
-	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) error
+	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
 
 	// InsertBlock saves a new block's data to the database.
 	InsertBlock(data []byte) error
@@ -44,7 +44,7 @@ type BlockchainDBInterface interface {
 	GetUTXOs() (map[string][]UTXO, error)
 
 	// VerifyTransaction checks the validity of a transaction, including signature verification and UTXO checks.
-	VerifyTransaction(tx Transaction) bool
+	VerifyTransaction(tx Transaction) (bool, error)
 
 	// CreateAndSignTransaction constructs a new transaction with the given inputs and outputs, and signs it
 	// using the private key provided. This method encapsulates the creation and initial validation of transactions.
