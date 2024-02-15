@@ -1,6 +1,7 @@
 package core
 
 import (
+	thrylos "Thrylos"
 	"Thrylos/database"
 	"Thrylos/shared"
 	"bytes"
@@ -206,20 +207,32 @@ func (bc *Blockchain) GetLastBlock() (*Block, error) {
 // VerifyTransaction checks the validity of a transaction against the current state of the blockchain,
 // including signature verification and double spending checks. It's essential for maintaining the
 // Example snippet for VerifyTransaction method adjustment
-func (bc *Blockchain) VerifyTransaction(tx shared.Transaction) (bool, error) {
+func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
+	// Function to retrieve public key from the address
 	getPublicKeyFunc := func(address string) (*rsa.PublicKey, error) {
 		return bc.Database.RetrievePublicKeyFromAddress(address)
 	}
 
-	// Adjusted to handle both returned values from VerifyTransaction
-	isValid, err := shared.VerifyTransaction(tx, bc.UTXOs, getPublicKeyFunc)
+	// Convert your UTXOs map to the expected Protobuf type if needed
+	// This step is necessary if your bc.UTXOs is not already of the type map[string][]*thrylos.UTXO
+	protoUTXOs := make(map[string][]*thrylos.UTXO)
+	for key, utxos := range bc.UTXOs {
+		for _, utxo := range utxos {
+			// Assuming you have a way to convert shared.UTXO to *thrylos.UTXO
+			protoUtxo := sharedToProtoUTXO(utxo)
+			protoUTXOs[key] = append(protoUTXOs[key], protoUtxo)
+		}
+	}
+
+	// Verify the transaction using the converted UTXOs and the Protobuf transaction type
+	isValid, err := shared.VerifyTransaction(tx, protoUTXOs, getPublicKeyFunc)
 	if err != nil {
 		fmt.Printf("Error during transaction verification: %v\n", err)
 		return false, err
 	}
 	if !isValid {
 		fmt.Println("Signature verification failed or transaction is invalid")
-		return false, nil // Assuming you want to return an error indicating invalid transaction
+		return false, nil
 	}
 	return true, nil
 }

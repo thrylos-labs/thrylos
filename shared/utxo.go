@@ -1,6 +1,7 @@
 package shared
 
 import (
+	thrylos "Thrylos"
 	"encoding/json"
 	"fmt"
 )
@@ -14,6 +15,16 @@ type UTXO struct {
 	Index         int    // Position of this output in the transaction's list of outputs.
 	OwnerAddress  string // Blockchain address of the owner who can spend this UTXO.
 	Amount        int    // Amount of digital currency this UTXO represents.
+}
+
+// ConvertSharedUTXOToProto converts a shared.UTXO to a protobuf UTXO message.
+func ConvertSharedUTXOToProto(u UTXO) *thrylos.UTXO {
+	return &thrylos.UTXO{
+		TransactionId: u.TransactionID,
+		Index:         int32(u.Index),
+		OwnerAddress:  u.OwnerAddress,
+		Amount:        int64(u.Amount),
+	}
 }
 
 // GetUTXOsForUser scans through all available UTXOs and returns those owned by a specific user.
