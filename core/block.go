@@ -1,6 +1,7 @@
 package core
 
 import (
+	thrylos "Thrylos"
 	"Thrylos/shared"
 	"bytes"
 	"crypto/sha256"
@@ -9,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
 
@@ -38,7 +41,7 @@ type Block struct {
 
 	// Transactions is the list of transactions included in the block. Transactions are the actions
 	// that modify the blockchain's state, such as transferring assets between parties.
-	Transactions []shared.Transaction // List of transactions included in this block
+	Transactions []*thrylos.Transaction // Adjusted to hold Protobuf transactions
 
 	// Validator is the identifier for the node or party that created and validated the block.
 	// In proof-of-stake systems, this would be the stakeholder who was entitled to produce the block.
@@ -87,6 +90,46 @@ func Deserialize(data []byte) (*Block, error) {
 	return &block, nil
 }
 
+func ConvertSharedTransactionToProto(tx shared.Transaction) *thrylos.Transaction {
+	protoInputs := make([]*thrylos.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		protoInputs[i] = shared.ConvertSharedUTXOToProto(input)
+	}
+
+	protoOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		protoOutputs[i] = shared.ConvertSharedUTXOToProto(output)
+	}
+
+	return &thrylos.Transaction{
+		Id:        tx.ID,
+		Timestamp: tx.Timestamp,
+		Inputs:    protoInputs,
+		Outputs:   protoOutputs,
+		Signature: tx.Signature,
+	}
+}
+
+func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transaction {
+	inputs := make([]shared.UTXO, len(protoTx.GetInputs()))
+	for i, protoInput := range protoTx.GetInputs() {
+		inputs[i] = ConvertProtoUTXOToShared(protoInput)
+	}
+
+	outputs := make([]shared.UTXO, len(protoTx.GetOutputs()))
+	for i, protoOutput := range protoTx.GetOutputs() {
+		outputs[i] = ConvertProtoUTXOToShared(protoOutput)
+	}
+
+	return shared.Transaction{
+		ID:        protoTx.GetId(),
+		Timestamp: protoTx.GetTimestamp(),
+		Inputs:    inputs,
+		Outputs:   outputs,
+		Signature: protoTx.GetSignature(),
+	}
+}
+
 // NewBlock creates a new block with the specified parameters, including the index, transactions,
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
@@ -94,31 +137,41 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 	fmt.Printf("NewBlock: Creating new block at index %d with %d transactions\n", index, len(transactions))
 	currentTimestamp := time.Now().Unix()
 
-	// Make sure the new timestamp is greater than the previous block's timestamp
+	// Ensure the new timestamp is greater than the previous block's timestamp
 	for currentTimestamp <= prevTimestamp {
 		time.Sleep(1 * time.Millisecond) // wait for 1 ms
 		currentTimestamp = time.Now().Unix()
 	}
 
-	var txData [][]byte
+	var protoTransactions []*thrylos.Transaction
 	for _, tx := range transactions {
-		txByte, err := json.Marshal(tx)
-		if err != nil {
-			fmt.Printf("Failed to serialize transaction: %v\n", err)
-			continue
+		// Convert shared.Transaction to *thrylos.Transaction here
+		protoTx := ConvertSharedTransactionToProto(tx)
+		if protoTx != nil {
+			protoTransactions = append(protoTransactions, protoTx)
 		}
-		fmt.Printf("Serialized Transaction: %s\n", string(txByte))
-		txData = append(txData, txByte)
 	}
 
-	// Debug: Print the length of txData
-	fmt.Printf("Number of transactions to add to Merkle Tree: %d\n", len(txData))
+	// Debug: Print the number of transactions converted for the Merkle Tree
+	fmt.Printf("Number of transactions converted for Merkle Tree: %d\n", len(protoTransactions))
 
-	if len(txData) == 0 {
-		fmt.Println("No transactions to add to Merkle Tree.")
+	if len(protoTransactions) == 0 {
+		fmt.Println("No transactions converted for Merkle Tree.")
 		return nil
 	}
 
+	// Since Merkle trees require [][]byte, we serialize the Protobuf transactions
+	var txData [][]byte
+	for _, protoTx := range protoTransactions {
+		txByte, err := proto.Marshal(protoTx)
+		if err != nil {
+			fmt.Printf("Failed to serialize Protobuf transaction: %v\n", err)
+			continue
+		}
+		txData = append(txData, txByte)
+	}
+
+	// Create Merkle Tree from serialized Protobuf transactions
 	merkleTree := NewMerkleTree(txData)
 	if merkleTree == nil {
 		fmt.Println("Failed to create Merkle tree due to lack of transactions.")
@@ -127,8 +180,8 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 
 	block := &Block{
 		Index:        index,
-		Transactions: transactions,
-		Timestamp:    time.Now().Unix(),
+		Transactions: protoTransactions, // Use the converted Protobuf transactions
+		Timestamp:    currentTimestamp,
 		MerkleRoot:   merkleTree.RootNode.Data,
 		PrevHash:     prevHash,
 		Hash:         "",
@@ -137,7 +190,6 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 
 	block.Hash = block.ComputeHash()
 	fmt.Printf("NewBlock: Block created - Index: %d, Hash: %s, Transactions: %+v\n", block.Index, block.Hash, block.Transactions)
-	fmt.Printf("Block inside NewBlock before returning: %+v\n", block)
 	return block
 }
 

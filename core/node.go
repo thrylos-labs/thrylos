@@ -1,6 +1,7 @@
 package core
 
 import (
+	thrylos "Thrylos"
 	"Thrylos/shared"
 	"bytes"
 	"crypto/rsa"
@@ -24,12 +25,12 @@ type Vote struct {
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
 // the blockchain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
 type Node struct {
-	Address             string                    // Network address of the node.
-	Peers               []string                  // Addresses of peer nodes for communication within the network.
-	Blockchain          *Blockchain               // The blockchain maintained by this node.
-	Votes               []Vote                    // Collection of votes for blocks from validators.
-	Shard               *Shard                    // Reference to the shard this node is part of, if sharding is implemented.
-	PendingTransactions []shared.Transaction      // Transactions that have been received but not yet included in a block.
+	Address             string      // Network address of the node.
+	Peers               []string    // Addresses of peer nodes for communication within the network.
+	Blockchain          *Blockchain // The blockchain maintained by this node.
+	Votes               []Vote      // Collection of votes for blocks from validators.
+	Shard               *Shard      // Reference to the shard this node is part of, if sharding is implemented.
+	PendingTransactions []*thrylos.Transaction
 	PublicKeyMap        map[string]*rsa.PublicKey // Map to store public keys
 
 }
@@ -95,9 +96,9 @@ func (n *Node) HasBlock(blockHash string) bool {
 }
 
 // HasTransaction checks whether a transaction with the specified ID exists in the node's pool of pending transactions.
-func (n *Node) HasTransaction(txID string) bool {
-	for _, tx := range n.PendingTransactions {
-		if tx.ID == txID {
+func (node *Node) HasTransaction(txID string) bool {
+	for _, tx := range node.PendingTransactions {
+		if tx.GetId() == txID {
 			return true
 		}
 	}
@@ -163,7 +164,7 @@ func (node *Node) StorePublicKey(address string, publicKey *rsa.PublicKey) {
 	node.PublicKeyMap[address] = publicKey
 }
 
-func (node *Node) VerifyAndProcessTransaction(tx shared.Transaction) error {
+func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	// Retrieve the sender's public key
 	senderPublicKey, err := node.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Simplified
 	if err != nil {
@@ -171,8 +172,8 @@ func (node *Node) VerifyAndProcessTransaction(tx shared.Transaction) error {
 	}
 
 	// Verify the transaction signature
-	if err := shared.VerifyTransactionSignature(&tx, senderPublicKey); err != nil {
-		return fmt.Errorf("transaction signature verification failed")
+	if err := shared.VerifyTransactionSignature(tx, senderPublicKey); err != nil {
+		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
 
 	// Process the transaction...
@@ -239,8 +240,9 @@ func (bc *Blockchain) SelectValidator() string {
 	return ""
 }
 
-func (n *Node) AddPendingTransaction(tx shared.Transaction) {
-	n.PendingTransactions = append(n.PendingTransactions, tx)
+func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
+	node.PendingTransactions = append(node.PendingTransactions, tx)
+	return nil // Assuming you might want to handle errors in some scenarios
 }
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
@@ -325,6 +327,34 @@ func (node *Node) SyncBlockchain() {
 	}
 }
 
+func ConvertJSONToProto(jsonTx thrylos.TransactionJSON) *thrylos.Transaction {
+	tx := &thrylos.Transaction{
+		Id:        jsonTx.ID,
+		Timestamp: jsonTx.Timestamp,
+		Signature: jsonTx.Signature,
+	}
+
+	for _, input := range jsonTx.Inputs {
+		tx.Inputs = append(tx.Inputs, &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			Index:         input.Index,
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        input.Amount,
+		})
+	}
+
+	for _, output := range jsonTx.Outputs {
+		tx.Outputs = append(tx.Outputs, &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         output.Index,
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        output.Amount,
+		})
+	}
+
+	return tx
+}
+
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
@@ -394,19 +424,24 @@ func (node *Node) Start() {
 	})
 
 	mux.HandleFunc("/transaction", func(w http.ResponseWriter, r *http.Request) {
-		var tx shared.Transaction
-		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
+		// Assuming you have a struct that mirrors thrylos.Transaction for JSON purposes
+		var jsonTx thrylos.TransactionJSON
+		if err := json.NewDecoder(r.Body).Decode(&jsonTx); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// Convert jsonTx to thrylos.Transaction
+		tx := ConvertJSONToProto(jsonTx)
 
 		if err := node.VerifyAndProcessTransaction(tx); err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 
+		// Assuming AddPendingTransaction accepts *thrylos.Transaction
 		node.AddPendingTransaction(tx)
-		fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.ID)
+		fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.GetId())
 		w.WriteHeader(http.StatusCreated)
 	})
 

@@ -17,6 +17,8 @@ type UTXO struct {
 	Amount        int    // Amount of digital currency this UTXO represents.
 }
 
+// When creating or updating transactions to be serialized with Protobuf, you'll use ConvertSharedUTXOToProto to convert your application's internal UTXO representations into the format expected by Protobuf before serialization.
+
 // ConvertSharedUTXOToProto converts a shared.UTXO to a protobuf UTXO message.
 func ConvertSharedUTXOToProto(u UTXO) *thrylos.UTXO {
 	return &thrylos.UTXO{

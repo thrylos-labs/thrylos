@@ -1,6 +1,7 @@
 package core
 
 import (
+	thrylos "Thrylos"
 	"Thrylos/shared"
 	"fmt"
 )
@@ -71,8 +72,20 @@ func (s *Shard) RedistributeData() {
 
 // distributeUTXOs serves as a placeholder for the logic required to distribute UTXOs among the nodes in the shard.
 // This method should be implemented to ensure a balanced distribution of transaction outputs for processing and storage.
-func (s *Shard) distributeUTXOs() map[string][]shared.UTXO {
+func (s *Shard) distributeUTXOs() map[string][]*thrylos.UTXO {
 	// Placeholder function for UTXO distribution logic.
+	// This should return a map with string keys and slices of *thrylos.UTXO values.
+	distributedUTXOs := make(map[string][]*thrylos.UTXO)
 	// Implement specific logic for even distribution of UTXOs among shard nodes here.
-	return make(map[string][]shared.UTXO)
+	// For example, populate distributedUTXOs with UTXO pointers evenly.
+
+	// Placeholder logic to illustrate returning a map of UTXO pointers
+	// Actual distribution logic goes here
+	// for address, utxos := range s.exampleUTXOs() { // Assuming s.exampleUTXOs() returns example data
+	// 	for _, utxo := range utxos {
+	// 		distributedUTXOs[address] = append(distributedUTXOs[address], &utxo)
+	// 	}
+	// }
+
+	return distributedUTXOs
 }
