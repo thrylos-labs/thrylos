@@ -39,7 +39,7 @@ func TestTransactionSignatureVerificationWithDifferentKey(t *testing.T) {
 		t.Fatalf("Error creating mock signed transaction: %v", err)
 	}
 
-	err = shared.VerifyTransactionSignature(&tx, publicKey2)
+	err = shared.VerifyTransactionSignature(tx, publicKey2)
 	if err == nil {
 		t.Error("Verification succeeded for transaction signed with a different key")
 	}
@@ -51,12 +51,14 @@ func TestValidTransactionSignatureVerification(t *testing.T) {
 		t.Fatalf("Error generating RSA key pair: %v", err)
 	}
 
+	// Assuming CreateMockSignedTransaction already returns a *thrylos.Transaction
 	tx, err := shared.CreateMockSignedTransaction("txValid", privateKey)
 	if err != nil {
 		t.Fatalf("Error creating mock signed transaction: %v", err)
 	}
 
-	err = shared.VerifyTransactionSignature(&tx, publicKey)
+	// Directly pass tx since it's already a *thrylos.Transaction
+	err = shared.VerifyTransactionSignature(tx, publicKey)
 	if err != nil {
 		t.Errorf("Failed to verify valid transaction signature: %v", err)
 	}

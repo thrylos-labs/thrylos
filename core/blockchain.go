@@ -109,6 +109,11 @@ func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
 	}
 }
 
+func (bc *Blockchain) Status() string {
+	// Example status: return the number of blocks in the blockchain
+	return fmt.Sprintf("Current blockchain length: %d blocks", len(bc.Blocks))
+}
+
 // In this updated method, you're retrieving a slice of *thrylos.UTXO from the UTXOs map using the provided address. Then, you iterate over this slice, converting each *thrylos.UTXO to shared.UTXO using the ConvertProtoUTXOToShared function, and build a slice of shared.UTXO to return.
 
 // GetUTXOsForAddress returns all UTXOs for a given address.

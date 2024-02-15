@@ -1,3 +1,7 @@
+// to Start the app, 
+// cd cmd
+// go run main.go
+
 Below is a textual representation of the data flow in your blockchain architecture, which can guide the creation of a visual DFD.
 
 Level 1: Simplified Data Flow

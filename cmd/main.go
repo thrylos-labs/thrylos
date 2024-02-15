@@ -1,88 +1,47 @@
 package main
 
 import (
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
+	"Thrylos/core"
+	"database/sql"
 	"fmt"
-	"os"
+	"log"
+	"net/http"
+
+	_ "github.com/mattn/go-sqlite3"
+	// Import your blockchain package
 )
 
-// Transaction represents a simplified version of your transaction structure
-type Transaction struct {
-	ID        string
-	Timestamp int64
-}
-
-// GenerateKeyPair generates a new RSA private and public key pair
-func GenerateKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
-	privKey, err := rsa.GenerateKey(rand.Reader, bits)
-	if err != nil {
-		return nil, nil, err
-	}
-	return privKey, &privKey.PublicKey, nil
-}
-
-// SignTransaction creates a signature for the transaction using the private key
-func SignTransaction(tx Transaction, privKey *rsa.PrivateKey) (string, error) {
-	txData, err := json.Marshal(tx)
-	if err != nil {
-		return "", err
-	}
-
-	hashed := sha256.Sum256(txData)
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, hashed[:])
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(signature), nil
-}
-
-// VerifySignature checks the signature of the transaction using the public key
-func VerifySignature(tx Transaction, signature string, pubKey *rsa.PublicKey) bool {
-	txData, err := json.Marshal(tx)
-	if err != nil {
-		fmt.Println("Failed to serialize transaction:", err)
-		return false
-	}
-
-	sigBytes, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
-		fmt.Println("Failed to decode signature:", err)
-		return false
-	}
-
-	hashed := sha256.Sum256(txData)
-	err = rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed[:], sigBytes)
-	return err == nil
-}
-
 func main() {
-	// Generate RSA keys
-	privKey, pubKey, err := GenerateKeyPair(2048)
+	// Initialize the blockchain
+	blockchain, err := core.NewBlockchain()
 	if err != nil {
-		fmt.Println("Error generating key pair:", err)
-		os.Exit(1)
+		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
 
-	// Create a new transaction
-	tx := Transaction{
-		ID:        "tx123",
-		Timestamp: 1234567890,
+	// Perform an integrity check on the blockchain
+	if !blockchain.CheckChainIntegrity() {
+		log.Fatal("Blockchain integrity check failed.")
+	} else {
+		fmt.Println("Blockchain integrity check passed.")
 	}
 
-	// Sign the transaction
-	signature, err := SignTransaction(tx, privKey)
+	// Open the SQLite database
+	db, err := sql.Open("sqlite3", "./blockchain.db")
 	if err != nil {
-		fmt.Println("Error signing transaction:", err)
-		os.Exit(1)
+		log.Fatalf("Failed to open database: %v", err)
 	}
-	fmt.Println("Signature:", signature)
+	defer db.Close()
 
-	// Verify the signature
-	isValid := VerifySignature(tx, signature, pubKey)
-	fmt.Println("Signature valid:", isValid)
+	// Example: Adding a handler to get the blockchain status
+	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		// Implement logic to return the blockchain status
+		// This might involve calling a method on the blockchain instance to get its current status or statistics.
+		fmt.Fprintf(w, "Blockchain status: Operational")
+	})
+
+	// Start the HTTP server
+	fmt.Println("Starting server on port 8080...")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
