@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package core;
+package thrylos;
 
-option go_package = "github.com/thrylos-labs/thrylos/core";
+option go_package = "github.com/thrylos-labs/thrylos";
 
 message Transaction {
   string id = 1;

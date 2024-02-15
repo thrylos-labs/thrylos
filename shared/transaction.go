@@ -1,6 +1,7 @@
 package shared
 
 import (
+	thrylos "Thrylos"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -13,6 +14,8 @@ import (
 	"log"
 	"strconv"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // GenerateRSAKeys generates a new RSA key pair with the specified bit size.
@@ -135,22 +138,25 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 // VerifyTransactionSignature checks whether the provided signature for a transaction is valid.
 // It does so by re-serializing the transaction without the signature, hashing this serialized form,
 // and then using the public key to verify the signature against the hash.
-func VerifyTransactionSignature(tx *Transaction, pubKey *rsa.PublicKey) error {
-	// Manually construct the JSON string for verification to ensure field order
-	serializedForVerification := fmt.Sprintf(`{"ID":"%s","Inputs":[{"TransactionID":"%s","Index":%d,"OwnerAddress":"%s","Amount":%d}],"Outputs":[{"TransactionID":"%s","Index":%d,"OwnerAddress":"%s","Amount":%d}],"Timestamp":%d}`,
-		tx.ID,
-		tx.Inputs[0].TransactionID, tx.Inputs[0].Index, tx.Inputs[0].OwnerAddress, tx.Inputs[0].Amount,
-		tx.Outputs[0].TransactionID, tx.Outputs[0].Index, tx.Outputs[0].OwnerAddress, tx.Outputs[0].Amount,
-		tx.Timestamp)
+func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) error {
+	// Serialize the transaction for verification using Protobuf, excluding the signature
+	txCopy := *tx         // Make a shallow copy to avoid modifying the original transaction
+	txCopy.Signature = "" // Reset signature for serialization
+	txBytes, err := proto.Marshal(&txCopy)
+	if err != nil {
+		return fmt.Errorf("failed to serialize transaction for verification: %v", err)
+	}
 
-	fmt.Println("Serialized for verification:", serializedForVerification)
+	// Hash the serialized data
+	hashed := sha256.Sum256(txBytes)
 
-	hashed := sha256.Sum256([]byte(serializedForVerification))
+	// Decode the signature
 	sigBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %v", err)
 	}
 
+	// Verify the signature with the public key
 	if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed[:], sigBytes); err != nil {
 		return fmt.Errorf("signature verification failed: %v", err)
 	}
