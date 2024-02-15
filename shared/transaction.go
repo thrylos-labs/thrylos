@@ -37,30 +37,46 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 
 // CreateMockSignedTransaction generates a transaction and signs it.
 // CreateMockSignedTransaction generates a transaction, serializes it without the signature, signs it, and returns the signed transaction.
-func CreateMockSignedTransaction(transactionID string, privateKey *rsa.PrivateKey) (Transaction, error) {
-	// Manually construct the JSON string for signing to ensure field order
-	serializedForSigning := fmt.Sprintf(`{"ID":"%s","Inputs":[{"TransactionID":"tx0","Index":0,"OwnerAddress":"Alice","Amount":100}],"Outputs":[{"TransactionID":"%s","Index":0,"OwnerAddress":"Bob","Amount":100}],"Timestamp":%d}`,
-		transactionID, transactionID, time.Now().Unix())
+func CreateMockSignedTransaction(transactionID string, privateKey *rsa.PrivateKey) (*thrylos.Transaction, error) {
+	// Initialize the transaction with all fields except the signature
+	tx := &thrylos.Transaction{
+		Id:        transactionID,
+		Timestamp: time.Now().Unix(),
+		Inputs: []*thrylos.UTXO{{
+			TransactionId: "tx0",
+			Index:         0,
+			OwnerAddress:  "Alice",
+			Amount:        100,
+		}},
+		Outputs: []*thrylos.UTXO{{
+			TransactionId: transactionID,
+			Index:         0,
+			OwnerAddress:  "Bob",
+			Amount:        100,
+		}},
+	}
 
-	fmt.Println("Serialized for signing:", serializedForSigning)
+	// Temporarily remove the signature to serialize the transaction for signing
+	txForSigning := *tx         // Make a shallow copy
+	txForSigning.Signature = "" // Remove the signature for signing
 
-	// Hash the manually constructed string
-	hashed := sha256.Sum256([]byte(serializedForSigning))
+	// Serialize the transaction without the signature
+	txBytes, err := proto.Marshal(&txForSigning)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
+	}
+
+	// Hash the serialized data
+	hashed := sha256.Sum256(txBytes)
 
 	// Sign the hash
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+	signatureBytes, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
 	if err != nil {
-		return Transaction{}, fmt.Errorf("failed to sign transaction: %v", err)
+		return nil, fmt.Errorf("failed to sign transaction: %v", err)
 	}
 
-	// Create the transaction object with the base64-encoded signature
-	tx := Transaction{
-		ID:        transactionID,
-		Timestamp: time.Now().Unix(), // This should match the timestamp used in the serialized string
-		Inputs:    []UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-		Outputs:   []UTXO{{TransactionID: transactionID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
-		Signature: base64.StdEncoding.EncodeToString(signature),
-	}
+	// Encode the signature in base64 and attach it to the original transaction object
+	tx.Signature = base64.StdEncoding.EncodeToString(signatureBytes)
 
 	return tx, nil
 }
