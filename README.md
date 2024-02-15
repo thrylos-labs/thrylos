@@ -72,7 +72,7 @@ We're committed to fostering an inclusive environment. Please review our [Code o
 
 ### Reporting Security Issues
 
-Stumbled upon a security flaw? Email us at security@example.com. Let's keep our discussions private until we've addressed the issue.
+Stumbled upon a security flaw? Email us at hello@thrylos.org. Let's keep our discussions private until we've addressed the issue.
 
 ## License
 
