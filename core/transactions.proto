@@ -1,6 +1,8 @@
 syntax = "proto3";
 
-package blockchain;
+package core;
+
+option go_package = "github.com/thrylos-labs/thrylos/core";
 
 message Transaction {
   string id = 1;
