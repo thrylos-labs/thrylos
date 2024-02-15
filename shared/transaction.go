@@ -155,10 +155,13 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 // It does so by re-serializing the transaction without the signature, hashing this serialized form,
 // and then using the public key to verify the signature against the hash.
 func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) error {
-	// Serialize the transaction for verification using Protobuf, excluding the signature
-	txCopy := *tx         // Make a shallow copy to avoid modifying the original transaction
-	txCopy.Signature = "" // Reset signature for serialization
-	txBytes, err := proto.Marshal(&txCopy)
+	// Clone the transaction to avoid modifying the original
+	txCopy := proto.Clone(tx).(*thrylos.Transaction)
+	// Clear the signature for serialization
+	txCopy.Signature = ""
+
+	// Serialize the transaction without the signature
+	txBytes, err := proto.Marshal(txCopy)
 	if err != nil {
 		return fmt.Errorf("failed to serialize transaction for verification: %v", err)
 	}
@@ -166,7 +169,7 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) 
 	// Hash the serialized data
 	hashed := sha256.Sum256(txBytes)
 
-	// Decode the signature
+	// Decode the signature from Base64
 	sigBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
 	if err != nil {
 		return fmt.Errorf("failed to decode signature: %v", err)
@@ -182,52 +185,60 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) 
 
 // VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
 // the existence and ownership of UTXOs in its inputs, and the equality of input and output values.
-func VerifyTransaction(tx Transaction, utxos map[string][]UTXO, getPublicKeyFunc func(address string) (*rsa.PublicKey, error)) (bool, error) {
+func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (*rsa.PublicKey, error)) (bool, error) {
 	// Check if there are any inputs in the transaction
-	if len(tx.Inputs) == 0 {
+	if len(tx.GetInputs()) == 0 {
 		return false, errors.New("Transaction has no inputs")
 	}
 
-	senderAddress := tx.Inputs[0].OwnerAddress
+	// Assuming all inputs come from the same sender for simplicity
+	senderAddress := tx.GetInputs()[0].GetOwnerAddress()
 	senderPublicKey, err := getPublicKeyFunc(senderAddress)
 	if err != nil {
 		return false, fmt.Errorf("Error retrieving public key for address %s: %v", senderAddress, err)
 	}
 
-	// Serialize transaction without the signature for verification
-	serializedTxWithoutSignature, err := tx.SerializeWithoutSignature()
+	// Make a copy of the transaction to manipulate for verification
+	txCopy := proto.Clone(tx).(*thrylos.Transaction)
+	txCopy.Signature = "" // Reset signature for serialization
+
+	// Serialize the transaction for verification
+	txBytes, err := proto.Marshal(txCopy)
 	if err != nil {
 		return false, fmt.Errorf("Error serializing transaction for verification: %v", err)
 	}
 
 	// Log the serialized transaction data without the signature
-	log.Printf("Serialized transaction for verification: %x", serializedTxWithoutSignature)
+	log.Printf("Serialized transaction for verification: %x", txBytes)
 
-	if err := VerifyTransactionSignature(&tx, senderPublicKey); err != nil {
+	// Verify the transaction signature
+	err = VerifyTransactionSignature(tx, senderPublicKey)
+	if err != nil {
 		return false, fmt.Errorf("Transaction signature verification failed: %v", err)
 	}
 
 	// Check the UTXOs to verify they exist and calculate the input sum
-	inputSum := 0
-	for _, input := range tx.Inputs {
-		utxoKey := input.TransactionID + strconv.Itoa(input.Index)
+	inputSum := int64(0)
+	for _, input := range tx.GetInputs() {
+		utxoKey := fmt.Sprintf("%s-%d", input.GetTransactionId(), input.GetIndex())
 		utxoSlice, exists := utxos[utxoKey]
 		if !exists || len(utxoSlice) == 0 {
 			return false, fmt.Errorf("Input UTXO %s not found", utxoKey)
 		}
 
-		inputSum += utxoSlice[0].Amount
+		// Assuming the first UTXO in the slice is the correct one
+		inputSum += utxoSlice[0].GetAmount()
 	}
 
 	// Calculate the output sum
-	outputSum := 0
-	for _, output := range tx.Outputs {
-		outputSum += output.Amount
+	outputSum := int64(0)
+	for _, output := range tx.GetOutputs() {
+		outputSum += output.GetAmount()
 	}
 
 	// Verify if the input sum matches the output sum
 	if inputSum != outputSum {
-		return false, fmt.Errorf("Failed to validate transaction %s: Input sum (%d) does not match output sum (%d)", tx.ID, inputSum, outputSum)
+		return false, fmt.Errorf("Failed to validate transaction %s: Input sum (%d) does not match output sum (%d)", tx.GetId(), inputSum, outputSum)
 	}
 
 	return true, nil
