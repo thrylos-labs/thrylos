@@ -8,7 +8,9 @@ import (
 	"crypto/rsa"
 	"database/sql"
 	"encoding/gob"
+	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 	// other necessary imports
@@ -306,6 +308,28 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	bc.PendingTransactions = []*thrylos.Transaction{}
 
 	return newBlock, nil
+}
+
+func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
+	// iterate over blocks and find by ID
+	for _, block := range bc.Blocks {
+		if block.Hash == id || strconv.Itoa(block.Index) == id {
+			return block, nil
+		}
+	}
+	return nil, errors.New("block not found")
+}
+
+func (bc *Blockchain) GetTransactionByID(id string) (*thrylos.Transaction, error) {
+	// iterate over blocks and transactions to find by ID
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			if tx.Id == id {
+				return tx, nil
+			}
+		}
+	}
+	return nil, errors.New("transaction not found")
 }
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.
