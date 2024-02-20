@@ -180,6 +180,83 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	return nil
 }
 
+// SubmitTransactionHandler processes transaction submissions to the node.
+func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var tx thrylos.Transaction
+		err := json.NewDecoder(r.Body).Decode(&tx)
+		if err != nil {
+			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
+			return
+		}
+
+		// Add transaction to pending transactions
+		err = node.AddPendingTransaction(&tx)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to add transaction: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Optionally, broadcast transaction to peers here...
+
+		// Respond with success
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprintf(w, "Transaction submitted successfully")
+	}
+}
+
+// GetBlockHandler retrieves a specific block by ID.
+func (node *Node) GetBlockHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		blockID := r.URL.Query().Get("id")
+		if blockID == "" {
+			http.Error(w, "Block ID is required", http.StatusBadRequest)
+			return
+		}
+
+		block, err := node.Blockchain.GetBlockByID(blockID)
+		if err != nil {
+			http.Error(w, "Block not found", http.StatusNotFound)
+			return
+		}
+
+		blockJSON, err := json.Marshal(block)
+		if err != nil {
+			http.Error(w, "Failed to serialize block", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(blockJSON)
+	}
+}
+
+// GetTransactionHandler retrieves a specific transaction by ID.
+func (node *Node) GetTransactionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txID := r.URL.Query().Get("id")
+		if txID == "" {
+			http.Error(w, "Transaction ID is required", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := node.Blockchain.GetTransactionByID(txID)
+		if err != nil {
+			http.Error(w, "Transaction not found", http.StatusNotFound)
+			return
+		}
+
+		txJSON, err := json.Marshal(tx)
+		if err != nil {
+			http.Error(w, "Failed to serialize transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(txJSON)
+	}
+}
+
 // TotalStake calculates the total amount of stake from all stakeholders in the blockchain. This is used
 // in consensus mechanisms that involve staking.
 func (bc *Blockchain) TotalStake() int {
