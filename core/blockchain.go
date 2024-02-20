@@ -27,6 +27,9 @@ type Blockchain struct {
 	// is the foundation of the blockchain, with no preceding block.
 	Genesis *Block
 
+	// Adding transactions to the pending transactions pool
+	PendingTransactions []*thrylos.Transaction
+
 	// Stakeholders maps validator addresses to their respective stakes in the network. This is
 	// used in proof-of-stake (PoS) consensus mechanisms to determine validators' rights to create
 	// new blocks based on the size of their stake
@@ -263,6 +266,46 @@ func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// AddPendingTransaction adds a new transaction to the pool of pending transactions.
+func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+	bc.PendingTransactions = append(bc.PendingTransactions, tx)
+}
+
+func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Example logic to process transactions
+	// This is where you would validate each transaction and potentially update UTXOs
+
+	// Select a validator based on PoS rules (simplified here)
+	selectedValidator := bc.SelectValidator()
+
+	if validator != selectedValidator {
+		return nil, fmt.Errorf("selected validator does not match")
+	}
+
+	// Assume we reward the validator with a fixed amount for simplicity
+	rewardTransaction := &thrylos.Transaction{
+		// Create a reward transaction for the validator
+	}
+	bc.PendingTransactions = append(bc.PendingTransactions, rewardTransaction)
+
+	newBlock := bc.CreateBlock(bc.PendingTransactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash, time.Now().Unix())
+
+	// Assuming CreateBlock also handles the addition of the block to the chain
+	if newBlock == nil {
+		return nil, fmt.Errorf("failed to create a new block")
+	}
+
+	// Clear pending transactions after they have been added to a block
+	bc.PendingTransactions = []*thrylos.Transaction{}
+
+	return newBlock, nil
 }
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.
