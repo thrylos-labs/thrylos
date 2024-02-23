@@ -53,6 +53,7 @@ func main() {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
 
+	// Define main endpoints
 	http.HandleFunc("/submit-transaction", node.SubmitTransactionHandler())
 	http.HandleFunc("/get-block", node.GetBlockHandler())
 	http.HandleFunc("/get-transaction", node.GetTransactionHandler())
