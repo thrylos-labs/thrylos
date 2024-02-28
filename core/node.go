@@ -200,8 +200,9 @@ func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 		// Optionally, broadcast transaction to peers here...
 
 		// Respond with success
-		w.WriteHeader(http.StatusAccepted)
-		fmt.Fprintf(w, "Transaction submitted successfully")
+		// w.WriteHeader(http.StatusAccepted)
+		// fmt.Fprintf(w, "Transaction submitted successfully")
+		sendResponse(w, []byte("Transaction submitted successfully"))
 	}
 }
 
@@ -226,9 +227,13 @@ func (node *Node) GetBlockHandler() http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(blockJSON)
+		sendResponse(w, blockJSON)
 	}
+}
+
+func sendResponse(w http.ResponseWriter, data []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
 }
 
 // GetTransactionHandler retrieves a specific transaction by ID.
@@ -252,8 +257,7 @@ func (node *Node) GetTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(txJSON)
+		sendResponse(w, txJSON)
 	}
 }
 
