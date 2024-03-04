@@ -45,7 +45,7 @@ func InitializeDatabase() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Error creating blocks table: %w", err)
 	}
-	fmt.Println("Blocks table created successfully") // Add logging
+	fmt.Println("Blocks table created successfully.") // Add logging
 
 	// New table for publicKey-to-address mappings
 	createPublicKeyTableSQL := `
