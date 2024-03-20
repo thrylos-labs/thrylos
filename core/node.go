@@ -180,6 +180,11 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	return nil
 }
 
+func sendResponse(w http.ResponseWriter, data []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
 // SubmitTransactionHandler processes transaction submissions to the node.
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -229,11 +234,6 @@ func (node *Node) GetBlockHandler() http.HandlerFunc {
 
 		sendResponse(w, blockJSON)
 	}
-}
-
-func sendResponse(w http.ResponseWriter, data []byte) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
 }
 
 // GetTransactionHandler retrieves a specific transaction by ID.
