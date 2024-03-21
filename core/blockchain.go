@@ -313,6 +313,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
 	// iterate over blocks and find by ID
 	for _, block := range bc.Blocks {
+		fmt.Printf("Checking block: Index=%d, Hash=%s\n", block.Index, block.Hash)
 		if block.Hash == id || strconv.Itoa(block.Index) == id {
 			return block, nil
 		}

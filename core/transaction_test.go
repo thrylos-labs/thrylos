@@ -247,3 +247,42 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 
 	t.Log("Transaction signing and verification successful")
 }
+
+func TestTransactionThroughput(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Error generating RSA key: %v", err)
+	}
+	publicKey := &privateKey.PublicKey
+
+	// Define the number of transactions to simulate
+	numTransactions := 1000
+
+	start := time.Now()
+
+	for i := 0; i < numTransactions; i++ {
+		// Simulate creating a transaction
+		txID := fmt.Sprintf("tx%d", i)
+		inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
+		outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
+		tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
+
+		// Serialize the transaction without the signature for signing
+		txBytes, _ := json.Marshal(tx)
+		hashed := sha256.Sum256(txBytes)
+
+		// Sign the transaction
+		signature, _ := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+
+		// Verify the signature (assuming verification is part of the processing)
+		err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
+		if err != nil {
+			t.Fatalf("Signature verification failed: %v", err)
+		}
+	}
+
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
+
+	t.Logf("Processed %d transactions in %s. TPS: %f", numTransactions, elapsed, tps)
+}

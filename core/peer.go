@@ -6,38 +6,69 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strings"
+	"time"
 )
 
 // AddPeer adds a new peer to the node's list of peers if it is not already present. This function ensures that
 // the node maintains an up-to-date list of peers with which it can communicate. Duplicate addresses are ignored
 // to prevent redundancy.
 func (node *Node) AddPeer(peerAddress string) {
+	// Ensure the peer address includes the http:// scheme
+	if !strings.HasPrefix(peerAddress, "http://") && !strings.HasPrefix(peerAddress, "https://") {
+		peerAddress = "http://" + peerAddress // Defaulting to HTTP for simplicity
+	}
+
+	// Check for duplicates
 	for _, peer := range node.Peers {
 		if peer == peerAddress {
 			return // Peer is already in the list, no need to add again.
 		}
 	}
 	node.Peers = append(node.Peers, peerAddress) // Add new peer to the list.
+	fmt.Println("Peer added:", peerAddress)
 }
 
 // DiscoverPeers iterates over the node's current list of peers and requests their peer lists. This allows the node
 // to discover new peers in the network dynamically. Discovered peers are added using the AddPeer method.
 func (node *Node) DiscoverPeers() {
-	for _, peer := range node.Peers {
-		resp, err := http.Get(peer + "/peers")
-		if err != nil {
-			fmt.Println("Failed to discover peers:", err)
-			continue
-		}
-		defer resp.Body.Close()
+	maxRetries := 5
+	retryInterval := time.Second * 5 // 5 seconds between retries
 
-		var discoveredPeers []string
-		json.NewDecoder(resp.Body).Decode(&discoveredPeers) // Decode the list of peers from the response.
+	for i := 0; i < maxRetries; i++ {
+		allPeersDiscovered := true
 
-		for _, discoveredPeer := range discoveredPeers {
-			node.AddPeer(discoveredPeer) // Add each discovered peer.
+		for _, peer := range node.Peers {
+			resp, err := http.Get(peer + "/peers")
+			if err != nil {
+				fmt.Println("Failed to discover peers:", err)
+				allPeersDiscovered = false
+				break // Exit the inner loop, one failed attempt means retry
+			}
+			defer resp.Body.Close()
+
+			var discoveredPeers []string
+			if err := json.NewDecoder(resp.Body).Decode(&discoveredPeers); err != nil {
+				fmt.Printf("Failed to decode peers from %s: %v\n", peer, err)
+				allPeersDiscovered = false
+				break // Exit the inner loop, one failed decoding means retry
+			}
+
+			for _, discoveredPeer := range discoveredPeers {
+				node.AddPeer(discoveredPeer) // Add each discovered peer.
+			}
 		}
+
+		if allPeersDiscovered {
+			fmt.Println("Successfully discovered all peers.")
+			return // Exit the function if all peers are successfully discovered
+		}
+
+		fmt.Printf("Retrying peer discovery in %v... (%d/%d)\n", retryInterval, i+1, maxRetries)
+		time.Sleep(retryInterval)
 	}
+
+	fmt.Println("Failed to discover all peers after maximum retries.")
 }
 
 // SyncWithPeer fetches the blockchain from a specified peer and updates the node's blockchain if the peer's
