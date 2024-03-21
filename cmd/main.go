@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"strings"
 
+	// Import the CORS package
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/rs/cors"
 	// Import your blockchain package
 )
 
@@ -46,21 +48,35 @@ func main() {
 	}
 
 	// Initialize a new node with the specified address and known peers
+	// Initialize a new node with the specified address and known peers
 	node := core.NewNode(*nodeAddress, peersList, nil, false)
 
-	// Define HTTP routes and handlers
-	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
+	// Setup CORS
+	c := cors.New(cors.Options{
+		AllowedOrigins: []string{"http://localhost:3000"}, // Allow frontend domain
+		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders: []string{"Content-Type"},
 	})
 
-	// Define main endpoints
-	http.HandleFunc("/submit-transaction", node.SubmitTransactionHandler())
-	http.HandleFunc("/get-block", node.GetBlockHandler())
-	http.HandleFunc("/get-transaction", node.GetTransactionHandler())
+	// Define HTTP routes and handlers within a single handler function wrapped by CORS
+	handler := c.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
+		case "/submit-transaction":
+			node.SubmitTransactionHandler()(w, r)
+		case "/get-block":
+			node.GetBlockHandler()(w, r)
+		case "/get-transaction":
+			node.GetTransactionHandler()(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 
-	// Start the HTTP server
+	// Start the HTTP server with CORS-enabled handler
 	fmt.Printf("Starting server on %s\n", *nodeAddress)
-	if err := http.ListenAndServe(*nodeAddress, nil); err != nil {
+	if err := http.ListenAndServe(*nodeAddress, handler); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
