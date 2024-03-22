@@ -3,6 +3,7 @@ package core
 import (
 	"Thrylos/shared"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -210,10 +211,10 @@ func signTransactionData(data []byte, privateKey *rsa.PrivateKey) (string, error
 }
 
 func TestTransactionSigningAndVerification1(t *testing.T) {
-	// Step 1: Generate RSA keys
-	privateKey, publicKey, err := shared.GenerateRSAKeys(2048)
+	// Step 1: Generate Ed25519 keys
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate RSA keys: %v", err)
+		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
 	}
 
 	// Step 2: Create a new transaction
@@ -224,28 +225,24 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
 	}
 
-	// Step 3: Serialize the transaction, excluding the signature
+	// Step 3: Serialize the transaction (excluding the signature for now)
 	serializedTx, err := json.Marshal(tx)
 	if err != nil {
 		t.Fatalf("Failed to serialize transaction: %v", err)
 	}
 
-	// Step 4: Hash the serialized transaction data
-	hashed := sha256.Sum256(serializedTx)
-
-	// Step 5: Sign the hash
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
-	if err != nil {
-		t.Fatalf("Failed to sign transaction: %v", err)
+	// Step 4: Sign the serialized transaction data directly with Ed25519 (no separate hashing needed)
+	signature := ed25519.Sign(privateKey, serializedTx)
+	if signature == nil {
+		t.Fatalf("Failed to sign transaction")
 	}
 
-	// Step 6: Verify the signature
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
-	if err != nil {
-		t.Fatalf("Signature verification failed: %v", err)
+	// Step 5: Verify the signature with the Ed25519 public key
+	if !ed25519.Verify(publicKey, serializedTx, signature) {
+		t.Fatalf("Signature verification failed")
 	}
 
-	t.Log("Transaction signing and verification successful")
+	t.Log("Transaction signing and verification with Ed25519 successful")
 }
 
 func TestTransactionThroughput(t *testing.T) {

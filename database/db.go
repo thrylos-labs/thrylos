@@ -6,14 +6,13 @@ package database
 import (
 	"Thrylos/shared"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 )
 
@@ -106,11 +105,11 @@ func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, pemPublicKey []
 
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.
 // It is essential for verifying transaction signatures and ensuring the integrity of transactions.
-func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (*rsa.PublicKey, error) {
+func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error) {
 	row := bdb.DB.QueryRow("SELECT publicKey FROM publicKeys WHERE address = ?", address)
 
-	var pemData []byte
-	err := row.Scan(&pemData)
+	var publicKeyBytes []byte
+	err := row.Scan(&publicKeyBytes)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("no public key found for address %s", address)
@@ -118,32 +117,12 @@ func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (*rsa.Publ
 		return nil, err
 	}
 
-	// Log the raw PEM data for debugging
-	fmt.Printf("Retrieved raw PEM data for address %s: %s\n", address, string(pemData))
-
-	// Decode the PEM block
-	block, _ := pem.Decode(pemData)
-	if block == nil {
-		// Here, you could log the specific issue or take other actions as needed.
-		return nil, fmt.Errorf("failed to decode PEM block from stored public key for address %s", address)
+	// Check if the length of the publicKeyBytes matches that of an Ed25519 public key
+	if len(publicKeyBytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("retrieved public key size is incorrect for address %s", address)
 	}
 
-	// Parse the RSA public key from the PEM block
-	pubKeyInterface, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing public key for address %s: %v", address, err)
-	}
-
-	// Assert the type to *rsa.PublicKey
-	pubKey, ok := pubKeyInterface.(*rsa.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("public key type is not RSA for address %s", address)
-	}
-
-	// Log the parsed public key for debugging
-	fmt.Printf("Retrieved and parsed public key for address %s: %+v\n", address, pubKey)
-
-	return pubKey, nil
+	return ed25519.PublicKey(publicKeyBytes), nil
 }
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.

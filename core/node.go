@@ -5,7 +5,6 @@ import (
 	"Thrylos/shared"
 	"bytes"
 	"crypto/ed25519"
-	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -32,7 +31,7 @@ type Node struct {
 	Votes               []Vote      // Collection of votes for blocks from validators.
 	Shard               *Shard      // Reference to the shard this node is part of, if sharding is implemented.
 	PendingTransactions []*thrylos.Transaction
-	PublicKeyMap        map[string]*rsa.PublicKey // Map to store public keys
+	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
 
 }
 
@@ -49,7 +48,7 @@ func NewNode(address string, knownPeers []string, shard *Shard, isTest bool) *No
 		Peers:        knownPeers,
 		Blockchain:   bc,
 		Shard:        shard,
-		PublicKeyMap: make(map[string]*rsa.PublicKey), // Initialize the map
+		PublicKeyMap: make(map[string]ed25519.PublicKey), // Initialize the map
 	}
 
 	if shard != nil {
@@ -155,7 +154,7 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount 
 	return nil
 }
 
-func (node *Node) RetrievePublicKey(address string) (*rsa.PublicKey, error) {
+func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	pubKey, exists := node.PublicKeyMap[address]
 	if !exists {
 		return nil, fmt.Errorf("public key not found for address: %s", address)
@@ -163,18 +162,19 @@ func (node *Node) RetrievePublicKey(address string) (*rsa.PublicKey, error) {
 	return pubKey, nil
 }
 
-func (node *Node) StorePublicKey(address string, publicKey *rsa.PublicKey) {
+func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 	node.PublicKeyMap[address] = publicKey
 }
 
+// VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
-	// Retrieve the sender's public key
-	senderPublicKey, err := node.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Simplified
+	// Retrieve the sender's public key as an Ed25519 public key
+	senderPublicKey, err := node.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Ensure this returns ed25519.PublicKey
 	if err != nil {
 		return fmt.Errorf("failed to retrieve public key: %v", err)
 	}
 
-	// Verify the transaction signature
+	// Verify the transaction signature with Ed25519 public key
 	if err := shared.VerifyTransactionSignature(tx, senderPublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}

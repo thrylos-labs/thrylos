@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"crypto/ed25519"
 	"crypto/rsa"
 )
 
@@ -22,7 +23,7 @@ type BlockchainDBInterface interface {
 	GetLastBlockData() ([]byte, error)
 
 	// RetrievePublicKeyFromAddress fetches the public key associated with a given blockchain address.
-	RetrievePublicKeyFromAddress(address string) (*rsa.PublicKey, error)
+	RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error)
 
 	// AddTransaction records a new transaction in the database.
 	AddTransaction(tx Transaction) error

@@ -2,9 +2,7 @@ package shared
 
 import (
 	thrylos "Thrylos"
-	"crypto"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -76,7 +74,7 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 
 // CreateMockSignedTransaction generates a transaction and signs it.
 // CreateMockSignedTransaction generates a transaction, serializes it without the signature, signs it, and returns the signed transaction.
-func CreateMockSignedTransaction(transactionID string, privateKey *rsa.PrivateKey) (*thrylos.Transaction, error) {
+func CreateMockSignedTransaction(transactionID string, privateKey ed25519.PrivateKey) (*thrylos.Transaction, error) {
 	// Initialize the transaction with all fields except the signature
 	tx := &thrylos.Transaction{
 		Id:        transactionID,
@@ -105,17 +103,14 @@ func CreateMockSignedTransaction(transactionID string, privateKey *rsa.PrivateKe
 		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
 	}
 
-	// Hash the serialized data
-	hashed := sha256.Sum256(txBytes)
-
-	// Sign the hash
-	signatureBytes, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %v", err)
+	// Sign the serialized transaction data directly with Ed25519 (no hashing needed)
+	signature := ed25519.Sign(privateKey, txBytes)
+	if signature == nil {
+		return nil, fmt.Errorf("failed to sign transaction")
 	}
 
 	// Encode the signature in base64 and attach it to the original transaction object
-	tx.Signature = base64.StdEncoding.EncodeToString(signatureBytes)
+	tx.Signature = base64.StdEncoding.EncodeToString(signature)
 
 	return tx, nil
 }
@@ -184,10 +179,8 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 	return json.Marshal(temp)
 }
 
-// VerifyTransactionSignature checks whether the provided signature for a transaction is valid.
-// It does so by re-serializing the transaction without the signature, hashing this serialized form,
-// and then using the public key to verify the signature against the hash.
-func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) error {
+// VerifyTransactionSignature verifies the signature of a given transaction using an Ed25519 public key.
+func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey ed25519.PublicKey) error {
 	// Clone the transaction to avoid modifying the original
 	txCopy := proto.Clone(tx).(*thrylos.Transaction)
 	// Clear the signature for serialization
@@ -199,9 +192,6 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) 
 		return fmt.Errorf("failed to serialize transaction for verification: %v", err)
 	}
 
-	// Hash the serialized data
-	hashed := sha256.Sum256(txBytes)
-
 	// Decode the signature from Base64
 	sigBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
 	if err != nil {
@@ -209,8 +199,8 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) 
 	}
 
 	// Verify the signature with the public key
-	if err := rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, hashed[:], sigBytes); err != nil {
-		return fmt.Errorf("signature verification failed: %v", err)
+	if !ed25519.Verify(pubKey, txBytes, sigBytes) {
+		return fmt.Errorf("signature verification failed")
 	}
 
 	return nil // Signature is valid
@@ -218,7 +208,7 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, pubKey *rsa.PublicKey) 
 
 // VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
 // the existence and ownership of UTXOs in its inputs, and the equality of input and output values.
-func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (*rsa.PublicKey, error)) (bool, error) {
+func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (ed25519.PublicKey, error)) (bool, error) {
 	// Check if there are any inputs in the transaction
 	if len(tx.GetInputs()) == 0 {
 		return false, errors.New("Transaction has no inputs")

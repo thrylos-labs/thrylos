@@ -5,7 +5,7 @@ import (
 	"Thrylos/database"
 	"Thrylos/shared"
 	"bytes"
-	"crypto/rsa"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/gob"
 	"errors"
@@ -241,24 +241,22 @@ func (bc *Blockchain) GetLastBlock() (*Block, error) {
 // Example snippet for VerifyTransaction method adjustment
 func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 	// Function to retrieve public key from the address
-	getPublicKeyFunc := func(address string) (*rsa.PublicKey, error) {
-		return bc.Database.RetrievePublicKeyFromAddress(address)
-	}
-
-	// Convert your UTXOs map to the expected Protobuf type if needed
-	// This step is necessary if your bc.UTXOs is not already of the type map[string][]*thrylos.UTXO
-	protoUTXOs := make(map[string][]shared.UTXO)
-	for key, utxos := range bc.UTXOs {
-		var sharedUtxos []shared.UTXO
-		for _, protoUtxo := range utxos {
-			sharedUtxo := ConvertProtoUTXOToShared(protoUtxo)
-			sharedUtxos = append(sharedUtxos, sharedUtxo)
+	getPublicKeyFunc := func(address string) (ed25519.PublicKey, error) {
+		pubKey, err := bc.Database.RetrievePublicKeyFromAddress(address)
+		if err != nil {
+			return ed25519.PublicKey{}, err // Corrected to return the zero value for ed25519.PublicKey
 		}
-		protoUTXOs[key] = sharedUtxos
+		return pubKey, nil
 	}
 
-	// Verify the transaction using the converted UTXOs and the Protobuf transaction type
-	isValid, err := shared.VerifyTransaction(tx, bc.UTXOs, getPublicKeyFunc)
+	// Assuming you've made necessary adjustments to the rest of your code to handle the protobuf and shared.UTXO types correctly
+	protoUTXOs := make(map[string][]*thrylos.UTXO)
+	for key, utxos := range bc.UTXOs {
+		protoUTXOs[key] = utxos // Adjust according to your actual type conversion if necessary
+	}
+
+	// Verify the transaction using the converted UTXOs and the correct public key type
+	isValid, err := shared.VerifyTransaction(tx, protoUTXOs, getPublicKeyFunc)
 	if err != nil {
 		fmt.Printf("Error during transaction verification: %v\n", err)
 		return false, err

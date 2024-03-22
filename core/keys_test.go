@@ -1,45 +1,37 @@
 package core
 
 import (
-	"Thrylos/shared"
-	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
 	"testing"
 )
 
 // This test ensures your RSA keys are generated, stored, retrieved, and used correctly throughout your application.
-func TestRSAKeyGenerationAndUsage(t *testing.T) {
-	// Generate RSA keys
-	privateKey, publicKey, err := shared.GenerateRSAKeys(2048)
+func TestEd25519KeyGenerationAndUsage(t *testing.T) {
+	// Generate Ed25519 keys
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate RSA keys: %v", err)
+		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
 	}
 
 	// Prepare a message for signing
-	message := "Test message for RSA signature"
-	hashed := sha256.Sum256([]byte(message))
+	message := []byte("Test message for Ed25519 signature")
 
 	// Sign the message
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
-	if err != nil {
-		t.Fatalf("Failed to sign message: %v", err)
-	}
+	signature := ed25519.Sign(privateKey, message)
 
 	// Verify the signature
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
-	if err != nil {
-		t.Fatalf("Failed to verify signature: %v", err)
+	if !ed25519.Verify(publicKey, message, signature) {
+		t.Fatalf("Failed to verify signature")
 	}
 
 	// Check key sizes
-	if privateKey.Size() != 256 { // 2048 bits / 8 = 256 bytes
-		t.Errorf("Private key size is incorrect, expected 256 bytes, got %d", privateKey.Size())
+	if len(privateKey) != ed25519.PrivateKeySize {
+		t.Errorf("Private key size is incorrect, expected %d bytes, got %d", ed25519.PrivateKeySize, len(privateKey))
 	}
-	if publicKey.Size() != 256 { // 2048 bits / 8 = 256 bytes
-		t.Errorf("Public key size is incorrect, expected 256 bytes, got %d", publicKey.Size())
+	if len(publicKey) != ed25519.PublicKeySize {
+		t.Errorf("Public key size is incorrect, expected %d bytes, got %d", ed25519.PublicKeySize, len(publicKey))
 	}
 
-	t.Log("RSA key generation, signing, and verification successful")
+	t.Log("Ed25519 key generation, signing, and verification successful")
 }
