@@ -4,6 +4,7 @@ import (
 	thrylos "Thrylos"
 	"Thrylos/shared"
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
@@ -127,7 +128,9 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 	return collectedInputs, change, nil
 }
 
-func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount int, privateKey *rsa.PrivateKey) error {
+// CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
+// signs it with the sender's Ed25519 private key, and broadcasts it to the network.
+func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount int, privateKey ed25519.PrivateKey) error {
 	// Attempt to gather inputs for the transaction along with change and potential error
 	inputs, change, err := node.CollectInputsForTransaction(amount, node.Address)
 	if err != nil {
@@ -141,7 +144,7 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount 
 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
 	}
 
-	// Create and sign the transaction
+	// Create and sign the transaction using Ed25519
 	transaction, err := shared.CreateAndSignTransaction("txID", inputs, outputs, privateKey)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)

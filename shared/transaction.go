@@ -3,6 +3,7 @@ package shared
 import (
 	thrylos "Thrylos"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -13,18 +14,56 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 )
 
-// GenerateRSAKeys generates a new RSA key pair with the specified bit size.
-func GenerateRSAKeys(bitSize int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, bitSize)
+// Initialize a cache with a mutex for concurrent access control
+var (
+	addressCache = make(map[string]string)
+	cacheMutex   sync.RWMutex
+)
+
+// PublicKeyToAddressWithCache converts an Ed25519 public key to a blockchain address string,
+// using SHA-256 hashing, and caches the result.
+func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
+	pubKeyStr := hex.EncodeToString(pubKey) // Convert public key to string for map key
+
+	// Try to get the address from cache
+	cacheMutex.RLock()
+	address, found := addressCache[pubKeyStr]
+	cacheMutex.RUnlock()
+
+	if found {
+		return address // Return cached address if available
+	}
+
+	// Compute the address if not found in cache
+	address = computeAddressFromPublicKey(pubKey)
+
+	// Cache the newly computed address
+	cacheMutex.Lock()
+	addressCache[pubKeyStr] = address
+	cacheMutex.Unlock()
+
+	return address
+}
+
+// computeAddressFromPublicKey performs the actual computation of the address from a public key.
+func computeAddressFromPublicKey(pubKey ed25519.PublicKey) string {
+	hash := sha256.Sum256(pubKey)
+	return hex.EncodeToString(hash[:])
+}
+
+// GenerateEd25519Keys generates a new Ed25519 public/private key pair.
+func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	return privateKey, &privateKey.PublicKey, nil
+	return publicKey, privateKey, nil
 }
 
 // PublicKeyToAddress converts a given RSA public key to a blockchain address string using SHA-256 hashing.
@@ -97,12 +136,11 @@ type Transaction struct {
 	Signature string
 }
 
-// CreateAndSignTransaction generates a new transaction and signs it with the sender's private RSA key.
-// The signature provides security by ensuring that transactions cannot be modified or forged.
-func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, privKey *rsa.PrivateKey) (Transaction, error) {
+// CreateAndSignTransaction generates a new transaction and signs it with the sender's private Ed25519 key.
+func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, privKey ed25519.PrivateKey) (Transaction, error) {
 	tx := NewTransaction(id, inputs, outputs) // Create the transaction
 
-	// Sign the transaction directly
+	// Sign the transaction directly using the Ed25519 private key
 	signature, err := SignTransaction(tx, privKey)
 	if err != nil {
 		return Transaction{}, err
@@ -115,21 +153,16 @@ func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, privKey 
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
 // The signature is created by first hashing the transaction data, then signing the hash with the private key.
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
-func SignTransaction(tx Transaction, privKey *rsa.PrivateKey) (string, error) {
+func SignTransaction(tx Transaction, privateKey ed25519.PrivateKey) (string, error) {
 	// Serialize transaction without the signature
 	txData, err := json.Marshal(tx)
 	if err != nil {
 		return "", err
 	}
 
-	// Use HashData to hash the serialized transaction data
-	hashed := HashData(txData)
+	// Ed25519 does the hashing as part of the signing process
+	signature := ed25519.Sign(privateKey, txData)
 
-	// Sign the hash
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, hashed[:])
-	if err != nil {
-		return "", err
-	}
 	return base64.StdEncoding.EncodeToString(signature), nil
 }
 
