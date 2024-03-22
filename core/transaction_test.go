@@ -246,11 +246,11 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 }
 
 func TestTransactionThroughput(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// Generate Ed25519 keys
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Error generating RSA key: %v", err)
+		t.Fatalf("Error generating Ed25519 key pair: %v", err)
 	}
-	publicKey := &privateKey.PublicKey
 
 	// Define the number of transactions to simulate
 	numTransactions := 1000
@@ -264,17 +264,15 @@ func TestTransactionThroughput(t *testing.T) {
 		outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
 		tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
 
-		// Serialize the transaction without the signature for signing
+		// Serialize the transaction (excluding the signature for now)
 		txBytes, _ := json.Marshal(tx)
-		hashed := sha256.Sum256(txBytes)
 
-		// Sign the transaction
-		signature, _ := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+		// Sign the serialized transaction data directly with Ed25519 (no separate hashing needed)
+		signature := ed25519.Sign(privateKey, txBytes)
 
-		// Verify the signature (assuming verification is part of the processing)
-		err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature)
-		if err != nil {
-			t.Fatalf("Signature verification failed: %v", err)
+		// Verify the signature with the Ed25519 public key
+		if !ed25519.Verify(publicKey, txBytes, signature) {
+			t.Fatalf("Signature verification failed at transaction %d", i)
 		}
 	}
 
