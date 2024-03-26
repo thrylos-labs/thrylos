@@ -10,6 +10,7 @@ message Transaction {
   repeated UTXO inputs = 3;
   repeated UTXO outputs = 4;
   string signature = 5;
+  string dilithium_signature = 6;
 }
 
 message UTXO {

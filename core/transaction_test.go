@@ -245,6 +245,8 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 	t.Log("Transaction signing and verification with Ed25519 successful")
 }
 
+// Find out the test
+// go test -v -timeout 30s -run ^TestTransactionThroughput$ Thrylos/core
 func TestTransactionThroughput(t *testing.T) {
 	// Generate Ed25519 keys
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
