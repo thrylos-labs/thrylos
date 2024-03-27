@@ -236,6 +236,35 @@ func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 	}, nil
 }
 
+func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
+	protoTx := &thrylos.Transaction{
+		Id:                 tx.ID,
+		Timestamp:          tx.Timestamp,
+		Signature:          tx.Signature,
+		DilithiumSignature: tx.DilithiumSignature,
+	}
+
+	for _, input := range tx.Inputs {
+		protoTx.Inputs = append(protoTx.Inputs, &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			Index:         int32(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		})
+	}
+
+	for _, output := range tx.Outputs {
+		protoTx.Outputs = append(protoTx.Outputs, &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+		})
+	}
+
+	return protoTx
+}
+
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
 // The signature is created by first hashing the transaction data, then signing the hash with the private key.
 // SignTransaction creates a signature for a transaction using the sender's private Ed25519 key and a Dilithium private key.
@@ -402,4 +431,90 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 	}
 
 	return true
+}
+
+// Example usage within a hypothetical transaction processing function
+func processTransactions(transactions []*Transaction) {
+	// Generate or retrieve Ed25519 private key
+	_, edPrivateKey, err := ed25519.GenerateKey(rand.Reader) // Skip storing the public key if not used
+	if err != nil {
+		log.Fatalf("Failed to generate Ed25519 keys: %v", err)
+	}
+
+	// Generate or retrieve Dilithium private key
+	_, diPrivateKeyBytes, err := GenerateDilithiumKeys() // Adjust this function if you're retrieving keys, and skip storing the public key if not used
+	if err != nil {
+		log.Fatalf("Failed to generate or retrieve Dilithium keys: %v", err)
+	}
+
+	// Now that we have the keys, attempt to batch sign the transactions
+	err = BatchSignTransactions(transactions, edPrivateKey, diPrivateKeyBytes)
+	if err != nil {
+		log.Printf("Error signing transactions: %v", err)
+		return
+	}
+
+	// Proceed with further transaction processing...
+}
+
+// BatchSignTransactions signs a slice of transactions using both Ed25519 and Dilithium signatures.
+func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) error {
+	var wg sync.WaitGroup
+	errChan := make(chan error, 2) // Channel for error communication
+
+	go func() {
+		defer wg.Done()
+		for _, customTx := range transactions { // Assuming transactions is of type []*Transaction
+			// Convert the custom Transaction struct to the Protobuf-generated Transaction type
+			protoTx := ConvertToProtoTransaction(customTx)
+
+			// Correctly use the generated Protobuf type for marshaling
+			txBytes, err := proto.Marshal(protoTx)
+			if err != nil {
+				// Handle error appropriately
+				continue
+			}
+
+			// Ed25519 Signing
+			edSignature := ed25519.Sign(edPrivateKey, txBytes)
+
+			// Update the signature field of the Protobuf Transaction
+			protoTx.Signature = base64.StdEncoding.EncodeToString(edSignature)
+
+			// If you also want to update your custom struct, remember to convert the signature back
+			customTx.Signature = protoTx.Signature
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		dilithiumPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(dilithiumPrivateKeyBytes)
+		for _, tx := range transactions {
+			protoTx := ConvertToProtoTransaction(tx) // Convert to Protobuf type
+			txBytes, err := proto.Marshal(protoTx)   // Now marshaling should work
+			if err != nil {
+				log.Printf("Error marshaling transaction: %v", err)
+				continue // Handle the error as needed
+			}
+
+			// Dilithium Signing
+			dilithiumSignature := dilithium.Mode3.Sign(dilithiumPrivateKey, txBytes)
+			protoTx.DilithiumSignature = base64.StdEncoding.EncodeToString(dilithiumSignature)
+			// Convert back if necessary, or work with the Protobuf type going forward
+		}
+	}()
+
+	wg.Add(2)
+	wg.Wait()
+
+	close(errChan) // Close the channel to signal completion of error collection
+
+	// Check for errors
+	for e := range errChan {
+		if e != nil {
+			return e // Return the first encountered error (or aggregate as needed)
+		}
+	}
+
+	return nil
 }

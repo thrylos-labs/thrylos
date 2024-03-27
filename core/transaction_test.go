@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -286,6 +287,8 @@ func TestTransactionThroughput(t *testing.T) {
 	t.Logf("Processed %d transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }
 
+// Find out the test
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithDualSignatures$ Thrylos/core
 func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 	// Generate Ed25519 keys
 	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -301,33 +304,45 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 	diPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(diPrivateKeyBytes)
 	diPublicKey := dilithium.Mode3.PublicKeyFromBytes(diPublicKeyBytes)
 
-	// Define the number of transactions to simulate
+	// Define the number of transactions and the size of each batch
 	numTransactions := 1000
+	batchSize := 100 // Define an appropriate batch size
 
 	start := time.Now()
 
-	for i := 0; i < numTransactions; i++ {
-		// Simulate creating a transaction
-		txID := fmt.Sprintf("tx%d", i)
-		inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
-		outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
-		tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
+	var wg sync.WaitGroup
 
-		// Serialize the transaction for signing
-		txBytes, _ := json.Marshal(tx)
+	// Process transactions in batches
+	for i := 0; i < numTransactions; i += batchSize {
+		wg.Add(1)
+		go func(startIndex int) {
+			defer wg.Done()
+			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
+				// Simulate creating a transaction
+				txID := fmt.Sprintf("tx%d", j)
+				inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
+				outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
+				tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
 
-		// Sign the serialized transaction data with both Ed25519 and Dilithium
-		edSignature := ed25519.Sign(edPrivateKey, txBytes)
-		diSignature := dilithium.Mode3.Sign(diPrivateKey, txBytes)
+				// Serialize the transaction for signing
+				txBytes, _ := json.Marshal(tx)
 
-		// Verify both signatures
-		if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
-			t.Fatalf("Ed25519 signature verification failed at transaction %d", i)
-		}
-		if !dilithium.Mode3.Verify(diPublicKey, txBytes, diSignature) {
-			t.Fatalf("Dilithium signature verification failed at transaction %d", i)
-		}
+				// Sign the serialized transaction data with both Ed25519 and Dilithium
+				edSignature := ed25519.Sign(edPrivateKey, txBytes)
+				diSignature := dilithium.Mode3.Sign(diPrivateKey, txBytes)
+
+				// Verify both signatures
+				if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
+					t.Errorf("Ed25519 signature verification failed at transaction %d", j)
+				}
+				if !dilithium.Mode3.Verify(diPublicKey, txBytes, diSignature) {
+					t.Errorf("Dilithium signature verification failed at transaction %d", j)
+				}
+			}
+		}(i)
 	}
+
+	wg.Wait()
 
 	elapsed := time.Since(start)
 	tps := float64(numTransactions) / elapsed.Seconds()
