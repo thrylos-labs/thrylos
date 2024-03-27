@@ -44,6 +44,9 @@ type BlockchainDBInterface interface {
 	// and could be subject to consolidation to avoid redundancy.
 	GetUTXOs() (map[string][]UTXO, error)
 
+	// Dilithium signature
+	RetrieveDilithiumPublicKeyFromAddress(address string) ([]byte, error)
+
 	// VerifyTransaction checks the validity of a transaction, including signature verification and UTXO checks.
 	// VerifyTransaction(tx Transaction) (bool, error)
 
@@ -55,9 +58,12 @@ type BlockchainDBInterface interface {
 	// and that the transaction conforms to the rules of the blockchain.
 	// ValidateTransaction(tx Transaction) (bool, error)
 
-	// InsertOrUpdatePublicKey adds a new public key to the database or updates the existing entry for a given address.
-	// This method is essential for associating blockchain addresses with their corresponding public keys.
-	InsertOrUpdatePublicKey(address string, pemPublicKey []byte) error
+	// Methods for handling Ed25519 public keys
+	InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error
+	RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error)
 
+	// Methods for handling Dilithium public keys
+	InsertOrUpdateDilithiumPublicKey(address string, dilithiumPublicKey []byte) error
+	RetrieveDilithiumPublicKey(address string) ([]byte, error)
 	// ... other methods that you need to access from core
 }

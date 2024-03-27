@@ -129,7 +129,7 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
-func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount int, privateKey ed25519.PrivateKey) error {
+func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount int, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKey []byte) error {
 	// Attempt to gather inputs for the transaction along with change and potential error
 	inputs, change, err := node.CollectInputsForTransaction(amount, node.Address)
 	if err != nil {
@@ -144,13 +144,13 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount 
 	}
 
 	// Create and sign the transaction using Ed25519
-	transaction, err := shared.CreateAndSignTransaction("txID", inputs, outputs, privateKey)
+	transaction, err := shared.CreateAndSignTransaction("txID", inputs, outputs, ed25519PrivateKey, dilithiumPrivateKey)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)
 	}
 
 	// Broadcast the transaction to the network
-	node.BroadcastTransaction(&transaction)
+	node.BroadcastTransaction(transaction)
 	return nil
 }
 
@@ -168,14 +168,20 @@ func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
-	// Retrieve the sender's public key as an Ed25519 public key
-	senderPublicKey, err := node.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Ensure this returns ed25519.PublicKey
+	// Retrieve the sender's Ed25519 public key
+	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Adjust as necessary
 	if err != nil {
-		return fmt.Errorf("failed to retrieve public key: %v", err)
+		return fmt.Errorf("failed to retrieve Ed25519 public key: %v", err)
+	}
+
+	// Retrieve the sender's Dilithium public key through the Blockchain struct
+	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(tx.Inputs[0].OwnerAddress)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
 	}
 
 	// Verify the transaction signature with Ed25519 public key
-	if err := shared.VerifyTransactionSignature(tx, senderPublicKey); err != nil {
+	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
 

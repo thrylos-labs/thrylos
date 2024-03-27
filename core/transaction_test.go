@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/cloudflare/circl/sign/dilithium"
 )
 
 // Verifying with a Different Public Key Than the One Used for Signing
@@ -282,4 +284,53 @@ func TestTransactionThroughput(t *testing.T) {
 	tps := float64(numTransactions) / elapsed.Seconds()
 
 	t.Logf("Processed %d transactions in %s. TPS: %f", numTransactions, elapsed, tps)
+}
+
+func TestTransactionThroughputWithDualSignatures(t *testing.T) {
+	// Generate Ed25519 keys
+	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Error generating Ed25519 key pair: %v", err)
+	}
+
+	// Generate Dilithium keys
+	diPublicKeyBytes, diPrivateKeyBytes, err := shared.GenerateDilithiumKeys()
+	if err != nil {
+		t.Fatalf("Error generating Dilithium keys: %v", err)
+	}
+	diPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(diPrivateKeyBytes)
+	diPublicKey := dilithium.Mode3.PublicKeyFromBytes(diPublicKeyBytes)
+
+	// Define the number of transactions to simulate
+	numTransactions := 1000
+
+	start := time.Now()
+
+	for i := 0; i < numTransactions; i++ {
+		// Simulate creating a transaction
+		txID := fmt.Sprintf("tx%d", i)
+		inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
+		outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
+		tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
+
+		// Serialize the transaction for signing
+		txBytes, _ := json.Marshal(tx)
+
+		// Sign the serialized transaction data with both Ed25519 and Dilithium
+		edSignature := ed25519.Sign(edPrivateKey, txBytes)
+		diSignature := dilithium.Mode3.Sign(diPrivateKey, txBytes)
+
+		// Verify both signatures
+		if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
+			t.Fatalf("Ed25519 signature verification failed at transaction %d", i)
+		}
+		if !dilithium.Mode3.Verify(diPublicKey, txBytes, diSignature) {
+			t.Fatalf("Dilithium signature verification failed at transaction %d", i)
+		}
+	}
+
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
+
+	t.Logf("Processed %d dual-signed transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }

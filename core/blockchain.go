@@ -133,6 +133,27 @@ func (bc *Blockchain) GetUTXOsForAddress(address string) []shared.UTXO {
 	return sharedUTXOs
 }
 
+// In blockchain.go, add this method to the Blockchain struct
+func (bc *Blockchain) RetrieveDilithiumPublicKey(ownerAddress string) ([]byte, error) {
+	// Utilize the Database field to call the method for retrieving the Dilithium public key
+	return bc.Database.RetrieveDilithiumPublicKeyFromAddress(ownerAddress)
+}
+
+// In blockchain.go, within your Blockchain struct definition
+func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey, error) {
+	publicKeyBytes, err := bc.Database.RetrievePublicKeyFromAddress(ownerAddress)
+	if err != nil {
+		return nil, err // Handle the error appropriately
+	}
+
+	// Assuming the returned publicKeyBytes is of type ed25519.PublicKey, or you need to convert it
+	// Depending on how your public keys are stored, you might need to unmarshal or otherwise process
+	// publicKeyBytes to convert them into the ed25519.PublicKey type expected by your application.
+	// Here's a simplified version assuming direct conversion is possible:
+	publicKey := ed25519.PublicKey(publicKeyBytes)
+	return publicKey, nil
+}
+
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // This method encapsulates the logic for building a block to be added to the blockchain.
 func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator string, prevHash string, timestamp int64) *Block {
@@ -180,8 +201,15 @@ func (bc *Blockchain) ResolveForks() {
 }
 
 // In Blockchain
-func (bc *Blockchain) InsertOrUpdatePublicKey(address string, pemPublicKey []byte) error {
-	return bc.Database.InsertOrUpdatePublicKey(address, pemPublicKey)
+func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKey []byte, keyType string) error {
+	switch keyType {
+	case "Ed25519":
+		return bc.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
+	case "Dilithium":
+		return bc.Database.InsertOrUpdateDilithiumPublicKey(address, publicKey)
+	default:
+		return fmt.Errorf("unsupported key type: %s", keyType)
+	}
 }
 
 // ValidateBlock checks if the block is valid
@@ -240,13 +268,22 @@ func (bc *Blockchain) GetLastBlock() (*Block, error) {
 // including signature verification and double spending checks. It's essential for maintaining the
 // Example snippet for VerifyTransaction method adjustment
 func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
-	// Function to retrieve public key from the address
-	getPublicKeyFunc := func(address string) (ed25519.PublicKey, error) {
-		pubKey, err := bc.Database.RetrievePublicKeyFromAddress(address)
+	// Function to retrieve Ed25519 public key from the address
+	getEd25519PublicKeyFunc := func(address string) (ed25519.PublicKey, error) {
+		pubKey, err := bc.Database.RetrieveDilithiumPublicKeyFromAddress(address)
 		if err != nil {
-			return ed25519.PublicKey{}, err // Corrected to return the zero value for ed25519.PublicKey
+			return ed25519.PublicKey{}, err // Return the zero value for ed25519.PublicKey in case of error
 		}
 		return pubKey, nil
+	}
+
+	// Function to retrieve Dilithium public key from the address
+	getDilithiumPublicKeyFunc := func(address string) ([]byte, error) {
+		dilithiumPubKey, err := bc.Database.RetrieveDilithiumPublicKeyFromAddress(address)
+		if err != nil {
+			return nil, err // Handle error appropriately
+		}
+		return dilithiumPubKey, nil
 	}
 
 	// Assuming you've made necessary adjustments to the rest of your code to handle the protobuf and shared.UTXO types correctly
@@ -255,8 +292,8 @@ func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 		protoUTXOs[key] = utxos // Adjust according to your actual type conversion if necessary
 	}
 
-	// Verify the transaction using the converted UTXOs and the correct public key type
-	isValid, err := shared.VerifyTransaction(tx, protoUTXOs, getPublicKeyFunc)
+	// Verify the transaction using the converted UTXOs and both public key types
+	isValid, err := shared.VerifyTransaction(tx, protoUTXOs, getEd25519PublicKeyFunc, getDilithiumPublicKeyFunc)
 	if err != nil {
 		fmt.Printf("Error during transaction verification: %v\n", err)
 		return false, err

@@ -50,7 +50,8 @@ func InitializeDatabase() (*sql.DB, error) {
 	createPublicKeyTableSQL := `
         CREATE TABLE IF NOT EXISTS publicKeys (
             address TEXT PRIMARY KEY,
-            publicKey BLOB
+            publicKey BLOB,
+			dilithiumPublicKey BLOB
         );`
 	_, err = db.Exec(createPublicKeyTableSQL)
 	if err != nil {
@@ -83,24 +84,50 @@ func InitializeDatabase() (*sql.DB, error) {
 	return db, nil
 }
 
-// InsertOrUpdatePublicKey adds a new public key to the database or updates it if it already exists.
-// This function is critical for managing the association between user addresses and their public keys.
-func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, pemPublicKey []byte) error {
-	// Check if an entry for the address already exists
-	var exists bool
-	err := bdb.DB.QueryRow("SELECT EXISTS(SELECT 1 FROM publicKeys WHERE address = ?)", address).Scan(&exists)
-	if err != nil {
-		return err
-	}
+func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
+	// Implement the logic specific to Ed25519 public keys.
+	// This might simply involve calling InsertOrUpdatePublicKey with the correct arguments.
+	return bdb.InsertOrUpdatePublicKey(address, ed25519PublicKey, nil) // Pass nil for the Dilithium key if you're not updating it.
+}
 
-	if exists {
-		// Update existing entry
-		_, err = bdb.DB.Exec("UPDATE publicKeys SET publicKey = ? WHERE address = ?", pemPublicKey, address)
-	} else {
-		// Insert new entry
-		_, err = bdb.DB.Exec("INSERT INTO publicKeys (address, publicKey) VALUES (?, ?)", address, pemPublicKey)
+func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
+	publicKeyBytes, err := bdb.RetrievePublicKeyFromAddress(address)
+	if err != nil {
+		return nil, err
 	}
+	return ed25519.PublicKey(publicKeyBytes), nil
+}
+
+func (bdb *BlockchainDB) InsertOrUpdateDilithiumPublicKey(address string, dilithiumPublicKey []byte) error {
+	// Implement the logic specific to Dilithium public keys.
+	// This might simply involve calling InsertOrUpdatePublicKey with the correct arguments.
+	return bdb.InsertOrUpdatePublicKey(address, nil, dilithiumPublicKey) // Pass nil for the Ed25519 key if you're not updating it.
+}
+
+func (bdb *BlockchainDB) RetrieveDilithiumPublicKey(address string) ([]byte, error) {
+	return bdb.RetrieveDilithiumPublicKeyFromAddress(address)
+}
+
+func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey, dilithiumPublicKey []byte) error {
+	// This SQL statement attempts to insert a new row or update existing ones if the address already exists.
+	_, err := bdb.DB.Exec(`
+        INSERT INTO publicKeys (address, publicKey, dilithiumPublicKey) 
+        VALUES (?, ?, ?)
+        ON CONFLICT(address) DO UPDATE SET publicKey = excluded.publicKey, dilithiumPublicKey = excluded.dilithiumPublicKey;
+    `, address, ed25519PublicKey, dilithiumPublicKey)
 	return err
+}
+
+func (bdb *BlockchainDB) RetrieveDilithiumPublicKeyFromAddress(address string) ([]byte, error) {
+	var dilithiumPublicKeyBytes []byte
+	err := bdb.DB.QueryRow("SELECT dilithiumPublicKey FROM publicKeys WHERE address = ?", address).Scan(&dilithiumPublicKeyBytes)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("no Dilithium public key found for address %s", address)
+		}
+		return nil, err
+	}
+	return dilithiumPublicKeyBytes, nil
 }
 
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.

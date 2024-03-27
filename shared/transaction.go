@@ -89,8 +89,8 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 
 // CreateMockSignedTransaction generates a transaction and signs it.
 // CreateMockSignedTransaction generates a transaction, serializes it without the signature, signs it, and returns the signed transaction.
-func CreateMockSignedTransaction(transactionID string, privateKey ed25519.PrivateKey) (*thrylos.Transaction, error) {
-	// Initialize the transaction with all fields except the signature
+func CreateMockDualSignedTransaction(transactionID string, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) (*thrylos.Transaction, error) {
+	// Initialize the transaction as before
 	tx := &thrylos.Transaction{
 		Id:        transactionID,
 		Timestamp: time.Now().Unix(),
@@ -108,24 +108,22 @@ func CreateMockSignedTransaction(transactionID string, privateKey ed25519.Privat
 		}},
 	}
 
-	// Temporarily remove the signature to serialize the transaction for signing
-	txForSigning := *tx         // Make a shallow copy
-	txForSigning.Signature = "" // Remove the signature for signing
-
-	// Serialize the transaction without the signature
-	txBytes, err := proto.Marshal(&txForSigning)
+	// Serialize the transaction for signing
+	txBytes, err := proto.Marshal(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
 	}
 
-	// Sign the serialized transaction data directly with Ed25519 (no hashing needed)
-	signature := ed25519.Sign(privateKey, txBytes)
-	if signature == nil {
-		return nil, fmt.Errorf("failed to sign transaction")
-	}
+	// Sign with Ed25519
+	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
 
-	// Encode the signature in base64 and attach it to the original transaction object
-	tx.Signature = base64.StdEncoding.EncodeToString(signature)
+	// Prepare Dilithium private key and sign
+	dilithiumSk := dilithium.Mode3.PrivateKeyFromBytes(dilithiumPrivateKeyBytes)
+	dilithiumSignature := dilithium.Mode3.Sign(dilithiumSk, txBytes)
+
+	// Set both signatures on the transaction and return
+	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
+	tx.DilithiumSignature = base64.StdEncoding.EncodeToString(dilithiumSignature)
 
 	return tx, nil
 }
@@ -151,13 +149,91 @@ type Transaction struct {
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519 and Dilithium keys.
 // Assuming Transaction is the correct type across your application:
 func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) (*Transaction, error) {
-	tx := NewTransaction(id, inputs, outputs) // NewTransaction returns *Transaction
+	// Use your existing NewTransaction function to create a local Transaction instance
+	localTx := NewTransaction(id, inputs, outputs)
 
-	if err := SignTransaction(tx, ed25519PrivateKey, dilithiumPrivateKeyBytes); err != nil {
+	// Convert the local Transaction type to *thrylos.Transaction for signing
+	thrylosTx, err := convertLocalTransactionToThrylosTransaction(localTx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert transaction for signing: %v", err)
+	}
+
+	// Use SignTransaction for dual signing with the converted thrylos.Transaction
+	if err := SignTransaction(thrylosTx, ed25519PrivateKey, dilithiumPrivateKeyBytes); err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %v", err)
 	}
 
-	return tx, nil
+	// If your application needs the signed transaction in local format, convert it back
+	signedLocalTx, err := convertThrylosTransactionToLocal(thrylosTx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert signed transaction back to local format: %v", err)
+	}
+
+	// Return the signed local transaction type
+	return &signedLocalTx, nil
+}
+
+// Hypothetical conversion function from your local Transaction type to *thrylos.Transaction
+func convertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Transaction, error) {
+	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		thrylosInputs[i] = &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			Index:         int32(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		}
+	}
+
+	thrylosOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		thrylosOutputs[i] = &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+		}
+	}
+
+	return &thrylos.Transaction{
+		Id:        tx.ID,
+		Inputs:    thrylosInputs,
+		Outputs:   thrylosOutputs,
+		Timestamp: tx.Timestamp,
+		// Leave Signature and DilithiumSignature for the SignTransaction to fill
+	}, nil
+}
+
+// Hypothetical conversion back to local Transaction type, if needed
+func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, error) {
+	localInputs := make([]UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		localInputs[i] = UTXO{
+			TransactionID: input.TransactionId,
+			Index:         int(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int(input.Amount),
+		}
+	}
+
+	localOutputs := make([]UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		localOutputs[i] = UTXO{
+			TransactionID: output.TransactionId,
+			Index:         int(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int(output.Amount),
+		}
+	}
+
+	return Transaction{
+		ID:                 tx.Id,
+		Inputs:             localInputs,
+		Outputs:            localOutputs,
+		Timestamp:          tx.Timestamp,
+		Signature:          tx.Signature,
+		DilithiumSignature: tx.DilithiumSignature,
+	}, nil
 }
 
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
