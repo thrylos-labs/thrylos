@@ -349,3 +349,54 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 
 	t.Logf("Processed %d dual-signed transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }
+
+// go test -v -timeout 30s -run ^TestTransactionThroughputWitSignatures$ Thrylos/core
+
+func TestTransactionThroughputWitSignatures(t *testing.T) {
+	// Generate Ed25519 keys
+	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Error generating Ed25519 key pair: %v", err)
+	}
+
+	// Define the number of transactions and the size of each batch
+	numTransactions := 1000
+	batchSize := 100 // Define an appropriate batch size
+
+	start := time.Now()
+
+	var wg sync.WaitGroup
+
+	// Process transactions in batches
+	for i := 0; i < numTransactions; i += batchSize {
+		wg.Add(1)
+		go func(startIndex int) {
+			defer wg.Done()
+			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
+				// Simulate creating a transaction
+				txID := fmt.Sprintf("tx%d", j)
+				inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
+				outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
+				tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
+
+				// Serialize the transaction for signing
+				txBytes, _ := json.Marshal(tx)
+
+				// Sign the serialized transaction data with both Ed25519 and Dilithium
+				edSignature := ed25519.Sign(edPrivateKey, txBytes)
+
+				// Verify both signatures
+				if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
+					t.Errorf("Ed25519 signature verification failed at transaction %d", j)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
+
+	t.Logf("Processed %d dual-signed transactions in %s. TPS: %f", numTransactions, elapsed, tps)
+}
