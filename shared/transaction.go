@@ -143,34 +143,54 @@ type Transaction struct {
 	Outputs            []UTXO
 	Signature          string
 	DilithiumSignature string // New field for the Dilithium signature
+	// Add a slice to store IDs of previous transactions, forming the DAG structure
+	PreviousTxIds []string
+}
 
+// select tips:
+func selectTips() ([]string, error) {
+	// Placeholder for your tip selection logic
+	return []string{"prevTxID1", "prevTxID2"}, nil
 }
 
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519 and Dilithium keys.
 // Assuming Transaction is the correct type across your application:
 func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) (*Transaction, error) {
-	// Use your existing NewTransaction function to create a local Transaction instance
-	localTx := NewTransaction(id, inputs, outputs)
+	// Select previous transactions to reference
+	previousTxIDs, err := selectTips()
+	if err != nil {
+		return nil, fmt.Errorf("failed to select previous transactions: %v", err)
+	}
 
-	// Convert the local Transaction type to *thrylos.Transaction for signing
-	thrylosTx, err := convertLocalTransactionToThrylosTransaction(localTx)
+	// Initialize the transaction, now including PreviousTxIDs
+	tx := Transaction{
+		ID:            id,
+		Inputs:        inputs,
+		Outputs:       outputs,
+		PreviousTxIds: previousTxIDs, // Incorporate the previous transaction IDs
+		Timestamp:     time.Now().Unix(),
+	}
+
+	// Convert the Transaction type to *thrylos.Transaction for signing
+	// Assuming there's an existing function like convertLocalTransactionToThrylosTransaction that you can use
+	thrylosTx, err := convertLocalTransactionToThrylosTransaction(tx) // Use tx directly
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert transaction for signing: %v", err)
 	}
 
-	// Use SignTransaction for dual signing with the converted thrylos.Transaction
+	// Sign the transaction
 	if err := SignTransaction(thrylosTx, ed25519PrivateKey, dilithiumPrivateKeyBytes); err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %v", err)
 	}
 
-	// If your application needs the signed transaction in local format, convert it back
-	signedLocalTx, err := convertThrylosTransactionToLocal(thrylosTx)
+	// Convert the signed thrylos.Transaction back to your local Transaction format
+	signedTx, err := convertThrylosTransactionToLocal(thrylosTx) // Ensure this function exists and is correct
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert signed transaction back to local format: %v", err)
 	}
 
-	// Return the signed local transaction type
-	return &signedLocalTx, nil
+	// Return the signed transaction
+	return &signedTx, nil
 }
 
 // Hypothetical conversion function from your local Transaction type to *thrylos.Transaction
@@ -196,10 +216,11 @@ func convertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Trans
 	}
 
 	return &thrylos.Transaction{
-		Id:        tx.ID,
-		Inputs:    thrylosInputs,
-		Outputs:   thrylosOutputs,
-		Timestamp: tx.Timestamp,
+		Id:            tx.ID,
+		Inputs:        thrylosInputs,
+		Outputs:       thrylosOutputs,
+		Timestamp:     tx.Timestamp,
+		PreviousTxIds: tx.PreviousTxIds, // Ensure this matches your local struct field
 		// Leave Signature and DilithiumSignature for the SignTransaction to fill
 	}, nil
 }
@@ -233,6 +254,8 @@ func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 		Timestamp:          tx.Timestamp,
 		Signature:          tx.Signature,
 		DilithiumSignature: tx.DilithiumSignature,
+		PreviousTxIds:      tx.PreviousTxIds, // Match this with the Protobuf field
+
 	}, nil
 }
 

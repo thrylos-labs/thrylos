@@ -11,6 +11,7 @@ message Transaction {
   repeated UTXO outputs = 4;
   string signature = 5;
   string dilithium_signature = 6;
+  repeated string previous_tx_ids = 7; // Adjusted to snake_case
 }
 
 message UTXO {
