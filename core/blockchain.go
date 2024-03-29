@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tecbot/gorocksdb"
+	"github.com/linxGnu/grocksdb"
 	// other necessary imports
 )
 
@@ -81,9 +81,9 @@ type Fork struct {
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain() (*Blockchain, error) {
 	// Initialize the RocksDB database
-	opts := gorocksdb.NewDefaultOptions()
+	opts := grocksdb.NewDefaultOptions()
 	opts.SetCreateIfMissing(true)
-	db, err := gorocksdb.OpenDb(opts, "./blockchain.db")
+	db, err := grocksdb.OpenDb(opts, "./blockchain.db")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open RocksDB database: %v", err)
 	}
