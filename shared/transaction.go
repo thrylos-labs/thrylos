@@ -173,7 +173,7 @@ func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519P
 
 	// Convert the Transaction type to *thrylos.Transaction for signing
 	// Assuming there's an existing function like convertLocalTransactionToThrylosTransaction that you can use
-	thrylosTx, err := convertLocalTransactionToThrylosTransaction(tx) // Use tx directly
+	thrylosTx, err := ConvertLocalTransactionToThrylosTransaction(tx) // Use tx directly
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert transaction for signing: %v", err)
 	}
@@ -194,7 +194,7 @@ func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519P
 }
 
 // Hypothetical conversion function from your local Transaction type to *thrylos.Transaction
-func convertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Transaction, error) {
+func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Transaction, error) {
 	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		thrylosInputs[i] = &thrylos.UTXO{

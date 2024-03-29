@@ -17,7 +17,7 @@ type BlockchainDBInterface interface {
 	// SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
 
 	// InsertBlock saves a new block's data to the database.
-	InsertBlock(data []byte) error
+	InsertBlock(data []byte, blockNumber int) error
 
 	// GetLastBlockData retrieves the data of the most recently added block.
 	GetLastBlockData() ([]byte, error)

@@ -12,7 +12,7 @@ Interacting with the Node:
 
 Submit Transaction: Send a POST request to /submit-transaction with a transaction payload.
 Get Block: Retrieve a block by its ID by sending a GET request to /get-block?id=<block_id>.
-Get Transaction: Fetch a transaction by its ID through a GET request to /get-transaction?id=<transaction_id>.
+Get Transaction: Fetch a transaction by itts ID through a GET request to /get-transaction?id=<transaction_id>.
 This setup assumes that you will adapt the handlers (SubmitTransactionHandler, GetBlockHandler, and GetTransactionHandler) to fit your actual implementation. Each handler should encapsulate the logic for handling its respective request, interacting with the blockchain stored within the Node instance.
 
 Remember, running a node requires keeping your application and dependencies up to date to ensure compatibility and security with the network. Always test your node in a controlled environment before connecting to a live network.

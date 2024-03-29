@@ -2,15 +2,12 @@ package main
 
 import (
 	"Thrylos/core"
-	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
-	// Import the CORS package
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/rs/cors"
 	// Import your blockchain package
 )
@@ -34,13 +31,6 @@ func main() {
 		fmt.Println("Blockchain integrity check passed.")
 	}
 
-	// Open the SQLite database
-	db, err := sql.Open("sqlite3", "./blockchain.db")
-	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
-	}
-	defer db.Close()
-
 	// Initialize a new node with the specified address and known peers
 	peersList := []string{}
 	if *knownPeers != "" {
@@ -51,7 +41,7 @@ func main() {
 	// Initialize a new node with the specified address and known peers
 	node := core.NewNode(*nodeAddress, peersList, nil, false)
 
-	// Setup CORS
+	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"http://localhost:3000"}, // Allow frontend domain
 		AllowedMethods: []string{"GET", "POST", "OPTIONS"},

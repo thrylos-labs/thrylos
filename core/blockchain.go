@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/tecbot/gorocksdb"
 	// other necessary imports
 )
 
@@ -78,15 +80,17 @@ type Fork struct {
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain() (*Blockchain, error) {
-	// Initialize the SQLite database
-	db, err := sql.Open("sqlite3", "./blockchain.db")
+	// Initialize the RocksDB database
+	opts := gorocksdb.NewDefaultOptions()
+	opts.SetCreateIfMissing(true)
+	db, err := gorocksdb.OpenDb(opts, "./blockchain.db")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open RocksDB database: %v", err)
 	}
 
 	// Initialize the BlockchainDB instance
 	bdb := &database.BlockchainDB{
-		DB: db,
+		DB: db, // db is now a *gorocksdb.DB instance
 	}
 
 	genesis := NewGenesisBlock()
@@ -416,7 +420,6 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 	}
 
 	// Handle UTXOs: updating UTXO set with new transactions.
-	// Handle UTXOs: updating UTXO set with new transactions.
 	for _, tx := range transactions {
 		for _, input := range tx.GetInputs() {
 			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
@@ -430,22 +433,26 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 	}
 
 	// Create and validate the new block.
-	prevBlock := bc.Blocks[len(bc.Blocks)-1]
+	prevBlock := bc.Blocks[len(bc.Blocks)-1] // Ensure there is at least one block before doing this
 	newBlock := bc.CreateBlock(transactions, validator, prevHash, timestamp)
 	if newBlock == nil || !bc.ValidateBlock(newBlock, prevBlock) {
 		return false, fmt.Errorf("failed to create or validate a new block")
 	}
 
-	// Serialize and insert the new block into the database.
+	// Serialize the new block for storage
 	blockData, err := newBlock.Serialize()
 	if err != nil {
 		return false, fmt.Errorf("failed to serialize new block: %v", err)
 	}
-	if err := bc.Database.InsertBlock(blockData); err != nil {
+
+	// Use the length of the blockchain as the new block number
+	blockNumber := len(bc.Blocks) // This should be calculated appropriately
+
+	if err := bc.Database.InsertBlock(blockData, blockNumber); err != nil {
 		return false, fmt.Errorf("failed to insert block into database: %v", err)
 	}
 
-	// Update the blockchain with the new block and timestamp.
+	// Update the blockchain with the new block
 	bc.Blocks = append(bc.Blocks, newBlock)
 	bc.lastTimestamp = timestamp
 

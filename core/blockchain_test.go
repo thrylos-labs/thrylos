@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/cloudflare/circl/sign/dilithium"
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
 
 func TestNewBlockchain(t *testing.T) {

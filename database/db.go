@@ -10,10 +10,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/linxGnu/grocksdb"
 )
 
 // BlockchainDB wraps an SQL database connection and provides methods to interact
@@ -21,67 +23,29 @@ import (
 // retrieving balances based on UTXOs, and adding transactions to the database.
 
 type BlockchainDB struct {
-	DB         *sql.DB
+	DB         *grocksdb.DB
 	utxos      map[string]shared.UTXO
 	Blockchain shared.BlockchainDBInterface // Use the interface here
 }
 
 // InitializeDatabase sets up the initial database schema including tables for blocks,
 // public keys, and transactions. It ensures the database is ready to store blockchain data.
-func InitializeDatabase() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", "./blockchain.db")
+func InitializeDatabase() (*grocksdb.DB, []*grocksdb.ColumnFamilyHandle, error) {
+	opts := grocksdb.NewDefaultOptions()
+	opts.SetCreateIfMissing(true)
+
+	// In RocksDB, the "default" column family is created automatically if no other
+	// column family is specified. So we need to open the database with column family.
+	cfNames := []string{"default"}
+	cfOpts := []*grocksdb.Options{grocksdb.NewDefaultOptions()}
+	opts.SetCreateIfMissingColumnFamilies(true)
+
+	db, cfHandles, err := grocksdb.OpenDbColumnFamilies(opts, "./blockchain.db", cfNames, cfOpts)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to open database: %w", err)
+		return nil, nil, fmt.Errorf("failed to open RocksDB database: %w", err)
 	}
 
-	// Existing table for blocks
-	createBlocksTableSQL := `
-        CREATE TABLE IF NOT EXISTS blocks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            block_data BLOB
-        );`
-	_, err = db.Exec(createBlocksTableSQL)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating blocks table: %w", err)
-	}
-	fmt.Println("Blocks table created successfully") // Add logging
-
-	// New table for publicKey-to-address mappings
-	createPublicKeyTableSQL := `
-        CREATE TABLE IF NOT EXISTS publicKeys (
-            address TEXT PRIMARY KEY,
-            publicKey BLOB,
-			dilithiumPublicKey BLOB
-        );`
-	_, err = db.Exec(createPublicKeyTableSQL)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating publicKeys table: %w", err)
-	}
-	fmt.Println("publicKeys table created successfully") // Add logging
-
-	// New table for transactions
-	createTransactionsTableSQL := `
-        CREATE TABLE IF NOT EXISTS transactions (
-            ID TEXT PRIMARY KEY,
-            Inputs TEXT NOT NULL,
-            Outputs TEXT NOT NULL,
-            Timestamp INTEGER NOT NULL,
-            Signature TEXT
-        );`
-	_, err = db.Exec(createTransactionsTableSQL)
-	if err != nil {
-		return nil, fmt.Errorf("Error creating transactions table: %w", err)
-	}
-	fmt.Println("Transactions table created successfully") // Add logging
-
-	// Add Signature column to transactions table if it doesn't exist
-	alterTransactionsTableSQL := `
-        ALTER TABLE transactions ADD COLUMN IF NOT EXISTS Signature TEXT;`
-	// Execute the ALTER TABLE statement
-	// This may fail if the column already exists which is fine, so we ignore the error.
-	db.Exec(alterTransactionsTableSQL)
-
-	return db, nil
+	return db, cfHandles, nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
@@ -109,47 +73,66 @@ func (bdb *BlockchainDB) RetrieveDilithiumPublicKey(address string) ([]byte, err
 }
 
 func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey, dilithiumPublicKey []byte) error {
-	// This SQL statement attempts to insert a new row or update existing ones if the address already exists.
-	_, err := bdb.DB.Exec(`
-        INSERT INTO publicKeys (address, publicKey, dilithiumPublicKey) 
-        VALUES (?, ?, ?)
-        ON CONFLICT(address) DO UPDATE SET publicKey = excluded.publicKey, dilithiumPublicKey = excluded.dilithiumPublicKey;
-    `, address, ed25519PublicKey, dilithiumPublicKey)
-	return err
+	wo := grocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
+
+	data, err := json.Marshal(map[string][]byte{
+		"ed25519PublicKey":   ed25519PublicKey,
+		"dilithiumPublicKey": dilithiumPublicKey,
+	})
+	if err != nil {
+		return err
+	}
+
+	return bdb.DB.Put(wo, []byte("publicKey-"+address), data)
 }
 
 func (bdb *BlockchainDB) RetrieveDilithiumPublicKeyFromAddress(address string) ([]byte, error) {
-	var dilithiumPublicKeyBytes []byte
-	err := bdb.DB.QueryRow("SELECT dilithiumPublicKey FROM publicKeys WHERE address = ?", address).Scan(&dilithiumPublicKeyBytes)
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+
+	key := []byte("publicKey-" + address)
+	data, err := bdb.DB.Get(ro, key)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("no Dilithium public key found for address %s", address)
-		}
-		return nil, err
+		return nil, fmt.Errorf("error retrieving data from RocksDB: %w", err)
 	}
+	defer data.Free()
+
+	if data.Size() == 0 {
+		return nil, fmt.Errorf("no Dilithium public key found for address %s", address)
+	}
+
+	var keyData map[string][]byte
+	if err := json.Unmarshal(data.Data(), &keyData); err != nil {
+		return nil, fmt.Errorf("error unmarshalling data: %w", err)
+	}
+
+	dilithiumPublicKeyBytes, ok := keyData["dilithiumPublicKey"]
+	if !ok {
+		return nil, fmt.Errorf("no Dilithium public key found in the data for address %s", address)
+	}
+
 	return dilithiumPublicKeyBytes, nil
 }
 
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.
 // It is essential for verifying transaction signatures and ensuring the integrity of transactions.
 func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error) {
-	row := bdb.DB.QueryRow("SELECT publicKey FROM publicKeys WHERE address = ?", address)
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
 
-	var publicKeyBytes []byte
-	err := row.Scan(&publicKeyBytes)
+	data, err := bdb.DB.Get(ro, []byte("publicKey-"+address))
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("no public key found for address %s", address)
-		}
+		return nil, err
+	}
+	defer data.Free()
+
+	var keyData map[string][]byte
+	if err := json.Unmarshal(data.Data(), &keyData); err != nil {
 		return nil, err
 	}
 
-	// Check if the length of the publicKeyBytes matches that of an Ed25519 public key
-	if len(publicKeyBytes) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("retrieved public key size is incorrect for address %s", address)
-	}
-
-	return ed25519.PublicKey(publicKeyBytes), nil
+	return ed25519.PublicKey(keyData["ed25519PublicKey"]), nil
 }
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.
@@ -169,218 +152,155 @@ func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO
 // AddTransaction stores a new transaction in the database. It serializes transaction inputs,
 // outputs, and the signature for persistent storage.
 func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
-	// Convert the Inputs and Outputs slices to JSON strings for storage.
-	inputsJSON, err := json.Marshal(tx.Inputs)
+	// Serialize the entire transaction object to JSON for storage.
+	txJSON, err := json.Marshal(tx)
 	if err != nil {
-		return fmt.Errorf("error marshaling transaction inputs: %v", err)
+		return fmt.Errorf("error marshaling transaction: %v", err)
 	}
 
-	outputsJSON, err := json.Marshal(tx.Outputs)
-	if err != nil {
-		return fmt.Errorf("error marshaling transaction outputs: %v", err)
-	}
+	// Use the transaction ID as the key for the key-value store.
+	key := []byte("transaction-" + tx.ID)
 
-	signatureJSON, err := json.Marshal(tx.Signature)
-	if err != nil {
-		return fmt.Errorf("error marshaling transaction signature: %v", err)
-	}
+	// Write options for the RocksDB put operation.
+	wo := grocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
 
-	// Prepare an SQL statement to insert the transaction into the transactions table.
-	stmt, err := bdb.DB.Prepare("INSERT INTO transactions (ID, Inputs, Outputs, Timestamp, Signature) VALUES (?, ?, ?, ?, ?)")
+	// Put the serialized transaction data into the RocksDB store.
+	err = bdb.DB.Put(wo, key, txJSON)
 	if err != nil {
-		return fmt.Errorf("error preparing statement: %v", err)
-	}
-	defer stmt.Close()
-
-	// Execute the SQL statement with the transaction details.
-	_, err = stmt.Exec(tx.ID, inputsJSON, outputsJSON, tx.Timestamp, signatureJSON)
-	if err != nil {
-		return fmt.Errorf("error executing statement: %v", err)
+		return fmt.Errorf("error storing transaction in RocksDB: %v", err)
 	}
 
 	return nil
 }
 
 func (bdb *BlockchainDB) GetAllUTXOs() (map[string]shared.UTXO, error) {
-	// Here, the assumption is that you have stored UTXOs in some form in a database.
-	// You should query the database to fetch all UTXOs and return them as a map.
-
 	utxos := make(map[string]shared.UTXO)
 
-	rows, err := bdb.DB.Query("SELECT * FROM utxos") // Adjust the SQL query as per your database schema.
-	if err != nil {
-		return nil, fmt.Errorf("Error querying UTXOs: %v", err)
-	}
-	defer rows.Close()
+	// Create an iterator for the database.
+	ro := grocksdb.NewDefaultReadOptions()
+	it := bdb.DB.NewIterator(ro)
 
-	for rows.Next() {
-		var utxoID string
-		var utxoData []byte
-
-		if err := rows.Scan(&utxoID, &utxoData); err != nil {
-			return nil, fmt.Errorf("Error scanning row: %v", err)
-		}
+	for it.Seek([]byte("utxo-")); it.ValidForPrefix([]byte("utxo-")); it.Next() {
+		key := it.Key()
+		value := it.Value()
 
 		var utxo shared.UTXO
-		if err := json.Unmarshal(utxoData, &utxo); err != nil {
-			return nil, fmt.Errorf("Error unmarshalling UTXO: %v", err)
+		if err := json.Unmarshal(value.Data(), &utxo); err != nil {
+			key.Free()
+			value.Free()
+			ro.Destroy()
+			it.Close()
+			return nil, fmt.Errorf("error unmarshalling UTXO: %v", err)
 		}
 
+		// Assuming the UTXO ID is part of the key, and the key format is "utxo-<utxoID>"
+		utxoID := string(key.Data())[5:]
 		utxos[utxoID] = utxo
+
+		key.Free()
+		value.Free()
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("Rows iteration error: %v", err)
+	if err := it.Err(); err != nil {
+		ro.Destroy()
+		it.Close()
+		return nil, fmt.Errorf("iterator error: %v", err)
 	}
+
+	ro.Destroy()
+	it.Close()
 
 	return utxos, nil
 }
 
 func (bdb *BlockchainDB) GetTransactionByID(txID string) (*shared.Transaction, error) {
-	var inputsJSON, outputsJSON []byte
-	var timestamp int64
-	var signature string // Change this from []byte to string
+	// Create a read option for the database.
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
 
-	query := "SELECT Inputs, Outputs, Timestamp, Signature FROM transactions WHERE ID = ?"
-	err := bdb.DB.QueryRow(query, txID).Scan(&inputsJSON, &outputsJSON, &timestamp, &signature) // Directly scan into signature as a string
+	// Construct the key with which the transaction is stored.
+	key := []byte("transaction-" + txID)
+
+	// Get the transaction data from the database.
+	data, err := bdb.DB.Get(ro, key)
 	if err != nil {
-		return nil, err // Handle no rows error as needed
+		return nil, fmt.Errorf("error retrieving transaction from RocksDB: %w", err)
+	}
+	defer data.Free()
+
+	// Check if data was found
+	if data.Size() == 0 {
+		return nil, fmt.Errorf("no transaction found with ID %s", txID)
 	}
 
-	var inputs, outputs []shared.UTXO
-	if err := json.Unmarshal(inputsJSON, &inputs); err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(outputsJSON, &outputs); err != nil {
-		return nil, err
+	// Unmarshal the transaction data into the Transaction struct.
+	var tx shared.Transaction
+	if err := json.Unmarshal(data.Data(), &tx); err != nil {
+		return nil, fmt.Errorf("error unmarshalling transaction data: %w", err)
 	}
 
-	// No need to unmarshal signature since it's already the correct type (string)
-
-	tx := &shared.Transaction{
-		ID:        txID,
-		Inputs:    inputs,  // Make sure inputs are correctly unmarshaled from inputsJSON
-		Outputs:   outputs, // Make sure outputs are correctly unmarshaled from outputsJSON
-		Timestamp: timestamp,
-		Signature: signature, // Directly assign since it's already a base64 string
-	}
-	return tx, nil
+	return &tx, nil
 }
 
 func (bdb *BlockchainDB) GetLatestBlockData() ([]byte, error) {
-	var blockData []byte
-	err := bdb.DB.QueryRow("SELECT block_data FROM blocks ORDER BY id DESC LIMIT 1").Scan(&blockData)
-	if err != nil {
-		return nil, err // Handle no rows error as needed
+	// Create a read option for the database.
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+
+	// Create an iterator for the database, set to reverse order to get the latest block first.
+	it := bdb.DB.NewIterator(ro)
+	defer it.Close()
+
+	// Seek to the last key in the range of blocks and move in reverse order.
+	for it.SeekToLast(); it.Valid(); it.Prev() {
+		key := it.Key()
+		if strings.HasPrefix(string(key.Data()), "block-") {
+			// We've found the latest block
+			blockData := make([]byte, len(it.Value().Data()))
+			copy(blockData, it.Value().Data())
+
+			key.Free()
+			it.Value().Free()
+
+			return blockData, nil
+		}
+		key.Free()
+		it.Value().Free()
 	}
 
-	return blockData, nil
+	if err := it.Err(); err != nil {
+		return nil, fmt.Errorf("iterator error: %v", err)
+	}
+
+	return nil, fmt.Errorf("no blocks found in the database")
 }
 
 func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int) error {
 	utxo := shared.CreateUTXO(id, txID, index, owner, amount)
 
+	// Marshal the UTXO object into JSON for storage.
 	utxoJSON, err := json.Marshal(utxo)
 	if err != nil {
 		return fmt.Errorf("error marshalling UTXO: %v", err)
 	}
 
-	_, err = bdb.DB.Exec(`INSERT INTO utxos (id, data) VALUES (?, ?)`, id, utxoJSON)
+	// Prepare the key for this UTXO entry in the database.
+	key := []byte("utxo-" + id)
+
+	// Write options for the RocksDB put operation.
+	wo := grocksdb.NewDefaultWriteOptions()
+
+	// Put the UTXO data into RocksDB.
+	err = bdb.DB.Put(wo, key, utxoJSON)
 	if err != nil {
-		return fmt.Errorf("error inserting UTXO into the database: %v", err)
+		wo.Destroy() // Explicitly destroy write options when there is an error
+		return fmt.Errorf("error inserting UTXO into RocksDB: %v", err)
 	}
 
+	wo.Destroy() // Explicitly destroy write options after operation is done
 	return nil
 }
-
-// func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error) {
-// 	allUTXOs, err := bdb.GetAllUTXOs()
-// 	if err != nil {
-// 		return false, fmt.Errorf("failed to get all UTXOs: %v", err)
-// 	}
-
-// 	// This function needs to be adjusted or implemented to return []*thrylos.UTXO
-// 	userUTXOs := shared.GetUTXOsForUser(fromAddress, allUTXOs)
-// 	protoUTXOs := make([]*thrylos.UTXO, 0)
-// 	for _, utxo := range userUTXOs {
-// 		protoUTXO := shared.ConvertSharedUTXOToProto(utxo)
-// 		protoUTXOs = append(protoUTXOs, protoUTXO)
-// 	}
-
-// 	var inputAmount int = 0
-// 	var protoInputs []*thrylos.UTXO
-// 	for _, utxo := range protoUTXOs {
-// 		if inputAmount < amount {
-// 			protoInputs = append(protoInputs, utxo)
-// 			inputAmount += int(utxo.Amount)
-// 		}
-// 		if inputAmount >= amount {
-// 			break
-// 		}
-// 	}
-
-// 	if inputAmount < amount {
-// 		return false, fmt.Errorf("insufficient funds")
-// 	}
-
-// 	// Outputs including change
-// 	change := inputAmount - amount
-// 	protoOutputs := []*thrylos.UTXO{
-// 		{
-// 			TransactionId: "output1",
-// 			Index:         0,
-// 			OwnerAddress:  toAddress,
-// 			Amount:        int64(amount),
-// 		},
-// 	}
-// 	if change > 0 {
-// 		changeOutput := &thrylos.UTXO{
-// 			TransactionId: "change1",
-// 			Index:         1,
-// 			OwnerAddress:  fromAddress,
-// 			Amount:        int64(change),
-// 		}
-// 		protoOutputs = append(protoOutputs, changeOutput)
-// 	}
-
-// 	tx, err := shared.CreateAndSignTransactionProto("txID123", protoInputs, protoOutputs, privKey) // Adjust this to use a function that works with Protobuf types
-// 	if err != nil {
-// 		return false, fmt.Errorf("failed to create and sign transaction: %v", err)
-// 	}
-
-// 	getPublicKeyFunc := func(address string) (*rsa.PublicKey, error) {
-// 		// Implement this function or ensure it's correctly defined elsewhere
-// 		return bdb.GetPublicKey(address)
-// 	}
-
-// 	isValid, err := shared.VerifyTransaction(tx, protoUTXOs, getPublicKeyFunc) // Adjust this to accept and return Protobuf types
-// 	if !isValid || err != nil {
-// 		return false, fmt.Errorf("transaction verification failed: %v", err)
-// 	}
-
-// 	// Implement AddTransaction to accept *thrylos.Transaction
-// 	if err := bdb.AddTransaction(tx); err != nil {
-// 		return false, fmt.Errorf("failed to add transaction: %v", err)
-// 	}
-
-// 	err = bdb.UpdateUTXOs(inputs, outputs)
-// 	if err != nil {
-// 		return false, fmt.Errorf("Update utxo failed")
-// 	}
-
-// 	// Assuming MarkUTXOAsSpent and AddUTXO are methods on BlockchainDB or its interface
-// 	for _, in := range inputs {
-// 		bdb.MarkUTXOAsSpent(in) // pass the whole UTXO object
-// 	}
-// 	for _, out := range outputs {
-// 		err := bdb.AddUTXO(out) // Assuming AddUTXO returns an error
-// 		if err != nil {
-// 			return false, fmt.Errorf("Add utxo failed")
-// 		}
-// 	}
-
-// 	return false, fmt.Errorf("nill")
-// }
 
 func (bdb *BlockchainDB) GetPublicKey(address string) (*rsa.PublicKey, error) {
 	// Your implementation here to get public key by address
@@ -435,15 +355,41 @@ func (bdb *BlockchainDB) GetUTXOs() (map[string][]shared.UTXO, error) {
 	return utxos, nil
 }
 
-func (bdb *BlockchainDB) InsertBlock(blockData []byte) error {
-	_, err := bdb.DB.Exec("INSERT INTO blocks (block_data) VALUES (?)", blockData)
-	return err
+func (bdb *BlockchainDB) InsertBlock(blockData []byte, blockNumber int) error {
+	key := []byte(fmt.Sprintf("block-%d", blockNumber))
+
+	wo := grocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
+
+	err := bdb.DB.Put(wo, key, blockData)
+	if err != nil {
+		return fmt.Errorf("error inserting block into RocksDB: %v", err)
+	}
+
+	return nil
 }
 
 func (bdb *BlockchainDB) GetLastBlockData() ([]byte, error) {
-	var blockData []byte
-	err := bdb.DB.QueryRow("SELECT block_data FROM blocks ORDER BY id DESC LIMIT 1").Scan(&blockData)
-	return blockData, err
+	ro := grocksdb.NewDefaultReadOptions()
+	defer ro.Destroy()
+
+	it := bdb.DB.NewIterator(ro)
+	defer it.Close()
+
+	// Iterate in reverse order to find the latest block
+	it.SeekToLast()
+	if it.Valid() {
+		blockData := make([]byte, len(it.Value().Data()))
+		copy(blockData, it.Value().Data())
+
+		return blockData, nil
+	}
+
+	if err := it.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating blocks in RocksDB: %v", err)
+	}
+
+	return nil, fmt.Errorf("no blocks found in the database")
 }
 
 func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs []shared.UTXO, privKey *rsa.PrivateKey) (shared.Transaction, error) {
@@ -499,88 +445,3 @@ func (bdb *BlockchainDB) GetUTXOsForUser(address string, utxos map[string]shared
 
 	return userUTXOs, nil
 }
-
-// func (bdb *BlockchainDB) ValidateTransaction(tx shared.Transaction) (bool, error) {
-// 	// Fetch all available UTXOs
-// 	availableUTXOs, err := bdb.GetAllUTXOs()
-// 	if err != nil {
-// 		return false, fmt.Errorf("error fetching UTXOs: %v", err)
-// 	}
-
-// 	// Validate each transaction input
-// 	for _, input := range tx.Inputs {
-// 		// Assuming your UTXO has a unique ID that is a string,
-// 		// check if the input refers to a valid UTXO
-// 		utxo, exists := availableUTXOs[input.ID]
-// 		if !exists {
-// 			return false, errors.New("invalid input: referenced UTXO does not exist")
-// 		}
-
-// 		// Verify the signature using the public key of the input's owner
-// 		publicKey, err := bdb.RetrievePublicKeyFromAddress(utxo.OwnerAddress)
-// 		if err != nil {
-// 			return false, fmt.Errorf("error retrieving public key: %v", err)
-// 		}
-
-// 		// Adjusted to handle error from VerifyTransactionSignature correctly
-// 		if err := shared.VerifyTransactionSignature(&tx, publicKey); err != nil {
-// 			return false, fmt.Errorf("invalid signature: %v", err)
-// 		}
-
-// 		// Here you can also check if the input amounts are correct,
-// 		// and if the sum of input amounts is greater or equal to the sum of output amounts.
-// 	}
-
-// 	// Perform other necessary validations for your transaction like
-// 	// checking the output amounts, etc.
-
-// 	return true, nil
-// }
-
-// func (bdb *BlockchainDB) VerifyTransaction(tx shared.Transaction) (bool, error) {
-// 	// 1. Verify the signature of the transaction
-// 	if len(tx.Inputs) == 0 {
-// 		return false, errors.New("Transaction has no inputs")
-// 	}
-// 	senderAddress := tx.Inputs[0].OwnerAddress // Assuming all inputs come from the same address
-
-// 	// Use the database function to retrieve the public key based on the address.
-// 	senderPublicKey, err := bdb.RetrievePublicKeyFromAddress(senderAddress)
-// 	if err != nil {
-// 		return false, fmt.Errorf("Error retrieving public key for address %s: %v", senderAddress, err)
-// 	}
-
-// 	// Adjusted to handle error from VerifyTransactionSignature correctly
-// 	if err := shared.VerifyTransactionSignature(&tx, senderPublicKey); err != nil {
-// 		return false, fmt.Errorf("Transaction signature verification failed: %v", err)
-// 	}
-
-// 	// Fetch all available UTXOs
-// 	availableUTXOs, err := bdb.GetAllUTXOs()
-// 	if err != nil {
-// 		return false, fmt.Errorf("Error fetching UTXOs: %v", err)
-// 	}
-
-// 	// 2. Check the UTXOs to verify they exist and calculate the input sum
-// 	inputSum := 0
-// 	for _, input := range tx.Inputs {
-// 		utxo, exists := availableUTXOs[input.TransactionID+strconv.Itoa(input.Index)]
-// 		if !exists {
-// 			return false, fmt.Errorf("Input UTXO %s not found", input.TransactionID+strconv.Itoa(input.Index))
-// 		}
-// 		inputSum += utxo.Amount
-// 	}
-
-// 	// 3. Calculate the output sum
-// 	outputSum := 0
-// 	for _, output := range tx.Outputs {
-// 		outputSum += output.Amount
-// 	}
-
-// 	// 4. Verify if the input sum matches the output sum
-// 	if inputSum != outputSum {
-// 		return false, fmt.Errorf("Failed to validate transaction %s: Input sum (%d) does not match output sum (%d)", tx.ID, inputSum, outputSum)
-// 	}
-
-// 	return true, nil
-// }
