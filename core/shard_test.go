@@ -3,8 +3,6 @@ package core
 import (
 	"fmt"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
 
 // TestNewShard tests the creation of a new shard.

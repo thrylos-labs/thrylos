@@ -13,8 +13,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/linxGnu/grocksdb"
 	// other necessary imports
 )
 
@@ -80,29 +78,37 @@ type Fork struct {
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain() (*Blockchain, error) {
-	// Initialize the RocksDB database
-	opts := grocksdb.NewDefaultOptions()
-	opts.SetCreateIfMissing(true)
-	db, err := grocksdb.OpenDb(opts, "./blockchain.db")
+	// Initialize the BadgerDB database using the centralized function
+	db, err := database.InitializeDatabase() // This calls the function from db.go
 	if err != nil {
-		return nil, fmt.Errorf("failed to open RocksDB database: %v", err)
+		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
 
 	// Initialize the BlockchainDB instance
 	bdb := &database.BlockchainDB{
-		DB: db, // db is now a *gorocksdb.DB instance
+		DB: db, // db is now a *badger.DB instance from InitializeDatabase
 	}
+
+	// Make sure to close the database if something fails during blockchain initialization
+	defer func() {
+		if err != nil {
+			db.Close()
+		}
+	}()
 
 	genesis := NewGenesisBlock()
 
-	return &Blockchain{
+	// Construct and return the Blockchain instance
+	blockchain := &Blockchain{
 		Blocks:       []*Block{genesis},
 		Genesis:      genesis,
 		Stakeholders: make(map[string]int),
-		Database:     bdb,                              // Add the BlockchainDB instance to the Blockchain struct
-		UTXOs:        make(map[string][]*thrylos.UTXO), // Correctly instantiate the map
-		Forks:        make([]*Fork, 0),                 // Initialize if not already done.
-	}, nil
+		Database:     bdb,
+		UTXOs:        make(map[string][]*thrylos.UTXO),
+		Forks:        make([]*Fork, 0),
+	}
+
+	return blockchain, nil
 }
 
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.

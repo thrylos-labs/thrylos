@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/linxGnu/grocksdb"
+	"github.com/dgraph-io/badger"
 )
 
 // BlockchainDB wraps an SQL database connection and provides methods to interact
@@ -23,29 +23,20 @@ import (
 // retrieving balances based on UTXOs, and adding transactions to the database.
 
 type BlockchainDB struct {
-	DB         *grocksdb.DB
+	DB         *badger.DB
 	utxos      map[string]shared.UTXO
 	Blockchain shared.BlockchainDBInterface // Use the interface here
 }
 
 // InitializeDatabase sets up the initial database schema including tables for blocks,
 // public keys, and transactions. It ensures the database is ready to store blockchain data.
-func InitializeDatabase() (*grocksdb.DB, []*grocksdb.ColumnFamilyHandle, error) {
-	opts := grocksdb.NewDefaultOptions()
-	opts.SetCreateIfMissing(true)
-
-	// In RocksDB, the "default" column family is created automatically if no other
-	// column family is specified. So we need to open the database with column family.
-	cfNames := []string{"default"}
-	cfOpts := []*grocksdb.Options{grocksdb.NewDefaultOptions()}
-	opts.SetCreateIfMissingColumnFamilies(true)
-
-	db, cfHandles, err := grocksdb.OpenDbColumnFamilies(opts, "./blockchain.db", cfNames, cfOpts)
+func InitializeDatabase() (*badger.DB, error) {
+	opts := badger.DefaultOptions("./blockchain.db").WithLogger(nil) // Common options setup
+	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open RocksDB database: %w", err)
+		return nil, fmt.Errorf("failed to open BadgerDB database: %w", err)
 	}
-
-	return db, cfHandles, nil
+	return db, nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
@@ -73,43 +64,51 @@ func (bdb *BlockchainDB) RetrieveDilithiumPublicKey(address string) ([]byte, err
 }
 
 func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey, dilithiumPublicKey []byte) error {
-	wo := grocksdb.NewDefaultWriteOptions()
-	defer wo.Destroy()
+	err := bdb.DB.Update(func(txn *badger.Txn) error {
+		data, err := json.Marshal(map[string][]byte{
+			"ed25519PublicKey":   ed25519PublicKey,
+			"dilithiumPublicKey": dilithiumPublicKey,
+		})
+		if err != nil {
+			return err
+		}
 
-	data, err := json.Marshal(map[string][]byte{
-		"ed25519PublicKey":   ed25519PublicKey,
-		"dilithiumPublicKey": dilithiumPublicKey,
+		return txn.Set([]byte("publicKey-"+address), data)
 	})
-	if err != nil {
-		return err
-	}
-
-	return bdb.DB.Put(wo, []byte("publicKey-"+address), data)
+	return err
 }
 
 func (bdb *BlockchainDB) RetrieveDilithiumPublicKeyFromAddress(address string) ([]byte, error) {
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
+	var dilithiumPublicKeyBytes []byte
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		key := []byte("publicKey-" + address)
+		item, err := txn.Get(key)
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				return fmt.Errorf("no Dilithium public key found for address %s", address)
+			}
+			return fmt.Errorf("error retrieving data from BadgerDB: %w", err)
+		}
 
-	key := []byte("publicKey-" + address)
-	data, err := bdb.DB.Get(ro, key)
+		err = item.Value(func(val []byte) error {
+			var keyData map[string][]byte
+			if err := json.Unmarshal(val, &keyData); err != nil {
+				return fmt.Errorf("error unmarshalling data: %w", err)
+			}
+
+			var ok bool
+			dilithiumPublicKeyBytes, ok = keyData["dilithiumPublicKey"]
+			if !ok {
+				return fmt.Errorf("no Dilithium public key found in the data for address %s", address)
+			}
+
+			return nil
+		})
+		return err
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("error retrieving data from RocksDB: %w", err)
-	}
-	defer data.Free()
-
-	if data.Size() == 0 {
-		return nil, fmt.Errorf("no Dilithium public key found for address %s", address)
-	}
-
-	var keyData map[string][]byte
-	if err := json.Unmarshal(data.Data(), &keyData); err != nil {
-		return nil, fmt.Errorf("error unmarshalling data: %w", err)
-	}
-
-	dilithiumPublicKeyBytes, ok := keyData["dilithiumPublicKey"]
-	if !ok {
-		return nil, fmt.Errorf("no Dilithium public key found in the data for address %s", address)
+		return nil, err
 	}
 
 	return dilithiumPublicKeyBytes, nil
@@ -118,21 +117,39 @@ func (bdb *BlockchainDB) RetrieveDilithiumPublicKeyFromAddress(address string) (
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.
 // It is essential for verifying transaction signatures and ensuring the integrity of transactions.
 func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error) {
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
+	var publicKeyBytes []byte
 
-	data, err := bdb.DB.Get(ro, []byte("publicKey-"+address))
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("publicKey-" + address))
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				return fmt.Errorf("no public key found for address %s", address)
+			}
+			return err
+		}
+
+		err = item.Value(func(val []byte) error {
+			var keyData map[string][]byte
+			if err := json.Unmarshal(val, &keyData); err != nil {
+				return err
+			}
+
+			var ok bool
+			publicKeyBytes, ok = keyData["ed25519PublicKey"]
+			if !ok {
+				return fmt.Errorf("no Ed25519 public key found in the data for address %s", address)
+			}
+
+			return nil
+		})
+		return err
+	})
+
 	if err != nil {
 		return nil, err
 	}
-	defer data.Free()
 
-	var keyData map[string][]byte
-	if err := json.Unmarshal(data.Data(), &keyData); err != nil {
-		return nil, err
-	}
-
-	return ed25519.PublicKey(keyData["ed25519PublicKey"]), nil
+	return ed25519.PublicKey(publicKeyBytes), nil
 }
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.
@@ -161,14 +178,14 @@ func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
 	// Use the transaction ID as the key for the key-value store.
 	key := []byte("transaction-" + tx.ID)
 
-	// Write options for the RocksDB put operation.
-	wo := grocksdb.NewDefaultWriteOptions()
-	defer wo.Destroy()
+	// Start a write transaction in BadgerDB.
+	err = bdb.DB.Update(func(txn *badger.Txn) error {
+		// Put the serialized transaction data into the BadgerDB store.
+		return txn.Set(key, txJSON)
+	})
 
-	// Put the serialized transaction data into the RocksDB store.
-	err = bdb.DB.Put(wo, key, txJSON)
 	if err != nil {
-		return fmt.Errorf("error storing transaction in RocksDB: %v", err)
+		return fmt.Errorf("error storing transaction in BadgerDB: %v", err)
 	}
 
 	return nil
@@ -177,103 +194,100 @@ func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
 func (bdb *BlockchainDB) GetAllUTXOs() (map[string]shared.UTXO, error) {
 	utxos := make(map[string]shared.UTXO)
 
-	// Create an iterator for the database.
-	ro := grocksdb.NewDefaultReadOptions()
-	it := bdb.DB.NewIterator(ro)
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte("utxo-")
+		it := txn.NewIterator(opts)
+		defer it.Close()
 
-	for it.Seek([]byte("utxo-")); it.ValidForPrefix([]byte("utxo-")); it.Next() {
-		key := it.Key()
-		value := it.Value()
+		for it.Rewind(); it.ValidForPrefix(opts.Prefix); it.Next() {
+			item := it.Item()
+			key := item.KeyCopy(nil)
 
-		var utxo shared.UTXO
-		if err := json.Unmarshal(value.Data(), &utxo); err != nil {
-			key.Free()
-			value.Free()
-			ro.Destroy()
-			it.Close()
-			return nil, fmt.Errorf("error unmarshalling UTXO: %v", err)
+			err := item.Value(func(val []byte) error {
+				var utxo shared.UTXO
+				if err := json.Unmarshal(val, &utxo); err != nil {
+					return fmt.Errorf("error unmarshalling UTXO: %v", err)
+				}
+
+				// Assuming the UTXO ID is part of the key, and the key format is "utxo-<utxoID>"
+				utxoID := string(key)[5:]
+				utxos[utxoID] = utxo
+
+				return nil
+			})
+			if err != nil {
+				return err
+			}
 		}
 
-		// Assuming the UTXO ID is part of the key, and the key format is "utxo-<utxoID>"
-		utxoID := string(key.Data())[5:]
-		utxos[utxoID] = utxo
+		return nil
+	})
 
-		key.Free()
-		value.Free()
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving UTXOs: %v", err)
 	}
-
-	if err := it.Err(); err != nil {
-		ro.Destroy()
-		it.Close()
-		return nil, fmt.Errorf("iterator error: %v", err)
-	}
-
-	ro.Destroy()
-	it.Close()
 
 	return utxos, nil
 }
 
 func (bdb *BlockchainDB) GetTransactionByID(txID string) (*shared.Transaction, error) {
-	// Create a read option for the database.
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
+	var tx *shared.Transaction
 
-	// Construct the key with which the transaction is stored.
-	key := []byte("transaction-" + txID)
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		key := []byte("transaction-" + txID)
+		item, err := txn.Get(key)
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				return fmt.Errorf("no transaction found with ID %s", txID)
+			}
+			return fmt.Errorf("error retrieving transaction from BadgerDB: %w", err)
+		}
 
-	// Get the transaction data from the database.
-	data, err := bdb.DB.Get(ro, key)
+		return item.Value(func(val []byte) error {
+			tx = &shared.Transaction{}
+			return json.Unmarshal(val, tx)
+		})
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("error retrieving transaction from RocksDB: %w", err)
-	}
-	defer data.Free()
-
-	// Check if data was found
-	if data.Size() == 0 {
-		return nil, fmt.Errorf("no transaction found with ID %s", txID)
+		return nil, err
 	}
 
-	// Unmarshal the transaction data into the Transaction struct.
-	var tx shared.Transaction
-	if err := json.Unmarshal(data.Data(), &tx); err != nil {
-		return nil, fmt.Errorf("error unmarshalling transaction data: %w", err)
-	}
-
-	return &tx, nil
+	return tx, nil
 }
 
 func (bdb *BlockchainDB) GetLatestBlockData() ([]byte, error) {
-	// Create a read option for the database.
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
+	var latestBlockData []byte
 
-	// Create an iterator for the database, set to reverse order to get the latest block first.
-	it := bdb.DB.NewIterator(ro)
-	defer it.Close()
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Reverse = true // Iterate in reverse order
+		it := txn.NewIterator(opts)
+		defer it.Close()
 
-	// Seek to the last key in the range of blocks and move in reverse order.
-	for it.SeekToLast(); it.Valid(); it.Prev() {
-		key := it.Key()
-		if strings.HasPrefix(string(key.Data()), "block-") {
-			// We've found the latest block
-			blockData := make([]byte, len(it.Value().Data()))
-			copy(blockData, it.Value().Data())
-
-			key.Free()
-			it.Value().Free()
-
-			return blockData, nil
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+			if strings.HasPrefix(string(key), "block-") {
+				// We've found the latest block
+				err := item.Value(func(val []byte) error {
+					// Make a copy of the block data
+					latestBlockData = append([]byte(nil), val...)
+					return nil
+				})
+				return err // Return from the View function after finding the latest block
+			}
 		}
-		key.Free()
-		it.Value().Free()
+
+		return fmt.Errorf("no blocks found in the database")
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
-	if err := it.Err(); err != nil {
-		return nil, fmt.Errorf("iterator error: %v", err)
-	}
-
-	return nil, fmt.Errorf("no blocks found in the database")
+	return latestBlockData, nil
 }
 
 func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int) error {
@@ -288,17 +302,14 @@ func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner st
 	// Prepare the key for this UTXO entry in the database.
 	key := []byte("utxo-" + id)
 
-	// Write options for the RocksDB put operation.
-	wo := grocksdb.NewDefaultWriteOptions()
-
-	// Put the UTXO data into RocksDB.
-	err = bdb.DB.Put(wo, key, utxoJSON)
+	// Use BadgerDB transaction to put the UTXO data into the database.
+	err = bdb.DB.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, utxoJSON)
+	})
 	if err != nil {
-		wo.Destroy() // Explicitly destroy write options when there is an error
-		return fmt.Errorf("error inserting UTXO into RocksDB: %v", err)
+		return fmt.Errorf("error inserting UTXO into BadgerDB: %v", err)
 	}
 
-	wo.Destroy() // Explicitly destroy write options after operation is done
 	return nil
 }
 
@@ -358,38 +369,54 @@ func (bdb *BlockchainDB) GetUTXOs() (map[string][]shared.UTXO, error) {
 func (bdb *BlockchainDB) InsertBlock(blockData []byte, blockNumber int) error {
 	key := []byte(fmt.Sprintf("block-%d", blockNumber))
 
-	wo := grocksdb.NewDefaultWriteOptions()
-	defer wo.Destroy()
+	// Use BadgerDB transaction to put the block data into the database.
+	err := bdb.DB.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, blockData)
+	})
 
-	err := bdb.DB.Put(wo, key, blockData)
 	if err != nil {
-		return fmt.Errorf("error inserting block into RocksDB: %v", err)
+		return fmt.Errorf("error inserting block into BadgerDB: %v", err)
 	}
 
 	return nil
 }
 
 func (bdb *BlockchainDB) GetLastBlockData() ([]byte, error) {
-	ro := grocksdb.NewDefaultReadOptions()
-	defer ro.Destroy()
+	var blockData []byte
 
-	it := bdb.DB.NewIterator(ro)
-	defer it.Close()
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Reverse = true // Iterate in reverse order to get the latest block first
+		it := txn.NewIterator(opts)
+		defer it.Close()
 
-	// Iterate in reverse order to find the latest block
-	it.SeekToLast()
-	if it.Valid() {
-		blockData := make([]byte, len(it.Value().Data()))
-		copy(blockData, it.Value().Data())
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
 
-		return blockData, nil
+			// Assuming block data keys are prefixed with "block-"
+			if strings.HasPrefix(string(key), "block-") {
+				var err error
+				blockData, err = item.ValueCopy(nil) // Use ValueCopy to get the data
+				if err != nil {
+					return fmt.Errorf("error retrieving block data: %v", err)
+				}
+				return nil // Break after finding the latest block
+			}
+		}
+
+		return fmt.Errorf("no blocks found in the database")
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
-	if err := it.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating blocks in RocksDB: %v", err)
+	if len(blockData) == 0 {
+		return nil, fmt.Errorf("no blocks found in the database")
 	}
 
-	return nil, fmt.Errorf("no blocks found in the database")
+	return blockData, nil
 }
 
 func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs []shared.UTXO, privKey *rsa.PrivateKey) (shared.Transaction, error) {
