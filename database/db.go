@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/dgraph-io/badger"
 )
@@ -28,15 +29,21 @@ type BlockchainDB struct {
 	Blockchain shared.BlockchainDBInterface // Use the interface here
 }
 
+var (
+	db   *badger.DB
+	once sync.Once
+)
+
 // InitializeDatabase sets up the initial database schema including tables for blocks,
 // public keys, and transactions. It ensures the database is ready to store blockchain data.
+// InitializeDatabase ensures that BadgerDB is only initialized once
 func InitializeDatabase() (*badger.DB, error) {
-	opts := badger.DefaultOptions("./blockchain.db").WithLogger(nil) // Common options setup
-	db, err := badger.Open(opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open BadgerDB database: %w", err)
-	}
-	return db, nil
+	var err error
+	once.Do(func() {
+		opts := badger.DefaultOptions("./blockchain.db").WithLogger(nil)
+		db, err = badger.Open(opts)
+	})
+	return db, err
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
