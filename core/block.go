@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
@@ -27,9 +28,9 @@ type Block struct {
 	// the Unix epoch. It ensures the chronological order of blocks within the blockchain.
 	Timestamp int64
 
-	// MerkleRoot is the root hash of the Merkle tree constructed from the block's transactions.
+	// VerkleRoot is the root hash of the Verkle tree constructed from the block's transactions.
 	// It provides a succinct proof of the transactions' inclusion in the block.
-	MerkleRoot []byte
+	VerkleRoot []byte // Changed from MerkleRoot to VerkleRoot
 
 	// PrevHash stores the hash of the previous block in the chain, establishing the link between
 	// this block and its predecessor. This linkage is crucial for the blockchain's integrity.
@@ -54,7 +55,7 @@ func NewGenesisBlock() *Block {
 	block := &Block{
 		Index:      0,
 		Timestamp:  time.Now().Unix(),
-		MerkleRoot: []byte{}, // Or some predefined value, since it's a special case.
+		VerkleRoot: []byte{}, // Or some predefined value, since it's a special case.
 		PrevHash:   "",
 		Hash:       "",
 		Validator:  "",
@@ -171,10 +172,25 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 		txData = append(txData, txByte)
 	}
 
-	// Create Merkle Tree from serialized Protobuf transactions
-	merkleTree := NewMerkleTree(txData)
-	if merkleTree == nil {
-		fmt.Println("Failed to create Merkle tree due to lack of transactions.")
+	// Create Verkle Tree from serialized transaction data
+	var err error                           // Declare err before using it
+	var verkleTree verkle.VerkleNode        // Declare verkleTree if not already declared
+	verkleTree, err = NewVerkleTree(txData) // Use = instead of := to assign values to existing variables
+	if err != nil {
+		fmt.Println("Failed to create Verkle tree:", err)
+		return nil
+	}
+
+	// Assuming the Verkle tree has a method to get the commitment (root hash)
+	verkleRoot := verkleTree.Commitment() // Get the commitment (root hash) of the Verkle tree
+
+	// Convert verkleRoot to []byte
+	verkleRootBytes := verkleRoot.Bytes() // Assuming banderwagon.Element has a Bytes() method
+
+	// Serialize the verkleRoot
+	verkleRootBytes, err := verkleRoot.Serialize()
+	if err != nil {
+		fmt.Println("Failed to serialize Verkle root:", err)
 		return nil
 	}
 
@@ -182,7 +198,7 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 		Index:        index,
 		Transactions: protoTransactions, // Use the converted Protobuf transactions
 		Timestamp:    currentTimestamp,
-		MerkleRoot:   merkleTree.RootNode.Data,
+		VerkleRoot:   verkleRootBytes, // Assign the serialized byte slice
 		PrevHash:     prevHash,
 		Hash:         "",
 		Validator:    validator,
@@ -203,17 +219,25 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 		txData = append(txData, txByte)
 	}
 
-	merkleTree := NewMerkleTree(txData)
+	verkleTree, err := NewVerkleTree(txData)
+	if err != nil {
+		fmt.Println("Failed to create Verkle tree:", err)
+		return nil
+	}
 
-	if merkleTree == nil {
-		fmt.Println("Failed to create Merkle tree due to lack of transactions.")
+	// Create Merkle Tree from serialized Protobuf transactions
+	var verkleRoot []byte
+	if verkleNode, ok := verkleTree.(interface{ Root() []byte }); ok && verkleNode != nil {
+		verkleRoot = verkleNode.Root()
+	} else {
+		fmt.Println("Failed to extract Verkle root")
 		return nil
 	}
 
 	block := &Block{
 		Index:      index,
 		Timestamp:  timestamp, // Use the provided timestamp here
-		MerkleRoot: merkleTree.RootNode.Data,
+		VerkleRoot: verkleRoot,
 		PrevHash:   prevHash,
 		Hash:       "",
 		Validator:  validator,
@@ -234,7 +258,7 @@ func (b *Block) ComputeHash() string {
 	data := bytes.Join([][]byte{
 		[]byte(fmt.Sprintf("%d", b.Index)),
 		[]byte(fmt.Sprintf("%d", b.Timestamp)),
-		[]byte(b.MerkleRoot), // Adjust this to use the Merkle Root instead
+		[]byte(b.VerkleRoot), // Adjust this to use the Merkle Root instead
 		[]byte(b.PrevHash),
 		[]byte(b.Validator),
 	}, []byte{})
