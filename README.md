@@ -28,12 +28,12 @@ Dive deeper into the core components that power our blockchain:
 
 ## Data Management
 
-### SQLite Database
+### Badger Database
 - **Utility**: Stores blockchain data (blocks and transactions), ensuring durability and swift access.
 - **Features**: Offers a solid foundation for blockchain persistence and efficient data queries.
 
 ### BlockchainDB
-- **Overview**: An abstraction over SQLite, tailored for blockchain operations.
+- **Overview**: An abstraction over Badger, tailored for blockchain operations.
 - **Capabilities**: Handles transaction additions, UTXO retrieval, and UTXO set updates, streamlining database interactions.
 
 ## Interfacing with the Blockchain
