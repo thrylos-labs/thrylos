@@ -306,7 +306,7 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 
 	// Define the number of transactions and the size of each batch
 	numTransactions := 1000
-	batchSize := 100 // Define an appropriate batch size
+	batchSize := 10 // Define an appropriate batch size
 
 	start := time.Now()
 
@@ -361,7 +361,7 @@ func TestTransactionThroughputWitSignatures(t *testing.T) {
 
 	// Define the number of transactions and the size of each batch
 	numTransactions := 1000
-	batchSize := 100 // Define an appropriate batch size
+	batchSize := 10 // Define an appropriate batch size
 
 	start := time.Now()
 
