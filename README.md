@@ -51,6 +51,11 @@ Dive deeper into the core components that power our blockchain:
 - **Advantage**: Ensures data is compact and efficiently stored or transmitted, using Google's Protobuf for serialization.
 - **Conversion**: Bridges the gap between Go's native data structures and Protobuf's binary format, facilitating seamless data operations.
 
+## VerkleTree
+- **Purpose**: Enhances the efficiency and scalability of data storage and retrieval in the blockchain.
+- **Functionality**: Implements a novel data structure for organizing transactions in a compact, efficient manner, reducing the size of proof and improving verification times.
+- **Integration**: Used within the blockchain to form a succinct, cryptographically secure representation of transaction states, facilitating quicker and lighter consensus verification.
+
 ## Engaging with the Blockchain
 
 1. **Start**: Initialization kicks off with the blockchain and HTTP server, loading the current state from the database.
