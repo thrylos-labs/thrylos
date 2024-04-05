@@ -2,6 +2,7 @@ package main
 
 import (
 	"Thrylos/core"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -59,6 +60,15 @@ func main() {
 			node.GetBlockHandler()(w, r)
 		case "/get-transaction":
 			node.GetTransactionHandler()(w, r)
+		case "/get-stats":
+			stats := node.GetBlockchainStats()
+			statsJSON, err := json.Marshal(stats)
+			if err != nil {
+				http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(statsJSON)
 		default:
 			http.NotFound(w, r)
 		}
@@ -70,3 +80,5 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
+
+// Get the blockchain stats: curl http://localhost:8080/get-stats

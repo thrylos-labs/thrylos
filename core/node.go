@@ -270,6 +270,25 @@ func (node *Node) GetTransactionHandler() http.HandlerFunc {
 	}
 }
 
+type BlockchainStats struct {
+	NumberOfBlocks       int `json:"number_of_blocks"`
+	NumberOfTransactions int `json:"number_of_transactions"`
+	TotalStake           int `json:"total_stake"`
+	NumberOfPeers        int `json:"number_of_peers"`
+}
+
+func (node *Node) GetBlockchainStats() BlockchainStats {
+	var stats BlockchainStats
+	stats.NumberOfBlocks = len(node.Blockchain.Blocks)
+	stats.NumberOfTransactions = 0 // You'll need to iterate through blocks to count transactions
+	for _, block := range node.Blockchain.Blocks {
+		stats.NumberOfTransactions += len(block.Transactions)
+	}
+	stats.TotalStake = node.Blockchain.TotalStake()
+	stats.NumberOfPeers = len(node.Peers)
+	return stats
+}
+
 // TotalStake calculates the total amount of stake from all stakeholders in the blockchain. This is used
 // in consensus mechanisms that involve staking.
 func (bc *Blockchain) TotalStake() int {
@@ -511,6 +530,16 @@ func (node *Node) Start() {
 			return
 		}
 		node.Votes = append(node.Votes, vote)
+	})
+
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		stats := node.GetBlockchainStats()
+		statsJSON, err := json.Marshal(stats)
+		if err != nil {
+			http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
+			return
+		}
+		sendResponse(w, statsJSON) // Use your existing sendResponse function to send the JSON data
 	})
 
 	mux.HandleFunc("/transaction", func(w http.ResponseWriter, r *http.Request) {
