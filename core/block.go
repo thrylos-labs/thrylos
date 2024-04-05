@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
@@ -172,33 +171,25 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 		txData = append(txData, txByte)
 	}
 
-	// Create Verkle Tree from serialized transaction data
-	var err error                           // Declare err before using it
-	var verkleTree verkle.VerkleNode        // Declare verkleTree if not already declared
-	verkleTree, err = NewVerkleTree(txData) // Use = instead of := to assign values to existing variables
+	verkleTree, err := NewVerkleTree(txData)
 	if err != nil {
 		fmt.Println("Failed to create Verkle tree:", err)
 		return nil
 	}
+	// Get the Verkle root as a point
+	verkleRootPoint := verkleTree.Commitment()
 
-	// Assuming the Verkle tree has a method to get the commitment (root hash)
-	verkleRoot := verkleTree.Commitment() // Get the commitment (root hash) of the Verkle tree
+	// Use BytesUncompressedTrusted() to get the uncompressed byte array
+	verkleRootBytes := verkleRootPoint.BytesUncompressedTrusted() // This returns an array
 
-	// Convert verkleRoot to []byte
-	verkleRootBytes := verkleRoot.Bytes() // Assuming banderwagon.Element has a Bytes() method
-
-	// Serialize the verkleRoot
-	verkleRootBytes, err := verkleRoot.Serialize()
-	if err != nil {
-		fmt.Println("Failed to serialize Verkle root:", err)
-		return nil
-	}
+	// Convert array to slice for use
+	verkleRootBytesSlice := verkleRootBytes[:]
 
 	block := &Block{
 		Index:        index,
 		Transactions: protoTransactions, // Use the converted Protobuf transactions
 		Timestamp:    currentTimestamp,
-		VerkleRoot:   verkleRootBytes, // Assign the serialized byte slice
+		VerkleRoot:   verkleRootBytesSlice, // Use the slice here
 		PrevHash:     prevHash,
 		Hash:         "",
 		Validator:    validator,
@@ -225,19 +216,19 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 		return nil
 	}
 
-	// Create Merkle Tree from serialized Protobuf transactions
-	var verkleRoot []byte
-	if verkleNode, ok := verkleTree.(interface{ Root() []byte }); ok && verkleNode != nil {
-		verkleRoot = verkleNode.Root()
-	} else {
-		fmt.Println("Failed to extract Verkle root")
-		return nil
-	}
+	// Get the Verkle root as a point
+	verkleRootPoint := verkleTree.Commitment()
+
+	// Use BytesUncompressedTrusted() to get the uncompressed byte array
+	verkleRootBytes := verkleRootPoint.BytesUncompressedTrusted() // This returns an array
+
+	// Convert array to slice for use
+	verkleRootBytesSlice := verkleRootBytes[:]
 
 	block := &Block{
 		Index:      index,
-		Timestamp:  timestamp, // Use the provided timestamp here
-		VerkleRoot: verkleRoot,
+		Timestamp:  timestamp,            // Use the provided timestamp here
+		VerkleRoot: verkleRootBytesSlice, // Convert array to slice
 		PrevHash:   prevHash,
 		Hash:       "",
 		Validator:  validator,
