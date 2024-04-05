@@ -194,29 +194,67 @@ func sendResponse(w http.ResponseWriter, data []byte) {
 	w.Write(data)
 }
 
-// SubmitTransactionHandler processes transaction submissions to the node.
+// Assuming ConvertThrylosToSharedTransaction is a function you will create to convert between these transaction types
+// ConvertThrylosToProtoTransaction converts your internal transaction representation to the protobuf representation
+func ConvertThrylosToProtoTransaction(thrylosTx *thrylos.Transaction) *thrylos.Transaction {
+	// Since thrylosTx is already the type we want, assuming it's generated from protobuf, we don't need to convert field by field
+	// Just return the transaction as it matches the protobuf definition
+	return thrylosTx
+}
+
+func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
+	// Conversion logic goes here
+	// This is just a placeholder, adjust fields according to your actual struct definitions
+	return &shared.Transaction{
+		// Assuming both have similar fields but they may need conversion or renaming
+		ID:        tx.Id,
+		Timestamp: tx.Timestamp,
+		// Continue mapping all necessary fields from the thrylos.Transaction to shared.Transaction
+	}
+}
+
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var tx thrylos.Transaction
-		err := json.NewDecoder(r.Body).Decode(&tx)
-		if err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
 			return
 		}
 
-		// Add transaction to pending transactions
-		err = node.AddPendingTransaction(&tx)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to add transaction: %v", err), http.StatusInternalServerError)
+		// Verify and process the transaction
+		if err := node.VerifyAndProcessTransaction(&tx); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
 			return
 		}
 
-		// Optionally, broadcast transaction to peers here...
+		// Add the transaction to the pending transactions
+		if err := node.AddPendingTransaction(&tx); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to add transaction to pending transactions: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Convert the transaction and broadcast it to peers in the network
+		sharedTx := ThrylosToShared(&tx)
+		node.BroadcastTransaction(sharedTx) // Use the converted transaction for broadcasting
 
 		// Respond with success
-		// w.WriteHeader(http.StatusAccepted)
-		// fmt.Fprintf(w, "Transaction submitted successfully")
 		sendResponse(w, []byte("Transaction submitted successfully"))
+	}
+}
+
+func (node *Node) GetPendingTransactions() []*thrylos.Transaction {
+	return node.PendingTransactions
+}
+
+func (node *Node) PendingTransactionsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pendingTransactions := node.GetPendingTransactions()
+		txData, err := json.Marshal(pendingTransactions)
+		if err != nil {
+			http.Error(w, "Failed to serialize pending transactions", http.StatusInternalServerError)
+			return
+		}
+		sendResponse(w, txData)
 	}
 }
 

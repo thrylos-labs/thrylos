@@ -69,6 +69,8 @@ func main() {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(statsJSON)
+		case "/pending-transactions":
+			node.PendingTransactionsHandler()(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -81,4 +83,9 @@ func main() {
 	}
 }
 
+// first run the blockchain: go run main.go
+// open a new terminal and run:
+
 // Get the blockchain stats: curl http://localhost:8080/get-stats
+// Retrieve the genesis block: curl "http://localhost:8080/get-block?id=0"
+// Retrieve pending transactions: curl http://localhost:8080/pending-transactions
