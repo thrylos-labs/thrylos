@@ -71,6 +71,15 @@ func main() {
 			w.Write(statsJSON)
 		case "/pending-transactions":
 			node.PendingTransactionsHandler()(w, r)
+		case "/peers":
+			log.Println("Handling /peers request")
+			data, err := json.Marshal(node.Peers)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(data)
 		default:
 			http.NotFound(w, r)
 		}

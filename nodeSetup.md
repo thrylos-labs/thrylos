@@ -1,5 +1,20 @@
 Configuration Options:
 
+Navigate to the directory containing your main.go using 'cd cmd'
+
+First, start a node on localhost:8080 if it is supposed to be a peer:
+
+Start the nodes in any order, but ensure all are running:
+
+
+
+
+
+
+
+
+
+
 address: Specifies the network address the node should listen on. Example usage: --address=localhost:8080
 peers: A comma-separated list of addresses of known peers in the network. This helps the node to quickly connect and synchronize with the network. Example usage: --peers=localhost:8081,localhost:8082
 Running the Node:
