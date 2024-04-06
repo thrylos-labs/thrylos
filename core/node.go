@@ -449,16 +449,18 @@ func (node *Node) SyncBlockchain() {
 			fmt.Println("Failed to get blockchain from peer:", err)
 			continue
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			fmt.Println("Non-OK HTTP status from peer:", resp.StatusCode)
+			resp.Body.Close() // Close immediately after checking the status
 			continue
 		}
 
 		var peerBlockchain Blockchain
 		decoder := json.NewDecoder(resp.Body)
 		err = decoder.Decode(&peerBlockchain)
+		resp.Body.Close() // Close as soon as the body is no longer needed
+
 		if err != nil {
 			fmt.Println("Failed to deserialize blockchain:", err)
 			continue
