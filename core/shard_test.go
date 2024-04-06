@@ -2,6 +2,8 @@ package core
 
 import (
 	"fmt"
+	"io/ioutil"
+	"os"
 	"testing"
 )
 
@@ -35,9 +37,18 @@ func TestNewShard(t *testing.T) {
 // TestAddNodeToShard tests adding a node to a shard.
 
 func TestAssignNodeToShard(t *testing.T) {
-	shard := NewShard(1, 10) // Update with maxNodes argument
+	// Create a temporary directory for blockchain data
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
+
+	shard := NewShard(1, 10) // Initialize shard with appropriate arguments
 	knownPeers := []string{} // Empty slice for known peers
-	node := NewNode("localhost:8080", knownPeers, shard, true)
+
+	// Update with correct arguments including dataDir
+	node := NewNode("localhost:8080", knownPeers, tempDir, shard, true)
 
 	if err := shard.AssignNode(node); err != nil {
 		t.Errorf("Failed to assign node to shard: %v", err)
@@ -60,10 +71,25 @@ func TestAssignNodeToShard(t *testing.T) {
 }
 
 func TestRedistributeData(t *testing.T) {
-	shard := NewShard(1, 10) // Update with maxNodes argument
+	shard := NewShard(1, 10) // Initialize shard with appropriate arguments
 	knownPeers := []string{} // Empty slice for known peers
-	node1 := NewNode("localhost:8080", knownPeers, shard, true)
-	node2 := NewNode("localhost:8081", knownPeers, shard, true)
+
+	// Create a temporary directory for blockchain data
+	tempDir1, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory for node1: %v", err)
+	}
+	defer os.RemoveAll(tempDir1) // Ensure cleanup of the temporary directory for node1
+
+	tempDir2, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory for node2: %v", err)
+	}
+	defer os.RemoveAll(tempDir2) // Ensure cleanup of the temporary directory for node2
+
+	// Initialize nodes with their respective temporary directories
+	node1 := NewNode("localhost:8080", knownPeers, tempDir1, shard, true)
+	node2 := NewNode("localhost:8081", knownPeers, tempDir2, shard, true)
 
 	shard.AssignNode(node1)
 	shard.AssignNode(node2)
@@ -77,7 +103,15 @@ func TestShardUnderHighLoad(t *testing.T) {
 	shard := NewShard(1, 100) // Set the shard capacity to 100
 
 	for i := 0; i < 100; i++ {
-		node := NewNode(fmt.Sprintf("localhost:%d", 8080+i), []string{}, shard, true)
+		// Create a temporary directory for each node's blockchain data
+		tempDir, err := ioutil.TempDir("", fmt.Sprintf("blockchain_test_%d", i))
+		if err != nil {
+			t.Fatalf("Failed to create temporary directory for node %d: %v", i, err)
+		}
+		defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
+
+		nodeAddress := fmt.Sprintf("localhost:%d", 8080+i)
+		node := NewNode(nodeAddress, []string{}, tempDir, shard, true)
 		if err := shard.AssignNode(node); err != nil {
 			t.Errorf("Failed to assign node %d to shard: %v", i, err)
 		}
@@ -89,8 +123,18 @@ func TestShardUnderHighLoad(t *testing.T) {
 }
 
 func TestShardNodeFailureRecovery(t *testing.T) {
-	shard := NewShard(1, 100) // Ensure that the shard is created with a capacity of 100
-	node := NewNode("localhost:8080", []string{}, shard, true)
+	// Ensure that the shard is created with a capacity of 100
+	shard := NewShard(1, 100)
+
+	// Create a temporary directory for blockchain data
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
+
+	// Initialize node with the temporary directory
+	node := NewNode("localhost:8080", []string{}, tempDir, shard, true)
 	shard.AssignNode(node)
 
 	// Simulate node failure
@@ -103,29 +147,55 @@ func TestShardNodeFailureRecovery(t *testing.T) {
 }
 
 func TestCrossShardTransactions(t *testing.T) {
-	shard1 := NewShard(1, 10) // Update with maxNodes argument
-	shard2 := NewShard(2, 10) // Update with maxNodes argument
+	shard1 := NewShard(1, 10)
+	shard2 := NewShard(2, 10)
 
-	node1 := NewNode("localhost:8080", []string{}, shard1, true)
-	node2 := NewNode("localhost:8081", []string{}, shard2, true)
+	// Temporary directories for each node
+	tempDir1, err := ioutil.TempDir("", "blockchain_test_shard1_node1")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory for shard1 node1: %v", err)
+	}
+	defer os.RemoveAll(tempDir1)
+
+	tempDir2, err := ioutil.TempDir("", "blockchain_test_shard2_node1")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory for shard2 node1: %v", err)
+	}
+	defer os.RemoveAll(tempDir2)
+
+	node1 := NewNode("localhost:8080", []string{}, tempDir1, shard1, true)
+	node2 := NewNode("localhost:8081", []string{}, tempDir2, shard2, true)
 
 	shard1.AssignNode(node1)
 	shard2.AssignNode(node2)
 
 	// Simulate a transaction that spans across both shards
-	// This would involve creating a transaction that impacts data in both shard1 and shard2
 	// ...
 }
 
 func TestShardDataConsistency(t *testing.T) {
-	shard := NewShard(1, 10) // Update with maxNodes argument
-	node1 := NewNode("localhost:8080", []string{}, shard, true)
-	node2 := NewNode("localhost:8081", []string{}, shard, true)
+	shard := NewShard(1, 10)
+
+	// Temporary directories for each node
+	tempDir1, err := ioutil.TempDir("", "blockchain_test_shard1_node")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory for shard node1: %v", err)
+	}
+	defer os.RemoveAll(tempDir1)
+
+	tempDir2, err := ioutil.TempDir("", "blockchain_test_shard1_node2")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory for shard node2: %v", err)
+	}
+	defer os.RemoveAll(tempDir2)
+
+	node1 := NewNode("localhost:8080", []string{}, tempDir1, shard, true)
+	node2 := NewNode("localhost:8081", []string{}, tempDir2, shard, true)
 
 	shard.AssignNode(node1)
 	shard.AssignNode(node2)
 
-	// Simulate activities that change the state (like transactions)
+	// Simulate activities that change the state
 	// Ensure that the state changes are consistent and synchronized across all nodes in the shard
 	// ...
 }

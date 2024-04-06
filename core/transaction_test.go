@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -107,9 +109,19 @@ func TestSignatureVerificationWithInvalidSignature(t *testing.T) {
 
 // setupBlockchain initializes a blockchain with predefined data for testing.
 func setupBlockchain() (*Blockchain, error) {
-	// Initialize a new blockchain instance
-	bc, err := NewBlockchain()
+	// Create a temporary directory for blockchain data
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
 	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary directory: %v", err)
+	}
+	// Normally, defer os.RemoveAll(tempDir) would be used to clean up after,
+	// but in setup function, you'd return the directory path for cleanup in tests
+
+	// Initialize a new blockchain instance using the temporary directory
+	bc, err := NewBlockchain(tempDir)
+	if err != nil {
+		// Clean up the temporary directory in case of initialization failure
+		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("failed to initialize blockchain: %v", err)
 	}
 
@@ -118,7 +130,6 @@ func setupBlockchain() (*Blockchain, error) {
 	bc.Blocks = append(bc.Blocks, genesisBlock)
 
 	// Optionally, add more blocks or transactions as needed for your tests
-	// For example, if you need to test with specific UTXOs or transaction patterns
 
 	return bc, nil
 }
