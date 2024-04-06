@@ -77,9 +77,9 @@ type Fork struct {
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain() (*Blockchain, error) {
+func NewBlockchain(dataDir string) (*Blockchain, error) {
 	// Initialize the BadgerDB database using the centralized function
-	db, err := database.InitializeDatabase() // This calls the function from db.go
+	db, err := database.InitializeDatabase(dataDir) // Adjust this call accordingly
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}

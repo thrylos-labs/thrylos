@@ -4,13 +4,24 @@ import (
 	"Thrylos/shared"
 	"crypto/ed25519"
 	"crypto/rand"
+	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/cloudflare/circl/sign/dilithium"
 )
 
 func TestNewBlockchain(t *testing.T) {
-	bc, err := NewBlockchain()
+	// Create a temporary directory for blockchain data
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	// Clean up the temporary directory after the test
+	defer os.RemoveAll(tempDir)
+
+	// Create a new blockchain using the temporary directory
+	bc, err := NewBlockchain(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}

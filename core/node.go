@@ -37,8 +37,8 @@ type Node struct {
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
-func NewNode(address string, knownPeers []string, shard *Shard, isTest bool) *Node {
-	bc, err := NewBlockchain()
+func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
+	bc, err := NewBlockchain(dataDir) // Pass dataDir to the NewBlockchain function
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}

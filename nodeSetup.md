@@ -4,38 +4,18 @@ Navigate to the directory containing your main.go using 'cd cmd'
 
 First, start a node on localhost:8080 if it is supposed to be a peer:
 
-Start the nodes in any order, but ensure all are running:
+Begin by starting the first node without specifying any peers, as it will be the initial node in your network.
 
+go run main.go --address=localhost:8080 --data=./node1_data
 
+Start Subsequent Nodes with Peers:
+Once the first node is running, you can start other nodes and specify the first node as a known peer.
 
+go run main.go --address=localhost:8081 --peers=http://localhost:8080 --data=./node2_data
 
+This way, the new node at localhost:8081 will attempt to connect with the existing node at localhost:8080.
 
-
-
-
-
-
-address: Specifies the network address the node should listen on. Example usage: --address=localhost:8080
-peers: A comma-separated list of addresses of known peers in the network. This helps the node to quickly connect and synchronize with the network. Example usage: --peers=localhost:8081,localhost:8082
-Running the Node:
-
-Ensure you have Go installed on your machine.
-Navigate to the directory containing your main.go using 'cd cmd'
-Compile your project or run it directly using 'go run main.go'
-
-
-For example run: 
-
-go run main.go --address=localhost:8080 --peers=localhost:8081,localhost:8082
-
-or try: 
-
-go run main.go --address=localhost:8080 --peers=http://localhost:8081,http://localhost:8082
-
-
-This command will start the node, which will listen on the specified address and attempt to connect to the peers.
-
-Your node will start and attempt to connect to the provided peers, synchronize the blockchain, and listen for incoming requests.
+By following these steps, you'll establish a local blockchain network where nodes are aware of each other and can synchronize data, allowing you to test the network's functionality more effectively.
 
 Interacting with the Node:
 

@@ -37,10 +37,11 @@ var (
 // InitializeDatabase sets up the initial database schema including tables for blocks,
 // public keys, and transactions. It ensures the database is ready to store blockchain data.
 // InitializeDatabase ensures that BadgerDB is only initialized once
-func InitializeDatabase() (*badger.DB, error) {
+func InitializeDatabase(dataDir string) (*badger.DB, error) {
 	var err error
 	once.Do(func() {
-		opts := badger.DefaultOptions("./blockchain.db").WithLogger(nil)
+		// Use dataDir for the database directory
+		opts := badger.DefaultOptions(dataDir).WithLogger(nil)
 		db, err = badger.Open(opts)
 	})
 	return db, err

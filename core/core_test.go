@@ -5,38 +5,58 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"io/ioutil"
+	"os"
 	"testing"
 )
 
 // setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.
 func setupTestBlockchain(t *testing.T) *Blockchain {
-	// Initialize the blockchain. This might involve creating a genesis block,
-	// setting up a test database, or other initial setup required for your blockchain.
-	bc, err := NewBlockchain()
+	// Create a temporary directory for blockchain data
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+
+	// You should ensure the temporary directory is cleaned up after the test runs,
+	// possibly in the test function that calls setupTestBlockchain
+	// defer os.RemoveAll(tempDir)
+
+	// Initialize the blockchain using the temporary directory
+	bc, err := NewBlockchain(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
 	}
 
-	// Example: Adding a genesis block explicitly if your NewBlockchain
-	// function does not automatically do this. Adjust as needed.
+	// Add a genesis block if it's not automatically created by NewBlockchain
 	if len(bc.Blocks) == 0 {
 		genesis := NewGenesisBlock()
 		bc.Blocks = append(bc.Blocks, genesis)
-		// If your blockchain implementation directly interacts with a database,
-		// you might also need to insert the genesis block into the database here.
+		// If needed, insert the genesis block into the database here
 	}
 
 	return bc
 }
 
 func TestGenesisBlockCreation(t *testing.T) {
-	bc, err := NewBlockchain()
+	// Create a temporary directory for blockchain data
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
+
+	// Initialize the blockchain with the temporary directory
+	bc, err := NewBlockchain(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
-	if bc.Blocks[0] != bc.Genesis {
+
+	// Check if the first block is the genesis block
+	if len(bc.Blocks) == 0 || bc.Blocks[0] != bc.Genesis {
 		t.Errorf("Genesis block is not the first block in the blockchain")
 	}
+
 	// Additional checks can include validating genesis block's specific properties.
 }
 

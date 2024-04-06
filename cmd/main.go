@@ -17,10 +17,11 @@ func main() {
 	// Command-line flags for node configuration
 	nodeAddress := flag.String("address", "localhost:8080", "Address for the node to listen on")
 	knownPeers := flag.String("peers", "", "Comma-separated list of known peer addresses")
-	flag.Parse()
+	nodeDataDir := flag.String("data", "./blockchain_data", "Directory to store node's blockchain data")
+	flag.Parse() // Parse the command-line flags
 
 	// Initialize the blockchain
-	blockchain, err := core.NewBlockchain()
+	blockchain, err := core.NewBlockchain(*nodeDataDir)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
@@ -40,7 +41,7 @@ func main() {
 
 	// Initialize a new node with the specified address and known peers
 	// Initialize a new node with the specified address and known peers
-	node := core.NewNode(*nodeAddress, peersList, nil, false)
+	node := core.NewNode(*nodeAddress, peersList, *nodeDataDir, nil, false)
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
