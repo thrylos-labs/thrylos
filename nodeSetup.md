@@ -2,11 +2,7 @@ Configuration Options:
 
 Navigate to the directory containing your main.go using 'cd cmd'
 
-First, start a node on localhost:8080 if it is supposed to be a peer:
-
-Begin by starting the first node without specifying any peers, as it will be the initial node in your network.
-
-go run main.go --address=localhost:8080 --data=./node1_data
+Run the first node: go run main.go --address=localhost:8080 --data=./node1_data
 
 Start Subsequent Nodes with Peers:
 Once the first node is running, you can start other nodes and specify the first node as a known peer.

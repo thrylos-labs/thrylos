@@ -167,7 +167,13 @@ func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 }
 
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
+// VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
+	// Check if there are any inputs in the transaction
+	if len(tx.Inputs) == 0 {
+		return fmt.Errorf("transaction has no inputs")
+	}
+
 	// Retrieve the sender's Ed25519 public key
 	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Adjust as necessary
 	if err != nil {
@@ -180,7 +186,7 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
 	}
 
-	// Verify the transaction signature with Ed25519 public key
+	// Verify the transaction signature with Ed25519 and Dilithium public keys
 	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
@@ -217,28 +223,36 @@ func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var tx thrylos.Transaction
 		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
+			log.Printf("Error decoding transaction: %v", err)
 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
 			return
 		}
 
+		log.Println("Received transaction:", tx)
+
 		// Verify and process the transaction
 		if err := node.VerifyAndProcessTransaction(&tx); err != nil {
+			log.Printf("Invalid transaction: %v", err)
 			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
 			return
 		}
 
 		// Add the transaction to the pending transactions
 		if err := node.AddPendingTransaction(&tx); err != nil {
+			log.Printf("Failed to add transaction to pending transactions: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to add transaction to pending transactions: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		// Convert the transaction and broadcast it to peers in the network
 		sharedTx := ThrylosToShared(&tx)
-		node.BroadcastTransaction(sharedTx) // Use the converted transaction for broadcasting
+		node.BroadcastTransaction(sharedTx)
+
+		log.Println("Transaction submitted and broadcasted successfully")
 
 		// Respond with success
-		sendResponse(w, []byte("Transaction submitted successfully"))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Transaction submitted successfully"))
 	}
 }
 

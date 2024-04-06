@@ -18,7 +18,11 @@ func main() {
 	nodeAddress := flag.String("address", "localhost:8080", "Address for the node to listen on")
 	knownPeers := flag.String("peers", "", "Comma-separated list of known peer addresses")
 	nodeDataDir := flag.String("data", "./blockchain_data", "Directory to store node's blockchain data")
+	testnet := flag.Bool("testnet", false, "Initialize with testnet settings and predefined accounts")
 	flag.Parse() // Parse the command-line flags
+
+	var testAccounts []core.Account
+	var err error
 
 	// Initialize the blockchain
 	blockchain, err := core.NewBlockchain(*nodeDataDir)
@@ -33,14 +37,23 @@ func main() {
 		fmt.Println("Blockchain integrity check passed.")
 	}
 
+	if *testnet {
+		testAccounts, err = core.InitializeTestnetAccounts(10) // Example: initialize 10 testnet accounts
+		if err != nil {
+			log.Fatalf("Failed to initialize testnet accounts: %v", err)
+		}
+		// Log the details of the test accounts
+		log.Println("Initialized test accounts:")
+		for i, account := range testAccounts {
+			log.Printf("Account %d: Address: %s, PublicKey: %x\n", i, account.Address, account.PublicKey)
+		}
+	}
+
 	// Initialize a new node with the specified address and known peers
 	peersList := []string{}
 	if *knownPeers != "" {
 		peersList = strings.Split(*knownPeers, ",")
 	}
-
-	// Initialize a new node with the specified address and known peers
-	// Initialize a new node with the specified address and known peers
 	node := core.NewNode(*nodeAddress, peersList, *nodeDataDir, nil, false)
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
