@@ -38,14 +38,16 @@ func main() {
 	}
 
 	if *testnet {
-		testAccounts, err = core.InitializeTestnetAccounts(10) // Example: initialize 10 testnet accounts
+		// Now InitializeTestnetAccounts is a method of blockchain, so call it directly from the blockchain instance
+		testAccounts, err = blockchain.InitializeTestnetAccounts(10) // Notice the assignment without the := to use the already declared variables
 		if err != nil {
 			log.Fatalf("Failed to initialize testnet accounts: %v", err)
 		}
+
 		// Log the details of the test accounts
 		log.Println("Initialized test accounts:")
-		for i, account := range testAccounts {
-			log.Printf("Account %d: Address: %s, PublicKey: %x\n", i, account.Address, account.PublicKey)
+		for _, account := range testAccounts {
+			log.Printf("Account: Address: %s, PublicKey: %x\n", account.Address, account.PublicKey)
 		}
 	}
 
@@ -108,6 +110,27 @@ func main() {
 
 // first run the blockchain: go run main.go
 // open a new terminal and run:
+
+// go run main.go --address=localhost:8080 --data=./node1_data --testnet
+
+// curl -X POST http://localhost:8080/submit-transaction \
+//   -H "Content-Type: application/json" \
+//   -d '{
+//     "inputs": [
+//       {
+//         "previousTx": "mock-previous-tx-hash",
+//         "index": 0,
+//         "signature": "mock-signature",
+//         "ownerAddress": "254f89bd52362ee777407df6a9e96f05346b56ef763678a07e004cd76eb7870b"
+//       }
+//     ],
+//     "outputs": [
+//       {
+//         "amount": 100,
+//         "address": "75911a37b6861ac3a81a9aaddf89d7e2c95dfbadac4f7f9e489f4f1f98a4fae2"
+//       }
+//     ]
+//   }'
 
 // Get the blockchain stats: curl http://localhost:8080/get-stats
 // Retrieve the genesis block: curl "http://localhost:8080/get-block?id=0"

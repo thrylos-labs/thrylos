@@ -20,7 +20,9 @@ type Account struct {
 }
 
 // InitializeTestnetAccounts creates and initializes predefined accounts for the testnet.
-func InitializeTestnetAccounts(predefinedAccountCount int) ([]Account, error) {
+// InitializeTestnetAccounts creates and initializes predefined accounts for the testnet.
+// It's now a method of the Blockchain type.
+func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]Account, error) {
 	var accounts []Account
 
 	for i := 0; i < predefinedAccountCount; i++ {
@@ -34,7 +36,7 @@ func InitializeTestnetAccounts(predefinedAccountCount int) ([]Account, error) {
 			return nil, err
 		}
 
-		address := PublicKeyToAddress(edPublicKey) // Convert the Ed25519 public key to a blockchain address
+		address := PublicKeyToAddress(edPublicKey)
 
 		account := Account{
 			Address:             address,
@@ -42,6 +44,14 @@ func InitializeTestnetAccounts(predefinedAccountCount int) ([]Account, error) {
 			PrivateKey:          edPrivateKey,
 			DilithiumPublicKey:  diPublicKey,
 			DilithiumPrivateKey: diPrivateKey,
+		}
+
+		// Use the blockchain's database interface to insert or update public keys
+		if err := bc.Database.InsertOrUpdateEd25519PublicKey(address, edPublicKey); err != nil {
+			log.Fatalf("Error inserting/updating Ed25519 public key: %v", err)
+		}
+		if err := bc.Database.InsertOrUpdateDilithiumPublicKey(address, diPublicKey); err != nil {
+			log.Fatalf("Error inserting/updating Dilithium public key: %v", err)
 		}
 
 		accounts = append(accounts, account)
