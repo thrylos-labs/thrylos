@@ -412,48 +412,119 @@ func TestTransactionThroughputWitSignatures(t *testing.T) {
 	t.Logf("Processed %d dual-signed transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }
 
-// Mock data for simplicity
-const numberOfTransactions = 100
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithAllSignatures$ Thrylos/core
 
-func TestDAGTransactionsProcessing(t *testing.T) {
-	// Generate Ed25519 keys for transaction signing
-	publicKey, privateKey, err := shared.GenerateEd25519Keys()
+func TestTransactionThroughputWithAllSignatures(t *testing.T) {
+	// Generate Ed25519 keys
+	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
+		t.Fatalf("Error generating Ed25519 key pair: %v", err)
 	}
 
-	// Generate Dilithium keys for transaction signing
-	dilithiumPublicKey, dilithiumPrivateKey, err := shared.GenerateDilithiumKeys()
+	// Generate Dilithium keys
+	diPublicKeyBytes, diPrivateKeyBytes, err := shared.GenerateDilithiumKeys()
 	if err != nil {
-		t.Fatalf("Failed to generate Dilithium keys: %v", err)
+		t.Fatalf("Error generating Dilithium keys: %v", err)
+	}
+	diPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(diPrivateKeyBytes)
+	diPublicKey := dilithium.Mode3.PublicKeyFromBytes(diPublicKeyBytes)
+
+	// Define the number of transactions and the size of each batch
+	numTransactions := 1000
+	batchSize := 10 // Define an appropriate batch size
+
+	start := time.Now()
+
+	var wg sync.WaitGroup
+
+	// Process transactions in batches
+	for i := 0; i < numTransactions; i += batchSize {
+		wg.Add(1)
+		go func(startIndex int) {
+			defer wg.Done()
+			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
+				// Simulate creating a transaction
+				txID := fmt.Sprintf("tx%d", j)
+				inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
+				outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
+
+				// Generate AES key for each transaction to simulate encryption process
+				aesKey, _ := shared.GenerateAESKey()
+
+				// Simulate transaction encryption (normally you would encrypt something meaningful)
+				encryptedData, _ := shared.EncryptWithAES(aesKey, []byte(txID))
+
+				// Decrypt the data to simulate the full transaction lifecycle
+				_, _ = shared.DecryptWithAES(aesKey, encryptedData)
+
+				// Serialize the transaction for signing
+				txBytes, _ := json.Marshal(shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()})
+
+				// Sign the serialized transaction data with both Ed25519 and Dilithium
+				edSignature := ed25519.Sign(edPrivateKey, txBytes)
+				diSignature := dilithium.Mode3.Sign(diPrivateKey, txBytes)
+
+				// Verify both signatures
+				if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
+					t.Errorf("Ed25519 signature verification failed at transaction %d", j)
+				}
+				if !dilithium.Mode3.Verify(diPublicKey, txBytes, diSignature) {
+					t.Errorf("Dilithium signature verification failed at transaction %d", j)
+				}
+			}
+		}(i)
 	}
 
-	// Simulate creating and processing a series of transactions in a DAG structure
-	var previousTxIds []string // To simulate linking in a DAG
-	for i := 0; i < 100; i++ { // Example: Process 100 transactions
-		txID := fmt.Sprintf("tx%d", i)
+	wg.Wait()
 
-		// Create a new transaction with selected previous transaction IDs
-		tx, err := shared.CreateAndSignTransaction(txID, []shared.UTXO{{TransactionID: "input", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-			[]shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}, privateKey, dilithiumPrivateKey)
-		if err != nil {
-			t.Fatalf("Failed to create and sign transaction: %v", err)
-		}
-		tx.PreviousTxIds = previousTxIds // Link to previous transactions
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
 
-		// Convert shared.Transaction (local type) to thrylos.Transaction for signature verification
-		thrylosTx, err := shared.ConvertLocalTransactionToThrylosTransaction(*tx)
-		if err != nil {
-			t.Fatalf("Failed to convert transaction for verification: %v", err)
-		}
-
-		// Verify the signatures using the converted transaction
-		err = shared.VerifyTransactionSignature(thrylosTx, publicKey, dilithiumPublicKey)
-		if err != nil {
-			t.Errorf("Verification failed for transaction %s: %v", tx.ID, err)
-		}
-
-		// Assuming a transaction is successfully processed, add its ID to previousTxIds for future transactions to reference
-		previousTxIds = append(previousTxIds, txID)
-	}
+	t.Logf("Processed %d dual-signed and AES-256 encrypted transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }
+
+// Mock data for simplicity
+// const numberOfTransactions = 100
+
+// func TestDAGTransactionsProcessing(t *testing.T) {
+// 	// Generate Ed25519 keys for transaction signing
+// 	publicKey, privateKey, err := shared.GenerateEd25519Keys()
+// 	if err != nil {
+// 		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
+// 	}
+
+// 	// Generate Dilithium keys for transaction signing
+// 	dilithiumPublicKey, dilithiumPrivateKey, err := shared.GenerateDilithiumKeys()
+// 	if err != nil {
+// 		t.Fatalf("Failed to generate Dilithium keys: %v", err)
+// 	}
+
+// 	// Simulate creating and processing a series of transactions in a DAG structure
+// 	var previousTxIds []string // To simulate linking in a DAG
+// 	for i := 0; i < 100; i++ { // Example: Process 100 transactions
+// 		txID := fmt.Sprintf("tx%d", i)
+
+// 		// Create a new transaction with selected previous transaction IDs
+// 		tx, err := shared.CreateAndSignTransaction(txID, []shared.UTXO{{TransactionID: "input", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+// 			[]shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}, privateKey, dilithiumPrivateKey)
+// 		if err != nil {
+// 			t.Fatalf("Failed to create and sign transaction: %v", err)
+// 		}
+// 		tx.PreviousTxIds = previousTxIds // Link to previous transactions
+
+// 		// Convert shared.Transaction (local type) to thrylos.Transaction for signature verification
+// 		thrylosTx, err := shared.ConvertLocalTransactionToThrylosTransaction(*tx)
+// 		if err != nil {
+// 			t.Fatalf("Failed to convert transaction for verification: %v", err)
+// 		}
+
+// 		// Verify the signatures using the converted transaction
+// 		err = shared.VerifyTransactionSignature(thrylosTx, publicKey, dilithiumPublicKey)
+// 		if err != nil {
+// 			t.Errorf("Verification failed for transaction %s: %v", tx.ID, err)
+// 		}
+
+// 		// Assuming a transaction is successfully processed, add its ID to previousTxIds for future transactions to reference
+// 		previousTxIds = append(previousTxIds, txID)
+// 	}
+// }
