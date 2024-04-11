@@ -235,17 +235,11 @@ func selectTips() ([]string, error) {
 
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519 and Dilithium keys.
 // Assuming Transaction is the correct type across your application:
-func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) (*Transaction, error) {
+func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte, aesKey []byte) (*Transaction, error) {
 	// Select previous transactions to reference
 	previousTxIDs, err := selectTips()
 	if err != nil {
 		return nil, fmt.Errorf("failed to select previous transactions: %v", err)
-	}
-
-	// Generate AES key for encrypting the transaction data
-	aesKey, err := GenerateAESKey()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate AES key: %v", err)
 	}
 
 	// Serialize and Encrypt the sensitive parts of the transaction (Inputs)
@@ -273,7 +267,7 @@ func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519P
 		ID:               id,
 		EncryptedInputs:  encryptedInputs,
 		EncryptedOutputs: encryptedOutputs,
-		PreviousTxIds:    previousTxIDs, // Incorporate the previous transaction IDs
+		PreviousTxIds:    previousTxIDs,
 		Timestamp:        time.Now().Unix(),
 	}
 

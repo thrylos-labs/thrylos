@@ -20,8 +20,14 @@ func TestNewBlockchain(t *testing.T) {
 	// Clean up the temporary directory after the test
 	defer os.RemoveAll(tempDir)
 
-	// Create a new blockchain using the temporary directory
-	bc, err := NewBlockchain(tempDir)
+	// Generate a dummy AES key for testing
+	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	// Create a new blockchain using the temporary directory and generated AES key
+	bc, err := NewBlockchain(tempDir, aesKey)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}

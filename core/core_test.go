@@ -18,12 +18,21 @@ func setupTestBlockchain(t *testing.T) *Blockchain {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
 
+	// Clean up the temporary directory after the test
+	defer os.RemoveAll(tempDir)
+
+	// Generate a dummy AES key for testing
+	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
 	// You should ensure the temporary directory is cleaned up after the test runs,
 	// possibly in the test function that calls setupTestBlockchain
 	// defer os.RemoveAll(tempDir)
 
 	// Initialize the blockchain using the temporary directory
-	bc, err := NewBlockchain(tempDir)
+	bc, err := NewBlockchain(tempDir, aesKey)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
 	}
@@ -44,10 +53,16 @@ func TestGenesisBlockCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
-	defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
+	// Clean up the temporary directory after the test
+	defer os.RemoveAll(tempDir)
 
+	// Generate a dummy AES key for testing
+	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
 	// Initialize the blockchain with the temporary directory
-	bc, err := NewBlockchain(tempDir)
+	bc, err := NewBlockchain(tempDir, aesKey)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

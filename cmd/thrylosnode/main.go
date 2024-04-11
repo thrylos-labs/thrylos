@@ -2,11 +2,13 @@ package main
 
 import (
 	"Thrylos/core"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/rs/cors"
@@ -21,11 +23,20 @@ func main() {
 	testnet := flag.Bool("testnet", false, "Initialize with testnet settings and predefined accounts")
 	flag.Parse() // Parse the command-line flags
 
-	var testAccounts []core.Account
-	var err error
+	// Fetch the Base64-encoded AES key from the environment variable
+	base64Key := os.Getenv("AES_KEY_ENV_VAR")
+	if base64Key == "" {
+		log.Fatal("AES key is not set in environment variables")
+	}
 
-	// Initialize the blockchain
-	blockchain, err := core.NewBlockchain(*nodeDataDir)
+	// Decode the Base64-encoded key to get the raw bytes
+	aesKey, err := base64.StdEncoding.DecodeString(base64Key)
+	if err != nil {
+		log.Fatalf("Error decoding AES key: %v", err)
+	}
+
+	// Initialize the blockchain and database with the AES key
+	blockchain, err := core.NewBlockchain(*nodeDataDir, aesKey) // Adjust according to your actual constructor method
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
@@ -38,13 +49,11 @@ func main() {
 	}
 
 	if *testnet {
-		// Now InitializeTestnetAccounts is a method of blockchain, so call it directly from the blockchain instance
-		testAccounts, err = blockchain.InitializeTestnetAccounts(10) // Notice the assignment without the := to use the already declared variables
+		// Initialize test accounts
+		testAccounts, err := blockchain.InitializeTestnetAccounts(10)
 		if err != nil {
 			log.Fatalf("Failed to initialize testnet accounts: %v", err)
 		}
-
-		// Log the details of the test accounts
 		log.Println("Initialized test accounts:")
 		for _, account := range testAccounts {
 			log.Printf("Account: Address: %s, PublicKey: %x\n", account.Address, account.PublicKey)

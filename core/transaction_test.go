@@ -114,11 +114,17 @@ func setupBlockchain() (*Blockchain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %v", err)
 	}
-	// Normally, defer os.RemoveAll(tempDir) would be used to clean up after,
-	// but in setup function, you'd return the directory path for cleanup in tests
 
-	// Initialize a new blockchain instance using the temporary directory
-	bc, err := NewBlockchain(tempDir)
+	// Generate a temporary AES key for testing purposes
+	aesKey := make([]byte, 32) // 32 bytes for AES-256
+	if _, err := rand.Read(aesKey); err != nil {
+		// Clean up the temporary directory in case of key generation failure
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to generate AES key: %v", err)
+	}
+
+	// Initialize a new blockchain instance using the temporary directory and AES key
+	bc, err := NewBlockchain(tempDir, aesKey)
 	if err != nil {
 		// Clean up the temporary directory in case of initialization failure
 		os.RemoveAll(tempDir)

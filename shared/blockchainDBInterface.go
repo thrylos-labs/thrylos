@@ -62,6 +62,10 @@ type BlockchainDBInterface interface {
 	InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error
 	RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error)
 
+	RetrievePrivateKey(address string) ([]byte, error)
+
+	InsertOrUpdatePrivateKey(address string, privateKey []byte) error
+
 	// Methods for handling Dilithium public keys
 	InsertOrUpdateDilithiumPublicKey(address string, dilithiumPublicKey []byte) error
 	RetrieveDilithiumPublicKey(address string) ([]byte, error)

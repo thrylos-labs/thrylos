@@ -6,6 +6,8 @@ package database
 import (
 	"Thrylos/shared"
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -13,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -24,9 +27,10 @@ import (
 // retrieving balances based on UTXOs, and adding transactions to the database.
 
 type BlockchainDB struct {
-	DB         *badger.DB
-	utxos      map[string]shared.UTXO
-	Blockchain shared.BlockchainDBInterface // Use the interface here
+	DB            *badger.DB
+	utxos         map[string]shared.UTXO
+	Blockchain    shared.BlockchainDBInterface // Use the interface here
+	encryptionKey []byte                       // The AES-256 key used for encryption and decryption
 }
 
 var (
@@ -45,6 +49,89 @@ func InitializeDatabase(dataDir string) (*badger.DB, error) {
 		db, err = badger.Open(opts)
 	})
 	return db, err
+}
+
+// NewBlockchainDB creates a new instance of BlockchainDB with the necessary initialization.
+// encryptionKey should be securely provided, e.g., from environment variables or a secure vault service.
+func NewBlockchainDB(db *badger.DB, encryptionKey []byte) *BlockchainDB {
+	return &BlockchainDB{
+		DB:            db,
+		utxos:         make(map[string]shared.UTXO),
+		encryptionKey: encryptionKey,
+	}
+}
+
+// encryptData encrypts data using AES-256 GCM.
+func (bdb *BlockchainDB) encryptData(data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(bdb.encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	return gcm.Seal(nonce, nonce, data, nil), nil
+}
+
+// decryptData decrypts data using AES-256 GCM.
+func (bdb *BlockchainDB) decryptData(encryptedData []byte) ([]byte, error) {
+	block, err := aes.NewCipher(bdb.encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(encryptedData) < gcm.NonceSize() {
+		return nil, fmt.Errorf("invalid encrypted data")
+	}
+
+	nonce, ciphertext := encryptedData[:gcm.NonceSize()], encryptedData[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+// InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
+func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []byte) error {
+	encryptedKey, err := bdb.encryptData(privateKey)
+	if err != nil {
+		return fmt.Errorf("error encrypting private key: %v", err)
+	}
+
+	return bdb.DB.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte("privateKey-"+address), encryptedKey)
+	})
+}
+
+// RetrievePrivateKey retrieves the private key for the given address, decrypting it before returning.
+func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
+	var encryptedKey []byte
+
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("privateKey-" + address))
+		if err != nil {
+			return fmt.Errorf("error retrieving encrypted private key: %v", err)
+		}
+
+		encryptedKey, err = item.ValueCopy(nil)
+		return err
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return bdb.decryptData(encryptedKey)
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {

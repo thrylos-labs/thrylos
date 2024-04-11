@@ -4,24 +4,20 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"log"
-	// Assuming "dilithium" is the package you use for Dilithium key generation and signing
+	// Adjust the import path to where your database package is
 )
 
-// Account represents a blockchain account for testing, with a public/private key pair and address.
+// Account represents a blockchain account for testing, with a public key and address.
+// The private key is not stored directly within the structure to ensure security.
 type Account struct {
-	Address             string
-	PublicKey           ed25519.PublicKey
-	PrivateKey          ed25519.PrivateKey
-	DilithiumPublicKey  []byte
-	DilithiumPrivateKey []byte
+	Address            string
+	PublicKey          ed25519.PublicKey
+	DilithiumPublicKey []byte
 }
 
 // InitializeTestnetAccounts creates and initializes predefined accounts for the testnet.
-// InitializeTestnetAccounts creates and initializes predefined accounts for the testnet.
-// It's now a method of the Blockchain type.
 func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]Account, error) {
 	var accounts []Account
 
@@ -31,22 +27,29 @@ func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]A
 			return nil, err
 		}
 
-		diPublicKey, diPrivateKey, err := GenerateDilithiumKeys()
+		diPublicKey, diPrivateKey, err := GenerateDilithiumKeys() // Ensure this function securely generates keys
 		if err != nil {
 			return nil, err
 		}
 
 		address := PublicKeyToAddress(edPublicKey)
 
-		account := Account{
-			Address:             address,
-			PublicKey:           edPublicKey,
-			PrivateKey:          edPrivateKey,
-			DilithiumPublicKey:  diPublicKey,
-			DilithiumPrivateKey: diPrivateKey,
+		// Encrypt and store the Ed25519 private key in the database
+		if err := bc.Database.InsertOrUpdatePrivateKey(address+"-ed25519", edPrivateKey); err != nil {
+			log.Fatalf("Error inserting/updating Ed25519 private key: %v", err)
 		}
 
-		// Use the blockchain's database interface to insert or update public keys
+		// Encrypt and store the Dilithium private key in the database
+		if err := bc.Database.InsertOrUpdatePrivateKey(address+"-dilithium", diPrivateKey); err != nil {
+			log.Fatalf("Error inserting/updating Dilithium private key: %v", err)
+		}
+
+		account := Account{
+			Address:            address,
+			PublicKey:          edPublicKey,
+			DilithiumPublicKey: diPublicKey,
+		}
+
 		if err := bc.Database.InsertOrUpdateEd25519PublicKey(address, edPublicKey); err != nil {
 			log.Fatalf("Error inserting/updating Ed25519 public key: %v", err)
 		}
@@ -67,10 +70,9 @@ func PublicKeyToAddress(publicKey ed25519.PublicKey) string {
 }
 
 // GenerateDilithiumKeys generates a new Dilithium public/private key pair.
-// Placeholder for actual Dilithium key generation logic.
+// Replace this with actual Dilithium key generation logic.
 func GenerateDilithiumKeys() (publicKey []byte, privateKey []byte, err error) {
 	// Simulate Dilithium key pair generation.
-	// Replace this with actual Dilithium key generation logic.
 	return []byte("simulated_dilithium_public_key"), []byte("simulated_dilithium_private_key"), nil
 }
 
@@ -79,8 +81,8 @@ func logAccountDetails(accounts []Account) {
 	for i, account := range accounts {
 		log.Printf("Account %d:\n", i)
 		log.Printf("Address: %s\n", account.Address)
-		log.Printf("Ed25519 Public Key: %s\n", base64.StdEncoding.EncodeToString(account.PublicKey))
-		log.Printf("Dilithium Public Key: %s\n", base64.StdEncoding.EncodeToString(account.DilithiumPublicKey))
+		log.Printf("Ed25519 Public Key: %s\n", account.PublicKey)
+		// Don't log private keys!
 	}
 }
 

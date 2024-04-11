@@ -1,57 +1,88 @@
 package main
 
 import (
-	"Thrylos/core" // Adjust the import path based on your project's structure
+	"Thrylos/core"
+	"Thrylos/shared"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 )
 
-// Assuming you have a way to instantiate or access your Blockchain object in the CLI utility
-func getTestAccounts(blockchain *core.Blockchain) ([]core.Account, error) {
-	// Directly using the InitializeTestnetAccounts for fetching test accounts
-	return blockchain.InitializeTestnetAccounts(10) // or however many you need
+// Simulate the Account structure for the CLI tool
+type Account struct {
+	Address          string
+	PrivateKeyBase64 string             `json:"PrivateKey"` // For JSON unmarshalling of the base64-encoded key
+	PrivateKey       ed25519.PrivateKey // For cryptographic operations, not unmarshalled from JSON
 }
 
-func signTransaction(privateKey ed25519.PrivateKey, transactionData []byte) (string, error) {
-	signature := ed25519.Sign(privateKey, transactionData)
-	return base64.StdEncoding.EncodeToString(signature), nil
+// Read account data securely, for example from a secured JSON file (or other secure sources)
+func getAccountByAddress(address string) (*Account, error) {
+	data, err := ioutil.ReadFile("secure_accounts.json")
+	if err != nil {
+		return nil, err
+	}
+
+	var accounts []Account
+	if err = json.Unmarshal(data, &accounts); err != nil {
+		return nil, err
+	}
+
+	for i, acc := range accounts {
+		if acc.Address == address {
+			privateKeyData, err := base64.StdEncoding.DecodeString(acc.PrivateKeyBase64)
+			if err != nil {
+				return nil, fmt.Errorf("error decoding private key for address %s: %v", address, err)
+			}
+			acc.PrivateKey = ed25519.PrivateKey(privateKeyData)
+
+			return &accounts[i], nil // Return the modified account with the decoded private key
+		}
+	}
+
+	return nil, fmt.Errorf("account not found for address: %s", address)
 }
 
 func main() {
 	address := flag.String("address", "", "Address of the account to use for signing")
 	transactionData := flag.String("transaction", "", "Transaction data to sign in JSON format")
+	dataDir := flag.String("data", "./blockchain_data", "Directory to store node's blockchain data")
 	flag.Parse()
 
 	if *address == "" || *transactionData == "" {
 		log.Fatalf("Both address and transaction data are required")
 	}
 
-	// Here you would instantiate or access your Blockchain object
-	// For this example, let's assume we can directly access it
-	blockchain := &core.Blockchain{}
-	testAccounts, err := getTestAccounts(blockchain)
+	aesKey, err := shared.GenerateAESKey() // Or retrieve from a secure source
 	if err != nil {
-		log.Fatalf("Error getting test accounts: %v", err)
+		log.Fatalf("Error generating/retrieving AES key: %v", err)
 	}
 
-	var account *core.Account
-	for _, acc := range testAccounts {
-		if acc.Address == *address {
-			account = &acc
-			break
-		}
-	}
-	if account == nil {
-		log.Fatalf("No account found for the given address: %s", *address)
+	// Initialize the blockchain using the data directory
+	blockchain, err := core.NewBlockchain(*dataDir, aesKey)
+	if err != nil {
+		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
 
-	signature, err := signTransaction(account.PrivateKey, []byte(*transactionData))
+	// Retrieve private key from blockchain database
+	privateKeyBytes, err := blockchain.Database.RetrievePrivateKey(*address)
+	if err != nil {
+		log.Fatalf("Error retrieving private key: %v", err)
+	}
+
+	privateKey := ed25519.PrivateKey(privateKeyBytes)
+	signature, err := signTransaction(privateKey, []byte(*transactionData))
 	if err != nil {
 		log.Fatalf("Error signing transaction: %v", err)
 	}
 
 	fmt.Printf("Signature: %s\n", signature)
+}
+
+func signTransaction(privateKey ed25519.PrivateKey, transactionData []byte) (string, error) {
+	signature := ed25519.Sign(privateKey, transactionData)
+	return base64.StdEncoding.EncodeToString(signature), nil
 }

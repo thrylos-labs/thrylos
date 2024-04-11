@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -38,7 +39,10 @@ type Node struct {
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
-	bc, err := NewBlockchain(dataDir) // Pass dataDir to the NewBlockchain function
+	// Retrieve the AES key securely from an environment variable
+	aesKey := []byte(os.Getenv("AES_KEY_ENV_VAR"))
+
+	bc, err := NewBlockchain(dataDir, aesKey) // Pass both dataDir and aesKey to the NewBlockchain function
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}
@@ -129,7 +133,7 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
-func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount int, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKey []byte) error {
+func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey []byte, amount int, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKey []byte) error {
 	// Attempt to gather inputs for the transaction along with change and potential error
 	inputs, change, err := node.CollectInputsForTransaction(amount, node.Address)
 	if err != nil {
@@ -144,7 +148,7 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, amount 
 	}
 
 	// Create and sign the transaction using Ed25519
-	transaction, err := shared.CreateAndSignTransaction("txID", inputs, outputs, ed25519PrivateKey, dilithiumPrivateKey)
+	transaction, err := shared.CreateAndSignTransaction("txID", inputs, outputs, ed25519PrivateKey, dilithiumPrivateKey, aesKey)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)
 	}
