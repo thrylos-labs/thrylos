@@ -239,27 +239,56 @@ func (bdb *BlockchainDB) GetAllUTXOs() (map[string]shared.UTXO, error) {
 	return utxos, nil
 }
 
-func (bdb *BlockchainDB) GetTransactionByID(txID string) (*shared.Transaction, error) {
-	var tx *shared.Transaction
+func (bdb *BlockchainDB) GetTransactionByID(txID string, recipientPrivateKey *rsa.PrivateKey) (*shared.Transaction, error) {
+	var encryptedTx shared.Transaction // Use your actual transaction structure here
 
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		key := []byte("transaction-" + txID)
 		item, err := txn.Get(key)
 		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return fmt.Errorf("no transaction found with ID %s", txID)
-			}
-			return fmt.Errorf("error retrieving transaction from BadgerDB: %w", err)
+			return fmt.Errorf("error retrieving transaction: %v", err)
 		}
 
 		return item.Value(func(val []byte) error {
-			tx = &shared.Transaction{}
-			return json.Unmarshal(val, tx)
+			return json.Unmarshal(val, &encryptedTx)
 		})
 	})
 
 	if err != nil {
 		return nil, err
+	}
+
+	// encryptedTx.EncryptedAESKey contains the RSA-encrypted AES key
+	encryptedKey := encryptedTx.EncryptedAESKey // This field should exist in your encrypted transaction structure
+
+	// Decrypt the encrypted inputs and outputs using the AES key
+	decryptedInputsData, err := shared.DecryptTransactionData(encryptedTx.EncryptedInputs, encryptedKey, recipientPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt inputs: %v", err)
+	}
+
+	decryptedOutputsData, err := shared.DecryptTransactionData(encryptedTx.EncryptedOutputs, encryptedKey, recipientPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt outputs: %v", err)
+	}
+
+	// Deserialize the decrypted data into your actual data structures
+	var inputs []shared.UTXO
+	var outputs []shared.UTXO
+	if err := json.Unmarshal(decryptedInputsData, &inputs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal inputs: %v", err)
+	}
+	if err := json.Unmarshal(decryptedOutputsData, &outputs); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal outputs: %v", err)
+	}
+
+	// Construct the decrypted transaction object
+	tx := &shared.Transaction{
+		ID:        encryptedTx.ID,
+		Timestamp: encryptedTx.Timestamp,
+		Inputs:    inputs,
+		Outputs:   outputs,
+		// You can continue populating this struct with the necessary fields...
 	}
 
 	return tx, nil

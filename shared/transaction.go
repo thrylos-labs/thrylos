@@ -79,23 +79,22 @@ func DecryptWithAES(key, ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// DecryptTransactionData function should be already defined and be similar to this
 func DecryptTransactionData(encryptedData, encryptedKey []byte, recipientPrivateKey *rsa.PrivateKey) ([]byte, error) {
+	// Decrypt the AES key first
 	aesKey, err := rsa.DecryptOAEP(
 		sha256.New(),
 		rand.Reader,
 		recipientPrivateKey,
 		encryptedKey,
-		nil, // Optional label
+		nil,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	decryptedData, err := DecryptWithAES(aesKey, encryptedData)
-	if err != nil {
-		return nil, err
-	}
-	return decryptedData, nil
+	// Now decrypt the actual transaction data with the AES key
+	return DecryptWithAES(aesKey, encryptedData)
 }
 
 // Initialize a cache with a mutex for concurrent access control
@@ -221,6 +220,7 @@ type Transaction struct {
 	Outputs            []UTXO
 	EncryptedInputs    []byte // Add these fields to store encrypted data
 	EncryptedOutputs   []byte // Add these fields to store encrypted data
+	EncryptedAESKey    []byte // Add this field to hold the RSA-encrypted AES key
 	Signature          string
 	DilithiumSignature string // New field for the Dilithium signature
 	// Add a slice to store IDs of previous transactions, forming the DAG structure
