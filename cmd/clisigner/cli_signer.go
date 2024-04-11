@@ -1,7 +1,7 @@
 package main
 
 import (
-	"Thrylos/core" // Adjust this import to match your project's structure
+	"Thrylos/core" // Adjust the import path based on your project's structure
 	"crypto/ed25519"
 	"encoding/base64"
 	"flag"
@@ -9,41 +9,46 @@ import (
 	"log"
 )
 
-// Simulate or actually retrieve the account from your test accounts
-func getAccountByAddress(address string, testAccounts []core.Account) (*core.Account, error) {
-	for _, account := range testAccounts {
-		if account.Address == address {
-			return &account, nil
-		}
-	}
-	return nil, fmt.Errorf("account not found for address: %s", address)
+// Assuming you have a way to instantiate or access your Blockchain object in the CLI utility
+func getTestAccounts(blockchain *core.Blockchain) ([]core.Account, error) {
+	// Directly using the InitializeTestnetAccounts for fetching test accounts
+	return blockchain.InitializeTestnetAccounts(10) // or however many you need
 }
 
-func signTransaction(account *core.Account, transactionData []byte) (string, error) {
-	// Signing the transaction using the private key of the account
-	signature := ed25519.Sign(account.PrivateKey, transactionData)
+func signTransaction(privateKey ed25519.PrivateKey, transactionData []byte) (string, error) {
+	signature := ed25519.Sign(privateKey, transactionData)
 	return base64.StdEncoding.EncodeToString(signature), nil
 }
 
 func main() {
-	// Assuming you have some way to populate this for the CLI usage
-	var testAccounts []core.Account
-
 	address := flag.String("address", "", "Address of the account to use for signing")
-	data := flag.String("data", "", "Transaction data to sign")
+	transactionData := flag.String("transaction", "", "Transaction data to sign in JSON format")
 	flag.Parse()
 
-	if *address == "" || *data == "" {
-		log.Fatalf("Usage: %s -address=<account_address> -data=<transaction_data>", flag.CommandLine.Name())
+	if *address == "" || *transactionData == "" {
+		log.Fatalf("Both address and transaction data are required")
 	}
 
-	account, err := getAccountByAddress(*address, testAccounts)
+	// Here you would instantiate or access your Blockchain object
+	// For this example, let's assume we can directly access it
+	blockchain := &core.Blockchain{}
+	testAccounts, err := getTestAccounts(blockchain)
 	if err != nil {
-		log.Fatalf("Error retrieving account: %v", err)
+		log.Fatalf("Error getting test accounts: %v", err)
 	}
 
-	transactionData := []byte(*data)
-	signature, err := signTransaction(account, transactionData)
+	var account *core.Account
+	for _, acc := range testAccounts {
+		if acc.Address == *address {
+			account = &acc
+			break
+		}
+	}
+	if account == nil {
+		log.Fatalf("No account found for the given address: %s", *address)
+	}
+
+	signature, err := signTransaction(account.PrivateKey, []byte(*transactionData))
 	if err != nil {
 		log.Fatalf("Error signing transaction: %v", err)
 	}

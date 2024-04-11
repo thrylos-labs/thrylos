@@ -2,6 +2,8 @@ package shared
 
 import (
 	thrylos "Thrylos"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"strconv"
 	"sync"
@@ -19,6 +22,81 @@ import (
 	"github.com/cloudflare/circl/sign/dilithium"
 	"google.golang.org/protobuf/proto"
 )
+
+func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
+	encryptedKey, err := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		recipientPublicKey,
+		aesKey,
+		nil, // Optional label for additional data, can be nil if not used
+	)
+	if err != nil {
+		return nil, err
+	}
+	return encryptedKey, nil
+}
+
+// GenerateAESKey generates a new AES-256 symmetric key.
+func GenerateAESKey() ([]byte, error) {
+	key := make([]byte, 32) // 256-bit key for AES-256
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// EncryptWithAES encrypts data using AES-256-CBC.
+func EncryptWithAES(key, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
+	return ciphertext, nil
+}
+
+// DecryptWithAES decrypts data using AES-256-CBC.
+func DecryptWithAES(key, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(ciphertext) < aes.BlockSize {
+		return nil, errors.New("ciphertext too short")
+	}
+	iv := ciphertext[:aes.BlockSize]
+	ciphertext = ciphertext[aes.BlockSize:]
+	stream := cipher.NewCFBDecrypter(block, iv)
+	plaintext := make([]byte, len(ciphertext))
+	stream.XORKeyStream(plaintext, ciphertext)
+	return plaintext, nil
+}
+
+func DecryptTransactionData(encryptedData, encryptedKey []byte, recipientPrivateKey *rsa.PrivateKey) ([]byte, error) {
+	aesKey, err := rsa.DecryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		recipientPrivateKey,
+		encryptedKey,
+		nil, // Optional label
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	decryptedData, err := DecryptWithAES(aesKey, encryptedData)
+	if err != nil {
+		return nil, err
+	}
+	return decryptedData, nil
+}
 
 // Initialize a cache with a mutex for concurrent access control
 var (
@@ -141,6 +219,8 @@ type Transaction struct {
 	Timestamp          int64
 	Inputs             []UTXO
 	Outputs            []UTXO
+	EncryptedInputs    []byte // Add these fields to store encrypted data
+	EncryptedOutputs   []byte // Add these fields to store encrypted data
 	Signature          string
 	DilithiumSignature string // New field for the Dilithium signature
 	// Add a slice to store IDs of previous transactions, forming the DAG structure
@@ -162,13 +242,39 @@ func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519P
 		return nil, fmt.Errorf("failed to select previous transactions: %v", err)
 	}
 
+	// Generate AES key for encrypting the transaction data
+	aesKey, err := GenerateAESKey()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate AES key: %v", err)
+	}
+
+	// Serialize and Encrypt the sensitive parts of the transaction (Inputs)
+	serializedInputs, err := serializeUTXOs(inputs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize inputs: %v", err)
+	}
+	encryptedInputs, err := EncryptWithAES(aesKey, serializedInputs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt inputs: %v", err)
+	}
+
+	// Serialize and Encrypt the sensitive parts of the transaction (Outputs)
+	serializedOutputs, err := serializeUTXOs(outputs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize outputs: %v", err)
+	}
+	encryptedOutputs, err := EncryptWithAES(aesKey, serializedOutputs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt outputs: %v", err)
+	}
+
 	// Initialize the transaction, now including PreviousTxIDs
 	tx := Transaction{
-		ID:            id,
-		Inputs:        inputs,
-		Outputs:       outputs,
-		PreviousTxIds: previousTxIDs, // Incorporate the previous transaction IDs
-		Timestamp:     time.Now().Unix(),
+		ID:               id,
+		EncryptedInputs:  encryptedInputs,
+		EncryptedOutputs: encryptedOutputs,
+		PreviousTxIds:    previousTxIDs, // Incorporate the previous transaction IDs
+		Timestamp:        time.Now().Unix(),
 	}
 
 	// Convert the Transaction type to *thrylos.Transaction for signing

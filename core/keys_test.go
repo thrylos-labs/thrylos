@@ -1,6 +1,8 @@
 package core
 
 import (
+	"Thrylos/shared"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
@@ -34,4 +36,39 @@ func TestEd25519KeyGenerationAndUsage(t *testing.T) {
 	}
 
 	t.Log("Ed25519 key generation, signing, and verification successful")
+}
+
+func TestAES256EncryptionAndDecryption(t *testing.T) {
+	// Generate an AES-256 key
+	aesKey, err := shared.GenerateAESKey()
+	if err != nil {
+		t.Fatalf("Failed to generate AES-256 key: %v", err)
+	}
+
+	// Check key size
+	if len(aesKey) != 32 { // 256 bits = 32 bytes
+		t.Errorf("AES key size is incorrect, expected 32 bytes, got %d", len(aesKey))
+	}
+
+	// Prepare data for encryption
+	plaintext := []byte("Test message for AES-256 encryption")
+
+	// Encrypt the data
+	encryptedData, err := shared.EncryptWithAES(aesKey, plaintext)
+	if err != nil {
+		t.Fatalf("Failed to encrypt data: %v", err)
+	}
+
+	// Decrypt the data
+	decryptedData, err := shared.DecryptWithAES(aesKey, encryptedData)
+	if err != nil {
+		t.Fatalf("Failed to decrypt data: %v", err)
+	}
+
+	// Verify that decrypted data matches the original plaintext
+	if !bytes.Equal(plaintext, decryptedData) {
+		t.Fatalf("Decrypted data does not match original plaintext")
+	}
+
+	t.Log("AES-256 encryption and decryption successful")
 }

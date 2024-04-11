@@ -65,6 +65,11 @@ func CreateUTXO(id, txID string, index int, owner string, amount int) UTXO {
 	}
 }
 
+// This utilizes the custom MarshalJSON method defined in the UTXO struct if present.
+func serializeUTXOs(utxos []UTXO) ([]byte, error) {
+	return json.Marshal(utxos)
+}
+
 // MarkUTXOAsSpent removes a UTXO from the set of available UTXOs, effectively marking it as spent.
 // This operation is critical in preventing double-spending within the blockchain system.
 func MarkUTXOAsSpent(utxoID string, allUTXOs map[string]UTXO) {
