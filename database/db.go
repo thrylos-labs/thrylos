@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 
@@ -102,36 +103,58 @@ func (bdb *BlockchainDB) decryptData(encryptedData []byte) ([]byte, error) {
 }
 
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
+// InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []byte) error {
 	encryptedKey, err := bdb.encryptData(privateKey)
 	if err != nil {
+		log.Printf("Error encrypting private key for address %s: %v", address, err)
 		return fmt.Errorf("error encrypting private key: %v", err)
 	}
 
-	return bdb.DB.Update(func(txn *badger.Txn) error {
+	err = bdb.DB.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte("privateKey-"+address), encryptedKey)
 	})
+	if err != nil {
+		log.Printf("Error storing encrypted private key for address %s: %v", address, err)
+		return fmt.Errorf("error storing encrypted private key: %v", err)
+	}
+
+	log.Printf("Successfully inserted/updated private key for address %s", address)
+	return nil
 }
 
 // RetrievePrivateKey retrieves the private key for the given address, decrypting it before returning.
 func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
-	var encryptedKey []byte
+	log.Printf("Retrieving private key for address: %s", address)
+	storageKey := "privateKey-" + address + "-ed25519"
+	log.Printf("Looking for storage key: %s", storageKey)
 
+	var encryptedKey []byte
 	err := bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("privateKey-" + address))
+		item, err := txn.Get([]byte(storageKey))
 		if err != nil {
-			return fmt.Errorf("error retrieving encrypted private key: %v", err)
+			log.Printf("Key not found in database: %s, error: %v", storageKey, err)
+			return err
 		}
 
 		encryptedKey, err = item.ValueCopy(nil)
-		return err
+		if err != nil {
+			log.Printf("Failed to get value for key: %s, error: %v", storageKey, err)
+			return err
+		}
+		return nil
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
 	}
 
-	return bdb.decryptData(encryptedKey)
+	privateKey, err := bdb.decryptData(encryptedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
+	}
+
+	return privateKey, nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {

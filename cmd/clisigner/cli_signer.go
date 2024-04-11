@@ -2,7 +2,6 @@ package main
 
 import (
 	"Thrylos/core"
-	"Thrylos/shared"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +9,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"os"
 )
 
 // Simulate the Account structure for the CLI tool
@@ -56,19 +56,26 @@ func main() {
 		log.Fatalf("Both address and transaction data are required")
 	}
 
-	aesKey, err := shared.GenerateAESKey() // Or retrieve from a secure source
-	if err != nil {
-		log.Fatalf("Error generating/retrieving AES key: %v", err)
+	// Fetch the Base64-encoded AES key from the environment variable
+	base64Key := os.Getenv("AES_KEY_ENV_VAR")
+	if base64Key == "" {
+		log.Fatal("AES key is not set in environment variables")
 	}
 
-	// Initialize the blockchain using the data directory
+	// Decode the Base64-encoded key to get the raw bytes
+	aesKey, err := base64.StdEncoding.DecodeString(base64Key)
+	if err != nil {
+		log.Fatalf("Error decoding AES key: %v", err)
+	}
+
+	// Initialize the blockchain using the data directory and decoded AES key
 	blockchain, err := core.NewBlockchain(*dataDir, aesKey)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
 
 	// Retrieve private key from blockchain database
-	privateKeyBytes, err := blockchain.Database.RetrievePrivateKey(*address)
+	privateKeyBytes, err := blockchain.Database.RetrievePrivateKey(*address + "-ed25519") // Adjust for actual key type
 	if err != nil {
 		log.Fatalf("Error retrieving private key: %v", err)
 	}

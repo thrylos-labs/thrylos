@@ -1,7 +1,8 @@
 To run the testnet in terminal type:
 
 Navigate to the directory containing your main.go using 'cd cmd/thrylosnode'
-Then run: go run main.go --address=localhost:8080 --data=./node_data --testnet
+Then run: export AES_KEY_ENV_VAR='b8Eq7a0EWz06Ova4VNRN8ad6TkzCZkxNXm926rtNM2I='
+then: go run main.go --address=localhost:8080 --data=./node_data --testnet
 
 To run the cli signer to sign the transactions in terminal type:
 
