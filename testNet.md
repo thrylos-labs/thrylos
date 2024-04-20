@@ -1,19 +1,21 @@
 To run the testnet in terminal type:
 
-Navigate to the directory containing your main.go using 'cd cmd/thrylosnode'
-Then run: export AES_KEY_ENV_VAR='b8Eq7a0EWz06Ova4VNRN8ad6TkzCZkxNXm926rtNM2I='
+Navigate to the directory containing your main.go using: 
+cd cmd/thrylosnode
 
-then: go run main.go --address=localhost:8080 --data=./node_data --testnet
+Then run: 
+export AES_KEY_ENV_VAR='b8Eq7a0EWz06Ova4VNRN8ad6TkzCZkxNXm926rtNM2I='
+
+then: 
+o run main.go --address=localhost:8080 --data=./node_data --testnet
 
 To run the cli signer to sign the transactions in terminal type:
 
-Navigate to the directory containing your main.go using 'cd cmd/clisigner'
+Navigate to the directory containing your main.go using: 
+'cd cmd/clisigner'
 
-Sign the transaction: go run cli_signer.go -address="9186c36a4d7ce8fd063c59adf4b0b42e1d5e0e3907c944cd99fd07cf4d00049c" -transaction='{"sender": "9186c36a4d7ce8fd063c59adf4b0b42e1d5e0e3907c944cd99fd07cf4d00049c", "recipient": "87cb32f5cacb03d4ed9cb41ad3fe3b316ae021d5afc2ee461786eb740a102b7e", "amount": 100}'
-
-
-
-
+Sign the transaction: 
+go run cli_signer.go -address="0179a46738de97baff06939b8e973e9bfeb3ac3bcf267a848f6a04bf4a4df6ee" -transaction='{"sender": "0179a46738de97baff06939b8e973e9bfeb3ac3bcf267a848f6a04bf4a4df6ee", "recipient": "2cf8c51632f2ce553f2dcbc02dc130d11969ff8292f426d1e694bf68c60c306a", "amount": 100}'
 
 
 Sugmit the transaction using Curl:
