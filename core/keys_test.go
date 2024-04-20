@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"testing"
 )
 
@@ -71,4 +72,31 @@ func TestAES256EncryptionAndDecryption(t *testing.T) {
 	}
 
 	t.Log("AES-256 encryption and decryption successful")
+}
+
+func TestBase64EncodingAndDecoding(t *testing.T) {
+	// Generate Ed25519 keys
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
+	}
+
+	// Encode the private key using base64
+	encodedKey := base64.StdEncoding.EncodeToString(privateKey)
+	if len(encodedKey) == 0 {
+		t.Errorf("Base64 encoding failed, encoded key is empty")
+	}
+
+	// Decode the base64 encoded key
+	decodedKey, err := base64.StdEncoding.DecodeString(encodedKey)
+	if err != nil {
+		t.Fatalf("Base64 decoding failed: %v", err)
+	}
+
+	// Compare the original and decoded keys
+	if !ed25519.PrivateKey(decodedKey).Equal(privateKey) {
+		t.Fatalf("Decoded key does not match the original private key")
+	}
+
+	t.Log("Base64 encoding and decoding of Ed25519 keys successful")
 }

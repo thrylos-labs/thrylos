@@ -1,7 +1,6 @@
 package main
 
 import (
-	"Thrylos/core"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"os"
 )
 
 // Simulate the Account structure for the CLI tool
@@ -19,69 +17,66 @@ type Account struct {
 	PrivateKey       ed25519.PrivateKey // For cryptographic operations, not unmarshalled from JSON
 }
 
+func extendPrivateKey(seed []byte) ed25519.PrivateKey {
+	if len(seed) != 32 {
+		log.Fatalf("Invalid seed length: %d", len(seed))
+	}
+	// In Go, the private key is the seed followed by the public key.
+	publicKey := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	return append(seed, publicKey...)
+}
+
 // Read account data securely, for example from a secured JSON file (or other secure sources)
 func getAccountByAddress(address string) (*Account, error) {
 	data, err := ioutil.ReadFile("secure_accounts.json")
 	if err != nil {
+		log.Printf("Error reading secure accounts file: %v", err)
 		return nil, err
 	}
 
 	var accounts []Account
 	if err = json.Unmarshal(data, &accounts); err != nil {
+		log.Printf("Error unmarshalling JSON data: %v", err)
 		return nil, err
 	}
 
-	for i, acc := range accounts {
+	for _, acc := range accounts {
+		log.Printf("Checking account: %s", acc.Address)
 		if acc.Address == address {
 			privateKeyData, err := base64.StdEncoding.DecodeString(acc.PrivateKeyBase64)
 			if err != nil {
-				return nil, fmt.Errorf("error decoding private key for address %s: %v", address, err)
+				log.Printf("Error decoding private key for address %s: %v", acc.Address, err)
+				return nil, fmt.Errorf("error decoding private key for address %s: %v", acc.Address, err)
 			}
-			acc.PrivateKey = ed25519.PrivateKey(privateKeyData)
-
-			return &accounts[i], nil // Return the modified account with the decoded private key
+			if len(privateKeyData) == 32 { // if it's just the seed
+				privateKeyData = extendPrivateKey(privateKeyData)
+			}
+			acc.PrivateKey = privateKeyData
+			log.Printf("Private key decoded and set for account: %s", acc.Address)
+			return &acc, nil
 		}
 	}
 
+	log.Printf("Account not found for address: %s", address)
 	return nil, fmt.Errorf("account not found for address: %s", address)
 }
 
 func main() {
 	address := flag.String("address", "", "Address of the account to use for signing")
 	transactionData := flag.String("transaction", "", "Transaction data to sign in JSON format")
-	dataDir := flag.String("data", "./blockchain_data", "Directory to store node's blockchain data")
 	flag.Parse()
 
 	if *address == "" || *transactionData == "" {
 		log.Fatalf("Both address and transaction data are required")
 	}
 
-	// Fetch the Base64-encoded AES key from the environment variable
-	base64Key := os.Getenv("AES_KEY_ENV_VAR")
-	if base64Key == "" {
-		log.Fatal("AES key is not set in environment variables")
-	}
-
-	// Decode the Base64-encoded key to get the raw bytes
-	aesKey, err := base64.StdEncoding.DecodeString(base64Key)
+	// Retrieve account details including the private key
+	account, err := getAccountByAddress(*address)
 	if err != nil {
-		log.Fatalf("Error decoding AES key: %v", err)
+		log.Fatalf("Failed to retrieve account details: %v", err)
 	}
 
-	// Initialize the blockchain using the data directory and decoded AES key
-	blockchain, err := core.NewBlockchain(*dataDir, aesKey)
-	if err != nil {
-		log.Fatalf("Failed to initialize the blockchain: %v", err)
-	}
-
-	// Retrieve private key from blockchain database
-	privateKeyBytes, err := blockchain.Database.RetrievePrivateKey(*address + "-ed25519") // Adjust for actual key type
-	if err != nil {
-		log.Fatalf("Error retrieving private key: %v", err)
-	}
-
-	privateKey := ed25519.PrivateKey(privateKeyBytes)
-	signature, err := signTransaction(privateKey, []byte(*transactionData))
+	signature, err := signTransaction(account.PrivateKey, []byte(*transactionData))
 	if err != nil {
 		log.Fatalf("Error signing transaction: %v", err)
 	}

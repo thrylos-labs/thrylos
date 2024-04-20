@@ -105,7 +105,15 @@ func (bdb *BlockchainDB) decryptData(encryptedData []byte) ([]byte, error) {
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []byte) error {
-	encryptedKey, err := bdb.encryptData(privateKey)
+
+	// Log the private key bytes before base64 encoding
+	log.Printf("Private key bytes before base64 encoding: %v", privateKey)
+
+	// Base64 encode the private key first
+	encodedKey := base64.StdEncoding.EncodeToString(privateKey)
+	log.Printf("Base64 encoded key: %s", encodedKey)
+
+	encryptedKey, err := bdb.encryptData([]byte(encodedKey))
 	if err != nil {
 		log.Printf("Error encrypting private key for address %s: %v", address, err)
 		return fmt.Errorf("error encrypting private key: %v", err)
@@ -149,12 +157,20 @@ func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
 	}
 
-	privateKey, err := bdb.decryptData(encryptedKey)
+	decryptedData, err := bdb.decryptData(encryptedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
 	}
+	log.Printf("Decrypted base64 string: %s", string(decryptedData))
 
-	return privateKey, nil
+	decodedData, err := base64.StdEncoding.DecodeString(string(decryptedData))
+	if err != nil {
+		log.Printf("Error decoding base64 data: %v", err)
+		return nil, err
+	}
+	log.Printf("Decoded private key data: %v", decodedData)
+
+	return decodedData, nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
