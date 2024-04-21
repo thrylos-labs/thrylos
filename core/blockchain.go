@@ -162,6 +162,33 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 	return publicKey, nil
 }
 
+// Ensures that as your blockchain starts up, it has predefined transactions that allocate funds to specific accounts, providing you with a controlled setup for further development and testing.
+func (bc *Blockchain) CreateInitialFunds() error {
+	tx1 := thrylos.Transaction{
+		// Assuming you have constructors or methods to set these fields correctly
+		Sender:    "genesis",
+		Recipient: "ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
+		Amount:    1000,
+		Signature: "genesis", // Simplified for genesis transactions
+	}
+
+	tx2 := thrylos.Transaction{
+		Sender:    "genesis",
+		Recipient: "523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
+		Amount:    1000,
+		Signature: "genesis",
+	}
+
+	transactions := []*thrylos.Transaction{&tx1, &tx2}
+	newBlock := bc.CreateBlock(transactions, "validator_address", "previous_hash", time.Now().Unix())
+	success, err := bc.AddBlock(transactions, "validator_address", "previous_hash", time.Now().Unix())
+	if !success || err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // This method encapsulates the logic for building a block to be added to the blockchain.
 func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator string, prevHash string, timestamp int64) *Block {

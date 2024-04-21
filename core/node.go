@@ -161,6 +161,8 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	pubKey, exists := node.PublicKeyMap[address]
 	if !exists {
+		// Log this case to understand why it's happening
+		log.Printf("Public key not found for address: %s", address)
 		return nil, fmt.Errorf("public key not found for address: %s", address)
 	}
 	return pubKey, nil
