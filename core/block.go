@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -244,15 +245,28 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 // ComputeHash generates the hash of the block by concatenating and hashing its key components,
 // including the transactions, previous hash, and metadata. This hash serves as both a unique identifier
 // for the block and a security mechanism, ensuring the block's contents have not been altered.
-
 func (b *Block) ComputeHash() string {
+	// Serialize transactions using protobuf
+	var txHashes []byte
+	for _, tx := range b.Transactions {
+		txBytes, err := proto.Marshal(tx)
+		if err != nil {
+			log.Printf("Failed to serialize transaction: %v", err)
+			continue // handle the error appropriately
+		}
+		txHash := sha256.Sum256(txBytes)
+		txHashes = append(txHashes, txHash[:]...)
+	}
+
 	data := bytes.Join([][]byte{
 		[]byte(fmt.Sprintf("%d", b.Index)),
 		[]byte(fmt.Sprintf("%d", b.Timestamp)),
-		[]byte(b.VerkleRoot), // Adjust this to use the Merkle Root instead
+		[]byte(b.VerkleRoot), // Adjust this to use the actual root if using a different tree structure
 		[]byte(b.PrevHash),
 		[]byte(b.Validator),
+		txHashes, // Include transaction hashes
 	}, []byte{})
+
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
 }

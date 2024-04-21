@@ -10,6 +10,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -164,52 +165,58 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 
 // Ensures that as your blockchain starts up, it has predefined transactions that allocate funds to specific accounts, providing you with a controlled setup for further development and testing.
 func (bc *Blockchain) CreateInitialFunds() error {
-	// Create outputs for initial funding transactions
-	output1 := &thrylos.UTXO{
-		OwnerAddress: "ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
-		Amount:       1000,
+	log.Println("Creating initial funds...")
+
+	addresses := []string{
+		"ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
+		"523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
+	}
+	var transactions []*thrylos.Transaction
+
+	for _, addr := range addresses {
+		output := &thrylos.UTXO{
+			OwnerAddress: addr,
+			Amount:       1000,
+		}
+		transaction := thrylos.Transaction{
+			Id:        "genesis_" + addr,
+			Timestamp: time.Now().Unix(),
+			Outputs:   []*thrylos.UTXO{output},
+			Signature: "genesis_signature",
+		}
+		transactions = append(transactions, &transaction)
 	}
 
-	output2 := &thrylos.UTXO{
-		OwnerAddress: "523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
-		Amount:       1000,
+	// Handling the genesis block creation, assuming this is the first block if no last block is found
+	prevBlock, err := bc.GetLastBlock()
+	if err != nil {
+		log.Println("No last block found, initializing genesis block...")
 	}
 
-	// Create transactions with no inputs and just outputs
-	tx1 := thrylos.Transaction{
-		Id:        "tx1_genesis",
-		Timestamp: time.Now().Unix(),
-		Outputs:   []*thrylos.UTXO{output1},
-		Signature: "genesis_signature", // Placeholder for a real signature
-	}
-
-	tx2 := thrylos.Transaction{
-		Id:        "tx2_genesis",
-		Timestamp: time.Now().Unix(),
-		Outputs:   []*thrylos.UTXO{output2},
-		Signature: "genesis_signature", // Placeholder for a real signature
-	}
-
-	// Prepare the slice of transactions for the block
-	transactions := []*thrylos.Transaction{&tx1, &tx2}
-
-	// Create and add block to the blockchain
-	prevBlock, _ := bc.GetLastBlock()
-	prevHash := ""
+	prevHash := "0000000000000000000000000000000000000000000000000000000000000000" // Default hash for genesis
 	if prevBlock != nil {
 		prevHash = prevBlock.Hash
 	}
-	_, err := bc.AddBlock(transactions, "genesis_validator", prevHash)
+
+	_, err = bc.AddBlock(transactions, "genesis_validator", prevHash)
 	if err != nil {
+		log.Printf("Failed to add genesis block: %v", err)
 		return err
 	}
 
+	log.Println("Genesis block added successfully.")
 	return nil
 }
 
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // This method encapsulates the logic for building a block to be added to the blockchain.
 func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator string, prevHash string, timestamp int64) *Block {
+	// Log the incoming transactions
+	log.Printf("Creating block with %d transactions", len(transactions))
+	for i, tx := range transactions {
+		log.Printf("Transaction %d: ID=%s, Outputs=%+v", i, tx.Id, tx.Outputs)
+	}
+
 	// Create a new block with Protobuf transactions
 	newBlock := &Block{
 		Index:        len(bc.Blocks),
@@ -218,6 +225,10 @@ func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator
 		Validator:    validator,
 		PrevHash:     prevHash,
 	}
+
+	// Log the newly created block details before returning
+	log.Printf("New block created: Index=%d, Hash=%s, Transactions=%d, Timestamp=%d, Validator=%s, PrevHash=%s",
+		newBlock.Index, newBlock.Hash, len(newBlock.Transactions), newBlock.Timestamp, newBlock.Validator, newBlock.PrevHash)
 
 	// Assuming ComputeHash() is adapted to work with the new Transactions type
 	newBlock.Hash = newBlock.ComputeHash()
