@@ -164,25 +164,43 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 
 // Ensures that as your blockchain starts up, it has predefined transactions that allocate funds to specific accounts, providing you with a controlled setup for further development and testing.
 func (bc *Blockchain) CreateInitialFunds() error {
+	// Create outputs for initial funding transactions
+	output1 := &thrylos.UTXO{
+		OwnerAddress: "ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
+		Amount:       1000,
+	}
+
+	output2 := &thrylos.UTXO{
+		OwnerAddress: "523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
+		Amount:       1000,
+	}
+
+	// Create transactions with no inputs and just outputs
 	tx1 := thrylos.Transaction{
-		// Assuming you have constructors or methods to set these fields correctly
-		Sender:    "genesis",
-		Recipient: "ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
-		Amount:    1000,
-		Signature: "genesis", // Simplified for genesis transactions
+		Id:        "tx1_genesis",
+		Timestamp: time.Now().Unix(),
+		Outputs:   []*thrylos.UTXO{output1},
+		Signature: "genesis_signature", // Placeholder for a real signature
 	}
 
 	tx2 := thrylos.Transaction{
-		Sender:    "genesis",
-		Recipient: "523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
-		Amount:    1000,
-		Signature: "genesis",
+		Id:        "tx2_genesis",
+		Timestamp: time.Now().Unix(),
+		Outputs:   []*thrylos.UTXO{output2},
+		Signature: "genesis_signature", // Placeholder for a real signature
 	}
 
+	// Prepare the slice of transactions for the block
 	transactions := []*thrylos.Transaction{&tx1, &tx2}
-	newBlock := bc.CreateBlock(transactions, "validator_address", "previous_hash", time.Now().Unix())
-	success, err := bc.AddBlock(transactions, "validator_address", "previous_hash", time.Now().Unix())
-	if !success || err != nil {
+
+	// Create and add block to the blockchain
+	prevBlock, _ := bc.GetLastBlock()
+	prevHash := ""
+	if prevBlock != nil {
+		prevHash = prevBlock.Hash
+	}
+	_, err := bc.AddBlock(transactions, "genesis_validator", prevHash)
+	if err != nil {
 		return err
 	}
 

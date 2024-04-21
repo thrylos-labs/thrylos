@@ -41,6 +41,8 @@ func main() {
 		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
 
+	blockchain.CreateInitialFunds()
+
 	// Perform an integrity check on the blockchain
 	if !blockchain.CheckChainIntegrity() {
 		log.Fatal("Blockchain integrity check failed.")
