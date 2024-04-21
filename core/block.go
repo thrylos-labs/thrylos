@@ -242,6 +242,70 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 	return block
 }
 
+func convertBlockToJSON(block *Block) ([]byte, error) {
+	// Create a struct that matches the JSON structure you want
+	type JSONTransaction struct {
+		ID        string        `json:"id"`
+		Timestamp int64         `json:"timestamp"`
+		Inputs    []shared.UTXO `json:"inputs"`
+		Outputs   []shared.UTXO `json:"outputs"`
+		Signature string        `json:"signature"`
+	}
+
+	type JSONUTXO struct {
+		TransactionID string `json:"transactionId"`
+		Index         int32  `json:"index"`
+		OwnerAddress  string `json:"ownerAddress"`
+		Amount        int64  `json:"amount"`
+	}
+
+	type JSONBlock struct {
+		Index        int               `json:"index"`
+		Timestamp    int64             `json:"timestamp"`
+		Transactions []JSONTransaction `json:"transactions"`
+		Hash         string            `json:"hash"`
+		Validator    string            `json:"validator"`
+	}
+
+	jsonBlock := JSONBlock{
+		Index:     block.Index,
+		Timestamp: block.Timestamp,
+		Hash:      block.Hash,
+		Validator: block.Validator,
+	}
+
+	// Convert Protobuf transactions to JSON transactions
+	for _, trx := range block.Transactions {
+		jsonTrx := JSONTransaction{
+			ID:        trx.Id,
+			Timestamp: trx.Timestamp,
+			Signature: trx.Signature,
+		}
+
+		for _, input := range trx.Inputs {
+			jsonTrx.Inputs = append(jsonTrx.Inputs, JSONUTXO{
+				TransactionID: input.TransactionId,
+				Index:         input.Index,
+				OwnerAddress:  input.OwnerAddress,
+				Amount:        input.Amount,
+			})
+		}
+
+		for _, output := range trx.Outputs {
+			jsonTrx.Outputs = append(jsonTrx.Outputs, JSONUTXO{
+				TransactionID: output.TransactionId,
+				Index:         output.Index,
+				OwnerAddress:  output.OwnerAddress,
+				Amount:        output.Amount,
+			})
+		}
+
+		jsonBlock.Transactions = append(jsonBlock.Transactions, jsonTrx)
+	}
+
+	return json.Marshal(jsonBlock)
+}
+
 // ComputeHash generates the hash of the block by concatenating and hashing its key components,
 // including the transactions, previous hash, and metadata. This hash serves as both a unique identifier
 // for the block and a security mechanism, ensuring the block's contents have not been altered.

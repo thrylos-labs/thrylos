@@ -2,6 +2,8 @@ package main
 
 import (
 	"Thrylos/core"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -35,13 +37,23 @@ func main() {
 		log.Fatalf("Error decoding AES key: %v", err)
 	}
 
+	// Example of key generation
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		log.Fatalf("Failed to generate genesis key: %v", err)
+	}
+
 	// Initialize the blockchain and database with the AES key
 	blockchain, err := core.NewBlockchain(*nodeDataDir, aesKey) // Adjust according to your actual constructor method
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
 
-	blockchain.CreateInitialFunds()
+	// Create initial funds using the genesis private key
+	err = blockchain.CreateInitialFunds(privateKey)
+	if err != nil {
+		log.Fatalf("Failed to create initial funds: %v", err)
+	}
 
 	// Perform an integrity check on the blockchain
 	if !blockchain.CheckChainIntegrity() {
@@ -56,6 +68,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to initialize testnet accounts: %v", err)
 		}
+
 		log.Println("Initialized test accounts:")
 		for _, account := range testAccounts {
 			log.Printf("Account: Address: %s, PublicKey: %x\n", account.Address, account.PublicKey)

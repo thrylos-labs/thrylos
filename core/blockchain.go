@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
 
@@ -164,9 +167,10 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 }
 
 // Ensures that as your blockchain starts up, it has predefined transactions that allocate funds to specific accounts, providing you with a controlled setup for further development and testing.
-func (bc *Blockchain) CreateInitialFunds() error {
+func (bc *Blockchain) CreateInitialFunds(signingKey ed25519.PrivateKey) error {
 	log.Println("Creating initial funds...")
 
+	// Example addresses - these should be dynamically fetched or passed as parameters
 	addresses := []string{
 		"ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
 		"523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
@@ -176,23 +180,29 @@ func (bc *Blockchain) CreateInitialFunds() error {
 	for _, addr := range addresses {
 		output := &thrylos.UTXO{
 			OwnerAddress: addr,
-			Amount:       1000,
+			Amount:       1000, // Specify the initial amount
 		}
 		transaction := thrylos.Transaction{
 			Id:        "genesis_" + addr,
 			Timestamp: time.Now().Unix(),
 			Outputs:   []*thrylos.UTXO{output},
-			Signature: "genesis_signature",
 		}
+
+		// Serialize transaction to sign it
+		txBytes, err := proto.Marshal(&transaction)
+		if err != nil {
+			log.Fatalf("Failed to serialize transaction: %v", err)
+			return err
+		}
+
+		// Sign the transaction
+		signature := ed25519.Sign(signingKey, txBytes)
+		transaction.Signature = base64.StdEncoding.EncodeToString(signature)
+
 		transactions = append(transactions, &transaction)
 	}
 
-	// Handling the genesis block creation, assuming this is the first block if no last block is found
 	prevBlock, err := bc.GetLastBlock()
-	if err != nil {
-		log.Println("No last block found, initializing genesis block...")
-	}
-
 	prevHash := "0000000000000000000000000000000000000000000000000000000000000000" // Default hash for genesis
 	if prevBlock != nil {
 		prevHash = prevBlock.Hash
@@ -409,10 +419,12 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	return newBlock, nil
 }
 
+// Get the block and see how many transactions are in each block
+
 func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
 	// iterate over blocks and find by ID
 	for _, block := range bc.Blocks {
-		fmt.Printf("Checking block: Index=%d, Hash=%s\n", block.Index, block.Hash)
+		fmt.Printf("Checking block: Index=%d, Hash=%s, Transactions=%d\n", block.Index, block.Hash, len(block.Transactions))
 		if block.Hash == id || strconv.Itoa(block.Index) == id {
 			return block, nil
 		}

@@ -293,13 +293,14 @@ func (node *Node) GetBlockHandler() http.HandlerFunc {
 			return
 		}
 
-		blockJSON, err := json.Marshal(block)
+		blockJSON, err := convertBlockToJSON(block)
 		if err != nil {
 			http.Error(w, "Failed to serialize block", http.StatusInternalServerError)
 			return
 		}
 
-		sendResponse(w, blockJSON)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(blockJSON)
 	}
 }
 

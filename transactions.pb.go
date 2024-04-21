@@ -25,14 +25,12 @@ type Transaction struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Id        string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Timestamp int64  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	// Existing fields remain, assuming these are now the raw (unencrypted) formats
-	Inputs  []*UTXO `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
-	Outputs []*UTXO `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
-	// Add encrypted data fields
-	EncryptedInputs    []byte   `protobuf:"bytes,8,opt,name=encrypted_inputs,json=encryptedInputs,proto3" json:"encrypted_inputs,omitempty"`    // New field for encrypted inputs
-	EncryptedOutputs   []byte   `protobuf:"bytes,9,opt,name=encrypted_outputs,json=encryptedOutputs,proto3" json:"encrypted_outputs,omitempty"` // New field for encrypted outputs
+	Id                 string   `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Timestamp          int64    `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	Inputs             []*UTXO  `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	Outputs            []*UTXO  `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	EncryptedInputs    []byte   `protobuf:"bytes,8,opt,name=encrypted_inputs,json=encryptedInputs,proto3" json:"encrypted_inputs,omitempty"`
+	EncryptedOutputs   []byte   `protobuf:"bytes,9,opt,name=encrypted_outputs,json=encryptedOutputs,proto3" json:"encrypted_outputs,omitempty"`
 	Signature          string   `protobuf:"bytes,5,opt,name=signature,proto3" json:"signature,omitempty"`
 	DilithiumSignature string   `protobuf:"bytes,6,opt,name=dilithium_signature,json=dilithiumSignature,proto3" json:"dilithium_signature,omitempty"`
 	PreviousTxIds      []string `protobuf:"bytes,7,rep,name=previous_tx_ids,json=previousTxIds,proto3" json:"previous_tx_ids,omitempty"`
