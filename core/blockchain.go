@@ -424,11 +424,12 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
 	// iterate over blocks and find by ID
 	for _, block := range bc.Blocks {
-		fmt.Printf("Checking block: Index=%d, Hash=%s, Transactions=%d\n", block.Index, block.Hash, len(block.Transactions))
 		if block.Hash == id || strconv.Itoa(block.Index) == id {
+			log.Printf("Block found: Index=%d, Transactions=%v", block.Index, block.Transactions)
 			return block, nil
 		}
 	}
+	log.Println("Block not found with ID:", id)
 	return nil, errors.New("block not found")
 }
 

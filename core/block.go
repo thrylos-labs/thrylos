@@ -243,20 +243,12 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 }
 
 func convertBlockToJSON(block *Block) ([]byte, error) {
-	// Create a struct that matches the JSON structure you want
 	type JSONTransaction struct {
 		ID        string        `json:"id"`
 		Timestamp int64         `json:"timestamp"`
 		Inputs    []shared.UTXO `json:"inputs"`
 		Outputs   []shared.UTXO `json:"outputs"`
 		Signature string        `json:"signature"`
-	}
-
-	type JSONUTXO struct {
-		TransactionID string `json:"transactionId"`
-		Index         int32  `json:"index"`
-		OwnerAddress  string `json:"ownerAddress"`
-		Amount        int64  `json:"amount"`
 	}
 
 	type JSONBlock struct {
@@ -274,7 +266,7 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 		Validator: block.Validator,
 	}
 
-	// Convert Protobuf transactions to JSON transactions
+	// Iterate through each transaction in the block
 	for _, trx := range block.Transactions {
 		jsonTrx := JSONTransaction{
 			ID:        trx.Id,
@@ -282,22 +274,14 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 			Signature: trx.Signature,
 		}
 
+		// Convert each input UTXO
 		for _, input := range trx.Inputs {
-			jsonTrx.Inputs = append(jsonTrx.Inputs, JSONUTXO{
-				TransactionID: input.TransactionId,
-				Index:         input.Index,
-				OwnerAddress:  input.OwnerAddress,
-				Amount:        input.Amount,
-			})
+			jsonTrx.Inputs = append(jsonTrx.Inputs, ConvertProtoUTXOToShared(input))
 		}
 
+		// Convert each output UTXO
 		for _, output := range trx.Outputs {
-			jsonTrx.Outputs = append(jsonTrx.Outputs, JSONUTXO{
-				TransactionID: output.TransactionId,
-				Index:         output.Index,
-				OwnerAddress:  output.OwnerAddress,
-				Amount:        output.Amount,
-			})
+			jsonTrx.Outputs = append(jsonTrx.Outputs, ConvertProtoUTXOToShared(output))
 		}
 
 		jsonBlock.Transactions = append(jsonBlock.Transactions, jsonTrx)
