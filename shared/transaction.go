@@ -556,7 +556,7 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 	return true
 }
 
-// Example usage within a hypothetical transaction processing function
+// transaction processing function
 func processTransactions(transactions []*Transaction) {
 	// Generate or retrieve Ed25519 private key
 	_, edPrivateKey, err := ed25519.GenerateKey(rand.Reader) // Skip storing the public key if not used

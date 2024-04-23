@@ -243,6 +243,8 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 }
 
 func convertBlockToJSON(block *Block) ([]byte, error) {
+	log.Printf("Converting block Index=%d with %d transactions to JSON", block.Index, len(block.Transactions)) // Log the block details
+
 	type JSONTransaction struct {
 		ID        string        `json:"id"`
 		Timestamp int64         `json:"timestamp"`
@@ -266,7 +268,6 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 		Validator: block.Validator,
 	}
 
-	// Iterate through each transaction in the block
 	for _, trx := range block.Transactions {
 		jsonTrx := JSONTransaction{
 			ID:        trx.Id,
@@ -274,17 +275,16 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 			Signature: trx.Signature,
 		}
 
-		// Convert each input UTXO
 		for _, input := range trx.Inputs {
 			jsonTrx.Inputs = append(jsonTrx.Inputs, ConvertProtoUTXOToShared(input))
 		}
 
-		// Convert each output UTXO
 		for _, output := range trx.Outputs {
 			jsonTrx.Outputs = append(jsonTrx.Outputs, ConvertProtoUTXOToShared(output))
 		}
 
 		jsonBlock.Transactions = append(jsonBlock.Transactions, jsonTrx)
+		log.Printf("Added transaction %s with %d outputs", trx.Id, len(trx.Outputs)) // Log each transaction detail
 	}
 
 	return json.Marshal(jsonBlock)

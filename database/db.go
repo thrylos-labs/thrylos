@@ -173,6 +173,39 @@ func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
 	return decodedData, nil
 }
 
+// fetching of UTXOs from BadgerDB
+func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
+	var utxos []shared.UTXO
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		prefix := []byte(fmt.Sprintf("utxo-%s-", address)) // Assuming keys are prefixed with utxo-{address}-
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var utxo shared.UTXO
+				if err := json.Unmarshal(val, &utxo); err != nil {
+					return err
+				}
+				utxos = append(utxos, utxo)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving UTXOs for address %s: %v", address, err)
+	}
+	return utxos, nil
+}
+
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
 	// Implement the logic specific to Ed25519 public keys.
 	// This might simply involve calling InsertOrUpdatePublicKey with the correct arguments.

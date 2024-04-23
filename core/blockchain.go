@@ -145,6 +145,39 @@ func (bc *Blockchain) GetUTXOsForAddress(address string) []shared.UTXO {
 	return sharedUTXOs
 }
 
+func (bc *Blockchain) GetBalance(address string) (int, error) {
+	var balance int
+
+	// Track spent outputs to avoid counting coins that have been spent.
+	spentOutputs := make(map[string]bool)
+
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			// Check inputs (subtract from balance if this address spent coins)
+			for _, input := range tx.Inputs {
+				if input.OwnerAddress == address {
+					// Mark the input as spent
+					spentKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
+					spentOutputs[spentKey] = true
+					balance -= int(input.Amount)
+				}
+			}
+
+			// Check outputs (add to balance if this address received coins)
+			for i, output := range tx.Outputs {
+				if output.OwnerAddress == address {
+					outputKey := fmt.Sprintf("%s:%d", tx.Id, i)
+					if !spentOutputs[outputKey] {
+						balance += int(output.Amount)
+					}
+				}
+			}
+		}
+	}
+
+	return balance, nil
+}
+
 // In blockchain.go, add this method to the Blockchain struct
 func (bc *Blockchain) RetrieveDilithiumPublicKey(ownerAddress string) ([]byte, error) {
 	// Utilize the Database field to call the method for retrieving the Dilithium public key

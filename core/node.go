@@ -295,10 +295,12 @@ func (node *Node) GetBlockHandler() http.HandlerFunc {
 
 		blockJSON, err := convertBlockToJSON(block)
 		if err != nil {
+			log.Printf("Error serializing block: %v", err) // Log the error
 			http.Error(w, "Failed to serialize block", http.StatusInternalServerError)
 			return
 		}
 
+		log.Printf("Sending block data: %s", string(blockJSON)) // Log the output data
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(blockJSON)
 	}
@@ -326,6 +328,30 @@ func (node *Node) GetTransactionHandler() http.HandlerFunc {
 		}
 
 		sendResponse(w, txJSON)
+	}
+}
+
+func (node *Node) GetBalanceHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Extract the address from query parameters
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		// Fetch the balance
+		balance, err := node.Blockchain.GetBalance(address)
+		if err != nil {
+			log.Printf("Failed to get balance for address %s: %v", address, err)
+			http.Error(w, "Failed to retrieve balance", http.StatusInternalServerError)
+			return
+		}
+
+		// Respond with the balance
+		response := fmt.Sprintf("Balance for address %s: %d", address, balance)
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(response))
 	}
 }
 
@@ -539,6 +565,8 @@ func (node *Node) Start() {
 		}
 		w.Write(data)
 	})
+
+	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
 
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		var block Block

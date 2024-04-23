@@ -100,6 +100,8 @@ func main() {
 			node.GetBlockHandler()(w, r)
 		case "/get-transaction":
 			node.GetTransactionHandler()(w, r)
+		case "/get-balance":
+			node.GetBalanceHandler()(w, r)
 		case "/get-stats":
 			stats := node.GetBlockchainStats()
 			statsJSON, err := json.Marshal(stats)
@@ -111,6 +113,7 @@ func main() {
 			w.Write(statsJSON)
 		case "/pending-transactions":
 			node.PendingTransactionsHandler()(w, r)
+
 		case "/peers":
 			log.Println("Handling /peers request")
 			data, err := json.Marshal(node.Peers)
@@ -159,3 +162,4 @@ func main() {
 // Get the blockchain stats: curl http://localhost:8080/get-stats
 // Retrieve the genesis block: curl "http://localhost:8080/get-block?id=0"
 // Retrieve pending transactions: curl http://localhost:8080/pending-transactions
+// Retrive a balance from a specific address: curl "http://localhost:8080/get-balance?address=your_address_here"

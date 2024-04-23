@@ -15,11 +15,13 @@ type Account struct {
 	Address            string
 	PublicKey          ed25519.PublicKey
 	DilithiumPublicKey []byte
+	Balance            int // Added to keep track of the account balance
 }
 
 // InitializeTestnetAccounts creates and initializes predefined accounts for the testnet.
 func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]Account, error) {
 	var accounts []Account
+	startingBalance := 1000 // Set a starting balance for each test account
 
 	for i := 0; i < predefinedAccountCount; i++ {
 		edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -48,6 +50,7 @@ func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]A
 			Address:            address,
 			PublicKey:          edPublicKey,
 			DilithiumPublicKey: diPublicKey,
+			Balance:            startingBalance, // Set the starting balance
 		}
 
 		if err := bc.Database.InsertOrUpdateEd25519PublicKey(address, edPublicKey); err != nil {
@@ -82,6 +85,7 @@ func logAccountDetails(accounts []Account) {
 		log.Printf("Account %d:\n", i)
 		log.Printf("Address: %s\n", account.Address)
 		log.Printf("Ed25519 Public Key: %s\n", account.PublicKey)
+		log.Printf("Balance: %d\n", account.Balance) // Now logging the balance as well
 		// Don't log private keys!
 	}
 }
