@@ -186,16 +186,21 @@ func (bc *Blockchain) RetrieveDilithiumPublicKey(ownerAddress string) ([]byte, e
 
 // In blockchain.go, within your Blockchain struct definition
 func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey, error) {
-	publicKeyBytes, err := bc.Database.RetrievePublicKeyFromAddress(ownerAddress)
+	log.Printf("Attempting to retrieve public key from database for address: %s", ownerAddress)
+	publicKeyBytes, err := bc.Database.RetrieveEd25519PublicKey(ownerAddress)
 	if err != nil {
-		return nil, err // Handle the error appropriately
+		log.Printf("Database error retrieving public key: %v", err)
+		return nil, err
 	}
 
-	// Assuming the returned publicKeyBytes is of type ed25519.PublicKey, or you need to convert it
-	// Depending on how your public keys are stored, you might need to unmarshal or otherwise process
-	// publicKeyBytes to convert them into the ed25519.PublicKey type expected by your application.
-	// Here's a simplified version assuming direct conversion is possible:
+	if len(publicKeyBytes) != ed25519.PublicKeySize {
+		errorMsg := fmt.Sprintf("retrieved public key size is incorrect for address: %s", ownerAddress)
+		log.Printf(errorMsg)
+		return nil, fmt.Errorf(errorMsg)
+	}
+
 	publicKey := ed25519.PublicKey(publicKeyBytes)
+	log.Printf("Successfully retrieved and validated public key for address: %s", ownerAddress)
 	return publicKey, nil
 }
 

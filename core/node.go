@@ -159,15 +159,15 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey 
 }
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
-	// Correctly using log.Printf for formatted output
 	log.Printf("Attempting to retrieve public key for address: %s", address)
 	pubKey, exists := node.PublicKeyMap[address]
 	if !exists {
-		// Log this case to understand why it's happening
-		log.Printf("Public key not found for address: %s", address)
-		return nil, fmt.Errorf("public key not found for address: %s", address)
+		// Enhanced error logging
+		errorMsg := fmt.Sprintf("public key not found for address: %s", address)
+		log.Printf(errorMsg)
+		return nil, fmt.Errorf(errorMsg)
 	}
-	// Display the public key in hexadecimal format
+	// Display the public key in hexadecimal format for detailed verification
 	log.Printf("Public key retrieved: %x for address: %s", pubKey, address)
 	return pubKey, nil
 }
@@ -177,22 +177,26 @@ func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 }
 
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
-// VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	// Check if there are any inputs in the transaction
 	if len(tx.Inputs) == 0 {
 		return fmt.Errorf("transaction has no inputs")
 	}
 
+	senderAddress := tx.Inputs[0].OwnerAddress
+	log.Printf("Verifying transaction for sender address: %s", senderAddress)
+
 	// Retrieve the sender's Ed25519 public key
-	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(tx.Inputs[0].OwnerAddress) // Adjust as necessary
+	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress) // Adjust as necessary
 	if err != nil {
+		log.Printf("Failed to retrieve Ed25519 public key for address %s: %v", senderAddress, err)
 		return fmt.Errorf("failed to retrieve Ed25519 public key: %v", err)
 	}
 
 	// Retrieve the sender's Dilithium public key through the Blockchain struct
-	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(tx.Inputs[0].OwnerAddress)
+	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(senderAddress)
 	if err != nil {
+		log.Printf("Failed to retrieve Dilithium public key for address %s: %v", senderAddress, err)
 		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
 	}
 

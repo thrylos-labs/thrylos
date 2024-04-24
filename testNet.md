@@ -20,33 +20,42 @@ cd cmd/clisigner
 
 Sign the transaction: 
 
-go run cli_signer.go -address="4a1740103cc6827e5548224213d55a1035e4e6d9b7c6cde9d64ea89a080701cb" -transaction='{"sender": "4a1740103cc6827e5548224213d55a1035e4e6d9b7c6cde9d64ea89a080701cb", "recipient": "08052616d698ab065244ef85894ce51df4a51eb111aea77817926178898fae66", "amount": 100}'
+go run cli_signer.go -address="8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf" -transaction='{"sender": "8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf", "recipient": "b2aed28f8fe2ca4ff6d427470a8a0d32f711b2ae18bff1e83d68c4049a45cbcf", "amount": 100}'
+
+[
+    {
+        "Address": "8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf",
+        "PrivateKey": "qE7TwYtHetbur7gkAsWFo0Aa91nCMqHdTE6KCBNCCKcP4rKPPaJl7/q8/ARH/Go8HLP56xlGfieUrUoXFzE8nA==",
+        "PublicKey": "0fe2b28f3da265effabcfc0447fc6a3c1cb3f9eb19467e2794ad4a1717313c9c"
+    },
+    {
+        "Address": "b2aed28f8fe2ca4ff6d427470a8a0d32f711b2ae18bff1e83d68c4049a45cbcf",
+        "PrivateKey": "tOMmH7chRRkXi4d4/PyNnUvPCsrv29HMAX+fMH7kC7K48d/PdLGYCqBpFe0Eky4jKF9PBjlG5Wd+8gg/IjeJNA==",
+        "PublicKey": "b8f1dfcf74b1980aa06915ed04932e23285f4f063946e5677ef2083f22378934"
+    }
+]
+
+Retreive the public key first:
+
+ Before attempting another transaction submission, directly test the retrieval function for the public key in your code to confirm that it can indeed find and return the correct key. This can help isolate the issue:
 
 
 Sugmit the transaction using Curl:
 
-curl -X POST http://localhost:8080/submit-transaction \
-  -H "Content-Type: application/json" \
-  -d '{
+curl -X POST -H "Content-Type: application/json" -d '{
+    "sender": "8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf",
+    "recipient": "b2aed28f8fe2ca4ff6d427470a8a0d32f711b2ae18bff1e83d68c4049a45cbcf",
+    "amount": 100,
+    "signature": "55qEsDuiChWA66Cyiq72FxBf5NWhnMTB0a4LXff2NKnzlEq1c/TFMdYXBTjT3QwfCWJ0Cs/XcRQhHP1OepbdDw==",
     "inputs": [
-      {
-        "previousTx": "genesis_d6df6065959c403051e8bf5dd33c05a62cb7edb27c4b5c6e90b7975a720b3c43",
-        "index": 0,
-        "signature": "VO3zzLTQqctS9kZ+lh2AZ1rGbHfe6TyDu5wFUJFr309ghlIt5NOm1YgbauEJcTQoMdNj3wNnUwB5uatPsSoXCw==",
-        "ownerAddress": "d6df6065959c403051e8bf5dd33c05a62cb7edb27c4b5c6e90b7975a720b3c43"
-      }
-    ],
-    "outputs": [
-      {
-        "amount": 100,
-        "address": "ee118296485e39cc8818e6c89fc4104cc29c2d51a415c5627281a339a6ec5d3d"
-      },
-      {
-        "amount": 900,
-        "address": "d6df6065959c403051e8bf5dd33c05a62cb7edb27c4b5c6e90b7975a720b3c43"
-      }
+        {
+            "transactionId": "genesis_8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf",
+            "outputIndex": 0,
+            "signature": "55qEsDuiChWA66Cyiq72FxBf5NWhnMTB0a4LXff2NKnzlEq1c/TFMdYXBTjT3QwfCWJ0Cs/XcRQhHP1OepbdDw=="
+        }
     ]
-  }'
+}' http://localhost:8080/submit-transaction
+
 
 
 Summary
