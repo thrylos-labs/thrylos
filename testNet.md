@@ -20,32 +20,33 @@ cd cmd/clisigner
 
 Sign the transaction: 
 
-go run cli_signer.go -address="sender_address" -transaction='{"sender": "sender_address", "recipient": "reciever_address", "amount": 100}'
+go run cli_signer.go -address="4a1740103cc6827e5548224213d55a1035e4e6d9b7c6cde9d64ea89a080701cb" -transaction='{"sender": "4a1740103cc6827e5548224213d55a1035e4e6d9b7c6cde9d64ea89a080701cb", "recipient": "08052616d698ab065244ef85894ce51df4a51eb111aea77817926178898fae66", "amount": 100}'
 
 
 Sugmit the transaction using Curl:
 
 curl -X POST http://localhost:8080/submit-transaction \
--H "Content-Type: application/json" \
--d '{
+  -H "Content-Type: application/json" \
+  -d '{
     "inputs": [
-        {
-            "previousTx": "abcd1234",
-            "index": 0,
-            "signature": "signature"
-        }
+      {
+        "previousTx": "genesis_d6df6065959c403051e8bf5dd33c05a62cb7edb27c4b5c6e90b7975a720b3c43",
+        "index": 0,
+        "signature": "VO3zzLTQqctS9kZ+lh2AZ1rGbHfe6TyDu5wFUJFr309ghlIt5NOm1YgbauEJcTQoMdNj3wNnUwB5uatPsSoXCw==",
+        "ownerAddress": "d6df6065959c403051e8bf5dd33c05a62cb7edb27c4b5c6e90b7975a720b3c43"
+      }
     ],
     "outputs": [
-        {
-            "amount": 100,
-            "address": "sender_address"
-        }
-    ],
-    "sender": "sender_address",
-    "recipient": "reciever_address",
-    "amount": 100,
-    "signature": "signature"
-}'
+      {
+        "amount": 100,
+        "address": "ee118296485e39cc8818e6c89fc4104cc29c2d51a415c5627281a339a6ec5d3d"
+      },
+      {
+        "amount": 900,
+        "address": "d6df6065959c403051e8bf5dd33c05a62cb7edb27c4b5c6e90b7975a720b3c43"
+      }
+    ]
+  }'
 
 
 Summary

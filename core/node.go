@@ -159,12 +159,16 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey 
 }
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
+	// Correctly using log.Printf for formatted output
+	log.Printf("Attempting to retrieve public key for address: %s", address)
 	pubKey, exists := node.PublicKeyMap[address]
 	if !exists {
 		// Log this case to understand why it's happening
 		log.Printf("Public key not found for address: %s", address)
 		return nil, fmt.Errorf("public key not found for address: %s", address)
 	}
+	// Display the public key in hexadecimal format
+	log.Printf("Public key retrieved: %x for address: %s", pubKey, address)
 	return pubKey, nil
 }
 
@@ -293,14 +297,19 @@ func (node *Node) GetBlockHandler() http.HandlerFunc {
 			return
 		}
 
-		blockJSON, err := convertBlockToJSON(block)
+		// Check if the block transactions are not null
+		if block.Transactions == nil {
+			log.Printf("No transactions found in block %s", blockID)
+		}
+
+		blockJSON, err := json.Marshal(block)
 		if err != nil {
-			log.Printf("Error serializing block: %v", err) // Log the error
+			log.Printf("Error serializing block: %v", err)
 			http.Error(w, "Failed to serialize block", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("Sending block data: %s", string(blockJSON)) // Log the output data
+		log.Printf("Sending block data: %s", string(blockJSON))
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(blockJSON)
 	}

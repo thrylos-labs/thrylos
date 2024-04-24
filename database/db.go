@@ -213,10 +213,39 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 }
 
 func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
-	publicKeyBytes, err := bdb.RetrievePublicKeyFromAddress(address)
+	log.Printf("Querying public key for address: %s", address)
+
+	var publicKeyBytes []byte
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("publicKey-" + address))
+		if err != nil {
+			if err == badger.ErrKeyNotFound {
+				log.Printf("No public key found for address: %s", address)
+				return fmt.Errorf("no public key found for address: %s", address)
+			}
+			return err
+		}
+
+		return item.Value(func(val []byte) error {
+			var keyData map[string][]byte
+			if err := json.Unmarshal(val, &keyData); err != nil {
+				return err
+			}
+
+			var ok bool
+			publicKeyBytes, ok = keyData["ed25519PublicKey"]
+			if !ok {
+				return fmt.Errorf("no Ed25519 public key found in the data for address %s", address)
+			}
+			return nil
+		})
+	})
+
 	if err != nil {
 		return nil, err
 	}
+
+	log.Printf("Public key retrieved: %x for address: %s", publicKeyBytes, address)
 	return ed25519.PublicKey(publicKeyBytes), nil
 }
 
@@ -507,12 +536,6 @@ func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner st
 	}
 
 	return nil
-}
-
-func (bdb *BlockchainDB) GetPublicKey(address string) (*rsa.PublicKey, error) {
-	// Your implementation here to get public key by address
-	// This is just a placeholder
-	return nil, nil
 }
 
 func (bdb *BlockchainDB) UpdateUTXOs(inputs []shared.UTXO, outputs []shared.UTXO) error {

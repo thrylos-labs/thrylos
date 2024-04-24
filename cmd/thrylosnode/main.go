@@ -57,16 +57,17 @@ func main() {
 	}
 
 	if *testnet {
-		// Initialize test accounts
+		log.Println("Creating initial funds and test accounts...")
 		testAccounts, err := blockchain.InitializeTestnetAccounts(10)
 		if err != nil {
 			log.Fatalf("Failed to initialize testnet accounts: %v", err)
 		}
 
-		// Create initial funds using the genesis private key and the test accounts
 		err = blockchain.CreateInitialFunds(testAccounts, privateKey)
 		if err != nil {
 			log.Fatalf("Failed to create initial funds: %v", err)
+		} else {
+			log.Println("Genesis block transactions created successfully.")
 		}
 
 		log.Println("Initialized test accounts:")
