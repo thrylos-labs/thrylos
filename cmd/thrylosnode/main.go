@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,25 +13,30 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 	// Import your blockchain package
 )
 
 func main() {
-	// Command-line flags for node configuration
-	nodeAddress := flag.String("address", "localhost:8080", "Address for the node to listen on")
-	knownPeers := flag.String("peers", "", "Comma-separated list of known peer addresses")
-	nodeDataDir := flag.String("data", "./blockchain_data", "Directory to store node's blockchain data")
-	testnet := flag.Bool("testnet", false, "Initialize with testnet settings and predefined accounts")
-	flag.Parse() // Parse the command-line flags
+	// Load configuration from .env file
+	// Specify the path to your .env file
+	envPath := "../../.env"
+	if err := godotenv.Load(envPath); err != nil {
+		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
+	}
+
+	// Environment variables
+	nodeAddress := os.Getenv("NODE_ADDRESS")
+	knownPeers := os.Getenv("PEERS")
+	nodeDataDir := os.Getenv("DATA")
+	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
 
 	// Fetch the Base64-encoded AES key from the environment variable
 	base64Key := os.Getenv("AES_KEY_ENV_VAR")
 	if base64Key == "" {
 		log.Fatal("AES key is not set in environment variables")
 	}
-
-	// Decode the Base64-encoded key to get the raw bytes
 	aesKey, err := base64.StdEncoding.DecodeString(base64Key)
 	if err != nil {
 		log.Fatalf("Error decoding AES key: %v", err)
@@ -45,7 +49,7 @@ func main() {
 	}
 
 	// Get the absolute path of the node data directory
-	absPath, err := filepath.Abs(*nodeDataDir)
+	absPath, err := filepath.Abs(nodeDataDir)
 	if err != nil {
 		log.Fatalf("Error resolving the absolute path of the blockchain data directory: %v", err)
 	}
@@ -64,7 +68,7 @@ func main() {
 		fmt.Println("Blockchain integrity check passed.")
 	}
 
-	if *testnet {
+	if testnet {
 		log.Println("Creating initial funds and test accounts...")
 		testAccounts, err := blockchain.InitializeTestnetAccounts(10)
 		if err != nil {
@@ -86,10 +90,10 @@ func main() {
 
 	// Initialize a new node with the specified address and known peers
 	peersList := []string{}
-	if *knownPeers != "" {
-		peersList = strings.Split(*knownPeers, ",")
+	if knownPeers != "" {
+		peersList = strings.Split(knownPeers, ",")
 	}
-	node := core.NewNode(*nodeAddress, peersList, *nodeDataDir, nil, false)
+	node := core.NewNode(nodeAddress, peersList, nodeDataDir, nil, false)
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
@@ -138,8 +142,8 @@ func main() {
 	}))
 
 	// Start the HTTP server with CORS-enabled handler
-	fmt.Printf("Starting server on %s\n", *nodeAddress)
-	if err := http.ListenAndServe(*nodeAddress, handler); err != nil {
+	fmt.Printf("Starting server on %s\n", nodeAddress)
+	if err := http.ListenAndServe(nodeAddress, handler); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

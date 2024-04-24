@@ -14,7 +14,14 @@ type BlockchainDBInterface interface {
 
 	// SendTransaction creates and processes a transaction from a sender to a recipient for a specified amount.
 	// It signs the transaction using the sender's private key.
-	// SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
+	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
+
+	// // VerifyTransaction checks the validity of a transaction, including signature verification and UTXO checks.
+	// VerifyTransaction(tx Transaction) (bool, error)
+
+	// ValidateTransaction examines a transaction for correctness, ensuring that inputs match outputs
+	// and that the transaction conforms to the rules of the blockchain.
+	// ValidateTransaction(tx Transaction) (bool, error)
 
 	// InsertBlock saves a new block's data to the database.
 	InsertBlock(data []byte, blockNumber int) error
@@ -47,16 +54,9 @@ type BlockchainDBInterface interface {
 	// Dilithium signature
 	RetrieveDilithiumPublicKeyFromAddress(address string) ([]byte, error)
 
-	// VerifyTransaction checks the validity of a transaction, including signature verification and UTXO checks.
-	// VerifyTransaction(tx Transaction) (bool, error)
-
 	// CreateAndSignTransaction constructs a new transaction with the given inputs and outputs, and signs it
 	// using the private key provided. This method encapsulates the creation and initial validation of transactions.
 	CreateAndSignTransaction(txID string, inputs, outputs []UTXO, privKey *rsa.PrivateKey) (Transaction, error)
-
-	// ValidateTransaction examines a transaction for correctness, ensuring that inputs match outputs
-	// and that the transaction conforms to the rules of the blockchain.
-	// ValidateTransaction(tx Transaction) (bool, error)
 
 	// Methods for handling Ed25519 public keys
 	InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error

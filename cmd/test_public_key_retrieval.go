@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+// Tak a testnet public key that is generated to test it in here
+
 func main() {
 	// Ensure the database path is correct
 	dbPath := "/Users/ned/Documents/GitHub/thrylos/cmd/thrylosnode/node_data"

@@ -103,6 +103,65 @@ func (bdb *BlockchainDB) decryptData(encryptedData []byte) ([]byte, error) {
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
+func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error) {
+	// Step 1: Create transaction data
+	transactionData := map[string]interface{}{
+		"from":   fromAddress,
+		"to":     toAddress,
+		"amount": amount,
+	}
+
+	// Step 2: Serialize transaction data to JSON
+	jsonData, err := json.Marshal(transactionData)
+	if err != nil {
+		return false, fmt.Errorf("error serializing transaction data: %v", err)
+	}
+
+	// Step 3: Encrypt the transaction data
+	encryptedData, err := bdb.encryptData(jsonData)
+	if err != nil {
+		return false, fmt.Errorf("error encrypting transaction data: %v", err)
+	}
+
+	// Step 4: Sign the encrypted data
+	signature, err := rsa.SignPSS(rand.Reader, privKey, crypto.SHA256, bdb.hashData(encryptedData), nil)
+	if err != nil {
+		return false, fmt.Errorf("error signing transaction: %v", err)
+	}
+
+	// Step 5: Store the encrypted transaction and signature in the database
+	err = bdb.storeTransaction(encryptedData, signature, fromAddress, toAddress)
+	if err != nil {
+		return false, fmt.Errorf("error storing transaction in the database: %v", err)
+	}
+
+	return true, nil
+}
+
+func (bdb *BlockchainDB) hashData(data []byte) []byte {
+	hasher := sha256.New()
+	hasher.Write(data)
+	return hasher.Sum(nil)
+}
+
+func (bdb *BlockchainDB) storeTransaction(encryptedData, signature []byte, fromAddress, toAddress string) error {
+	// Implement actual database interaction here
+	// This is a simplified example of how you might store the transaction
+	txn := bdb.DB.NewTransaction(true)
+	defer txn.Discard()
+
+	err := txn.Set([]byte(fmt.Sprintf("transaction:%s:%s", fromAddress, toAddress)), encryptedData)
+	if err != nil {
+		return err
+	}
+	err = txn.Set([]byte(fmt.Sprintf("signature:%s:%s", fromAddress, toAddress)), signature)
+	if err != nil {
+		return err
+	}
+
+	return txn.Commit()
+}
+
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []byte) error {
