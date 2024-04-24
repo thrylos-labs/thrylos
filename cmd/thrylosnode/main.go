@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/rs/cors"
@@ -43,10 +44,17 @@ func main() {
 		log.Fatalf("Failed to generate genesis key: %v", err)
 	}
 
-	// Initialize the blockchain and database with the AES key
-	blockchain, err := core.NewBlockchain(*nodeDataDir, aesKey) // Adjust according to your actual constructor method
+	// Get the absolute path of the node data directory
+	absPath, err := filepath.Abs(*nodeDataDir)
 	if err != nil {
-		log.Fatalf("Failed to initialize the blockchain: %v", err)
+		log.Fatalf("Error resolving the absolute path of the blockchain data directory: %v", err)
+	}
+	log.Printf("Using blockchain data directory: %s", absPath)
+
+	// Initialize the blockchain and database with the AES key
+	blockchain, err := core.NewBlockchain(absPath, aesKey)
+	if err != nil {
+		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
 
 	// Perform an integrity check on the blockchain

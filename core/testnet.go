@@ -73,6 +73,7 @@ func storeKeys(bc *Blockchain, address string, edPrivateKey, diPrivateKey []byte
 
 	retrievedKey, err := bc.Database.RetrieveEd25519PublicKey(address)
 	if err != nil {
+
 		return fmt.Errorf("failed to retrieve Ed25519 public key: %v", err)
 	}
 

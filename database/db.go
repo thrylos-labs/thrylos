@@ -209,9 +209,12 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 
 // sanitizeAndFormatAddress ensures the address is in the correct format and safe to use as a key.
 func sanitizeAndFormatAddress(address string) (string, error) {
-	if !regexp.MustCompile(`^[0-9a-fA-F]{40}$`).MatchString(address) { // Adjust the regex as necessary for your address format
+	// Adjust regex to include potential '0x' prefix and change length as necessary
+	if !regexp.MustCompile(`^(0x)?[0-9a-fA-F]{40,64}$`).MatchString(address) {
 		return "", fmt.Errorf("invalid address format")
 	}
+	// Optionally remove the '0x' prefix if present
+	address = strings.TrimPrefix(address, "0x")
 	return strings.ToLower(address), nil
 }
 
