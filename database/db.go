@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -206,8 +207,22 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 	return utxos, nil
 }
 
+// sanitizeAndFormatAddress ensures the address is in the correct format and safe to use as a key.
+func sanitizeAndFormatAddress(address string) (string, error) {
+	if !regexp.MustCompile(`^[0-9a-fA-F]{40}$`).MatchString(address) { // Adjust the regex as necessary for your address format
+		return "", fmt.Errorf("invalid address format")
+	}
+	return strings.ToLower(address), nil
+}
+
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKey []byte) error {
-	log.Printf("Attempting to insert public key for address: %s", address)
+	formattedAddress, err := sanitizeAndFormatAddress(address)
+	if err != nil {
+		log.Printf("Address formatting error: %v", err)
+		return err
+	}
+
+	log.Printf("Attempting to insert public key for address: %s", formattedAddress)
 	data, err := json.Marshal(map[string][]byte{"ed25519PublicKey": publicKey})
 	if err != nil {
 		log.Printf("Failed to marshal public key: %v", err)
@@ -215,13 +230,13 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKe
 	}
 
 	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte("publicKey-"+address), data)
+		return txn.Set([]byte("publicKey-"+formattedAddress), data)
 	})
 	if err != nil {
-		log.Printf("Failed to insert public key for address %s: %v", address, err)
+		log.Printf("Failed to insert public key for address %s: %v", formattedAddress, err)
 		return err
 	}
-	log.Printf("Successfully inserted public key for address: %s", address)
+	log.Printf("Successfully inserted public key for address: %s", formattedAddress)
 	return nil
 }
 
@@ -231,12 +246,18 @@ type publicKeyData struct {
 }
 
 func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
-	log.Printf("Attempting to retrieve public key for address: %s", address)
+	formattedAddress, err := sanitizeAndFormatAddress(address)
+	if err != nil {
+		log.Printf("Address formatting error: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Attempting to retrieve public key for address: %s", formattedAddress)
 	var publicKeyData []byte
-	err := bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("publicKey-" + address))
+	err = bdb.DB.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("publicKey-" + formattedAddress))
 		if err != nil {
-			log.Printf("Failed to find public key for address %s: %v", address, err)
+			log.Printf("Failed to find public key for address %s: %v", formattedAddress, err)
 			return err
 		}
 		return item.Value(func(val []byte) error {
@@ -249,14 +270,14 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 		})
 	})
 	if err != nil {
-		log.Printf("Failed to retrieve public key for address %s: %v", address, err)
+		log.Printf("Failed to retrieve public key for address %s: %v", formattedAddress, err)
 		return nil, err
 	}
 	if publicKeyData == nil || len(publicKeyData) == 0 {
-		log.Printf("No public key found for address %s", address)
-		return nil, fmt.Errorf("no Ed25519 public key found for address %s", address)
+		log.Printf("No public key found for address %s", formattedAddress)
+		return nil, fmt.Errorf("no Ed25519 public key found for address %s", formattedAddress)
 	}
-	log.Printf("Successfully retrieved public key for address: %s", address)
+	log.Printf("Successfully retrieved public key for address: %s", formattedAddress)
 	return ed25519.PublicKey(publicKeyData), nil
 }
 
