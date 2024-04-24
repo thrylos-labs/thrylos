@@ -20,20 +20,8 @@ cd cmd/clisigner
 
 Sign the transaction: 
 
-go run cli_signer.go -address="8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf" -transaction='{"sender": "8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf", "recipient": "b2aed28f8fe2ca4ff6d427470a8a0d32f711b2ae18bff1e83d68c4049a45cbcf", "amount": 100}'
+go run cli_signer.go -address="1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2" -transaction='{"sender": "1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2", "recipient": "33c5cb2862568a9b75997538af3b1c77a2f75c47fd99ebef99226e3da608192a", "amount": 100}'
 
-[
-    {
-        "Address": "8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf",
-        "PrivateKey": "qE7TwYtHetbur7gkAsWFo0Aa91nCMqHdTE6KCBNCCKcP4rKPPaJl7/q8/ARH/Go8HLP56xlGfieUrUoXFzE8nA==",
-        "PublicKey": "0fe2b28f3da265effabcfc0447fc6a3c1cb3f9eb19467e2794ad4a1717313c9c"
-    },
-    {
-        "Address": "b2aed28f8fe2ca4ff6d427470a8a0d32f711b2ae18bff1e83d68c4049a45cbcf",
-        "PrivateKey": "tOMmH7chRRkXi4d4/PyNnUvPCsrv29HMAX+fMH7kC7K48d/PdLGYCqBpFe0Eky4jKF9PBjlG5Wd+8gg/IjeJNA==",
-        "PublicKey": "b8f1dfcf74b1980aa06915ed04932e23285f4f063946e5677ef2083f22378934"
-    }
-]
 
 Retreive the public key first:
 
@@ -43,15 +31,15 @@ Retreive the public key first:
 Sugmit the transaction using Curl:
 
 curl -X POST -H "Content-Type: application/json" -d '{
-    "sender": "8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf",
-    "recipient": "b2aed28f8fe2ca4ff6d427470a8a0d32f711b2ae18bff1e83d68c4049a45cbcf",
+    "sender": "1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2",
+    "recipient": "1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2",
     "amount": 100,
     "signature": "55qEsDuiChWA66Cyiq72FxBf5NWhnMTB0a4LXff2NKnzlEq1c/TFMdYXBTjT3QwfCWJ0Cs/XcRQhHP1OepbdDw==",
     "inputs": [
         {
-            "transactionId": "genesis_8cead27c2c53f5669b2943213f38d21dda82ae851fc51a767aa74f0b637fddbf",
+            "transactionId": "genesis_1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2",
             "outputIndex": 0,
-            "signature": "55qEsDuiChWA66Cyiq72FxBf5NWhnMTB0a4LXff2NKnzlEq1c/TFMdYXBTjT3QwfCWJ0Cs/XcRQhHP1OepbdDw=="
+            "signature": "gUlqrDliv6vDiFt4JfB6HkNpPsLoFtoKwHnZJdIWRpDBF1qT5fij8ufksqHvad+k26MaPPxv5i1nz7DtezreCg=="
         }
     ]
 }' http://localhost:8080/submit-transaction

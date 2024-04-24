@@ -16,6 +16,8 @@ type BlockchainDBInterface interface {
 	// It signs the transaction using the sender's private key.
 	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
 
+	SanitizeAndFormatAddress(address string) (string, error)
+
 	// // VerifyTransaction checks the validity of a transaction, including signature verification and UTXO checks.
 	// VerifyTransaction(tx Transaction) (bool, error)
 

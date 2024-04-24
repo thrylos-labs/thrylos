@@ -266,19 +266,18 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 	return utxos, nil
 }
 
-// sanitizeAndFormatAddress ensures the address is in the correct format and safe to use as a key.
-func sanitizeAndFormatAddress(address string) (string, error) {
-	// Adjust regex to include potential '0x' prefix and change length as necessary
-	if !regexp.MustCompile(`^(0x)?[0-9a-fA-F]{40,64}$`).MatchString(address) {
+var addressRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {
+	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40}$`) // Adjust regex as needed for the specific format you expect
+	if !addressRegex.MatchString(address) {
 		return "", fmt.Errorf("invalid address format")
 	}
-	// Optionally remove the '0x' prefix if present
-	address = strings.TrimPrefix(address, "0x")
 	return strings.ToLower(address), nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKey []byte) error {
-	formattedAddress, err := sanitizeAndFormatAddress(address)
+	formattedAddress, err := shared.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Address formatting error: %v", err)
 		return err
@@ -308,7 +307,7 @@ type publicKeyData struct {
 }
 
 func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
-	formattedAddress, err := sanitizeAndFormatAddress(address)
+	formattedAddress, err := shared.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Address formatting error: %v", err)
 		return nil, err

@@ -177,8 +177,8 @@ func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 }
 
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
+// VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
-	// Check if there are any inputs in the transaction
 	if len(tx.Inputs) == 0 {
 		return fmt.Errorf("transaction has no inputs")
 	}
@@ -186,21 +186,28 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	senderAddress := tx.Inputs[0].OwnerAddress
 	log.Printf("Verifying transaction for sender address: %s", senderAddress)
 
-	// Retrieve the sender's Ed25519 public key
-	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress) // Adjust as necessary
+	// Sanitize and format the sender address
+	formattedAddress, err := shared.SanitizeAndFormatAddress(senderAddress)
 	if err != nil {
-		log.Printf("Failed to retrieve Ed25519 public key for address %s: %v", senderAddress, err)
+		log.Printf("Address formatting error for %s: %v", senderAddress, err)
+		return fmt.Errorf("invalid address format: %v", err)
+	}
+
+	// Retrieve the sender's Ed25519 public key
+	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(formattedAddress)
+	if err != nil {
+		log.Printf("Failed to retrieve Ed25519 public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("failed to retrieve Ed25519 public key: %v", err)
 	}
 
-	// Retrieve the sender's Dilithium public key through the Blockchain struct
-	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(senderAddress)
+	// Retrieve the sender's Dilithium public key
+	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(formattedAddress)
 	if err != nil {
-		log.Printf("Failed to retrieve Dilithium public key for address %s: %v", senderAddress, err)
+		log.Printf("Failed to retrieve Dilithium public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
 	}
 
-	// Verify the transaction signature with Ed25519 and Dilithium public keys
+	// Verify the transaction signature with the retrieved public keys
 	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}

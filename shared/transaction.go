@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -579,6 +581,26 @@ func processTransactions(transactions []*Transaction) {
 
 	// Proceed with further transaction processing...
 }
+
+var addressRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+// SanitizeAndFormatAddress cleans and validates blockchain addresses.
+func SanitizeAndFormatAddress(address string) (string, error) {
+	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`) // Updated to match both lengths of 40 and 64 characters
+
+	if !addressRegex.MatchString(address) {
+		return "", fmt.Errorf("invalid address format")
+	}
+	return strings.ToLower(address), nil
+}
+
+// func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {
+//     addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40}$`) // Adjust regex as needed for the specific format you expect
+//     if !addressRegex.MatchString(address) {
+//         return "", fmt.Errorf("invalid address format")
+//     }
+//     return strings.ToLower(address), nil
+// }
 
 // BatchSignTransactions signs a slice of transactions using both Ed25519 and Dilithium signatures.
 func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) error {

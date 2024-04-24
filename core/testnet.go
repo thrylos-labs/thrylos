@@ -88,7 +88,7 @@ func storeKeys(bc *Blockchain, address string, edPrivateKey, diPrivateKey []byte
 // PublicKeyToAddress converts an Ed25519 public key to a blockchain address string.
 func PublicKeyToAddress(publicKey ed25519.PublicKey) string {
 	publicKeyHash := sha256.Sum256(publicKey)
-	return hex.EncodeToString(publicKeyHash[:])
+	return hex.EncodeToString(publicKeyHash[:]) // Ensures exactly 64 characters
 }
 
 // GenerateDilithiumKeys generates a new Dilithium public/private key pair.
