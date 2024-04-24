@@ -212,41 +212,39 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 	return bdb.InsertOrUpdatePublicKey(address, ed25519PublicKey, nil) // Pass nil for the Dilithium key if you're not updating it.
 }
 
-func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
-	log.Printf("Querying public key for address: %s", address)
+type publicKeyData struct {
+	Ed25519PublicKey   []byte `json:"ed25519PublicKey"`
+	DilithiumPublicKey []byte `json:"dilithiumPublicKey"`
+}
 
-	var publicKeyBytes []byte
+func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
+	var publicKeyData []byte
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("publicKey-" + address))
 		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				log.Printf("No public key found for address: %s", address)
-				return fmt.Errorf("no public key found for address: %s", address)
-			}
 			return err
 		}
-
 		return item.Value(func(val []byte) error {
-			var keyData map[string][]byte
-			if err := json.Unmarshal(val, &keyData); err != nil {
+			var data map[string][]byte
+			if err := json.Unmarshal(val, &data); err != nil {
 				return err
 			}
-
-			var ok bool
-			publicKeyBytes, ok = keyData["ed25519PublicKey"]
-			if !ok {
-				return fmt.Errorf("no Ed25519 public key found in the data for address %s", address)
-			}
+			publicKeyData = data["ed25519PublicKey"]
 			return nil
 		})
 	})
 
 	if err != nil {
+		log.Printf("Error retrieving Ed25519 public key for address %s: %v", address, err)
 		return nil, err
 	}
+	if publicKeyData == nil || len(publicKeyData) == 0 {
+		log.Printf("No Ed25519 public key found for address %s", address)
+		return nil, fmt.Errorf("no Ed25519 public key found for address %s", address)
+	}
 
-	log.Printf("Public key retrieved: %x for address: %s", publicKeyBytes, address)
-	return ed25519.PublicKey(publicKeyBytes), nil
+	log.Printf("Successfully retrieved Ed25519 public key for address %s: %x", address, publicKeyData)
+	return ed25519.PublicKey(publicKeyData), nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateDilithiumPublicKey(address string, dilithiumPublicKey []byte) error {
@@ -260,17 +258,33 @@ func (bdb *BlockchainDB) RetrieveDilithiumPublicKey(address string) ([]byte, err
 }
 
 func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey, dilithiumPublicKey []byte) error {
-	err := bdb.DB.Update(func(txn *badger.Txn) error {
-		data, err := json.Marshal(map[string][]byte{
-			"ed25519PublicKey":   ed25519PublicKey,
-			"dilithiumPublicKey": dilithiumPublicKey,
-		})
-		if err != nil {
-			return err
-		}
+	if ed25519PublicKey == nil || len(ed25519PublicKey) == 0 {
+		log.Printf("Warning: Ed25519 public key is nil or empty for address %s", address)
+	} else {
+		log.Printf("Updating Ed25519 public key for address %s: %x", address, ed25519PublicKey)
+	}
 
+	// Prepare the data for storage
+	data, err := json.Marshal(map[string][]byte{
+		"ed25519PublicKey":   ed25519PublicKey,
+		"dilithiumPublicKey": dilithiumPublicKey,
+	})
+	if err != nil {
+		log.Printf("Error marshalling public key data for address %s: %v", address, err)
+		return err
+	}
+
+	// Attempt to store the data in the database
+	err = bdb.DB.Update(func(txn *badger.Txn) error {
 		return txn.Set([]byte("publicKey-"+address), data)
 	})
+
+	if err != nil {
+		log.Printf("Error updating public key in the database for address %s: %v", address, err)
+	} else {
+		log.Printf("Successfully updated public key in the database for address %s", address)
+	}
+
 	return err
 }
 
@@ -313,39 +327,32 @@ func (bdb *BlockchainDB) RetrieveDilithiumPublicKeyFromAddress(address string) (
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.
 // It is essential for verifying transaction signatures and ensuring the integrity of transactions.
 func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error) {
-	var publicKeyBytes []byte
-
+	var publicKeyData []byte
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("publicKey-" + address))
 		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return fmt.Errorf("no public key found for address %s", address)
-			}
 			return err
 		}
-
-		err = item.Value(func(val []byte) error {
-			var keyData map[string][]byte
-			if err := json.Unmarshal(val, &keyData); err != nil {
-				return err
-			}
-
-			var ok bool
-			publicKeyBytes, ok = keyData["ed25519PublicKey"]
-			if !ok {
-				return fmt.Errorf("no Ed25519 public key found in the data for address %s", address)
-			}
-
+		return item.Value(func(val []byte) error {
+			publicKeyData = append([]byte{}, val...) // Make a copy of the data
 			return nil
 		})
-		return err
 	})
-
 	if err != nil {
 		return nil, err
 	}
 
-	return ed25519.PublicKey(publicKeyBytes), nil
+	var keys map[string][]byte
+	if err := json.Unmarshal(publicKeyData, &keys); err != nil {
+		return nil, err
+	}
+
+	ed25519Key, ok := keys["ed25519PublicKey"]
+	if !ok || len(ed25519Key) == 0 {
+		return nil, fmt.Errorf("no Ed25519 public key found for address %s", address)
+	}
+
+	return ed25519.PublicKey(ed25519Key), nil
 }
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.

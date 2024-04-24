@@ -6,7 +6,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"io/ioutil"
+	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // This test ensures your RSA keys are generated, stored, retrieved, and used correctly throughout your application.
@@ -99,4 +103,71 @@ func TestBase64EncodingAndDecoding(t *testing.T) {
 	}
 
 	t.Log("Base64 encoding and decoding of Ed25519 keys successful")
+}
+
+func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
+	// Set up the blockchain with a real database
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, err := shared.GenerateAESKey()
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	bc, err := NewBlockchain(tempDir, aesKey)
+	if err != nil {
+		t.Fatalf("Failed to create blockchain: %v", err)
+	}
+
+	address := "test-address"
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
+	}
+
+	// Test insertion
+	err = bc.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
+	if err != nil {
+		t.Fatalf("Failed to insert Ed25519 public key: %v", err)
+	}
+
+	// Test retrieval
+	retrievedKey, err := bc.Database.RetrieveEd25519PublicKey(address)
+	if err != nil {
+		t.Fatalf("Failed to retrieve Ed25519 public key: %v", err)
+	}
+
+	if !bytes.Equal(retrievedKey, publicKey) {
+		t.Errorf("Retrieved key does not match the inserted key")
+	}
+}
+
+func TestBlockchainKeyHandling(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "blockchain")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, _ := shared.GenerateAESKey()
+	blockchain, err := NewBlockchain(tempDir, aesKey)
+	if err != nil {
+		t.Fatalf("Failed to create blockchain: %v", err)
+	}
+
+	address := "test-address"
+	publicKey, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	// Insert public key
+	err = blockchain.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
+	assert.NoError(t, err, "Inserting public key should not produce an error")
+
+	// Retrieve public key
+	retrievedKey, err := blockchain.Database.RetrieveEd25519PublicKey(address)
+	assert.NoError(t, err, "Retrieving public key should not produce an error")
+	assert.Equal(t, publicKey, retrievedKey, "The retrieved public key should match the inserted one")
 }

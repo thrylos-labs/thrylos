@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -52,12 +53,24 @@ func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]A
 			DilithiumPublicKey: diPublicKey,
 			Balance:            startingBalance, // Set the starting balance
 		}
+		log.Printf("Inserting Ed25519 public key for address %s", address)
 
 		if err := bc.Database.InsertOrUpdateEd25519PublicKey(address, edPublicKey); err != nil {
-			log.Fatalf("Error inserting/updating Ed25519 public key: %v", err)
+			log.Fatalf("Failed to insert Ed25519 public key for address %s: %v", address, err)
+		} else {
+			log.Printf("Successfully inserted Ed25519 public key for address %s", address)
 		}
-		if err := bc.Database.InsertOrUpdateDilithiumPublicKey(address, diPublicKey); err != nil {
-			log.Fatalf("Error inserting/updating Dilithium public key: %v", err)
+
+		log.Printf("Retrieving Ed25519 public key for address %s for verification", address)
+		retrievedKey, err := bc.Database.RetrieveEd25519PublicKey(address)
+		if err != nil {
+			log.Printf("Failed to retrieve public key for address %s: %v", address, err)
+		} else {
+			if bytes.Equal(retrievedKey, edPublicKey) {
+				log.Println("Verification successful: Retrieved key matches the inserted key.")
+			} else {
+				log.Println("Verification failed: Retrieved key does not match the inserted key.")
+			}
 		}
 
 		accounts = append(accounts, account)

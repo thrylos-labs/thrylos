@@ -302,6 +302,9 @@ func (bc *Blockchain) ResolveForks() {
 
 // In Blockchain
 func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKey []byte, keyType string) error {
+	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
+	log.Printf("PublicKey: %x", publicKey)
+
 	switch keyType {
 	case "Ed25519":
 		return bc.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)

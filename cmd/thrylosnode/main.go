@@ -2,6 +2,7 @@ package main
 
 import (
 	"Thrylos/core"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -72,7 +73,19 @@ func main() {
 
 		log.Println("Initialized test accounts:")
 		for _, account := range testAccounts {
-			log.Printf("Account: Address: %s, PublicKey: %x\n", account.Address, account.PublicKey)
+			log.Printf("Account: Address: %s, Stored PublicKey: %x\n", account.Address, account.PublicKey)
+			retrievedKey, err := blockchain.Database.RetrieveEd25519PublicKey(account.Address)
+			if err != nil {
+				log.Printf("Failed to retrieve public key for address %s: %v", account.Address, err)
+			} else {
+				log.Printf("Retrieved PublicKey: %x", retrievedKey)
+				if bytes.Equal(retrievedKey, account.PublicKey) {
+					log.Println("Retrieved key matches the stored key.")
+				} else {
+					log.Println("Mismatch in retrieved key and stored key.")
+					log.Printf("Stored Key: %x, Retrieved Key: %x", account.PublicKey, retrievedKey)
+				}
+			}
 		}
 	}
 
