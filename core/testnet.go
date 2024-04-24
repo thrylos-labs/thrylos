@@ -82,7 +82,7 @@ func GenerateDilithiumKeys() (publicKey []byte, privateKey []byte, err error) {
 // Example function to log account details for debugging purposes.
 func logAccountDetails(accounts []Account) {
 	for i, account := range accounts {
-		log.Printf("Account %d:\n", i)
+		log.Printf("Account %d: Address: %s, Balance: %d\n", i, account.Address, account.Balance)
 		log.Printf("Address: %s\n", account.Address)
 		log.Printf("Ed25519 Public Key: %s\n", account.PublicKey)
 		log.Printf("Balance: %d\n", account.Balance) // Now logging the balance as well

@@ -49,12 +49,6 @@ func main() {
 		log.Fatalf("Failed to initialize the blockchain: %v", err)
 	}
 
-	// Create initial funds using the genesis private key
-	err = blockchain.CreateInitialFunds(privateKey)
-	if err != nil {
-		log.Fatalf("Failed to create initial funds: %v", err)
-	}
-
 	// Perform an integrity check on the blockchain
 	if !blockchain.CheckChainIntegrity() {
 		log.Fatal("Blockchain integrity check failed.")
@@ -67,6 +61,12 @@ func main() {
 		testAccounts, err := blockchain.InitializeTestnetAccounts(10)
 		if err != nil {
 			log.Fatalf("Failed to initialize testnet accounts: %v", err)
+		}
+
+		// Create initial funds using the genesis private key and the test accounts
+		err = blockchain.CreateInitialFunds(testAccounts, privateKey)
+		if err != nil {
+			log.Fatalf("Failed to create initial funds: %v", err)
 		}
 
 		log.Println("Initialized test accounts:")

@@ -200,43 +200,36 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 }
 
 // Ensures that as your blockchain starts up, it has predefined transactions that allocate funds to specific accounts, providing you with a controlled setup for further development and testing.
-func (bc *Blockchain) CreateInitialFunds(signingKey ed25519.PrivateKey) error {
+func (bc *Blockchain) CreateInitialFunds(accounts []Account, signingKey ed25519.PrivateKey) error {
 	log.Println("Creating initial funds...")
-
-	// Example addresses - these should be dynamically fetched or passed as parameters
-	addresses := []string{
-		"ad6675d7db1245a58c9ce1273bf66a79063d3574b5c917fbb007e83736bd839c",
-		"523202816395084d5f100f03f6787560c4b1048ed1872fe8b4647cfabc41e2c0",
-	}
 	var transactions []*thrylos.Transaction
 
-	for _, addr := range addresses {
+	for _, account := range accounts {
 		output := &thrylos.UTXO{
-			OwnerAddress: addr,
-			Amount:       1000, // Specify the initial amount
+			OwnerAddress: account.Address,
+			Amount:       int64(account.Balance), // Use the balance already set in the account
 		}
 		transaction := thrylos.Transaction{
-			Id:        "genesis_" + addr,
+			Id:        "genesis_" + account.Address,
 			Timestamp: time.Now().Unix(),
 			Outputs:   []*thrylos.UTXO{output},
 		}
 
-		// Serialize transaction to sign it
+		// Serialize and sign the transaction
 		txBytes, err := proto.Marshal(&transaction)
 		if err != nil {
-			log.Fatalf("Failed to serialize transaction: %v", err)
+			log.Printf("Failed to serialize transaction: %v", err)
 			return err
 		}
-
-		// Sign the transaction
 		signature := ed25519.Sign(signingKey, txBytes)
 		transaction.Signature = base64.StdEncoding.EncodeToString(signature)
 
 		transactions = append(transactions, &transaction)
 	}
 
+	// Assuming GetLastBlock is implemented to fetch the last block
 	prevBlock, err := bc.GetLastBlock()
-	prevHash := "0000000000000000000000000000000000000000000000000000000000000000" // Default hash for genesis
+	prevHash := "0000000000000000000000000000000000000000000000000000000000000000" // Genesis block hash
 	if prevBlock != nil {
 		prevHash = prevBlock.Hash
 	}
