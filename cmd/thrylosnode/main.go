@@ -15,10 +15,21 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
+	"github.com/wasmerio/wasmer-go/wasmer"
 	// Import your blockchain package
 )
 
 func main() {
+	// Load WebAssembly binary
+	wasmBytes, err := os.ReadFile("/Users/ned/Documents/GitHub/rust_wasm/target/wasm32-unknown-unknown/release/rust_wasm.wasm")
+	if err != nil {
+		log.Fatalf("Failed to read wasm file: %v", err)
+	}
+
+	// Execute the WebAssembly module
+	result := executeWasm(wasmBytes)
+	fmt.Printf("Result from wasm: %d\n", result)
+
 	// Load configuration from .env file
 	// Specify the path to your .env file
 	envPath := "../../.env"
@@ -145,6 +156,44 @@ func main() {
 	fmt.Printf("Starting server on %s\n", nodeAddress)
 	if err := http.ListenAndServe(nodeAddress, handler); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+func executeWasm(wasmBytes []byte) int {
+	// Create an instance of the WebAssembly engine
+	engine := wasmer.NewEngine()
+	store := wasmer.NewStore(engine)
+
+	// Compile the WebAssembly module
+	module, err := wasmer.NewModule(store, wasmBytes)
+	if err != nil {
+		log.Fatalf("Failed to compile module: %v", err)
+	}
+
+	// Create an instance of the module
+	instance, err := wasmer.NewInstance(module, wasmer.NewImportObject())
+	if err != nil {
+		log.Fatalf("Failed to instantiate wasm module: %v", err)
+	}
+
+	// Get the `process_transaction` function from the module
+	processTransaction, err := instance.Exports.GetFunction("process_transaction")
+	if err != nil {
+		log.Fatalf("Failed to get process_transaction function: %v", err)
+	}
+
+	// Call the WebAssembly function
+	result, err := processTransaction(10) // passing an example value
+	if err != nil {
+		log.Fatalf("Failed to execute process_transaction function: %v", err)
+	}
+
+	// Assuming the function returns an i32 and converting it properly
+	if processedResult, ok := result.(int32); ok {
+		return int(processedResult) // convert int32 to int
+	} else {
+		log.Fatalf("Failed to convert result to int32")
+		return 0
 	}
 }
 
