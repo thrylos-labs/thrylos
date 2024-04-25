@@ -20,16 +20,6 @@ import (
 )
 
 func main() {
-	// Load WebAssembly binary
-	wasmBytes, err := os.ReadFile("/Users/ned/Documents/GitHub/rust_wasm/target/wasm32-unknown-unknown/release/rust_wasm.wasm")
-	if err != nil {
-		log.Fatalf("Failed to read wasm file: %v", err)
-	}
-
-	// Execute the WebAssembly module
-	result := executeWasm(wasmBytes)
-	fmt.Printf("Result from wasm: %d\n", result)
-
 	// Load configuration from .env file
 	// Specify the path to your .env file
 	envPath := "../../.env"
@@ -42,6 +32,21 @@ func main() {
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
+	wasmPath := os.Getenv("WASM_PATH")
+
+	if wasmPath == "" {
+		log.Fatal("WASM_PATH environment variable not set")
+	}
+
+	// Load WebAssembly binary
+	wasmBytes, err := os.ReadFile(wasmPath)
+	if err != nil {
+		log.Fatalf("Failed to read wasm file: %v", err)
+	}
+
+	// Execute the WebAssembly module
+	result := executeWasm(wasmBytes)
+	fmt.Printf("Result from wasm: %d\n", result)
 
 	// Fetch the Base64-encoded AES key from the environment variable
 	base64Key := os.Getenv("AES_KEY_ENV_VAR")
