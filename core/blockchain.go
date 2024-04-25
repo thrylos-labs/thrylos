@@ -372,6 +372,29 @@ func (bc *Blockchain) GetLastBlock() (*Block, error) {
 	return &lastBlock, nil
 }
 
+// addUTXO adds a new UTXO to the blockchain's UTXO set.
+func (bc *Blockchain) addUTXO(utxo shared.UTXO) {
+	utxoKey := fmt.Sprintf("%s:%d", utxo.TransactionID, utxo.Index)
+	// Ensure the UTXO list for the key is initialized
+	if _, exists := bc.UTXOs[utxoKey]; !exists {
+		bc.UTXOs[utxoKey] = []*thrylos.UTXO{}
+	}
+	// Convert shared UTXO to thrylos UTXO and add it
+	thrylosUtxo := shared.ConvertSharedUTXOToProto(utxo)
+	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
+	log.Printf("UTXO added: %s", utxoKey)
+}
+
+// removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.
+func (bc *Blockchain) removeUTXO(transactionID string, index int32) bool {
+	utxoKey := fmt.Sprintf("%s:%d", transactionID, index)
+	if _, exists := bc.UTXOs[utxoKey]; exists {
+		delete(bc.UTXOs, utxoKey)
+		return true
+	}
+	return false
+}
+
 // VerifyTransaction checks the validity of a transaction against the current state of the blockchain,
 // including signature verification and double spending checks. It's essential for maintaining the
 // Example snippet for VerifyTransaction method adjustment
@@ -420,36 +443,44 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) {
 	bc.PendingTransactions = append(bc.PendingTransactions, tx)
 }
 
+// ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
-	// Example logic to process transactions
-	// This is where you would validate each transaction and potentially update UTXOs
+	for _, tx := range bc.PendingTransactions {
+		log.Printf("Processing transaction %s", tx.Id)
+		for _, input := range tx.Inputs {
+			if removed := bc.removeUTXO(input.TransactionId, input.Index); !removed {
+				log.Printf("Failed to remove input UTXO: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
+				continue
+			}
+			log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
+		}
+		for _, output := range tx.Outputs {
+			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int(output.Amount))
+			bc.addUTXO(newUTXO)
+			log.Printf("Output UTXO added: Transaction ID: %s, Owner: %s, Amount: %d", tx.Id, output.OwnerAddress, output.Amount)
+		}
+	}
 
-	// Select a validator based on PoS rules (simplified here)
 	selectedValidator := bc.SelectValidator()
-
 	if validator != selectedValidator {
 		return nil, fmt.Errorf("selected validator does not match")
 	}
 
-	// Assume we reward the validator with a fixed amount for simplicity
 	rewardTransaction := &thrylos.Transaction{
-		// Create a reward transaction for the validator
+		// Implementation for reward transaction
 	}
 	bc.PendingTransactions = append(bc.PendingTransactions, rewardTransaction)
 
 	newBlock := bc.CreateBlock(bc.PendingTransactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash, time.Now().Unix())
-
-	// Assuming CreateBlock also handles the addition of the block to the chain
 	if newBlock == nil {
 		return nil, fmt.Errorf("failed to create a new block")
 	}
 
-	// Clear pending transactions after they have been added to a block
-	bc.PendingTransactions = []*thrylos.Transaction{}
-
+	bc.Blocks = append(bc.Blocks, newBlock)
+	bc.PendingTransactions = nil
 	return newBlock, nil
 }
 

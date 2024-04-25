@@ -13,6 +13,8 @@ import (
 	"os"
 	"regexp"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // Vote represents a vote cast by a validator for a specific block. It includes the block hash being voted for,
@@ -41,8 +43,34 @@ type Node struct {
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
-	// Retrieve the AES key securely from an environment variable
-	aesKey := []byte(os.Getenv("AES_KEY_ENV_VAR"))
+	// Load configuration from .env file, particularly for non-test environments
+	if !isTest {
+		envPath := "/Users/ned/Documents/GitHub/thrylos/.env" // Specify the path to your .env file
+		if err := godotenv.Load(envPath); err != nil {
+			log.Fatalf("Error loading .env file from %s: %v", envPath, err)
+		} else {
+			log.Println(".env file loaded successfully")
+		}
+	}
+
+	// Retrieve the AES key securely from an environment variable, with a fallback for tests
+	aesKeyEncoded := os.Getenv("AES_KEY_ENV_VAR")
+	if aesKeyEncoded == "" {
+		if isTest {
+			aesKeyEncoded = "A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=" // Ensure this is properly base64-encoded
+		} else {
+			log.Fatal("AES key is not set in environment variables")
+		}
+	}
+
+	log.Printf("AES Key from environment: %s", aesKeyEncoded) // Debug output to see what is retrieved
+
+	aesKey, err := base64.StdEncoding.DecodeString(aesKeyEncoded)
+	if err != nil {
+		log.Fatalf("Failed to decode AES key: %v", err)
+	} else {
+		log.Println("AES key decoded successfully")
+	}
 
 	bc, err := NewBlockchain(dataDir, aesKey) // Pass both dataDir and aesKey to the NewBlockchain function
 	if err != nil {
@@ -186,6 +214,11 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	}
 
 	for _, input := range tx.Inputs {
+		if input.OwnerAddress == "" {
+			log.Printf("Transaction input with empty owner address: %+v", input)
+			return fmt.Errorf("sender address is empty")
+		}
+
 		senderAddress := input.OwnerAddress
 		if senderAddress == "" {
 			return fmt.Errorf("sender address is empty")
@@ -237,18 +270,53 @@ func ConvertThrylosToProtoTransaction(thrylosTx *thrylos.Transaction) *thrylos.T
 }
 
 func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
-	// Conversion logic goes here
-	// This is just a placeholder, adjust fields according to your actual struct definitions
-	return &shared.Transaction{
-		// Assuming both have similar fields but they may need conversion or renaming
-		ID:        tx.Id,
-		Timestamp: tx.Timestamp,
-		// Continue mapping all necessary fields from the thrylos.Transaction to shared.Transaction
+	if tx == nil {
+		return nil
 	}
+	return &shared.Transaction{
+		ID:                 tx.GetId(),
+		Timestamp:          tx.GetTimestamp(),
+		Inputs:             ConvertProtoInputs(tx.GetInputs()),
+		Outputs:            ConvertProtoOutputs(tx.GetOutputs()),
+		Signature:          tx.GetSignature(),
+		DilithiumSignature: tx.GetDilithiumSignature(),
+		PreviousTxIds:      tx.GetPreviousTxIds(),
+	}
+}
+
+func ConvertProtoInputs(inputs []*thrylos.UTXO) []shared.UTXO {
+	sharedInputs := make([]shared.UTXO, len(inputs))
+	for i, input := range inputs {
+		if input != nil {
+			sharedInputs[i] = shared.UTXO{
+				TransactionID: input.GetTransactionId(),
+				Index:         int(input.GetIndex()), // Corrected type conversion
+				OwnerAddress:  input.GetOwnerAddress(),
+				Amount:        int(input.GetAmount()), // Corrected type conversion
+			}
+		}
+	}
+	return sharedInputs
+}
+
+func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
+	sharedOutputs := make([]shared.UTXO, len(outputs))
+	for i, output := range outputs {
+		if output != nil {
+			sharedOutputs[i] = shared.UTXO{
+				TransactionID: output.GetTransactionId(),
+				Index:         int(output.GetIndex()), // Corrected type conversion
+				OwnerAddress:  output.GetOwnerAddress(),
+				Amount:        int(output.GetAmount()), // Corrected type conversion
+			}
+		}
+	}
+	return sharedOutputs
 }
 
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var tx thrylos.Transaction
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Printf("Error reading request body: %v", err)
@@ -256,25 +324,19 @@ func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		log.Printf("Received transaction request: %s", body)
+		log.Printf("Received transaction request: %s", string(body))
 
-		var tx thrylos.Transaction
 		if err := json.Unmarshal(body, &tx); err != nil {
-			log.Printf("Error decoding transaction: %v", err)
+			log.Printf("Error decoding transaction: %v, Body: %s", err, string(body))
 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
 			return
 		}
 
-		// Log details to debug
-		for _, input := range tx.Inputs {
-			log.Printf("Input owner address: %s", input.OwnerAddress)
-		}
-
-		log.Printf("Received transaction: %+v", tx)
+		log.Printf("Parsed transaction: %+v", tx)
 
 		// Verify and process the transaction
 		if err := node.VerifyAndProcessTransaction(&tx); err != nil {
-			log.Printf("Invalid transaction: %v", err)
+			log.Printf("Invalid transaction: %v, Transaction: %+v", err, tx)
 			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
 			return
 		}
@@ -284,16 +346,6 @@ func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Failed to add transaction to pending transactions: %v", err), http.StatusInternalServerError)
 			return
 		}
-
-		// Convert the thrylos.Transaction to shared.Transaction before broadcasting
-		sharedTx := ThrylosToShared(&tx)
-		if sharedTx == nil {
-			log.Println("Failed to convert transaction for broadcasting")
-			http.Error(w, "Failed to process transaction", http.StatusInternalServerError)
-			return
-		}
-
-		node.BroadcastTransaction(sharedTx)
 
 		log.Println("Transaction submitted and broadcasted successfully")
 		w.WriteHeader(http.StatusOK)

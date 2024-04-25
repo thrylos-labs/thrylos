@@ -216,16 +216,16 @@ func HashData(data []byte) []byte {
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID                 string   `json:"id"`
-	Timestamp          int64    `json:"timestamp"`
-	Inputs             []UTXO   `json:"inputs"`
-	Outputs            []UTXO   `json:"outputs"`
-	EncryptedInputs    []byte   `json:"encryptedInputs,omitempty"` // Use omitempty if the field can be empty
-	EncryptedOutputs   []byte   `json:"encryptedOutputs,omitempty"`
-	Signature          string   `json:"signature"`
-	EncryptedAESKey    []byte   `json:"encryptedAESKey,omitempty"` // Add this line
-	DilithiumSignature string   `json:"dilithiumSignature,omitempty"`
-	PreviousTxIds      []string `json:"previousTxIds,omitempty"`
+	ID                 string   `json:"ID"`
+	Timestamp          int64    `json:"Timestamp"`
+	Inputs             []UTXO   `json:"Inputs"`
+	Outputs            []UTXO   `json:"Outputs"`
+	EncryptedInputs    []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
+	EncryptedOutputs   []byte   `json:"EncryptedOutputs,omitempty"`
+	Signature          string   `json:"Signature"`
+	EncryptedAESKey    []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
+	DilithiumSignature string   `json:"DilithiumSignature,omitempty"`
+	PreviousTxIds      []string `json:"PreviousTxIds,omitempty"`
 }
 
 // select tips:
