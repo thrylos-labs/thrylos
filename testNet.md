@@ -17,20 +17,21 @@ cd cmd/clisigner
 
 Sign the transaction: 
 
-go run cli_signer.go -address="bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3" -transaction='{"sender": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3", "recipient": "140650119bd130250fbd9b75e84604f13ecaee05cbb15f783d25390b2ab9b23e", "amount": 100}'
+go run cli_signer.go -address="6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19" -transaction='{"sender": "6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19", "recipient": "8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7", "amount": 100}'
 
 [
     {
-        "Address": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3",
-        "PrivateKey": "7KuBYoufwg2MmQGcHL5LptRIqRMEb+H0gxE/3jLQf68bKDHMO22ssry+j3EzuVW0RrBt/oEzsJEoOer2t6fdrg==",
-        "PublicKey": "1b2831cc3b6dacb2bcbe8f7133b955b446b06dfe8133b0912839eaf6b7a7ddae"
+        "Address": "6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19",
+        "PrivateKey": "K0ePAElFeRugR+zMlajHN+aAvnxs21g78Sg/0+IqOLfcMUho7QcGG8dPn7D5f5cMWyLHW1kMSVLeyzjKXTz0zw==",
+        "PublicKey": "dc314868ed07061bc74f9fb0f97f970c5b22c75b590c4952decb38ca5d3cf4cf"
     },
     {
-        "Address": "140650119bd130250fbd9b75e84604f13ecaee05cbb15f783d25390b2ab9b23e",
-        "PrivateKey": "6m0IuJ+BkcwIALgYLbXkkrKUGyOVli8PnQl2oa3Te941vdIaAEHa8h06ZsIg0MBPc5jHc/VZTejmu2dmdLsM6A==",
-        "PublicKey": "35bdd21a0041daf21d3a66c220d0c04f7398c773f5594de8e6bb676674bb0ce8"
+        "Address": "8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7",
+        "PrivateKey": "MQedW0vZ6LhJXiZ5X53yZ84R8oFUYwFPezV9UgOxGE6nGGfYlA/cB8Foyyhphrj1/su8uMrBQGAct+skC1Lj4Q==",
+        "PublicKey": "a71867d8940fdc07c168cb286986b8f5fecbbcb8cac140601cb7eb240b52e3e1"
     }
 ]
+
 
 
 
@@ -43,15 +44,15 @@ Retreive the public key first:
 Sugmit the transaction using Curl:
 
 curl -X POST -H "Content-Type: application/json" -d '{
-    "sender": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3",
-    "recipient": "140650119bd130250fbd9b75e84604f13ecaee05cbb15f783d25390b2ab9b23e",
+    "sender": "6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19",
+    "recipient": "8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7",
     "amount": 100,
-    "signature": "Z1vmLjcVS2uCA0NzMl9YCcLY4kUihQm+dgkPt9ODgiow2d+uhJI/6gum4fnov20mzV4ZAH2wyzYjpLvoV9rNBQ==",
+    "signature": "zgxBpq439sTVn1qLOaALzqHdtYbmyBuZpajGZceXZd4oZiHwhDGfGEbM+OVLuo7UOdtQowAsfxql3EgcegGBA==",
     "inputs": [
         {
-            "transactionId": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3",
+            "transactionId": "genesis_6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19",
             "outputIndex": 0,
-            "signature": "Z1vmLjcVS2uCA0NzMl9YCcLY4kUihQm+dgkPt9ODgiow2d+uhJI/6gum4fnov20mzV4ZAH2wyzYjpLvoV9rNBQ=="
+            "signature": "zgxBpq439sTVn1qLOaALzqHdtYbmyBuZpajGZceXZd4oZiHwhDGfGEbM+OVLuo7UOdtQowAsfxql3EgcegGBA=="
         }
     ]
 }' http://localhost:8080/submit-transaction

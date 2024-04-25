@@ -82,25 +82,45 @@ type Fork struct {
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
-	// Initialize the BadgerDB database using the centralized function
-	db, err := database.InitializeDatabase(dataDir) // Adjust this call accordingly
+	// Initialize the database
+	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
 
-	// Initialize the BlockchainDB instance with the AES key for encryption
-	bdb := database.NewBlockchainDB(db, aesKey) // Use the NewBlockchainDB function
-
-	// Make sure to close the database if something fails during blockchain initialization
 	defer func() {
 		if err != nil {
 			db.Close()
 		}
 	}()
 
+	// Create a new BlockchainDB instance
+	bdb := database.NewBlockchainDB(db, aesKey)
+
+	// Create the genesis block
 	genesis := NewGenesisBlock()
 
-	// Construct and return the Blockchain instance
+	// Optionally, add initial transactions simulating a starting state
+	genesisTransactions := make([]*thrylos.Transaction, 0)
+	genesisSender := "genesis_sender_address"
+	initialBalance := int64(1000000) // Example starting balance, explicitly defined as int64
+
+	// Create a genesis transaction crediting the genesis account
+	genesisTx := &thrylos.Transaction{
+		Id:        "genesis_tx_1",
+		Timestamp: time.Now().Unix(),
+		Sender:    genesisSender, // The source of the transaction is the genesis sender
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress: genesisSender,
+			Amount:       initialBalance, // Correctly use int64 type
+		}},
+		Signature: "genesis_signature", // This would typically be a placeholder or symbolic signature
+	}
+
+	genesisTransactions = append(genesisTransactions, genesisTx)
+	genesis.Transactions = genesisTransactions
+
+	// Create and return the Blockchain instance
 	blockchain := &Blockchain{
 		Blocks:       []*Block{genesis},
 		Genesis:      genesis,
@@ -110,6 +130,7 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		Forks:        make([]*Fork, 0),
 	}
 
+	// Add any additional initialization here (e.g., registering the genesis transactions in the UTXO set)
 	return blockchain, nil
 }
 

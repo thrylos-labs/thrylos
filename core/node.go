@@ -178,8 +178,11 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey 
 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
 	}
 
-	// Create and sign the transaction using Ed25519
-	transaction, err := shared.CreateAndSignTransaction("txID", inputs, outputs, ed25519PrivateKey, dilithiumPrivateKey, aesKey)
+	// The transaction ID generation needs to be handled; here, it's statically assigned for example purposes
+	transactionID := "unique_transaction_id" // Replace with actual transaction ID logic
+
+	// Create and sign the transaction using Ed25519 and Dilithium keys, now also passing the sender's address
+	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, dilithiumPrivateKey, aesKey)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)
 	}
@@ -214,43 +217,37 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("transaction has no inputs")
 	}
 
-	for _, input := range tx.Inputs {
-		if input.OwnerAddress == "" {
-			log.Printf("Transaction input with empty owner address: %+v", input)
-			return fmt.Errorf("sender address is empty")
-		}
+	// Retrieve the sender's address from the transaction directly
+	senderAddress := tx.Sender
+	if senderAddress == "" {
+		log.Printf("Transaction with empty sender address: %+v", tx)
+		return fmt.Errorf("sender address is empty")
+	}
 
-		senderAddress := input.OwnerAddress
-		if senderAddress == "" {
-			return fmt.Errorf("sender address is empty")
-		}
+	// Example format validation for the sender's address (adapt regex to your needs)
+	if !regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(senderAddress) {
+		log.Printf("Invalid sender address format: %s", senderAddress)
+		return fmt.Errorf("invalid sender address format: %s", senderAddress)
+	}
 
-		// Example format validation (adapt regex to your needs)
-		if !regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(senderAddress) {
-			log.Printf("Invalid sender address format: %s", senderAddress)
-			return fmt.Errorf("invalid sender address format: %s", senderAddress)
-		}
+	log.Printf("VerifyAndProcessTransaction: Verifying transaction for sender address: %s", senderAddress)
+	// Retrieve the Ed25519 public key using the sender's address
+	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress)
+	if err != nil {
+		log.Printf("VerifyAndProcessTransaction: Failed to retrieve or validate Ed25519 public key for address %s: %v", senderAddress, err)
+		return fmt.Errorf("failed to retrieve or validate Ed25519 public key: %v", err)
+	}
 
-		log.Printf("VerifyAndProcessTransaction: Verifying transaction for sender address: %s", senderAddress)
-		// Use the RetrievePublicKey to get the Ed25519 public key
-		senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress)
-		if err != nil {
-			log.Printf("VerifyAndProcessTransaction: Failed to retrieve or validate Ed25519 public key for address %s: %v", senderAddress, err)
-			return fmt.Errorf("failed to retrieve or validate Ed25519 public key: %v", err)
-		}
+	// Retrieve the Dilithium public key if necessary
+	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(senderAddress)
+	if err != nil {
+		log.Printf("Failed to retrieve Dilithium public key for address %s: %v", senderAddress, err)
+		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
+	}
 
-		// Continue to retrieve Dilithium public key if necessary
-		// Assuming there's a similar RetrieveDilithiumPublicKey method
-		senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(senderAddress)
-		if err != nil {
-			log.Printf("Failed to retrieve Dilithium public key for address %s: %v", senderAddress, err)
-			return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
-		}
-
-		// Verify the transaction signature with the retrieved public keys
-		if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
-			return fmt.Errorf("transaction signature verification failed: %v", err)
-		}
+	// Verify the transaction signature with the retrieved public keys
+	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
+		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
 
 	// Process the transaction if all checks pass

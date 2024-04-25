@@ -15,6 +15,7 @@ message Transaction {
   string signature = 7 [json_name = "signature"];
   string dilithium_signature = 8 [json_name = "dilithiumSignature"];
   repeated string previous_tx_ids = 9 [json_name = "previousTxIds"];
+  string sender = 11 [json_name = "sender"];
 }
 
 message UTXO {

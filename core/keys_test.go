@@ -194,7 +194,7 @@ func TestTransactionSubmission(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	aesKey, _ := base64.StdEncoding.DecodeString("your_aes_key_here_base64")
+	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
 	blockchain, err := NewBlockchain(tempDir, aesKey)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)

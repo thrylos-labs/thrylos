@@ -226,6 +226,7 @@ type Transaction struct {
 	EncryptedAESKey    []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
 	DilithiumSignature string   `json:"DilithiumSignature,omitempty"`
 	PreviousTxIds      []string `json:"PreviousTxIds,omitempty"`
+	Sender             string   `json:"sender"`
 }
 
 // select tips:
@@ -236,7 +237,7 @@ func selectTips() ([]string, error) {
 
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519 and Dilithium keys.
 // Assuming Transaction is the correct type across your application:
-func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte, aesKey []byte) (*Transaction, error) {
+func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte, aesKey []byte) (*Transaction, error) {
 	// Select previous transactions to reference
 	previousTxIDs, err := selectTips()
 	if err != nil {
@@ -266,6 +267,7 @@ func CreateAndSignTransaction(id string, inputs []UTXO, outputs []UTXO, ed25519P
 	// Initialize the transaction, now including PreviousTxIDs
 	tx := Transaction{
 		ID:               id,
+		Sender:           sender,
 		EncryptedInputs:  encryptedInputs,
 		EncryptedOutputs: encryptedOutputs,
 		PreviousTxIds:    previousTxIDs,
@@ -363,6 +365,7 @@ func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
 	protoTx := &thrylos.Transaction{
 		Id:                 tx.ID,
+		Sender:             tx.Sender,
 		Timestamp:          tx.Timestamp,
 		Signature:          tx.Signature,
 		DilithiumSignature: tx.DilithiumSignature,
@@ -416,12 +419,14 @@ func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateK
 func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 	type TxTemp struct {
 		ID        string
+		Sender    string
 		Inputs    []UTXO
 		Outputs   []UTXO
 		Timestamp int64
 	}
 	temp := TxTemp{
 		ID:        tx.ID,
+		Sender:    tx.Sender,
 		Inputs:    tx.Inputs,
 		Outputs:   tx.Outputs,
 		Timestamp: tx.Timestamp,
@@ -469,7 +474,7 @@ func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO
 	}
 
 	// Assuming all inputs come from the same sender for simplicity
-	senderAddress := tx.GetInputs()[0].GetOwnerAddress()
+	senderAddress := tx.Sender // Use the sender field directly
 
 	// Retrieve the Ed25519 public key for the sender
 	ed25519PublicKey, err := getPublicKeyFunc(senderAddress)
