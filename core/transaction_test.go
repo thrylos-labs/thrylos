@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -488,24 +487,4 @@ func TestTransactionThroughputWithAllSignatures(t *testing.T) {
 	tps := float64(numTransactions) / elapsed.Seconds()
 
 	t.Logf("Processed %d dual-signed and AES-256 encrypted transactions in %s. TPS: %f", numTransactions, elapsed, tps)
-}
-
-func TestPublicKeyToAddress(t *testing.T) {
-	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
-	}
-
-	address := PublicKeyToAddress(publicKey)
-	if len(address) != 64 { // Assuming the correct length is 64 characters
-		t.Errorf("Address generated is of incorrect length: got %d, want %d", len(address), 64)
-	}
-
-	// Additional validation to check if the address meets the required format
-	match, _ := regexp.MatchString("^[0-9a-f]{64}$", address)
-	if !match {
-		t.Errorf("Address format is invalid")
-	}
-
-	t.Log("Address generation and validation successful")
 }

@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"database/sql"
-	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -15,8 +14,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
 
@@ -87,7 +84,6 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
-
 	defer func() {
 		if err != nil {
 			db.Close()
@@ -100,31 +96,44 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	// Create the genesis block
 	genesis := NewGenesisBlock()
 
-	// Optionally, add initial transactions simulating a starting state
+	// Add initial transactions simulating a starting state
 	genesisTransactions := make([]*thrylos.Transaction, 0)
-	genesisSender := "genesis_sender_address"
-	initialBalance := int64(1000000) // Example starting balance, explicitly defined as int64
 
-	// Create a genesis transaction crediting the genesis account
-	genesisTx := &thrylos.Transaction{
-		Id:        "genesis_tx_1",
-		Timestamp: time.Now().Unix(),
-		Sender:    genesisSender, // The source of the transaction is the genesis sender
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: genesisSender,
-			Amount:       initialBalance, // Correctly use int64 type
-		}},
-		Signature: "genesis_signature", // This would typically be a placeholder or symbolic signature
+	// Simulate several stakeholders
+	stakeholders := []struct {
+		Address string
+		Balance int64
+	}{
+		{"address1", 10000},
+		{"address2", 20000},
+		{"address3", 15000},
 	}
 
-	genesisTransactions = append(genesisTransactions, genesisTx)
+	// Initialize Stakeholders map
+	stakeholdersMap := make(map[string]int)
+
+	// Create a genesis transaction for each stakeholder
+	for _, stakeholder := range stakeholders {
+		genesisTx := &thrylos.Transaction{
+			Id:        "genesis_tx_" + stakeholder.Address,
+			Timestamp: time.Now().Unix(),
+			Outputs: []*thrylos.UTXO{{
+				OwnerAddress: stakeholder.Address,
+				Amount:       stakeholder.Balance,
+			}},
+			Signature: "genesis_signature", // Placeholder
+		}
+		genesisTransactions = append(genesisTransactions, genesisTx)
+		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance) // Initialize stakeholder stakes
+	}
+
 	genesis.Transactions = genesisTransactions
 
 	// Create and return the Blockchain instance
 	blockchain := &Blockchain{
 		Blocks:       []*Block{genesis},
 		Genesis:      genesis,
-		Stakeholders: make(map[string]int),
+		Stakeholders: stakeholdersMap,
 		Database:     bdb,
 		UTXOs:        make(map[string][]*thrylos.UTXO),
 		Forks:        make([]*Fork, 0),
@@ -135,11 +144,32 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		for idx, out := range tx.Outputs {
 			utxoKey := fmt.Sprintf("%s:%d", tx.Id, idx)
 			blockchain.UTXOs[utxoKey] = append(blockchain.UTXOs[utxoKey], out)
+			log.Printf("UTXO added for address %s with amount %d", out.OwnerAddress, out.Amount)
 		}
 	}
 
-	// Add any additional initialization here (e.g., registering the genesis transactions in the UTXO set)
 	return blockchain, nil
+}
+
+func (bc *Blockchain) MintTokens(toAddress string, amount int) error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	mintTx := &thrylos.Transaction{
+		Id:        "mint_tx_" + toAddress,
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress: toAddress,
+			Amount:       int64(amount),
+		}},
+		Signature: "system_signature", // System signature or a special validation
+	}
+
+	// Validate and process the transaction
+	// This example skips validation since it's a system-generated transaction
+	bc.AddPendingTransaction(mintTx)
+	_, err := bc.ProcessPendingTransactions("system") // Assumes system or another validator processes this
+	return err
 }
 
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
@@ -232,51 +262,6 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 	publicKey := ed25519.PublicKey(publicKeyBytes)
 	log.Printf("Successfully retrieved and validated public key for address: %s", ownerAddress)
 	return publicKey, nil
-}
-
-// Ensures that as your blockchain starts up, it has predefined transactions that allocate funds to specific accounts, providing you with a controlled setup for further development and testing.
-func (bc *Blockchain) CreateInitialFunds(accounts []Account, signingKey ed25519.PrivateKey) error {
-	log.Println("Creating initial funds...")
-	var transactions []*thrylos.Transaction
-
-	for _, account := range accounts {
-		output := &thrylos.UTXO{
-			OwnerAddress: account.Address,
-			Amount:       int64(account.Balance), // Use the balance already set in the account
-		}
-		transaction := thrylos.Transaction{
-			Id:        "genesis_" + account.Address,
-			Timestamp: time.Now().Unix(),
-			Outputs:   []*thrylos.UTXO{output},
-		}
-
-		// Serialize and sign the transaction
-		txBytes, err := proto.Marshal(&transaction)
-		if err != nil {
-			log.Printf("Failed to serialize transaction: %v", err)
-			return err
-		}
-		signature := ed25519.Sign(signingKey, txBytes)
-		transaction.Signature = base64.StdEncoding.EncodeToString(signature)
-
-		transactions = append(transactions, &transaction)
-	}
-
-	// Assuming GetLastBlock is implemented to fetch the last block
-	prevBlock, err := bc.GetLastBlock()
-	prevHash := "0000000000000000000000000000000000000000000000000000000000000000" // Genesis block hash
-	if prevBlock != nil {
-		prevHash = prevBlock.Hash
-	}
-
-	_, err = bc.AddBlock(transactions, "genesis_validator", prevHash)
-	if err != nil {
-		log.Printf("Failed to add genesis block: %v", err)
-		return err
-	}
-
-	log.Println("Genesis block added successfully.")
-	return nil
 }
 
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.

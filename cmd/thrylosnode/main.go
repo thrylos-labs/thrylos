@@ -2,8 +2,6 @@ package main
 
 import (
 	"Thrylos/core"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -34,6 +32,11 @@ func main() {
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
 	wasmPath := os.Getenv("WASM_PATH")
 
+	if testnet {
+		fmt.Println("Running in Testnet Mode")
+		// Specific settings for testnet can be configured here
+	}
+
 	if wasmPath == "" {
 		log.Fatal("WASM_PATH environment variable not set")
 	}
@@ -58,12 +61,6 @@ func main() {
 		log.Fatalf("Error decoding AES key: %v", err)
 	}
 
-	// Example of key generation
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		log.Fatalf("Failed to generate genesis key: %v", err)
-	}
-
 	// Get the absolute path of the node data directory
 	absPath, err := filepath.Abs(nodeDataDir)
 	if err != nil {
@@ -82,26 +79,6 @@ func main() {
 		log.Fatal("Blockchain integrity check failed.")
 	} else {
 		fmt.Println("Blockchain integrity check passed.")
-	}
-
-	if testnet {
-		log.Println("Creating initial funds and test accounts...")
-		testAccounts, err := blockchain.InitializeTestnetAccounts(10)
-		if err != nil {
-			log.Fatalf("Failed to initialize testnet accounts: %v", err)
-		}
-
-		err = blockchain.CreateInitialFunds(testAccounts, privateKey)
-		if err != nil {
-			log.Fatalf("Failed to create initial funds: %v", err)
-		} else {
-			log.Println("Genesis block transactions created successfully.")
-		}
-
-		log.Println("Initialized test accounts:")
-		for _, account := range testAccounts {
-			log.Printf("Account: Address: %s, PublicKey: %x\n", account.Address, account.PublicKey)
-		}
 	}
 
 	// Initialize a new node with the specified address and known peers
