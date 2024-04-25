@@ -9,11 +9,12 @@ message Transaction {
   int64 timestamp = 2 [json_name = "timestamp"];
   repeated UTXO inputs = 3 [json_name = "inputs"];
   repeated UTXO outputs = 4 [json_name = "outputs"];
-  bytes encrypted_inputs = 8 [json_name = "encryptedInputs"];
-  bytes encrypted_outputs = 9 [json_name = "encryptedOutputs"];
-  string signature = 5 [json_name = "signature"];
-  string dilithium_signature = 6 [json_name = "dilithiumSignature"];
-  repeated string previous_tx_ids = 7 [json_name = "previousTxIds"];
+  bytes encrypted_inputs = 5 [json_name = "encryptedInputs"];
+  bytes encrypted_outputs = 6 [json_name = "encryptedOutputs"];
+  bytes encrypted_aes_key = 10 [json_name = "encryptedAESKey"];
+  string signature = 7 [json_name = "signature"];
+  string dilithium_signature = 8 [json_name = "dilithiumSignature"];
+  repeated string previous_tx_ids = 9 [json_name = "previousTxIds"];
 }
 
 message UTXO {

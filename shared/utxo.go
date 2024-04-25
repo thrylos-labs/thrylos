@@ -10,11 +10,11 @@ import (
 // that has not been spent and can be used as an input in a new transaction. UTXOs are fundamental
 // to understanding a user's balance within the blockchain.
 type UTXO struct {
-	ID            string // Unique identifier for the UTXO, often a hash.
-	TransactionID string // Identifier of the transaction that created this UTXO.
-	Index         int    // Position of this output in the transaction's list of outputs.
-	OwnerAddress  string // Blockchain address of the owner who can spend this UTXO.
-	Amount        int    // Amount of digital currency this UTXO represents.
+	ID            string `json:"ID,omitempty"` // Use omitempty if the field can be empty
+	TransactionID string `json:"TransactionID"`
+	Index         int    `json:"Index"`
+	OwnerAddress  string `json:"OwnerAddress"`
+	Amount        int    `json:"Amount"`
 }
 
 // When creating or updating transactions to be serialized with Protobuf, you'll use ConvertSharedUTXOToProto to convert your application's internal UTXO representations into the format expected by Protobuf before serialization.

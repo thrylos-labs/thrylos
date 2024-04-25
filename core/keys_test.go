@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io/ioutil"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 )
@@ -144,5 +146,185 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 
 	if !bytes.Equal(retrievedKey, publicKey) {
 		t.Errorf("Retrieved key does not match the inserted key")
+	}
+}
+
+// Assuming you have a way to mock or create an account for testing
+// var testKeyStore = make(map[string]ed25519.PrivateKey)
+
+// func simulateKeyStorage(accounts []Account) {
+// 	for _, account := range accounts {
+// 		_, privateKey, _ := ed25519.GenerateKey(rand.Reader) // Generate a new key for each account
+// 		testKeyStore[account.Address] = privateKey           // Store the key in a map (only for testing)
+// 	}
+// }
+
+// func getPrivateKeyForAddress(address string) ed25519.PrivateKey {
+// 	return testKeyStore[address] // Retrieve the key (only for testing)
+// }
+
+// func TestTransactionSubmission(t *testing.T) {
+
+// 	// Mock an AES key for testing
+// 	testAESKey := []byte("1234567890123456") // 16 bytes for AES-128
+// 	os.Setenv("AES_KEY_ENV_VAR", base64.StdEncoding.EncodeToString(testAESKey))
+
+// 	// Setup: create a test blockchain and node
+// 	tempDir, err := ioutil.TempDir("", "blockchain_test")
+// 	if err != nil {
+// 		t.Fatalf("Failed to create temporary directory: %v", err)
+// 	}
+// 	defer os.RemoveAll(tempDir)
+
+// 	// Initialize node with nil for shard as it might not be needed for this test
+// 	node := NewNode("http://localhost:8080", []string{}, tempDir, nil, true) // true indicates it is a test
+
+// 	// Initialize test accounts
+// 	testAccounts, err := node.Blockchain.InitializeTestnetAccounts(10)
+// 	if err != nil {
+// 		t.Fatalf("Failed to initialize testnet accounts: %v", err)
+// 	}
+
+// 	simulateKeyStorage(testAccounts) // Simulate key storage for testing
+
+// 	if len(testAccounts) != 10 {
+// 		t.Fatalf("Expected 10 test accounts, got %d", len(testAccounts))
+// 	}
+
+// 	// Assume accounts[0] is the sender and accounts[1] is the recipient
+// 	sender := testAccounts[0]
+// 	recipient := testAccounts[1]
+
+// 	// Create a transaction
+// 	tx := shared.Transaction{
+// 		ID:        "transaction_id_here",
+// 		Timestamp: time.Now().Unix(),
+// 		Inputs: []shared.UTXO{
+// 			{
+// 				TransactionID: "previous_tx_id",
+// 				Index:         0,
+// 				OwnerAddress:  sender.Address,
+// 				Amount:        100,
+// 			},
+// 		},
+// 		Outputs: []shared.UTXO{
+// 			{
+// 				TransactionID: "transaction_id_here",
+// 				Index:         0,
+// 				OwnerAddress:  recipient.Address,
+// 				Amount:        100,
+// 			},
+// 		},
+// 	}
+
+// 	// Before serializing the transaction:
+// 	if sender.Address == "" {
+// 		t.Errorf("Sender address is empty before serialization")
+// 	}
+
+// 	// Serialize the transaction into JSON
+// 	txJSON, err := json.Marshal(tx)
+// 	if err != nil {
+// 		t.Fatalf("Failed to serialize transaction: %v", err)
+// 	}
+
+// 	// Debug log
+// 	t.Logf("Serialized transaction JSON: %s", string(txJSON))
+
+// 	// Retrieve the private key for signing (simulated for testing)
+// 	privateKey := getPrivateKeyForAddress(sender.Address)
+
+// 	// Sign the transaction
+// 	signature, err := signTransaction(privateKey, txJSON)
+// 	if err != nil {
+// 		t.Fatalf("Failed to sign transaction data: %v", err)
+// 	}
+// 	log.Printf("Transaction with signature: %+v", tx)
+
+// 	// Append the signature to your transaction
+// 	tx.Signature = signature
+// 	txJSON, err = json.Marshal(tx)
+// 	if err != nil {
+// 		t.Fatalf("Failed to serialize transaction with signature: %v", err)
+// 	}
+
+// 	// Create an HTTP request to simulate submitting the transaction
+// 	req, err := http.NewRequest("POST", "/submit-transaction", bytes.NewReader(txJSON))
+// 	if err != nil {
+// 		t.Fatalf("Failed to create request: %v", err)
+// 	}
+// 	req.Header.Set("Content-Type", "application/json")
+
+// 	// Use httptest to record HTTP response
+// 	rr := httptest.NewRecorder()
+// 	handler := http.HandlerFunc(node.SubmitTransactionHandler())
+
+// 	handler.ServeHTTP(rr, req)
+
+// 	// Check the status code and response body
+// 	if status := rr.Code; status != http.StatusOK {
+// 		t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+// 	}
+
+// 	expected := "Transaction submitted successfully"
+// 	if rr.Body.String() != expected {
+// 		t.Errorf("Handler returned unexpected body: got %v want %v", rr.Body.String(), expected)
+// 	}
+// }
+
+// // Utilize the provided signTransaction method
+// func signTransaction(privateKey ed25519.PrivateKey, transactionData []byte) (string, error) {
+// 	signature := ed25519.Sign(privateKey, transactionData)
+// 	return base64.StdEncoding.EncodeToString(signature), nil
+// }
+
+func TestTransactionSubmissionDirectTest(t *testing.T) {
+	// Setup server and environment as before
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	node := NewNode("http://localhost:8080", []string{}, tempDir, nil, true)
+
+	// Hardcoded transaction JSON
+	hardcodedJSON := `{
+        "ID": "transaction_id_here",
+        "Timestamp": 1714042156,
+        "Inputs": [{
+            "TransactionID": "previous_tx_id",
+            "Index": 0,
+            "OwnerAddress": "c623f591835d9846f3b0180593956bd213439cc6acec5a11c5afc63792ba3900",
+            "Amount": 100
+        }],
+        "Outputs": [{
+            "TransactionID": "transaction_id_here",
+            "Index": 0,
+            "OwnerAddress": "1efadd9af828a4fdb20c1a149bd798fa798b25b2acfc27489dde00d5b265fd22",
+            "Amount": 100
+        }],
+        "Signature": "dummy_signature"
+    }`
+
+	// Create an HTTP request to simulate submitting the transaction
+	req, err := http.NewRequest("POST", "/submit-transaction", bytes.NewBufferString(hardcodedJSON))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Use httptest to record HTTP response
+	rr := httptest.NewRecorder()
+	handler := http.HandlerFunc(node.SubmitTransactionHandler())
+
+	handler.ServeHTTP(rr, req)
+
+	// Check the status code and response body
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+		t.Errorf("Handler returned unexpected body: got %v want %v", rr.Body.String(), "Transaction submitted successfully")
+	} else {
+		t.Log("Transaction submitted successfully")
 	}
 }

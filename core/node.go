@@ -7,9 +7,11 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 )
 
@@ -183,36 +185,41 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("transaction has no inputs")
 	}
 
-	senderAddress := tx.Inputs[0].OwnerAddress
-	log.Printf("Verifying transaction for sender address: %s", senderAddress)
+	for _, input := range tx.Inputs {
+		senderAddress := input.OwnerAddress
+		if senderAddress == "" {
+			return fmt.Errorf("sender address is empty")
+		}
 
-	// Sanitize and format the sender address
-	formattedAddress, err := shared.SanitizeAndFormatAddress(senderAddress)
-	if err != nil {
-		log.Printf("Address formatting error for %s: %v", senderAddress, err)
-		return fmt.Errorf("invalid address format: %v", err)
+		// Example format validation (adapt regex to your needs)
+		if !regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(senderAddress) {
+			log.Printf("Invalid sender address format: %s", senderAddress)
+			return fmt.Errorf("invalid sender address format: %s", senderAddress)
+		}
+
+		log.Printf("VerifyAndProcessTransaction: Verifying transaction for sender address: %s", senderAddress)
+		// Use the RetrievePublicKey to get the Ed25519 public key
+		senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress)
+		if err != nil {
+			log.Printf("VerifyAndProcessTransaction: Failed to retrieve or validate Ed25519 public key for address %s: %v", senderAddress, err)
+			return fmt.Errorf("failed to retrieve or validate Ed25519 public key: %v", err)
+		}
+
+		// Continue to retrieve Dilithium public key if necessary
+		// Assuming there's a similar RetrieveDilithiumPublicKey method
+		senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(senderAddress)
+		if err != nil {
+			log.Printf("Failed to retrieve Dilithium public key for address %s: %v", senderAddress, err)
+			return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
+		}
+
+		// Verify the transaction signature with the retrieved public keys
+		if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
+			return fmt.Errorf("transaction signature verification failed: %v", err)
+		}
 	}
 
-	// Retrieve the sender's Ed25519 public key
-	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(formattedAddress)
-	if err != nil {
-		log.Printf("Failed to retrieve Ed25519 public key for address %s: %v", formattedAddress, err)
-		return fmt.Errorf("failed to retrieve Ed25519 public key: %v", err)
-	}
-
-	// Retrieve the sender's Dilithium public key
-	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(formattedAddress)
-	if err != nil {
-		log.Printf("Failed to retrieve Dilithium public key for address %s: %v", formattedAddress, err)
-		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
-	}
-
-	// Verify the transaction signature with the retrieved public keys
-	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
-		return fmt.Errorf("transaction signature verification failed: %v", err)
-	}
-
-	// Process the transaction...
+	// Process the transaction if all checks pass
 	return nil
 }
 
@@ -242,14 +249,28 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			log.Printf("Error reading request body: %v", err)
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received transaction request: %s", body)
+
 		var tx thrylos.Transaction
-		if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
+		if err := json.Unmarshal(body, &tx); err != nil {
 			log.Printf("Error decoding transaction: %v", err)
 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
 			return
 		}
 
-		log.Println("Received transaction:", tx)
+		// Log details to debug
+		for _, input := range tx.Inputs {
+			log.Printf("Input owner address: %s", input.OwnerAddress)
+		}
+
+		log.Printf("Received transaction: %+v", tx)
 
 		// Verify and process the transaction
 		if err := node.VerifyAndProcessTransaction(&tx); err != nil {
@@ -258,20 +279,23 @@ func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Add the transaction to the pending transactions
 		if err := node.AddPendingTransaction(&tx); err != nil {
 			log.Printf("Failed to add transaction to pending transactions: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to add transaction to pending transactions: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		// Convert the transaction and broadcast it to peers in the network
+		// Convert the thrylos.Transaction to shared.Transaction before broadcasting
 		sharedTx := ThrylosToShared(&tx)
+		if sharedTx == nil {
+			log.Println("Failed to convert transaction for broadcasting")
+			http.Error(w, "Failed to process transaction", http.StatusInternalServerError)
+			return
+		}
+
 		node.BroadcastTransaction(sharedTx)
 
 		log.Println("Transaction submitted and broadcasted successfully")
-
-		// Respond with success
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Transaction submitted successfully"))
 	}

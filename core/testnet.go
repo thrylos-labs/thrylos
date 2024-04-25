@@ -59,6 +59,7 @@ func (bc *Blockchain) InitializeTestnetAccounts(predefinedAccountCount int) ([]A
 }
 
 func storeKeys(bc *Blockchain, address string, edPrivateKey, diPrivateKey []byte, edPublicKey ed25519.PublicKey) error {
+
 	if err := bc.Database.InsertOrUpdatePrivateKey(address+"-ed25519", edPrivateKey); err != nil {
 		return fmt.Errorf("error inserting/updating Ed25519 private key: %v", err)
 	}
@@ -88,7 +89,11 @@ func storeKeys(bc *Blockchain, address string, edPrivateKey, diPrivateKey []byte
 // PublicKeyToAddress converts an Ed25519 public key to a blockchain address string.
 func PublicKeyToAddress(publicKey ed25519.PublicKey) string {
 	publicKeyHash := sha256.Sum256(publicKey)
-	return hex.EncodeToString(publicKeyHash[:]) // Ensures exactly 64 characters
+	address := hex.EncodeToString(publicKeyHash[:]) // Ensures exactly 64 characters
+	if len(address) != 64 {                         // example check, adjust according to your actual format requirements
+		log.Printf("Generated address '%s' is of incorrect length", address)
+	}
+	return address
 }
 
 // GenerateDilithiumKeys generates a new Dilithium public/private key pair.

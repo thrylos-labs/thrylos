@@ -266,14 +266,15 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 	return utxos, nil
 }
 
-var addressRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-
 func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {
-	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40}$`) // Adjust regex as needed for the specific format you expect
+	address = strings.TrimSpace(address)
+	address = strings.ToLower(address)
+
+	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
 	if !addressRegex.MatchString(address) {
-		return "", fmt.Errorf("invalid address format")
+		return "", fmt.Errorf("invalid address format: %s", address)
 	}
-	return strings.ToLower(address), nil
+	return address, nil
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKey []byte) error {

@@ -216,17 +216,16 @@ func HashData(data []byte) []byte {
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID                 string
-	Timestamp          int64
-	Inputs             []UTXO
-	Outputs            []UTXO
-	EncryptedInputs    []byte // Add these fields to store encrypted data
-	EncryptedOutputs   []byte // Add these fields to store encrypted data
-	EncryptedAESKey    []byte // Add this field to hold the RSA-encrypted AES key
-	Signature          string
-	DilithiumSignature string // New field for the Dilithium signature
-	// Add a slice to store IDs of previous transactions, forming the DAG structure
-	PreviousTxIds []string
+	ID                 string   `json:"id"`
+	Timestamp          int64    `json:"timestamp"`
+	Inputs             []UTXO   `json:"inputs"`
+	Outputs            []UTXO   `json:"outputs"`
+	EncryptedInputs    []byte   `json:"encryptedInputs,omitempty"` // Use omitempty if the field can be empty
+	EncryptedOutputs   []byte   `json:"encryptedOutputs,omitempty"`
+	Signature          string   `json:"signature"`
+	EncryptedAESKey    []byte   `json:"encryptedAESKey,omitempty"` // Add this line
+	DilithiumSignature string   `json:"dilithiumSignature,omitempty"`
+	PreviousTxIds      []string `json:"previousTxIds,omitempty"`
 }
 
 // select tips:
@@ -582,16 +581,23 @@ func processTransactions(transactions []*Transaction) {
 	// Proceed with further transaction processing...
 }
 
-var addressRegex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-
+// SanitizeAndFormatAddress cleans and validates blockchain addresses.
 // SanitizeAndFormatAddress cleans and validates blockchain addresses.
 func SanitizeAndFormatAddress(address string) (string, error) {
-	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`) // Updated to match both lengths of 40 and 64 characters
+	originalAddress := address // Store the original address for logging
+	address = strings.TrimSpace(address)
+	address = strings.ToLower(address)
 
+	log.Printf("SanitizeAndFormatAddress: original='%s', trimmed and lowercased='%s'", originalAddress, address)
+
+	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
 	if !addressRegex.MatchString(address) {
-		return "", fmt.Errorf("invalid address format")
+		log.Printf("SanitizeAndFormatAddress: invalid format after regex check, address='%s'", address)
+		return "", fmt.Errorf("invalid address format: %s", address)
 	}
-	return strings.ToLower(address), nil
+
+	log.Printf("SanitizeAndFormatAddress: validated and formatted address='%s'", address)
+	return address, nil
 }
 
 // func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {

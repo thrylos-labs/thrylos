@@ -3,9 +3,6 @@ To run the testnet in terminal type:
 Navigate to the directory containing your main.go using: 
 cd cmd/thrylosnode
 
-Then run the encryption: 
-export AES_KEY_ENV_VAR='b8Eq7a0EWz06Ova4VNRN8ad6TkzCZkxNXm926rtNM2I='
-
 By starting with new addresses, you can test how the system handles initialization, empty blocks, new transactions, and other edge cases more effectively.
 
 then:
@@ -20,7 +17,22 @@ cd cmd/clisigner
 
 Sign the transaction: 
 
-go run cli_signer.go -address="1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2" -transaction='{"sender": "1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2", "recipient": "33c5cb2862568a9b75997538af3b1c77a2f75c47fd99ebef99226e3da608192a", "amount": 100}'
+go run cli_signer.go -address="bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3" -transaction='{"sender": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3", "recipient": "140650119bd130250fbd9b75e84604f13ecaee05cbb15f783d25390b2ab9b23e", "amount": 100}'
+
+[
+    {
+        "Address": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3",
+        "PrivateKey": "7KuBYoufwg2MmQGcHL5LptRIqRMEb+H0gxE/3jLQf68bKDHMO22ssry+j3EzuVW0RrBt/oEzsJEoOer2t6fdrg==",
+        "PublicKey": "1b2831cc3b6dacb2bcbe8f7133b955b446b06dfe8133b0912839eaf6b7a7ddae"
+    },
+    {
+        "Address": "140650119bd130250fbd9b75e84604f13ecaee05cbb15f783d25390b2ab9b23e",
+        "PrivateKey": "6m0IuJ+BkcwIALgYLbXkkrKUGyOVli8PnQl2oa3Te941vdIaAEHa8h06ZsIg0MBPc5jHc/VZTejmu2dmdLsM6A==",
+        "PublicKey": "35bdd21a0041daf21d3a66c220d0c04f7398c773f5594de8e6bb676674bb0ce8"
+    }
+]
+
+
 
 
 Retreive the public key first:
@@ -31,15 +43,15 @@ Retreive the public key first:
 Sugmit the transaction using Curl:
 
 curl -X POST -H "Content-Type: application/json" -d '{
-    "sender": "1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2",
-    "recipient": "1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2",
+    "sender": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3",
+    "recipient": "140650119bd130250fbd9b75e84604f13ecaee05cbb15f783d25390b2ab9b23e",
     "amount": 100,
-    "signature": "55qEsDuiChWA66Cyiq72FxBf5NWhnMTB0a4LXff2NKnzlEq1c/TFMdYXBTjT3QwfCWJ0Cs/XcRQhHP1OepbdDw==",
+    "signature": "Z1vmLjcVS2uCA0NzMl9YCcLY4kUihQm+dgkPt9ODgiow2d+uhJI/6gum4fnov20mzV4ZAH2wyzYjpLvoV9rNBQ==",
     "inputs": [
         {
-            "transactionId": "genesis_1a1c45b4b5b8ac712a8e03ac8d73f70659414a1017e4a6df0e6b4c40353e56a2",
+            "transactionId": "bef445733a165742b6a7a3d5125ee28b60a0777f5c2c0c5bb7e3327f81d8cac3",
             "outputIndex": 0,
-            "signature": "gUlqrDliv6vDiFt4JfB6HkNpPsLoFtoKwHnZJdIWRpDBF1qT5fij8ufksqHvad+k26MaPPxv5i1nz7DtezreCg=="
+            "signature": "Z1vmLjcVS2uCA0NzMl9YCcLY4kUihQm+dgkPt9ODgiow2d+uhJI/6gum4fnov20mzV4ZAH2wyzYjpLvoV9rNBQ=="
         }
     ]
 }' http://localhost:8080/submit-transaction
