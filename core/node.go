@@ -5,6 +5,7 @@ import (
 	"Thrylos/shared"
 	"bytes"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
