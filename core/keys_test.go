@@ -237,3 +237,63 @@ func TestTransactionSubmission(t *testing.T) {
 
 	t.Log("Transaction submission and processing test passed")
 }
+
+func TestSenderVerification(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "testBlockchain")
+	if err != nil {
+		t.Fatalf("Failed to create temp directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
+	blockchain, err := NewBlockchain(tempDir, aesKey)
+	if err != nil {
+		t.Fatalf("Failed to initialize blockchain: %v", err)
+	}
+
+	senderPublicKey, senderPrivateKey, _ := ed25519.GenerateKey(rand.Reader)
+	senderAddress := base64.StdEncoding.EncodeToString(senderPublicKey)
+	recipientPublicKey, _, _ := ed25519.GenerateKey(rand.Reader)
+	recipientAddress := base64.StdEncoding.EncodeToString(recipientPublicKey)
+
+	// Assign initial tokens to the sender for testing
+	blockchain.Stakeholders[senderAddress] = 1000 // Corrected initial balance
+
+	transaction := &thrylos.Transaction{
+		Id:        "txTest1234",
+		Timestamp: time.Now().Unix(),
+		Sender:    senderAddress, // Explicitly set the sender
+		Inputs:    []*thrylos.UTXO{{TransactionId: "genesis_tx", Index: 0, OwnerAddress: senderAddress, Amount: 100}},
+		Outputs:   []*thrylos.UTXO{{TransactionId: "txTest1234", Index: 0, OwnerAddress: recipientAddress, Amount: 95}},
+		Signature: "",
+	}
+
+	// Serialize and sign the transaction
+	txBytes, _ := json.Marshal(transaction)
+	signature := ed25519.Sign(senderPrivateKey, txBytes)
+	transaction.Signature = base64.StdEncoding.EncodeToString(signature)
+
+	// Add transaction to pending transactions
+	blockchain.AddPendingTransaction(transaction)
+
+	// Process the pending transactions
+	_, err = blockchain.ProcessPendingTransactions(senderAddress)
+	if err != nil {
+		t.Errorf("Failed to process pending transactions: %v", err)
+	}
+
+	// Verify sender's balance post-transaction
+	senderBalance, _ := blockchain.GetBalance(senderAddress)
+	expectedSenderBalance := 905 // 1000 initial - 95 sent + 0 change
+	if senderBalance != expectedSenderBalance {
+		t.Errorf("Sender's balance after transaction incorrect, expected %d, got %d", expectedSenderBalance, senderBalance)
+	}
+
+	// Verify recipient's balance post-transaction
+	recipientBalance, _ := blockchain.GetBalance(recipientAddress)
+	if recipientBalance != 95 {
+		t.Errorf("Transaction amount not reflected in recipient's balance, expected 95, got %d", recipientBalance)
+	}
+
+	t.Log("Sender verification test passed")
+}

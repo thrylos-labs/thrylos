@@ -130,6 +130,14 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		Forks:        make([]*Fork, 0),
 	}
 
+	// Register genesis transaction outputs as UTXOs
+	for _, tx := range genesis.Transactions {
+		for idx, out := range tx.Outputs {
+			utxoKey := fmt.Sprintf("%s:%d", tx.Id, idx)
+			blockchain.UTXOs[utxoKey] = append(blockchain.UTXOs[utxoKey], out)
+		}
+	}
+
 	// Add any additional initialization here (e.g., registering the genesis transactions in the UTXO set)
 	return blockchain, nil
 }
@@ -174,22 +182,23 @@ func (bc *Blockchain) GetBalance(address string) (int, error) {
 
 	for _, block := range bc.Blocks {
 		for _, tx := range block.Transactions {
-			// Check inputs (subtract from balance if this address spent coins)
-			for _, input := range tx.Inputs {
-				if input.OwnerAddress == address {
-					// Mark the input as spent
-					spentKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
-					spentOutputs[spentKey] = true
-					balance -= int(input.Amount)
+			// Check outputs first - add to the balance if this address received coins
+			for i, output := range tx.Outputs {
+				outputKey := fmt.Sprintf("%s:%d", tx.Id, i)
+				if output.OwnerAddress == address {
+					if !spentOutputs[outputKey] {
+						balance += int(output.Amount)
+					}
 				}
 			}
 
-			// Check outputs (add to balance if this address received coins)
-			for i, output := range tx.Outputs {
-				if output.OwnerAddress == address {
-					outputKey := fmt.Sprintf("%s:%d", tx.Id, i)
-					if !spentOutputs[outputKey] {
-						balance += int(output.Amount)
+			// Check inputs - subtract from balance if this address spent coins and the outputs had been added to the balance
+			for _, input := range tx.Inputs {
+				if input.OwnerAddress == address {
+					spentKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
+					if !spentOutputs[spentKey] { // Check if this input was already marked as spent
+						spentOutputs[spentKey] = true
+						balance -= int(input.Amount)
 					}
 				}
 			}
