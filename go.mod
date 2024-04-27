@@ -7,6 +7,7 @@ require (
 	github.com/gballet/go-verkle v0.1.0
 	github.com/joho/godotenv v1.5.1
 	github.com/rs/cors v1.10.1
+	github.com/stretchr/testify v1.9.0
 	github.com/wasmerio/wasmer-go v1.0.4
 	google.golang.org/grpc v1.63.2
 	google.golang.org/protobuf v1.33.0
@@ -27,8 +28,7 @@ require (
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/stretchr/objx v0.5.2 // indirect
-	github.com/stretchr/testify v1.9.0 // indirect
+	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	golang.org/x/net v0.24.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/sys v0.19.0 // indirect
