@@ -5,6 +5,7 @@ import (
 	"Thrylos/shared"
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
@@ -22,31 +23,31 @@ import (
 
 type Block struct {
 	// Index is the position of the block in the blockchain, starting from 0 for the genesis block.
-	Index int
+	Index int `json:"index"`
 
 	// Timestamp represents the time at which the block was created, measured in seconds since
 	// the Unix epoch. It ensures the chronological order of blocks within the blockchain.
-	Timestamp int64
+	Timestamp int64 `json:"timestamp"`
 
 	// VerkleRoot is the root hash of the Verkle tree constructed from the block's transactions.
 	// It provides a succinct proof of the transactions' inclusion in the block.
-	VerkleRoot []byte // Changed from MerkleRoot to VerkleRoot
+	VerkleRoot []byte `json:"verkleRootBase64,omitempty"` // Optionally encoded in base64 if to be readable
 
 	// PrevHash stores the hash of the previous block in the chain, establishing the link between
 	// this block and its predecessor. This linkage is crucial for the blockchain's integrity.
-	PrevHash string
+	PrevHash string `json:"prevHash"`
 
 	// Hash is the block's own hash, computed from its contents and metadata. It uniquely identifies
 	// the block and secures the blockchain against tampering.
-	Hash string
+	Hash string `json:"Hash"` // Ensure the hash is part of the block's structure
 
 	// Transactions is the list of transactions included in the block. Transactions are the actions
 	// that modify the blockchain's state, such as transferring assets between parties.
-	Transactions []*thrylos.Transaction // Adjusted to hold Protobuf transactions
+	Transactions []*thrylos.Transaction `json:"transactions"`
 
 	// Validator is the identifier for the node or party that created and validated the block.
 	// In proof-of-stake systems, this would be the stakeholder who was entitled to produce the block.
-	Validator string
+	Validator string `json:"validator"`
 }
 
 // NewGenesisBlock creates and returns the genesis block for the blockchain. The genesis block
@@ -62,6 +63,11 @@ func NewGenesisBlock() *Block {
 	}
 	block.Hash = block.ComputeHash()
 	return block
+}
+
+// Encoding binary data as base64 in JSON is common as not supported
+func (b *Block) GetVerkleRootBase64() string {
+	return base64.StdEncoding.EncodeToString(b.VerkleRoot)
 }
 
 // Serialize converts the block into a byte slice, facilitating storage or transmission. It encodes
@@ -292,28 +298,35 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 // ComputeHash generates the hash of the block by concatenating and hashing its key components,
 // including the transactions, previous hash, and metadata. This hash serves as both a unique identifier
 // for the block and a security mechanism, ensuring the block's contents have not been altered.
+// ComputeHash generates the hash of the block only if it has not been computed or if it might have changed.
 func (b *Block) ComputeHash() string {
-	// Serialize transactions using protobuf
+	if b.Hash != "" {
+		return b.Hash // Return the cached hash if already computed
+	}
+
 	var txHashes []byte
 	for _, tx := range b.Transactions {
 		txBytes, err := proto.Marshal(tx)
 		if err != nil {
 			log.Printf("Failed to serialize transaction: %v", err)
-			continue // handle the error appropriately
+			continue
 		}
 		txHash := sha256.Sum256(txBytes)
 		txHashes = append(txHashes, txHash[:]...)
 	}
 
+	// Combine all relevant data to form a unique block hash
 	data := bytes.Join([][]byte{
 		[]byte(fmt.Sprintf("%d", b.Index)),
 		[]byte(fmt.Sprintf("%d", b.Timestamp)),
-		[]byte(b.VerkleRoot), // Adjust this to use the actual root if using a different tree structure
+		[]byte(b.VerkleRoot),
 		[]byte(b.PrevHash),
 		[]byte(b.Validator),
-		txHashes, // Include transaction hashes
+		txHashes,
 	}, []byte{})
 
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:])
+	// Compute the final hash
+	finalHash := sha256.Sum256(data)
+	b.Hash = hex.EncodeToString(finalHash[:])
+	return b.Hash
 }
