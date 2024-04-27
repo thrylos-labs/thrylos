@@ -356,7 +356,7 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 
 // go test -v -timeout 30s -run ^TestTransactionThroughputWitSignatures$ Thrylos/core
 
-func TestTransactionThroughputWitSignatures(t *testing.T) {
+func TestTransactionThroughputWitSignature(t *testing.T) {
 	// Generate Ed25519 keys
 	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -462,4 +462,77 @@ func TestTransactionThroughputWithAllSignatures(t *testing.T) {
 	tps := float64(numTransactions) / elapsed.Seconds()
 
 	t.Logf("Processed %d dual-signed and AES-256 encrypted transactions in %s. TPS: %f", numTransactions, elapsed, tps)
+}
+
+// go test -v -timeout 30s -run ^TestBlockTime$ Thrylos/core
+
+func TestBlockTime(t *testing.T) {
+	// Generate Ed25519 keys
+	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Error generating Ed25519 key pair: %v", err)
+	}
+
+	// Define the number of transactions and number of transactions per block
+	numTransactions := 1000
+	transactionsPerBlock := 100 // Assuming 100 transactions per block
+
+	var wg sync.WaitGroup
+	var blockFinalizeTimes []time.Duration
+
+	start := time.Now()
+
+	// Process transactions and group them into blocks
+	for i := 0; i < numTransactions; i += transactionsPerBlock {
+		wg.Add(1)
+		go func(startIndex int) {
+			defer wg.Done()
+			blockStartTime := time.Now()
+
+			var blockTransactions []shared.Transaction
+			for j := startIndex; j < startIndex+transactionsPerBlock && j < numTransactions; j++ {
+				// Create a transaction
+				txID := fmt.Sprintf("tx%d", j)
+				inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
+				outputs := []shared.UTXO{{TransactionID: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}}
+				tx := shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()}
+
+				// Serialize and sign the transaction
+				txBytes, err := json.Marshal(tx)
+				if err != nil {
+					t.Errorf("Error marshaling transaction %d: %v", j, err)
+					continue
+				}
+				edSignature := ed25519.Sign(edPrivateKey, txBytes)
+
+				// Verify signature and add transaction to block
+				if ed25519.Verify(edPublicKey, txBytes, edSignature) {
+					blockTransactions = append(blockTransactions, tx)
+				} else {
+					t.Errorf("Signature verification failed at transaction %d", j)
+				}
+			}
+
+			// Simulate finalizing the block
+			time.Sleep(time.Millisecond * 500) // Simulate delay for block finalization
+			blockEndTime := time.Now()
+			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
+		}(i)
+
+	}
+
+	wg.Wait()
+
+	// Calculate average block time
+	var totalBlockTime time.Duration
+	for _, bt := range blockFinalizeTimes {
+		totalBlockTime += bt
+	}
+	averageBlockTime := totalBlockTime / time.Duration(len(blockFinalizeTimes))
+
+	// Logging the result
+	t.Logf("Average block time: %s", averageBlockTime)
+
+	elapsedOverall := time.Since(start)
+	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
 }

@@ -138,10 +138,9 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 	fmt.Printf("NewBlock: Creating new block at index %d with %d transactions\n", index, len(transactions))
 	currentTimestamp := time.Now().Unix()
 
-	// Ensure the new timestamp is greater than the previous block's timestamp
-	for currentTimestamp <= prevTimestamp {
-		time.Sleep(1 * time.Millisecond) // wait for 1 ms
-		currentTimestamp = time.Now().Unix()
+	// Calculate the current timestamp ensuring it is at least 1 second greater than the previous timestamp
+	if currentTimestamp <= prevTimestamp {
+		currentTimestamp = prevTimestamp + 1
 	}
 
 	var protoTransactions []*thrylos.Transaction
