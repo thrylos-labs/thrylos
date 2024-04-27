@@ -56,3 +56,34 @@ func main() {
 	}
 	log.Printf("Transaction Status: %s", r.Status)
 }
+
+func getLastBlock(client pb.BlockchainServiceClient) (*pb.BlockResponse, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+	resp, err := client.GetLastBlock(ctx, &pb.EmptyRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil // Adjusted to return the correct type
+}
+
+func waitForBlockConfirmation(client pb.BlockchainServiceClient, expectedBlockIndex int) bool {
+	timeout := time.After(10 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			return false
+		case <-ticker.C:
+			res, err := getLastBlock(client) // Use the correct handling for getting the last block
+			if err != nil {
+				continue
+			}
+			if res.BlockIndex >= int32(expectedBlockIndex) {
+				return true
+			}
+		}
+	}
+}

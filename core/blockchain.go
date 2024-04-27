@@ -272,8 +272,8 @@ func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator
 
 	// Create a new block with Protobuf transactions
 	newBlock := &Block{
-		Index:        len(bc.Blocks),
-		Transactions: transactions, // Directly use the Protobuf transactions
+		Index:        int32(len(bc.Blocks)), // Convert len to int32
+		Transactions: transactions,          // Directly use the Protobuf transactions
 		Timestamp:    timestamp,
 		Validator:    validator,
 		PrevHash:     prevHash,
@@ -490,7 +490,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
 	// iterate over blocks and find by ID
 	for _, block := range bc.Blocks {
-		if block.Hash == id || strconv.Itoa(block.Index) == id {
+		if block.Hash == id || strconv.Itoa(int(block.Index)) == id { // Convert int32 to int before converting to string
 			log.Printf("Block found: Index=%d, Transactions=%v", block.Index, block.Transactions)
 			return block, nil
 		}

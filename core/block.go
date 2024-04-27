@@ -26,7 +26,7 @@ import (
 
 type Block struct {
 	// Index is the position of the block in the blockchain, starting from 0 for the genesis block.
-	Index int `json:"index"`
+	Index int32 `json:"index"`
 
 	// Timestamp represents the time at which the block was created, measured in seconds since
 	// the Unix epoch. It ensures the chronological order of blocks within the blockchain.
@@ -56,6 +56,8 @@ type Block struct {
 	verkleTree verkle.VerkleNode // Store the actual tree for later use if needed
 
 	Error error // Added to capture errors during block processing
+
+	Data string `json:"data"` // Assuming the block's content is just a string for simplicity
 
 }
 
@@ -186,7 +188,7 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 	currentTimestamp := max(time.Now().Unix(), prevTimestamp+1)
 
 	block := &Block{
-		Index:        index,
+		Index:        int32(index),
 		Timestamp:    currentTimestamp,
 		PrevHash:     prevHash,
 		Validator:    validator,
@@ -243,7 +245,7 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 	verkleRootBytesSlice := verkleRootBytes[:]
 
 	block := &Block{
-		Index:      index,
+		Index:      int32(index),         // Convert index to int32
 		Timestamp:  timestamp,            // Use the provided timestamp here
 		VerkleRoot: verkleRootBytesSlice, // Convert array to slice
 		PrevHash:   prevHash,
@@ -270,7 +272,7 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 	}
 
 	type JSONBlock struct {
-		Index        int               `json:"index"`
+		Index        int32             `json:"index"`
 		Timestamp    int64             `json:"timestamp"`
 		Transactions []JSONTransaction `json:"transactions"`
 		Hash         string            `json:"hash"`

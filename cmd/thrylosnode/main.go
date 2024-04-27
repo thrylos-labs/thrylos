@@ -48,6 +48,24 @@ func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionReque
 	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
 }
 
+func (s *server) GetLastBlock(ctx context.Context, req *pb.EmptyRequest) (*pb.BlockResponse, error) {
+	lastBlockBytes, err := s.db.GetLastBlockData()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "Failed to retrieve last block: %v", err)
+	}
+
+	// Deserialize the byte slice into Block struct
+	var lastBlock core.Block
+	if err := json.Unmarshal(lastBlockBytes, &lastBlock); err != nil {
+		return nil, status.Errorf(codes.Internal, "Failed to decode last block data: %v", err)
+	}
+
+	return &pb.BlockResponse{
+		BlockData:  lastBlock.Data,
+		BlockIndex: lastBlock.Index,
+	}, nil
+}
+
 func main() {
 	// Load configuration from .env file
 	// Specify the path to your .env file
@@ -64,6 +82,10 @@ func main() {
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
 	wasmPath := os.Getenv("WASM_PATH")
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		log.Fatal("DATA_DIR environment variable is not set")
+	}
 
 	if testnet {
 		fmt.Println("Running in Testnet Mode")
@@ -89,6 +111,7 @@ func main() {
 	if base64Key == "" {
 		log.Fatal("AES key is not set in environment variables")
 	}
+
 	aesKey, err := base64.StdEncoding.DecodeString(base64Key)
 	if err != nil {
 		log.Fatalf("Error decoding AES key: %v", err)
@@ -112,6 +135,12 @@ func main() {
 		log.Fatal("Blockchain integrity check failed.")
 	} else {
 		fmt.Println("Blockchain integrity check passed.")
+	}
+
+	// Initialize the database
+	blockchainDB, err := database.InitializeDatabase(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to create blockchain database: %v", err)
 	}
 
 	// Initialize a new node with the specified address and known peers
@@ -181,17 +210,21 @@ func main() {
 		}
 	}()
 
+	// Create BlockchainDB instance
+	encryptionKey := []byte(aesKey) // This should ideally come from a secure source
+	blockchainDatabase := database.NewBlockchainDB(blockchainDB, encryptionKey)
+
 	// Setup and start gRPC server
-	grpcLis, err := net.Listen("tcp", grpcAddress)
+	lis, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
-		log.Fatalf("Failed to listen on %s for gRPC: %v", grpcAddress, err)
+		log.Fatalf("Failed to listen on %s: %v", grpcAddress, err)
 	}
 
 	s := grpc.NewServer()
-	pb.RegisterBlockchainServiceServer(s, &server{})
+	pb.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
 
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
-	if err = s.Serve(grpcLis); err != nil {
+	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
 	}
 }
