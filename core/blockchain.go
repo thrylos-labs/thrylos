@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -508,6 +509,19 @@ func (bc *Blockchain) GetTransactionByID(id string) (*thrylos.Transaction, error
 	return nil, errors.New("transaction not found")
 }
 
+func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
+	blockData, err := bc.Database.RetrieveBlock(blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
+	}
+
+	var block Block
+	if err := json.Unmarshal(blockData, &block); err != nil { // Deserialize here
+		return nil, fmt.Errorf("failed to deserialize block: %v", err)
+	}
+	return &block, nil
+}
+
 // AddBlock adds a new block to the blockchain, with an optional timestamp.
 // If the timestamp is 0, the current system time is used as the block's timestamp.
 func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash string, optionalTimestamp ...int64) (bool, error) {
@@ -534,6 +548,16 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 		newBlock := bc.CreateBlock(transactions, validator, prevHash, timestamp)
 		if newBlock == nil {
 			return false, fmt.Errorf("failed to create a new block")
+		}
+
+		blockData, err := json.Marshal(newBlock) // Serialize here
+		if err != nil {
+			return false, fmt.Errorf("failed to serialize new block: %v", err)
+		}
+
+		blockNumber := len(bc.Blocks) // Calculate block number;
+		if err := bc.Database.StoreBlock(blockData, blockNumber); err != nil {
+			return false, fmt.Errorf("failed to store block in database: %v", err)
 		}
 
 		if selectedFork != nil {

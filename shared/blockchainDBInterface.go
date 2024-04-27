@@ -27,4 +27,6 @@ type BlockchainDBInterface interface {
 	RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error)
 	RetrievePrivateKey(address string) ([]byte, error)
 	InsertOrUpdatePrivateKey(address string, privateKey []byte) error
+	StoreBlock(data []byte, blockNumber int) error
+	RetrieveBlock(blockNumber int) ([]byte, error)
 }

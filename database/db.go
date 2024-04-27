@@ -655,6 +655,31 @@ func (bdb *BlockchainDB) InsertBlock(blockData []byte, blockNumber int) error {
 	return nil
 }
 
+// StoreBlock stores serialized block data.
+func (bdb *BlockchainDB) StoreBlock(blockData []byte, blockNumber int) error {
+	key := []byte(fmt.Sprintf("block-%d", blockNumber))
+	return bdb.DB.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, blockData)
+	})
+}
+
+// RetrieveBlock retrieves serialized block data by block number.
+func (bdb *BlockchainDB) RetrieveBlock(blockNumber int) ([]byte, error) {
+	var blockData []byte
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(fmt.Sprintf("block-%d", blockNumber)))
+		if err != nil {
+			return err
+		}
+		blockData, err = item.ValueCopy(nil)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
+	}
+	return blockData, nil
+}
+
 func (bdb *BlockchainDB) GetLastBlockData() ([]byte, error) {
 	var blockData []byte
 
