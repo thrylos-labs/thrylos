@@ -2,7 +2,8 @@ package core
 
 import (
 	"errors"
-    "github.com/gballet/go-verkle" // Use the correct import path based on the module's go.mod declaration
+
+	"github.com/gballet/go-verkle" // Use the correct import path based on the module's go.mod declaration
 )
 
 const (

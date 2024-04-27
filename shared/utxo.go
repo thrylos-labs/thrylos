@@ -1,9 +1,10 @@
 package shared
 
 import (
-	thrylos "Thrylos"
 	"encoding/json"
 	"fmt"
+
+	"github.com/thrylos-labs/thrylos"
 )
 
 // UTXO represents an Unspent Transaction Output, which is the output of a blockchain transaction

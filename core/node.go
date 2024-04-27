@@ -1,8 +1,6 @@
 package core
 
 import (
-	thrylos "Thrylos"
-	"Thrylos/shared"
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -14,6 +12,9 @@ import (
 	"os"
 	"regexp"
 	"time"
+
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 
 	"github.com/joho/godotenv"
 )

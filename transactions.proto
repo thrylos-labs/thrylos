@@ -24,5 +24,66 @@ message UTXO {
   int64 amount = 4 [json_name = "amount"];
 }
 
+service BlockchainService {
+  rpc SubmitTransaction(TransactionRequest) returns (TransactionResponse);
+  rpc GetBlock(GetBlockRequest) returns (BlockResponse);
+  rpc GetTransaction(GetTransactionRequest) returns (TransactionResponse);
+  rpc GetBalance(GetBalanceRequest) returns (BalanceResponse);
+  rpc GetStats(GetStatsRequest) returns (StatsResponse);
+  rpc GetPendingTransactions(GetPendingTransactionsRequest) returns (PendingTransactionsResponse);
+}
+
+message TransactionRequest {
+  Transaction transaction = 1; // Embedding the Transaction message
+}
+
+message TransactionResponse {
+  string status = 1;
+}
+
+message GetBlockRequest {
+  int32 id = 1;
+}
+
+message BlockResponse {
+  string blockData = 1;
+}
+
+message GetTransactionRequest {
+  string id = 1;
+}
+
+message BalanceResponse {
+  double balance = 1;
+}
+
+message GetBalanceRequest {
+  string address = 1; // The blockchain address for which the balance is requested
+}
+
+message GetStatsRequest {}
+
+message StatsResponse {
+  string stats = 1;
+}
+
+message GetPendingTransactionsRequest {}
+
+message PendingTransactionsResponse {
+  string transactions = 1;
+}
+
+message Input {
+  string previousTx = 1;
+  int32 index = 2;
+  string signature = 3;
+  string ownerAddress = 4;
+}
+
+message Output {
+  double amount = 1;
+  string address = 2;
+}
+
 // to generate the file again run:
-// protoc --go_out=. --go_opt=paths=source_relative transactions.proto
+// protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative transactions.proto

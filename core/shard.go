@@ -1,9 +1,10 @@
 package core
 
 import (
-	thrylos "Thrylos"
-	"Thrylos/shared"
 	"fmt"
+
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Shard represents a subset of the blockchain network, designed to scale the network by dividing

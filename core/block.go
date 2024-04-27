@@ -1,8 +1,6 @@
 package core
 
 import (
-	thrylos "Thrylos"
-	"Thrylos/shared"
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,6 +11,9 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 
 	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"

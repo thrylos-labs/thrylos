@@ -1,10 +1,11 @@
 package main
 
 import (
-	"Thrylos/shared"
 	"flag"
 	"fmt"
 	"log"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Example of CLI command integration for creating and signing a transaction

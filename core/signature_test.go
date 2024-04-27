@@ -1,11 +1,12 @@
 package core
 
 import (
-	"Thrylos/shared"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"testing"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // HashData uses SHA-256 to hash the input data

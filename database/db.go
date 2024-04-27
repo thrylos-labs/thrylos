@@ -4,7 +4,6 @@ package database
 // for storing and retrieving blockchain data, including blocks, transactions, public keys, and UTXOs.
 
 import (
-	"Thrylos/shared"
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
@@ -22,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/dgraph-io/badger"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // BlockchainDB wraps an SQL database connection and provides methods to interact

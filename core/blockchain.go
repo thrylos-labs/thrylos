@@ -1,9 +1,6 @@
 package core
 
 import (
-	thrylos "Thrylos"
-	"Thrylos/database"
-	"Thrylos/shared"
 	"bytes"
 	"crypto/ed25519"
 	"database/sql"
@@ -15,6 +12,11 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
+
+	"github.com/thrylos-labs/thrylos/database"
 	// other necessary imports
 )
 

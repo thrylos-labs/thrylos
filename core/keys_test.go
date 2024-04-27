@@ -1,8 +1,6 @@
 package core
 
 import (
-	thrylos "Thrylos"
-	"Thrylos/shared"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -12,6 +10,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // This test ensures your RSA keys are generated, stored, retrieved, and used correctly throughout your application.

@@ -1,7 +1,6 @@
 package shared
 
 import (
-	thrylos "Thrylos"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
@@ -21,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thrylos-labs/thrylos"
 	"google.golang.org/protobuf/proto"
 )
 

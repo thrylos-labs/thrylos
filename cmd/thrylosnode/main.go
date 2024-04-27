@@ -1,21 +1,52 @@
 package main
 
 import (
-	"Thrylos/core"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/thrylos-labs/thrylos/core"
+	"github.com/thrylos-labs/thrylos/database"
+
+	pb "github.com/thrylos-labs/thrylos"
+
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 	"github.com/wasmerio/wasmer-go/wasmer"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	// Import your blockchain package
 )
+
+type server struct {
+	pb.UnimplementedBlockchainServiceServer
+	db *database.BlockchainDB // Include a pointer to BlockchainDB
+}
+
+func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {
+	if req == nil || req.Transaction == nil {
+		return nil, status.Error(codes.InvalidArgument, "Transaction request or transaction data is nil")
+	}
+
+	// Convert the protobuf Transaction to your shared transaction type
+	tx := core.ConvertProtoTransactionToShared(req.Transaction)
+
+	// Process the transaction using your blockchain core logic
+	err := s.db.AddTransaction(tx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "Transaction failed: %v", err)
+	}
+
+	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
+}
 
 func main() {
 	// Load configuration from .env file
@@ -139,6 +170,18 @@ func main() {
 	if err := http.ListenAndServe(nodeAddress, handler); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
+
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	pb.RegisterBlockchainServiceServer(grpcServer, &server{db: &database.BlockchainDB{}})
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
+		}
+	}()
 }
 
 func executeWasm(wasmBytes []byte) int {

@@ -1,13 +1,14 @@
 package core
 
 import (
-	"Thrylos/shared"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"io/ioutil"
 	"os"
 	"testing"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.

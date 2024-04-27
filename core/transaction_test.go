@@ -1,7 +1,6 @@
 package core
 
 import (
-	"Thrylos/shared"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Verifying with a Different Public Key Than the One Used for Signing
@@ -354,7 +355,7 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 	t.Logf("Processed %d dual-signed transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }
 
-// go test -v -timeout 30s -run ^TestTransactionThroughputWitSignatures$ Thrylos/core
+// go test -v -timeout 30s -run ^TestTransactionThroughputWitSignatures$ github.com/thrylos-labs/thrylos/core
 
 func TestTransactionThroughputWitSignature(t *testing.T) {
 	// Generate Ed25519 keys
@@ -405,7 +406,7 @@ func TestTransactionThroughputWitSignature(t *testing.T) {
 	t.Logf("Processed %d dual-signed transactions in %s. TPS: %f", numTransactions, elapsed, tps)
 }
 
-// go test -v -timeout 30s -run ^TestTransactionThroughputWithAllSignatures$ Thrylos/core
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithAllSignatures$ github.com/thrylos-labs/thrylos/core
 
 func TestTransactionThroughputWithAllSignatures(t *testing.T) {
 	// Generate Ed25519 keys

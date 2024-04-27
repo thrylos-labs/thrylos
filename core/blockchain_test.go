@@ -1,12 +1,13 @@
 package core
 
 import (
-	"Thrylos/shared"
 	"crypto/ed25519"
 	"crypto/rand"
 	"io/ioutil"
 	"os"
 	"testing"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 func TestNewBlockchain(t *testing.T) {
