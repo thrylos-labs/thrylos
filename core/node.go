@@ -164,7 +164,7 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
-func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey []byte, amount int, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKey []byte) error {
+func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey []byte, amount int, ed25519PrivateKey ed25519.PrivateKey, additionalData []byte) error {
 	// Attempt to gather inputs for the transaction along with change and potential error
 	inputs, change, err := node.CollectInputsForTransaction(amount, node.Address)
 	if err != nil {
@@ -181,8 +181,8 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey 
 	// The transaction ID generation needs to be handled; here, it's statically assigned for example purposes
 	transactionID := "unique_transaction_id" // Replace with actual transaction ID logic
 
-	// Create and sign the transaction using Ed25519 and Dilithium keys, now also passing the sender's address
-	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, dilithiumPrivateKey, aesKey)
+	// Create and sign the transaction using Ed25519, now also passing the sender's address
+	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)
 	}
@@ -238,15 +238,8 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("failed to retrieve or validate Ed25519 public key: %v", err)
 	}
 
-	// Retrieve the Dilithium public key if necessary
-	senderDilithiumPublicKey, err := node.Blockchain.RetrieveDilithiumPublicKey(senderAddress)
-	if err != nil {
-		log.Printf("Failed to retrieve Dilithium public key for address %s: %v", senderAddress, err)
-		return fmt.Errorf("failed to retrieve Dilithium public key: %v", err)
-	}
-
 	// Verify the transaction signature with the retrieved public keys
-	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey, senderDilithiumPublicKey); err != nil {
+	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
 
@@ -272,13 +265,12 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 		return nil
 	}
 	return &shared.Transaction{
-		ID:                 tx.GetId(),
-		Timestamp:          tx.GetTimestamp(),
-		Inputs:             ConvertProtoInputs(tx.GetInputs()),
-		Outputs:            ConvertProtoOutputs(tx.GetOutputs()),
-		Signature:          tx.GetSignature(),
-		DilithiumSignature: tx.GetDilithiumSignature(),
-		PreviousTxIds:      tx.GetPreviousTxIds(),
+		ID:            tx.GetId(),
+		Timestamp:     tx.GetTimestamp(),
+		Inputs:        ConvertProtoInputs(tx.GetInputs()),
+		Outputs:       ConvertProtoOutputs(tx.GetOutputs()),
+		Signature:     tx.GetSignature(),
+		PreviousTxIds: tx.GetPreviousTxIds(),
 	}
 }
 

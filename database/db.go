@@ -278,7 +278,7 @@ func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKey []byte) error {
-	formattedAddress, err := shared.SanitizeAndFormatAddress(address)
+	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Address formatting error: %v", err)
 		return err
@@ -303,12 +303,11 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKe
 }
 
 type publicKeyData struct {
-	Ed25519PublicKey   []byte `json:"ed25519PublicKey"`
-	DilithiumPublicKey []byte `json:"dilithiumPublicKey"`
+	Ed25519PublicKey []byte `json:"ed25519PublicKey"`
 }
 
 func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
-	formattedAddress, err := shared.SanitizeAndFormatAddress(address)
+	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Address formatting error: %v", err)
 		return nil, err
@@ -343,20 +342,9 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 	return ed25519.PublicKey(publicKeyData), nil
 }
 
-func (bdb *BlockchainDB) InsertOrUpdateDilithiumPublicKey(address string, dilithiumPublicKey []byte) error {
-	// Implement the logic specific to Dilithium public keys.
-	// This might simply involve calling InsertOrUpdatePublicKey with the correct arguments.
-	return bdb.InsertOrUpdatePublicKey(address, nil, dilithiumPublicKey) // Pass nil for the Ed25519 key if you're not updating it.
-}
-
-func (bdb *BlockchainDB) RetrieveDilithiumPublicKey(address string) ([]byte, error) {
-	return bdb.RetrieveDilithiumPublicKeyFromAddress(address)
-}
-
-func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey, dilithiumPublicKey []byte) error {
+func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey []byte) error {
 	data, err := json.Marshal(map[string][]byte{
-		"ed25519PublicKey":   ed25519PublicKey,
-		"dilithiumPublicKey": dilithiumPublicKey,
+		"ed25519PublicKey": ed25519PublicKey,
 	})
 	if err != nil {
 		log.Printf("Error marshalling public key data for address %s: %v", address, err)
@@ -375,42 +363,6 @@ func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKe
 	}
 
 	return err
-}
-
-func (bdb *BlockchainDB) RetrieveDilithiumPublicKeyFromAddress(address string) ([]byte, error) {
-	var dilithiumPublicKeyBytes []byte
-	err := bdb.DB.View(func(txn *badger.Txn) error {
-		key := []byte("publicKey-" + address)
-		item, err := txn.Get(key)
-		if err != nil {
-			if err == badger.ErrKeyNotFound {
-				return fmt.Errorf("no Dilithium public key found for address %s", address)
-			}
-			return fmt.Errorf("error retrieving data from BadgerDB: %w", err)
-		}
-
-		err = item.Value(func(val []byte) error {
-			var keyData map[string][]byte
-			if err := json.Unmarshal(val, &keyData); err != nil {
-				return fmt.Errorf("error unmarshalling data: %w", err)
-			}
-
-			var ok bool
-			dilithiumPublicKeyBytes, ok = keyData["dilithiumPublicKey"]
-			if !ok {
-				return fmt.Errorf("no Dilithium public key found in the data for address %s", address)
-			}
-
-			return nil
-		})
-		return err
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return dilithiumPublicKeyBytes, nil
 }
 
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.

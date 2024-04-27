@@ -21,7 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudflare/circl/sign/dilithium"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -145,19 +144,6 @@ func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 	return publicKey, privateKey, nil
 }
 
-// Generates the Dilithium key pair
-func GenerateDilithiumKeys() (publicKey []byte, privateKey []byte, err error) {
-	mode := dilithium.Mode3 // Mode3 is recommended for a balance between security and performance
-
-	// Correctly handle all three return values, including the potential error.
-	pk, sk, err := mode.GenerateKey(rand.Reader) // Use crypto/rand.Reader for secure randomness
-	if err != nil {
-		return nil, nil, err // Return the error if key generation fails
-	}
-
-	return pk.Bytes(), sk.Bytes(), nil
-}
-
 // PublicKeyToAddress converts a given RSA public key to a blockchain address string using SHA-256 hashing.
 // The address uniquely identifies a participant or entity within the blockchain network.
 func PublicKeyToAddress(pub *rsa.PublicKey) string {
@@ -168,44 +154,39 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 
 // CreateMockSignedTransaction generates a transaction and signs it.
 // CreateMockSignedTransaction generates a transaction, serializes it without the signature, signs it, and returns the signed transaction.
-func CreateMockDualSignedTransaction(transactionID string, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) (*thrylos.Transaction, error) {
-	// Initialize the transaction as before
-	tx := &thrylos.Transaction{
-		Id:        transactionID,
-		Timestamp: time.Now().Unix(),
-		Inputs: []*thrylos.UTXO{{
-			TransactionId: "tx0",
-			Index:         0,
-			OwnerAddress:  "Alice",
-			Amount:        100,
-		}},
-		Outputs: []*thrylos.UTXO{{
-			TransactionId: transactionID,
-			Index:         0,
-			OwnerAddress:  "Bob",
-			Amount:        100,
-		}},
-	}
+// func CreateMockDualSignedTransaction(transactionID string, ed25519PrivateKey ed25519.PrivateKey, []byte) (*thrylos.Transaction, error) {
+// 	// Initialize the transaction as before
+// 	tx := &thrylos.Transaction{
+// 		Id:        transactionID,
+// 		Timestamp: time.Now().Unix(),
+// 		Inputs: []*thrylos.UTXO{{
+// 			TransactionId: "tx0",
+// 			Index:         0,
+// 			OwnerAddress:  "Alice",
+// 			Amount:        100,
+// 		}},
+// 		Outputs: []*thrylos.UTXO{{
+// 			TransactionId: transactionID,
+// 			Index:         0,
+// 			OwnerAddress:  "Bob",
+// 			Amount:        100,
+// 		}},
+// 	}
 
-	// Serialize the transaction for signing
-	txBytes, err := proto.Marshal(tx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
-	}
+// 	// Serialize the transaction for signing
+// 	txBytes, err := proto.Marshal(tx)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
+// 	}
 
-	// Sign with Ed25519
-	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
+// 	// Sign with Ed25519
+// 	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
 
-	// Prepare Dilithium private key and sign
-	dilithiumSk := dilithium.Mode3.PrivateKeyFromBytes(dilithiumPrivateKeyBytes)
-	dilithiumSignature := dilithium.Mode3.Sign(dilithiumSk, txBytes)
+// 	// Set both signatures on the transaction and return
+// 	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
 
-	// Set both signatures on the transaction and return
-	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
-	tx.DilithiumSignature = base64.StdEncoding.EncodeToString(dilithiumSignature)
-
-	return tx, nil
-}
+// 	return tx, nil
+// }
 
 // HashData hashes input data using SHA-256 and returns the hash as a byte slice.
 func HashData(data []byte) []byte {
@@ -216,17 +197,16 @@ func HashData(data []byte) []byte {
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID                 string   `json:"ID"`
-	Timestamp          int64    `json:"Timestamp"`
-	Inputs             []UTXO   `json:"Inputs"`
-	Outputs            []UTXO   `json:"Outputs"`
-	EncryptedInputs    []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
-	EncryptedOutputs   []byte   `json:"EncryptedOutputs,omitempty"`
-	Signature          string   `json:"Signature"`
-	EncryptedAESKey    []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
-	DilithiumSignature string   `json:"DilithiumSignature,omitempty"`
-	PreviousTxIds      []string `json:"PreviousTxIds,omitempty"`
-	Sender             string   `json:"sender"`
+	ID               string   `json:"ID"`
+	Timestamp        int64    `json:"Timestamp"`
+	Inputs           []UTXO   `json:"Inputs"`
+	Outputs          []UTXO   `json:"Outputs"`
+	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
+	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty"`
+	Signature        string   `json:"Signature"`
+	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
+	PreviousTxIds    []string `json:"PreviousTxIds,omitempty"`
+	Sender           string   `json:"sender"`
 }
 
 // select tips:
@@ -235,9 +215,9 @@ func selectTips() ([]string, error) {
 	return []string{"prevTxID1", "prevTxID2"}, nil
 }
 
-// CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519 and Dilithium keys.
+// CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519.
 // Assuming Transaction is the correct type across your application:
-func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte, aesKey []byte) (*Transaction, error) {
+func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, aesKey []byte) (*Transaction, error) {
 	// Select previous transactions to reference
 	previousTxIDs, err := selectTips()
 	if err != nil {
@@ -282,7 +262,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	}
 
 	// Sign the transaction
-	if err := SignTransaction(thrylosTx, ed25519PrivateKey, dilithiumPrivateKeyBytes); err != nil {
+	if err := SignTransaction(thrylosTx, ed25519PrivateKey); err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %v", err)
 	}
 
@@ -324,7 +304,7 @@ func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Trans
 		Outputs:       thrylosOutputs,
 		Timestamp:     tx.Timestamp,
 		PreviousTxIds: tx.PreviousTxIds, // Ensure this matches your local struct field
-		// Leave Signature and DilithiumSignature for the SignTransaction to fill
+		// Leave Signature for the SignTransaction to fill
 	}, nil
 }
 
@@ -351,24 +331,22 @@ func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 	}
 
 	return Transaction{
-		ID:                 tx.Id,
-		Inputs:             localInputs,
-		Outputs:            localOutputs,
-		Timestamp:          tx.Timestamp,
-		Signature:          tx.Signature,
-		DilithiumSignature: tx.DilithiumSignature,
-		PreviousTxIds:      tx.PreviousTxIds, // Match this with the Protobuf field
+		ID:            tx.Id,
+		Inputs:        localInputs,
+		Outputs:       localOutputs,
+		Timestamp:     tx.Timestamp,
+		Signature:     tx.Signature,
+		PreviousTxIds: tx.PreviousTxIds, // Match this with the Protobuf field
 
 	}, nil
 }
 
 func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
 	protoTx := &thrylos.Transaction{
-		Id:                 tx.ID,
-		Sender:             tx.Sender,
-		Timestamp:          tx.Timestamp,
-		Signature:          tx.Signature,
-		DilithiumSignature: tx.DilithiumSignature,
+		Id:        tx.ID,
+		Sender:    tx.Sender,
+		Timestamp: tx.Timestamp,
+		Signature: tx.Signature,
 	}
 
 	for _, input := range tx.Inputs {
@@ -394,8 +372,8 @@ func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
 
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
 // The signature is created by first hashing the transaction data, then signing the hash with the private key.
-// SignTransaction creates a signature for a transaction using the sender's private Ed25519 key and a Dilithium private key.
-func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateKey, dilithiumPrivateKey []byte) error {
+// SignTransaction creates a signature for a transaction using the sender's private Ed25519 key.
+func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateKey) error {
 	// Serialize the transaction for signing
 	txBytes, err := proto.Marshal(tx)
 	if err != nil {
@@ -405,11 +383,6 @@ func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateK
 	// Ed25519 Signature
 	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
 	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
-
-	// Dilithium Signature
-	dilithiumSk := dilithium.Mode3.PrivateKeyFromBytes(dilithiumPrivateKey)
-	dilithiumSignature := dilithium.Mode3.Sign(dilithiumSk, txBytes)
-	tx.DilithiumSignature = base64.StdEncoding.EncodeToString(dilithiumSignature)
 
 	return nil
 }
@@ -434,8 +407,8 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 	return json.Marshal(temp)
 }
 
-// VerifyTransactionSignature verifies both the Ed25519 and Dilithium signatures of a given transaction.
-func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed25519.PublicKey, dilithiumPublicKey []byte) error {
+// VerifyTransactionSignature verifies both the Ed25519 of a given transaction.
+func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed25519.PublicKey) error {
 	// Deserialize the transaction for verification
 	txBytes, err := proto.Marshal(tx)
 	if err != nil {
@@ -451,22 +424,12 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed2551
 		return errors.New("Ed25519 signature verification failed")
 	}
 
-	// Verify Dilithium Signature
-	dilithiumPk := dilithium.Mode3.PublicKeyFromBytes(dilithiumPublicKey)
-	dilithiumSigBytes, err := base64.StdEncoding.DecodeString(tx.DilithiumSignature)
-	if err != nil {
-		return fmt.Errorf("failed to decode Dilithium signature: %v", err)
-	}
-	if !dilithium.Mode3.Verify(dilithiumPk, txBytes, dilithiumSigBytes) {
-		return errors.New("Dilithium signature verification failed")
-	}
-
 	return nil
 }
 
 // VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
 // the existence and ownership of UTXOs in its inputs, and the equality of input and output values.
-func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (ed25519.PublicKey, error), getDilithiumPublicKeyFunc func(address string) ([]byte, error)) (bool, error) {
+func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (ed25519.PublicKey, error)) (bool, error) {
 
 	// Check if there are any inputs in the transaction
 	if len(tx.GetInputs()) == 0 {
@@ -480,12 +443,6 @@ func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO
 	ed25519PublicKey, err := getPublicKeyFunc(senderAddress)
 	if err != nil {
 		return false, fmt.Errorf("Error retrieving Ed25519 public key for address %s: %v", senderAddress, err)
-	}
-
-	// Retrieve the Dilithium public key for the sender
-	dilithiumPublicKeyBytes, err := getDilithiumPublicKeyFunc(senderAddress)
-	if err != nil {
-		return false, fmt.Errorf("Error retrieving Dilithium public key for address %s: %v", senderAddress, err)
 	}
 
 	// Make a copy of the transaction to manipulate for verification
@@ -502,7 +459,7 @@ func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO
 	log.Printf("Serialized transaction for verification: %x", txBytes)
 
 	// Verify the transaction signature using both public keys
-	err = VerifyTransactionSignature(tx, ed25519PublicKey, dilithiumPublicKeyBytes)
+	err = VerifyTransactionSignature(tx, ed25519PublicKey)
 	if err != nil {
 		return false, fmt.Errorf("Transaction signature verification failed: %v", err)
 	}
@@ -570,14 +527,8 @@ func processTransactions(transactions []*Transaction) {
 		log.Fatalf("Failed to generate Ed25519 keys: %v", err)
 	}
 
-	// Generate or retrieve Dilithium private key
-	_, diPrivateKeyBytes, err := GenerateDilithiumKeys() // Adjust this function if you're retrieving keys, and skip storing the public key if not used
-	if err != nil {
-		log.Fatalf("Failed to generate or retrieve Dilithium keys: %v", err)
-	}
-
 	// Now that we have the keys, attempt to batch sign the transactions
-	err = BatchSignTransactions(transactions, edPrivateKey, diPrivateKeyBytes)
+	err = BatchSignTransactions(transactions, edPrivateKey)
 	if err != nil {
 		log.Printf("Error signing transactions: %v", err)
 		return
@@ -586,7 +537,6 @@ func processTransactions(transactions []*Transaction) {
 	// Proceed with further transaction processing...
 }
 
-// SanitizeAndFormatAddress cleans and validates blockchain addresses.
 // SanitizeAndFormatAddress cleans and validates blockchain addresses.
 func SanitizeAndFormatAddress(address string) (string, error) {
 	originalAddress := address // Store the original address for logging
@@ -605,16 +555,8 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 	return address, nil
 }
 
-// func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {
-//     addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40}$`) // Adjust regex as needed for the specific format you expect
-//     if !addressRegex.MatchString(address) {
-//         return "", fmt.Errorf("invalid address format")
-//     }
-//     return strings.ToLower(address), nil
-// }
-
-// BatchSignTransactions signs a slice of transactions using both Ed25519 and Dilithium signatures.
-func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, dilithiumPrivateKeyBytes []byte) error {
+// BatchSignTransactions signs a slice of transactions using both Ed25519.
+func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
 	var wg sync.WaitGroup
 	errChan := make(chan error, 2) // Channel for error communication
 
@@ -639,24 +581,6 @@ func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.Pri
 
 			// If you also want to update your custom struct, remember to convert the signature back
 			customTx.Signature = protoTx.Signature
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		dilithiumPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(dilithiumPrivateKeyBytes)
-		for _, tx := range transactions {
-			protoTx := ConvertToProtoTransaction(tx) // Convert to Protobuf type
-			txBytes, err := proto.Marshal(protoTx)   // Now marshaling should work
-			if err != nil {
-				log.Printf("Error marshaling transaction: %v", err)
-				continue // Handle the error as needed
-			}
-
-			// Dilithium Signing
-			dilithiumSignature := dilithium.Mode3.Sign(dilithiumPrivateKey, txBytes)
-			protoTx.DilithiumSignature = base64.StdEncoding.EncodeToString(dilithiumSignature)
-			// Convert back if necessary, or work with the Protobuf type going forward
 		}
 	}()
 

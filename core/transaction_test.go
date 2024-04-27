@@ -15,8 +15,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/cloudflare/circl/sign/dilithium"
 )
 
 // Verifying with a Different Public Key Than the One Used for Signing
@@ -313,14 +311,6 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 		t.Fatalf("Error generating Ed25519 key pair: %v", err)
 	}
 
-	// Generate Dilithium keys
-	diPublicKeyBytes, diPrivateKeyBytes, err := shared.GenerateDilithiumKeys()
-	if err != nil {
-		t.Fatalf("Error generating Dilithium keys: %v", err)
-	}
-	diPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(diPrivateKeyBytes)
-	diPublicKey := dilithium.Mode3.PublicKeyFromBytes(diPublicKeyBytes)
-
 	// Define the number of transactions and the size of each batch
 	numTransactions := 1000
 	batchSize := 10 // Define an appropriate batch size
@@ -344,17 +334,14 @@ func TestTransactionThroughputWithDualSignatures(t *testing.T) {
 				// Serialize the transaction for signing
 				txBytes, _ := json.Marshal(tx)
 
-				// Sign the serialized transaction data with both Ed25519 and Dilithium
+				// Sign the serialized transaction data with both Ed25519
 				edSignature := ed25519.Sign(edPrivateKey, txBytes)
-				diSignature := dilithium.Mode3.Sign(diPrivateKey, txBytes)
 
 				// Verify both signatures
 				if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
 					t.Errorf("Ed25519 signature verification failed at transaction %d", j)
 				}
-				if !dilithium.Mode3.Verify(diPublicKey, txBytes, diSignature) {
-					t.Errorf("Dilithium signature verification failed at transaction %d", j)
-				}
+
 			}
 		}(i)
 	}
@@ -399,7 +386,7 @@ func TestTransactionThroughputWitSignatures(t *testing.T) {
 				// Serialize the transaction for signing
 				txBytes, _ := json.Marshal(tx)
 
-				// Sign the serialized transaction data with both Ed25519 and Dilithium
+				// Sign the serialized transaction data with both Ed25519 a
 				edSignature := ed25519.Sign(edPrivateKey, txBytes)
 
 				// Verify both signatures
@@ -426,14 +413,6 @@ func TestTransactionThroughputWithAllSignatures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error generating Ed25519 key pair: %v", err)
 	}
-
-	// Generate Dilithium keys
-	diPublicKeyBytes, diPrivateKeyBytes, err := shared.GenerateDilithiumKeys()
-	if err != nil {
-		t.Fatalf("Error generating Dilithium keys: %v", err)
-	}
-	diPrivateKey := dilithium.Mode3.PrivateKeyFromBytes(diPrivateKeyBytes)
-	diPublicKey := dilithium.Mode3.PublicKeyFromBytes(diPublicKeyBytes)
 
 	// Define the number of transactions and the size of each batch
 	numTransactions := 1000
@@ -466,16 +445,12 @@ func TestTransactionThroughputWithAllSignatures(t *testing.T) {
 				// Serialize the transaction for signing
 				txBytes, _ := json.Marshal(shared.Transaction{ID: txID, Inputs: inputs, Outputs: outputs, Timestamp: time.Now().Unix()})
 
-				// Sign the serialized transaction data with both Ed25519 and Dilithium
+				// Sign the serialized transaction data with both Ed25519
 				edSignature := ed25519.Sign(edPrivateKey, txBytes)
-				diSignature := dilithium.Mode3.Sign(diPrivateKey, txBytes)
 
 				// Verify both signatures
 				if !ed25519.Verify(edPublicKey, txBytes, edSignature) {
 					t.Errorf("Ed25519 signature verification failed at transaction %d", j)
-				}
-				if !dilithium.Mode3.Verify(diPublicKey, txBytes, diSignature) {
-					t.Errorf("Dilithium signature verification failed at transaction %d", j)
 				}
 			}
 		}(i)
