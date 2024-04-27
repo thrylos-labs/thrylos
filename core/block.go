@@ -295,16 +295,21 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 	return json.Marshal(jsonBlock)
 }
 
-// ComputeHash generates the hash of the block by concatenating and hashing its key components,
-// including the transactions, previous hash, and metadata. This hash serves as both a unique identifier
-// for the block and a security mechanism, ensuring the block's contents have not been altered.
-// ComputeHash generates the hash of the block only if it has not been computed or if it might have changed.
 func (b *Block) ComputeHash() string {
 	if b.Hash != "" {
 		return b.Hash // Return the cached hash if already computed
 	}
 
-	var txHashes []byte
+	// Initialize a new hash engine
+	hasher := sha256.New()
+
+	// Hash static components only once if they are unchanged
+	hasher.Write([]byte(fmt.Sprintf("%d", b.Index)))
+	hasher.Write([]byte(fmt.Sprintf("%d", b.Timestamp)))
+	hasher.Write([]byte(b.PrevHash))
+	hasher.Write([]byte(b.Validator))
+
+	// Dynamically update the hash with transaction data as they are added
 	for _, tx := range b.Transactions {
 		txBytes, err := proto.Marshal(tx)
 		if err != nil {
@@ -312,21 +317,16 @@ func (b *Block) ComputeHash() string {
 			continue
 		}
 		txHash := sha256.Sum256(txBytes)
-		txHashes = append(txHashes, txHash[:]...)
+		hasher.Write(txHash[:])
 	}
 
-	// Combine all relevant data to form a unique block hash
-	data := bytes.Join([][]byte{
-		[]byte(fmt.Sprintf("%d", b.Index)),
-		[]byte(fmt.Sprintf("%d", b.Timestamp)),
-		[]byte(b.VerkleRoot),
-		[]byte(b.PrevHash),
-		[]byte(b.Validator),
-		txHashes,
-	}, []byte{})
+	// Include the VerkleRoot in the hash computation
+	if len(b.VerkleRoot) > 0 {
+		hasher.Write(b.VerkleRoot)
+	}
 
 	// Compute the final hash
-	finalHash := sha256.Sum256(data)
-	b.Hash = hex.EncodeToString(finalHash[:])
+	finalHash := hasher.Sum(nil)
+	b.Hash = hex.EncodeToString(finalHash)
 	return b.Hash
 }
