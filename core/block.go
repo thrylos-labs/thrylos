@@ -11,8 +11,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
+	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
@@ -48,6 +50,44 @@ type Block struct {
 	// Validator is the identifier for the node or party that created and validated the block.
 	// In proof-of-stake systems, this would be the stakeholder who was entitled to produce the block.
 	Validator string `json:"validator"`
+
+	// Store the actual tree for later use if needed
+	verkleTree verkle.VerkleNode // Store the actual tree for later use if needed
+
+	Error error // Added to capture errors during block processing
+
+}
+
+// InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
+func (b *Block) InitializeVerkleTree() error {
+	var txData [][]byte
+	for _, protoTx := range b.Transactions {
+		txByte, err := proto.Marshal(protoTx)
+		if err != nil {
+			b.Error = fmt.Errorf("failed to serialize Protobuf transaction: %v", err)
+			return b.Error
+		}
+		txData = append(txData, txByte)
+	}
+
+	if len(txData) > 0 {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			b.verkleTree, err = NewVerkleTree(txData)
+			if err != nil {
+				b.Error = fmt.Errorf("failed to create Verkle tree: %v", err)
+			} else {
+				root := b.verkleTree.Commitment().BytesUncompressedTrusted()
+				b.VerkleRoot = make([]byte, len(root))
+				copy(b.VerkleRoot, root[:])
+			}
+		}()
+		wg.Wait()
+	}
+	return b.Error // return any error that occurred during processing
 }
 
 // NewGenesisBlock creates and returns the genesis block for the blockchain. The genesis block
@@ -151,57 +191,34 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 
 	var protoTransactions []*thrylos.Transaction
 	for _, tx := range transactions {
-		// Convert shared.Transaction to *thrylos.Transaction here
 		protoTx := ConvertSharedTransactionToProto(tx)
-		if protoTx != nil {
-			protoTransactions = append(protoTransactions, protoTx)
+		if protoTx == nil {
+			fmt.Printf("Failed to convert transaction to Protobuf format\n")
+			return nil // Early return on conversion failure
 		}
+		protoTransactions = append(protoTransactions, protoTx)
 	}
-
-	// Debug: Print the number of transactions converted for the Merkle Tree
-	fmt.Printf("Number of transactions converted for Merkle Tree: %d\n", len(protoTransactions))
 
 	if len(protoTransactions) == 0 {
-		fmt.Println("No transactions converted for Merkle Tree.")
+		fmt.Println("No valid transactions provided for the block.")
 		return nil
 	}
-
-	// Since Merkle trees require [][]byte, we serialize the Protobuf transactions
-	var txData [][]byte
-	for _, protoTx := range protoTransactions {
-		txByte, err := proto.Marshal(protoTx)
-		if err != nil {
-			fmt.Printf("Failed to serialize Protobuf transaction: %v\n", err)
-			continue
-		}
-		txData = append(txData, txByte)
-	}
-
-	verkleTree, err := NewVerkleTree(txData)
-	if err != nil {
-		fmt.Println("Failed to create Verkle tree:", err)
-		return nil
-	}
-	// Get the Verkle root as a point
-	verkleRootPoint := verkleTree.Commitment()
-
-	// Use BytesUncompressedTrusted() to get the uncompressed byte array
-	verkleRootBytes := verkleRootPoint.BytesUncompressedTrusted() // This returns an array
-
-	// Convert array to slice for use
-	verkleRootBytesSlice := verkleRootBytes[:]
 
 	block := &Block{
 		Index:        index,
-		Transactions: protoTransactions, // Use the converted Protobuf transactions
 		Timestamp:    currentTimestamp,
-		VerkleRoot:   verkleRootBytesSlice, // Use the slice here
+		Transactions: protoTransactions,
 		PrevHash:     prevHash,
-		Hash:         "",
 		Validator:    validator,
 	}
 
-	block.Hash = block.ComputeHash()
+	// Verkle tree is initialized lazily, so no need to compute the root here
+	if err := block.InitializeVerkleTree(); err != nil {
+		fmt.Printf("Error initializing Verkle Tree: %v\n", err)
+		return nil
+	}
+
+	block.Hash = block.ComputeHash() // Compute the hash of the block
 	fmt.Printf("NewBlock: Block created - Index: %d, Hash: %s, Transactions: %+v\n", block.Index, block.Hash, block.Transactions)
 	return block
 }
@@ -297,36 +314,32 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 
 func (b *Block) ComputeHash() string {
 	if b.Hash != "" {
-		return b.Hash // Return the cached hash if already computed
+		return b.Hash // Use the cached hash if available
 	}
 
-	// Initialize a new hash engine
 	hasher := sha256.New()
 
-	// Hash static components only once if they are unchanged
+	// Hash block's static components
 	hasher.Write([]byte(fmt.Sprintf("%d", b.Index)))
 	hasher.Write([]byte(fmt.Sprintf("%d", b.Timestamp)))
 	hasher.Write([]byte(b.PrevHash))
 	hasher.Write([]byte(b.Validator))
 
-	// Dynamically update the hash with transaction data as they are added
+	// Process transactions
 	for _, tx := range b.Transactions {
 		txBytes, err := proto.Marshal(tx)
 		if err != nil {
 			log.Printf("Failed to serialize transaction: %v", err)
-			continue
+			return "" // Return an empty string or handle the error as per your error policy
 		}
 		txHash := sha256.Sum256(txBytes)
 		hasher.Write(txHash[:])
 	}
 
-	// Include the VerkleRoot in the hash computation
 	if len(b.VerkleRoot) > 0 {
 		hasher.Write(b.VerkleRoot)
 	}
 
-	// Compute the final hash
-	finalHash := hasher.Sum(nil)
-	b.Hash = hex.EncodeToString(finalHash)
+	b.Hash = hex.EncodeToString(hasher.Sum(nil))
 	return b.Hash
 }
