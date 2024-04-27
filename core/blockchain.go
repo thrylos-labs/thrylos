@@ -555,19 +555,19 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 			return false, fmt.Errorf("failed to serialize new block: %v", err)
 		}
 
-		blockNumber := len(bc.Blocks) // Calculate block number;
+		blockNumber := len(bc.Blocks) // This should be after block validation
+		if selectedFork != nil {
+			selectedFork.Blocks = append(selectedFork.Blocks, newBlock)
+			blockNumber = len(selectedFork.Blocks) - 1
+		} else {
+			bc.Blocks = append(bc.Blocks, newBlock)
+			blockNumber = len(bc.Blocks) - 1 // Use the index of the newly appended block
+		}
+
 		if err := bc.Database.StoreBlock(blockData, blockNumber); err != nil {
 			return false, fmt.Errorf("failed to store block in database: %v", err)
 		}
 
-		if selectedFork != nil {
-			selectedFork.Blocks = append(selectedFork.Blocks, newBlock)
-		} else {
-			bc.Forks = append(bc.Forks, &Fork{
-				Index:  len(bc.Blocks),
-				Blocks: []*Block{newBlock},
-			})
-		}
 		return true, nil
 	}
 
