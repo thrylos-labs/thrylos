@@ -181,45 +181,38 @@ func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transa
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
 func NewBlock(index int, transactions []shared.Transaction, prevHash string, validator string, prevTimestamp int64) *Block {
-	fmt.Printf("NewBlock: Creating new block at index %d with %d transactions\n", index, len(transactions))
-	currentTimestamp := time.Now().Unix()
-
-	// Calculate the current timestamp ensuring it is at least 1 second greater than the previous timestamp
-	if currentTimestamp <= prevTimestamp {
-		currentTimestamp = prevTimestamp + 1
-	}
-
-	var protoTransactions []*thrylos.Transaction
-	for _, tx := range transactions {
-		protoTx := ConvertSharedTransactionToProto(tx)
-		if protoTx == nil {
-			fmt.Printf("Failed to convert transaction to Protobuf format\n")
-			return nil // Early return on conversion failure
-		}
-		protoTransactions = append(protoTransactions, protoTx)
-	}
-
-	if len(protoTransactions) == 0 {
-		fmt.Println("No valid transactions provided for the block.")
-		return nil
-	}
+	fmt.Printf("Creating new block at index %d with %d transactions.\n", index, len(transactions))
+	currentTimestamp := max(time.Now().Unix(), prevTimestamp+1)
 
 	block := &Block{
 		Index:        index,
 		Timestamp:    currentTimestamp,
-		Transactions: protoTransactions,
 		PrevHash:     prevHash,
 		Validator:    validator,
+		Transactions: make([]*thrylos.Transaction, 0, len(transactions)),
 	}
 
-	// Verkle tree is initialized lazily, so no need to compute the root here
+	for _, tx := range transactions {
+		protoTx := ConvertSharedTransactionToProto(tx)
+		if protoTx == nil {
+			fmt.Println("Failed to convert transaction to Protobuf format.")
+			continue
+		}
+		block.Transactions = append(block.Transactions, protoTx)
+	}
+
+	if len(block.Transactions) == 0 {
+		fmt.Println("No valid transactions provided for the block.")
+		return nil
+	}
+
 	if err := block.InitializeVerkleTree(); err != nil {
 		fmt.Printf("Error initializing Verkle Tree: %v\n", err)
 		return nil
 	}
 
-	block.Hash = block.ComputeHash() // Compute the hash of the block
-	fmt.Printf("NewBlock: Block created - Index: %d, Hash: %s, Transactions: %+v\n", block.Index, block.Hash, block.Transactions)
+	block.Hash = block.ComputeHash()
+	fmt.Printf("Block created - Index: %d, Hash: %s, Transactions: %d\n", block.Index, block.Hash, len(block.Transactions))
 	return block
 }
 
