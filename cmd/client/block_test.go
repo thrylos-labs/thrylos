@@ -22,6 +22,13 @@ func TestBlockTimeGRPC(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewBlockchainServiceClient(conn)
 
+	// Retrieve the last block index before submitting any transactions to establish a baseline.
+	_, initialIndex, err := getLastBlock(client) // Ignoring the block itself
+	if err != nil {
+		t.Fatalf("Failed to get the initial last block: %v", err)
+	}
+	t.Logf("Initial last block index: %d", initialIndex)
+
 	numTransactions := 1000
 	transactionsPerBlock := 100
 	numBlocks := numTransactions / transactionsPerBlock
@@ -41,7 +48,6 @@ func TestBlockTimeGRPC(t *testing.T) {
 				tx := &pb.Transaction{
 					Id:        fmt.Sprintf("tx%d", blockIndex*transactionsPerBlock+j),
 					Timestamp: time.Now().Unix(),
-					// Additional transaction details here
 				}
 
 				_, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: tx})
@@ -51,8 +57,7 @@ func TestBlockTimeGRPC(t *testing.T) {
 				}
 			}
 
-			// Poll for block confirmation
-			confirmed := waitForBlockConfirmation(client, blockIndex)
+			confirmed := waitForBlockConfirmation(client, int32(blockIndex+int(initialIndex)+1))
 			if !confirmed {
 				t.Errorf("Block %d was not confirmed within the timeout period", blockIndex)
 				return

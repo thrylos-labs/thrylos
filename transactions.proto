@@ -47,8 +47,8 @@ message GetBlockRequest {
 }
 
 message BlockResponse {
-  string blockData = 1; // This might contain the serialized block data
-  int32 blockIndex = 2; // Add this line to hold the index of the block
+  bytes blockData = 1; // Correct type for binary data
+  int32 blockIndex = 2;
 }
 
 message GetTransactionRequest {

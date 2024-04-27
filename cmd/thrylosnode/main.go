@@ -36,6 +36,8 @@ func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionReque
 		return nil, status.Error(codes.InvalidArgument, "Transaction request or transaction data is nil")
 	}
 
+	log.Printf("Received transaction %s for processing", req.Transaction.Id)
+
 	// Convert the protobuf Transaction to your shared transaction type
 	tx := core.ConvertProtoTransactionToShared(req.Transaction)
 
@@ -45,28 +47,30 @@ func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionReque
 		return nil, status.Errorf(codes.Internal, "Transaction failed: %v", err)
 	}
 
+	log.Printf("Transaction %s added successfully", req.Transaction.Id)
 	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
 }
 
 func (s *server) GetLastBlock(ctx context.Context, req *pb.EmptyRequest) (*pb.BlockResponse, error) {
-	lastBlockBytes, err := s.db.GetLastBlockData()
+	lastBlockData, err := s.db.GetLatestBlockData()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Failed to retrieve last block: %v", err)
 	}
-
-	// Deserialize the byte slice into Block struct
-	var lastBlock core.Block
-	if err := json.Unmarshal(lastBlockBytes, &lastBlock); err != nil {
-		return nil, status.Errorf(codes.Internal, "Failed to decode last block data: %v", err)
-	}
+	lastBlockIndex, _ := s.db.GetLastBlockIndex()
 
 	return &pb.BlockResponse{
-		BlockData:  lastBlock.Data,
-		BlockIndex: lastBlock.Index,
+		BlockData:  lastBlockData, // No need to convert to string, directly set as bytes
+		BlockIndex: int32(lastBlockIndex),
 	}, nil
 }
 
+func init() {
+	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
+	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
+}
+
 func main() {
+
 	// Load configuration from .env file
 	// Specify the path to your .env file
 	envPath := "../../.env"

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
+	"github.com/thrylos-labs/thrylos/core"
 	"google.golang.org/grpc"
 )
 
@@ -57,17 +59,27 @@ func main() {
 	log.Printf("Transaction Status: %s", r.Status)
 }
 
-func getLastBlock(client pb.BlockchainServiceClient) (*pb.BlockResponse, error) {
+func getLastBlock(client pb.BlockchainServiceClient) (*core.Block, int32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
+
 	resp, err := client.GetLastBlock(ctx, &pb.EmptyRequest{})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return resp, nil // Adjusted to return the correct type
+
+	// Convert the string data to bytes before passing to Deserialize
+	blockDataBytes := []byte(resp.BlockData)
+	block, err := core.Deserialize(blockDataBytes)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to deserialize block data: %v", err)
+	}
+
+	return block, resp.BlockIndex, nil
 }
 
-func waitForBlockConfirmation(client pb.BlockchainServiceClient, expectedBlockIndex int) bool {
+// Wait for a specific block confirmation
+func waitForBlockConfirmation(client pb.BlockchainServiceClient, expectedBlockIndex int32) bool {
 	timeout := time.After(10 * time.Second)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -77,11 +89,11 @@ func waitForBlockConfirmation(client pb.BlockchainServiceClient, expectedBlockIn
 		case <-timeout:
 			return false
 		case <-ticker.C:
-			res, err := getLastBlock(client) // Use the correct handling for getting the last block
+			resp, err := client.GetLastBlock(context.Background(), &pb.EmptyRequest{})
 			if err != nil {
 				continue
 			}
-			if res.BlockIndex >= int32(expectedBlockIndex) {
+			if resp.BlockIndex >= expectedBlockIndex {
 				return true
 			}
 		}

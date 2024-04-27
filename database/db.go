@@ -17,6 +17,7 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -641,47 +642,103 @@ func (bdb *BlockchainDB) GetUTXOs() (map[string][]shared.UTXO, error) {
 }
 
 func (bdb *BlockchainDB) InsertBlock(blockData []byte, blockNumber int) error {
-	key := []byte(fmt.Sprintf("block-%d", blockNumber))
+	key := fmt.Sprintf("block-%d", blockNumber)
+	log.Printf("Inserting block %d into database", blockNumber)
 
-	// Use BadgerDB transaction to put the block data into the database.
 	err := bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, blockData)
+		log.Printf("Storing data at key: %s", key)
+		return txn.Set([]byte(key), blockData)
 	})
 
 	if err != nil {
+		log.Printf("Error inserting block %d: %v", blockNumber, err)
 		return fmt.Errorf("error inserting block into BadgerDB: %v", err)
 	}
 
+	log.Printf("Block %d inserted successfully", blockNumber)
 	return nil
 }
 
 // StoreBlock stores serialized block data.
 func (bdb *BlockchainDB) StoreBlock(blockData []byte, blockNumber int) error {
-	key := []byte(fmt.Sprintf("block-%d", blockNumber))
+	key := fmt.Sprintf("block-%d", blockNumber)
+	log.Printf("Storing block %d in the database", blockNumber)
+
 	return bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, blockData)
+		log.Printf("Storing data at key: %s", key)
+		return txn.Set([]byte(key), blockData)
 	})
 }
 
 // RetrieveBlock retrieves serialized block data by block number.
 func (bdb *BlockchainDB) RetrieveBlock(blockNumber int) ([]byte, error) {
+	key := fmt.Sprintf("block-%d", blockNumber)
+	log.Printf("Retrieving block %d from the database", blockNumber)
 	var blockData []byte
+
 	err := bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte(fmt.Sprintf("block-%d", blockNumber)))
+		item, err := txn.Get([]byte(key))
 		if err != nil {
 			return err
 		}
 		blockData, err = item.ValueCopy(nil)
+		if err != nil {
+			log.Printf("Error retrieving block data from key %s: %v", key, err)
+		}
 		return err
 	})
+
 	if err != nil {
+		log.Printf("Failed to retrieve block %d: %v", blockNumber, err)
 		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
 	}
+	log.Printf("Block %d retrieved successfully", blockNumber)
 	return blockData, nil
 }
 
-func (bdb *BlockchainDB) GetLastBlockData() ([]byte, error) {
+func (bdb *BlockchainDB) GetLastBlockData() ([]byte, int, error) {
 	var blockData []byte
+	var lastIndex int = -1
+
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Reverse = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := item.Key()
+			if strings.HasPrefix(string(key), "block-") {
+				blockNumberStr := strings.TrimPrefix(string(key), "block-")
+				var parseErr error
+				lastIndex, parseErr = strconv.Atoi(blockNumberStr)
+				if parseErr != nil {
+					return fmt.Errorf("error parsing block number: %v", parseErr)
+				}
+				blockData, parseErr = item.ValueCopy(nil)
+				if parseErr != nil {
+					return fmt.Errorf("error retrieving block data: %v", parseErr)
+				}
+				return nil
+			}
+		}
+		return fmt.Errorf("no blocks found in the database")
+	})
+
+	if err != nil {
+		return nil, -1, err
+	}
+
+	if lastIndex == -1 {
+		return nil, -1, fmt.Errorf("no blocks found in the database")
+	}
+
+	return blockData, lastIndex, nil
+}
+
+func (bdb *BlockchainDB) GetLastBlockIndex() (int, error) {
+	var lastIndex int = -1 // Default to -1 to indicate no blocks if none found
 
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -689,33 +746,29 @@ func (bdb *BlockchainDB) GetLastBlockData() ([]byte, error) {
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		for it.Rewind(); it.Valid(); it.Next() {
+		if it.Rewind(); it.Valid() {
 			item := it.Item()
 			key := item.Key()
-
-			// Assuming block data keys are prefixed with "block-"
 			if strings.HasPrefix(string(key), "block-") {
-				var err error
-				blockData, err = item.ValueCopy(nil) // Use ValueCopy to get the data
-				if err != nil {
-					return fmt.Errorf("error retrieving block data: %v", err)
+				blockNumberStr := strings.TrimPrefix(string(key), "block-")
+				var parseErr error
+				lastIndex, parseErr = strconv.Atoi(blockNumberStr)
+				if parseErr != nil {
+					log.Printf("Error parsing block number from key %s: %v", key, parseErr)
+					return parseErr
 				}
-				return nil // Break after finding the latest block
+				return nil // Stop after the first (latest) block
 			}
 		}
-
 		return fmt.Errorf("no blocks found in the database")
 	})
 
 	if err != nil {
-		return nil, err
+		log.Printf("Failed to retrieve the last block index: %v", err)
+		return -1, err // Return -1 when no block is found
 	}
 
-	if len(blockData) == 0 {
-		return nil, fmt.Errorf("no blocks found in the database")
-	}
-
-	return blockData, nil
+	return lastIndex, nil
 }
 
 func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs []shared.UTXO, privKey *rsa.PrivateKey) (shared.Transaction, error) {

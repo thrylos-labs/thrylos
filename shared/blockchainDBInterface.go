@@ -14,7 +14,7 @@ type BlockchainDBInterface interface {
 	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
 	SanitizeAndFormatAddress(address string) (string, error)
 	InsertBlock(data []byte, blockNumber int) error
-	GetLastBlockData() ([]byte, error)
+	GetLastBlockData() ([]byte, int, error)
 	RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error)
 	AddTransaction(tx Transaction) error
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error

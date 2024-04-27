@@ -662,7 +662,8 @@ func (node *Node) Start() {
 			return
 		}
 
-		prevBlock, err := node.Blockchain.GetLastBlock()
+		// Retrieving the last block and its index
+		prevBlock, prevIndex, err := node.Blockchain.GetLastBlock()
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to get the last block: %v", err), http.StatusInternalServerError)
 			return
@@ -684,6 +685,13 @@ func (node *Node) Start() {
 			// you might want to respond accordingly. Adjust this based on your application's needs.
 			http.Error(w, "Failed to add block due to validation or other issues", http.StatusBadRequest)
 			return
+		}
+
+		// Log the retrieval of the previous block for debugging
+		if prevBlock != nil {
+			log.Printf("Previous Block Index: %d, Block Hash: %s", prevIndex, prevBlock.Hash)
+		} else {
+			log.Println("No previous block exists.")
 		}
 
 		// If successful, respond with a status indicating the block was created.

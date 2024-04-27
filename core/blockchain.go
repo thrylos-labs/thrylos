@@ -99,6 +99,18 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	// Create the genesis block
 	genesis := NewGenesisBlock()
 
+	// After genesis creation
+	// Assuming you have a Serialize method on the Block type
+	serializedGenesis, err := genesis.Serialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
+	}
+
+	// Insert the serialized genesis block into the database
+	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
+		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+	}
+
 	// Add initial transactions simulating a starting state
 	genesisTransactions := make([]*thrylos.Transaction, 0)
 
@@ -358,28 +370,28 @@ func (bc *Blockchain) ValidateBlock(newBlock *Block, prevBlock *Block) bool {
 	return true
 }
 
-func (bc *Blockchain) GetLastBlock() (*Block, error) {
-	var lastBlock Block
-
-	// Query the last block
-	blockData, err := bc.Database.GetLastBlockData()
+func (bc *Blockchain) GetLastBlock() (*Block, int, error) {
+	// Query the last block data and index
+	blockData, lastIndex, err := bc.Database.GetLastBlockData()
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// Handle no rows returned, which means blockchain is empty
-			return nil, nil
+			// Handle no rows returned, which means the blockchain is empty
+			return nil, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 
 	// Deserialize the block
+	var lastBlock Block
 	buffer := bytes.NewBuffer(blockData)
 	decoder := gob.NewDecoder(buffer)
 	err = decoder.Decode(&lastBlock)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return &lastBlock, nil
+	// Return the block along with its index
+	return &lastBlock, lastIndex, nil
 }
 
 // addUTXO adds a new UTXO to the blockchain's UTXO set.
