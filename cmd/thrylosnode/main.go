@@ -57,7 +57,9 @@ func main() {
 	}
 
 	// Environment variables
-	nodeAddress := os.Getenv("NODE_ADDRESS")
+
+	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
+	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
@@ -117,7 +119,7 @@ func main() {
 	if knownPeers != "" {
 		peersList = strings.Split(knownPeers, ",")
 	}
-	node := core.NewNode(nodeAddress, peersList, nodeDataDir, nil, false)
+	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil, false)
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
@@ -165,23 +167,33 @@ func main() {
 		}
 	}))
 
-	// Start the HTTP server with CORS-enabled handler
-	fmt.Printf("Starting server on %s\n", nodeAddress)
-	if err := http.ListenAndServe(nodeAddress, handler); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	// Listen for HTTP server
+	httpLis, err := net.Listen("tcp", httpAddress)
+	if err != nil {
+		log.Fatalf("Failed to listen for HTTP: %v", err)
 	}
 
-	lis, err := net.Listen("tcp", ":50051")
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-	grpcServer := grpc.NewServer()
-	pb.RegisterBlockchainServiceServer(grpcServer, &server{db: &database.BlockchainDB{}})
+	// Start the HTTP server with CORS-enabled handler
 	go func() {
-		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("failed to serve: %v", err)
+		fmt.Printf("Starting HTTP server on %s\n", httpAddress)
+		if err := http.Serve(httpLis, handler); err != nil {
+			log.Fatalf("Failed to start HTTP server: %v", err)
 		}
 	}()
+
+	// Setup and start gRPC server
+	grpcLis, err := net.Listen("tcp", grpcAddress)
+	if err != nil {
+		log.Fatalf("Failed to listen on %s for gRPC: %v", grpcAddress, err)
+	}
+
+	s := grpc.NewServer()
+	pb.RegisterBlockchainServiceServer(s, &server{})
+
+	log.Printf("Starting gRPC server on %s\n", grpcAddress)
+	if err = s.Serve(grpcLis); err != nil {
+		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
+	}
 }
 
 func executeWasm(wasmBytes []byte) int {
