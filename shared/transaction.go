@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/thrylos-labs/thrylos"
+	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -143,12 +144,15 @@ func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, error) {
 	return publicKey, privateKey, nil
 }
 
-// PublicKeyToAddress converts a given RSA public key to a blockchain address string using SHA-256 hashing.
-// The address uniquely identifies a participant or entity within the blockchain network.
+// PublicKeyToAddress generates a public address from an RSA public key using BLAKE2b-256.
 func PublicKeyToAddress(pub *rsa.PublicKey) string {
 	pubBytes := pub.N.Bytes() // Convert public key to bytes
-	hash := sha256.Sum256(pubBytes)
-	return hex.EncodeToString(hash[:])
+	hash, err := blake2b.New256(nil)
+	if err != nil {
+		panic(err) // Handle errors appropriately in production code
+	}
+	hash.Write(pubBytes)
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // CreateMockSignedTransaction generates a transaction and signs it.
@@ -189,8 +193,12 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 
 // HashData hashes input data using SHA-256 and returns the hash as a byte slice.
 func HashData(data []byte) []byte {
-	hash := sha256.Sum256(data)
-	return hash[:]
+	hash, err := blake2b.New256(nil) // No key, simple hash
+	if err != nil {
+		panic(err) // Handle errors appropriately in production code
+	}
+	hash.Write(data)
+	return hash.Sum(nil)
 }
 
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,

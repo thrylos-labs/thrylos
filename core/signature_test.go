@@ -1,18 +1,22 @@
 package core
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/thrylos-labs/thrylos/shared"
+	"golang.org/x/crypto/blake2b"
 )
 
 // HashData uses SHA-256 to hash the input data
 func HashData(data []byte) []byte {
-	hash := sha256.Sum256(data)
-	return hash[:]
+	hash, err := blake2b.New256(nil) // No key, simple hash
+	if err != nil {
+		panic(err) // Handle errors appropriately in production code
+	}
+	hash.Write(data)
+	return hash.Sum(nil)
 }
 
 // Your TestHashDataConsistency test passed successfully, indicating that the HashData function correctly hashes the serialized transaction data using SHA-256, and the output matches the expected hash value. This confirms that the serialization and hashing steps in your transaction handling process are consistent and reliable.
