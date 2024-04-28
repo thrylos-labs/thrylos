@@ -10,7 +10,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos/shared"
+	"golang.org/x/crypto/blake2b"
 )
 
 // BlockchainDB wraps an SQL database connection and provides methods to interact
@@ -140,7 +140,7 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 }
 
 func (bdb *BlockchainDB) hashData(data []byte) []byte {
-	hasher := sha256.New()
+	hasher, _ := blake2b.New256(nil)
 	hasher.Write(data)
 	return hasher.Sum(nil)
 }
@@ -780,8 +780,10 @@ func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs [
 		return tx, fmt.Errorf("error serializing transaction: %v", err) // returning tx, error
 	}
 
-	// Hash the serialized transaction
-	hashedTx := sha256.Sum256(txBytes)
+	// Hash the serialized transaction using BLAKE2b
+	hasher, _ := blake2b.New256(nil)
+	hasher.Write(txBytes)
+	hashedTx := hasher.Sum(nil)
 
 	// Sign the hashed transaction
 	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, hashedTx[:])

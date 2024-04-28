@@ -2,7 +2,6 @@ package core
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/hex"
@@ -14,6 +13,7 @@ import (
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"golang.org/x/crypto/blake2b"
 
 	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"
@@ -313,7 +313,12 @@ func (b *Block) ComputeHash() string {
 		return b.Hash // Use the cached hash if available
 	}
 
-	hasher := sha256.New()
+	// Create a new BLAKE2b-256 hasher
+	hasher, err := blake2b.New256(nil)
+	if err != nil {
+		log.Printf("Failed to create hasher: %v", err)
+		return ""
+	}
 
 	// Hash block's static components
 	hasher.Write([]byte(fmt.Sprintf("%d", b.Index)))
@@ -328,7 +333,7 @@ func (b *Block) ComputeHash() string {
 			log.Printf("Failed to serialize transaction: %v", err)
 			return "" // Return an empty string or handle the error as per your error policy
 		}
-		txHash := sha256.Sum256(txBytes)
+		txHash := blake2b.Sum256(txBytes)
 		hasher.Write(txHash[:])
 	}
 
@@ -336,6 +341,7 @@ func (b *Block) ComputeHash() string {
 		hasher.Write(b.VerkleRoot)
 	}
 
+	// Compute and store the hash
 	b.Hash = hex.EncodeToString(hasher.Sum(nil))
 	return b.Hash
 }

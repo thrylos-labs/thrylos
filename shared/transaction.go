@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,8 +24,14 @@ import (
 )
 
 func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
+	// Create a new BLAKE2b hasher for OAEP
+	blake2bHasher, err := blake2b.New256(nil)
+	if err != nil {
+		return nil, err
+	}
+
 	encryptedKey, err := rsa.EncryptOAEP(
-		sha256.New(),
+		blake2bHasher, // Using BLAKE2b for OAEP
 		rand.Reader,
 		recipientPublicKey,
 		aesKey,
@@ -82,9 +87,15 @@ func DecryptWithAES(key, ciphertext []byte) ([]byte, error) {
 
 // DecryptTransactionData function should be already defined and be similar to this
 func DecryptTransactionData(encryptedData, encryptedKey []byte, recipientPrivateKey *rsa.PrivateKey) ([]byte, error) {
+	// Create a new BLAKE2b hasher for OAEP
+	blake2bHasher, err := blake2b.New256(nil)
+	if err != nil {
+		return nil, err
+	}
+
 	// Decrypt the AES key first
 	aesKey, err := rsa.DecryptOAEP(
-		sha256.New(),
+		blake2bHasher, // Use BLAKE2b hasher
 		rand.Reader,
 		recipientPrivateKey,
 		encryptedKey,
@@ -131,8 +142,15 @@ func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
 
 // computeAddressFromPublicKey performs the actual computation of the address from a public key.
 func computeAddressFromPublicKey(pubKey ed25519.PublicKey) string {
-	hash := sha256.Sum256(pubKey)
-	return hex.EncodeToString(hash[:])
+	// Create a new BLAKE2b hasher
+	blake2bHasher, err := blake2b.New256(nil)
+	if err != nil {
+		panic(err) // Handle error appropriately in production code
+	}
+
+	// Compute the hash using BLAKE2b
+	hash := blake2bHasher.Sum(pubKey)
+	return hex.EncodeToString(hash)
 }
 
 // GenerateEd25519Keys generates a new Ed25519 public/private key pair.
