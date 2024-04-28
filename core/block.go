@@ -11,6 +11,9 @@ import (
 	"sync"
 	"time"
 
+	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/thrylos-labs/thrylos/thrylos"
+
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
@@ -64,13 +67,18 @@ type Block struct {
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
 func (b *Block) InitializeVerkleTree() error {
 	var txData [][]byte
-	for _, protoTx := range b.Transactions {
-		txByte, err := proto.Marshal(protoTx)
-		if err != nil {
-			b.Error = fmt.Errorf("failed to serialize Protobuf transaction: %v", err)
-			return b.Error
-		}
-		txData = append(txData, txByte)
+
+	for _, tx := range b.Transactions {
+		builder := flatbuffers.NewBuilder(0)
+		// Serialize the transaction - Example based on assuming a method to build the transaction exists
+		thrylos.TransactionStart(builder)
+		// Assume functions like TransactionAddId, TransactionAddInputs, etc., are available to add transaction fields
+		// Example: thrylos.TransactionAddId(builder, builder.CreateString(tx.Id))
+		transactionOffset := thrylos.TransactionEnd(builder)
+		builder.Finish(transactionOffset)
+
+		// Append the serialized transaction to txData
+		txData = append(txData, builder.FinishedBytes())
 	}
 
 	if len(txData) > 0 {
@@ -140,43 +148,43 @@ func Deserialize(data []byte) (*Block, error) {
 	return &block, nil
 }
 
-func ConvertSharedTransactionToProto(tx shared.Transaction) *thrylos.Transaction {
-	protoInputs := make([]*thrylos.UTXO, len(tx.Inputs))
-	for i, input := range tx.Inputs {
-		protoInputs[i] = shared.ConvertSharedUTXOToProto(input)
+func ConvertFlatTransactionToShared(fbTx *thrylos.Transaction) shared.Transaction {
+	// Convert inputs from FlatBuffers format to shared UTXO format
+	inputs := make([]shared.UTXO, fbTx.InputsLength())
+	for i := 0; i < fbTx.InputsLength(); i++ {
+		var fbInput thrylos.UTXO
+		if fbTx.Inputs(&fbInput, i) {
+			inputs[i] = ConvertFlatUTXOToShared(&fbInput)
+		}
 	}
 
-	protoOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
-	for i, output := range tx.Outputs {
-		protoOutputs[i] = shared.ConvertSharedUTXOToProto(output)
+	// Convert outputs from FlatBuffers format to shared UTXO format
+	outputs := make([]shared.UTXO, fbTx.OutputsLength())
+	for i := 0; i < fbTx.OutputsLength(); i++ {
+		var fbOutput thrylos.UTXO
+		if fbTx.Outputs(&fbOutput, i) {
+			outputs[i] = ConvertFlatUTXOToShared(&fbOutput)
+		}
 	}
 
-	return &thrylos.Transaction{
-		Id:        tx.ID,
-		Timestamp: tx.Timestamp,
-		Inputs:    protoInputs,
-		Outputs:   protoOutputs,
-		Signature: []byte(tx.Signature), // Convert string to []byte here
+	// Accessing fields directly, as Get methods do not exist in FlatBuffers
+	return shared.Transaction{
+		ID:        string(fbTx.Id()), // FlatBuffers uses direct byte slices, convert to string
+		Timestamp: fbTx.Timestamp(),
+		Inputs:    inputs,
+		Outputs:   outputs,
+		Signature: fbTx.Signature(), // Already a byte slice
+		// Additional fields such as EncryptedData if your application uses them
 	}
 }
 
-func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transaction {
-	inputs := make([]shared.UTXO, len(protoTx.GetInputs()))
-	for i, protoInput := range protoTx.GetInputs() {
-		inputs[i] = ConvertProtoUTXOToShared(protoInput)
-	}
-
-	outputs := make([]shared.UTXO, len(protoTx.GetOutputs()))
-	for i, protoOutput := range protoTx.GetOutputs() {
-		outputs[i] = ConvertProtoUTXOToShared(protoOutput)
-	}
-
-	return shared.Transaction{
-		ID:        protoTx.GetId(),
-		Timestamp: protoTx.GetTimestamp(),
-		Inputs:    inputs,
-		Outputs:   outputs,
-		Signature: protoTx.GetSignature(), // Directly use []byte
+// Assuming you have a similar function for converting UTXO
+func ConvertFlatUTXOToShared(fbUTXO *thrylos.UTXO) shared.UTXO {
+	return shared.UTXO{
+		TransactionID: string(fbUTXO.TransactionId()),
+		Index:         fbUTXO.Index(),
+		OwnerAddress:  string(fbUTXO.OwnerAddress()),
+		Amount:        fbUTXO.Amount(),
 	}
 }
 
