@@ -793,7 +793,7 @@ func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs [
 	base64Signature := base64.StdEncoding.EncodeToString(signature)
 
 	// Set the encoded signature on the transaction
-	tx.Signature = base64Signature
+	tx.Signature = []byte(base64Signature)
 	return tx, nil // returning tx, nil
 }
 

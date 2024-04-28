@@ -216,7 +216,7 @@ func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Tran
 	}
 
 	// Attach the signature to the transaction.
-	tx.Signature = signature
+	tx.Signature = []byte(signature)
 
 	// Return a slice containing the signed transaction.
 	return []shared.Transaction{tx}
@@ -542,6 +542,8 @@ func TestBlockTime(t *testing.T) {
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
 }
 
+// // go test -v -timeout 30s -run ^TestBlockTimeWithGRPC$ github.com/thrylos-labs/thrylos/core
+
 // go test -v -timeout 30s -run ^TestBlockTimeGRPC$ github.com/thrylos-labs/thrylos/core
 
 // func TestBlockTimeGRPC(t *testing.T) {
@@ -645,7 +647,7 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 						Amount:        100,
 					}},
 					Timestamp: time.Now().Unix(),
-					Signature: "", // Would be set properly in real usage
+					Signature: []byte(""), // Would be set properly in real usage
 					Sender:    "Alice",
 				}
 

@@ -51,19 +51,6 @@ func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionReque
 	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
 }
 
-func (s *server) GetLastBlock(ctx context.Context, req *pb.EmptyRequest) (*pb.BlockResponse, error) {
-	lastBlockData, err := s.db.GetLatestBlockData()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "Failed to retrieve last block: %v", err)
-	}
-	lastBlockIndex, _ := s.db.GetLastBlockIndex()
-
-	return &pb.BlockResponse{
-		BlockData:  lastBlockData, // No need to convert to string, directly set as bytes
-		BlockIndex: int32(lastBlockIndex),
-	}, nil
-}
-
 func init() {
 	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
 	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity

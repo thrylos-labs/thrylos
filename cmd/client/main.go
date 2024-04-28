@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
-	"github.com/thrylos-labs/thrylos/core"
 	"google.golang.org/grpc"
 )
 
@@ -43,7 +41,7 @@ func main() {
 		Timestamp:        time.Now().Unix(), // Set the current Unix time
 		Inputs:           inputs,
 		Outputs:          outputs,
-		Signature:        "transaction-signature",
+		Signature:        []byte("transaction-signature"),        // Convert string to []byte
 		PreviousTxIds:    []string{"prev-tx-id1", "prev-tx-id2"}, // Example previous transaction IDs
 		EncryptedAesKey:  []byte("example-encrypted-key"),        // Example encrypted AES key
 		EncryptedInputs:  []byte("encrypted-inputs-data"),        // Example encrypted inputs
@@ -57,45 +55,4 @@ func main() {
 		log.Fatalf("Could not submit transaction: %v", err)
 	}
 	log.Printf("Transaction Status: %s", r.Status)
-}
-
-func getLastBlock(client pb.BlockchainServiceClient) (*core.Block, int32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-
-	resp, err := client.GetLastBlock(ctx, &pb.EmptyRequest{})
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// Convert the string data to bytes before passing to Deserialize
-	blockDataBytes := []byte(resp.BlockData)
-	block, err := core.Deserialize(blockDataBytes)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to deserialize block data: %v", err)
-	}
-
-	return block, resp.BlockIndex, nil
-}
-
-// Wait for a specific block confirmation
-func waitForBlockConfirmation(client pb.BlockchainServiceClient, expectedBlockIndex int32) bool {
-	timeout := time.After(10 * time.Second)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			return false
-		case <-ticker.C:
-			resp, err := client.GetLastBlock(context.Background(), &pb.EmptyRequest{})
-			if err != nil {
-				continue
-			}
-			if resp.BlockIndex >= expectedBlockIndex {
-				return true
-			}
-		}
-	}
 }

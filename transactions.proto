@@ -11,7 +11,7 @@ message Transaction {
   repeated UTXO outputs = 4 [json_name = "outputs"];
   bytes encrypted_inputs = 5 [json_name = "encryptedInputs"];
   bytes encrypted_outputs = 6 [json_name = "encryptedOutputs"];
-  string signature = 7 [json_name = "signature"];
+  bytes signature = 7 [json_name = "signature"];
   repeated string previous_tx_ids = 8 [json_name = "previousTxIds"];
   bytes encrypted_aes_key = 9 [json_name = "encryptedAESKey"];
   string sender = 10 [json_name = "sender"];

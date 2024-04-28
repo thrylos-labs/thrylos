@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -203,7 +202,7 @@ type Transaction struct {
 	Outputs          []UTXO   `json:"Outputs"`
 	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
 	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty"`
-	Signature        string   `json:"Signature"`
+	Signature        []byte   `json:"Signature"`
 	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
 	PreviousTxIds    []string `json:"PreviousTxIds,omitempty"`
 	Sender           string   `json:"sender"`
@@ -382,7 +381,7 @@ func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateK
 
 	// Ed25519 Signature
 	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
-	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
+	tx.Signature = ed25519Signature // Directly assign the byte slice
 
 	return nil
 }
@@ -415,12 +414,8 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed2551
 		return fmt.Errorf("failed to serialize transaction for verification: %v", err)
 	}
 
-	// Verify Ed25519 Signature
-	ed25519SigBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
-	if err != nil {
-		return fmt.Errorf("failed to decode Ed25519 signature: %v", err)
-	}
-	if !ed25519.Verify(ed25519PublicKey, txBytes, ed25519SigBytes) {
+	// The tx.Signature is already a byte slice, no need for decoding
+	if !ed25519.Verify(ed25519PublicKey, txBytes, tx.Signature) {
 		return errors.New("Ed25519 signature verification failed")
 	}
 
@@ -447,7 +442,7 @@ func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO
 
 	// Make a copy of the transaction to manipulate for verification
 	txCopy := proto.Clone(tx).(*thrylos.Transaction)
-	txCopy.Signature = "" // Reset signature for serialization
+	txCopy.Signature = []byte("") // Reset signature for serialization
 
 	// Serialize the transaction for verification
 	txBytes, err := proto.Marshal(txCopy)
@@ -558,8 +553,9 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 // BatchSignTransactions signs a slice of transactions using both Ed25519.
 func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
 	var wg sync.WaitGroup
-	errChan := make(chan error, 2) // Channel for error communication
+	errChan := make(chan error, len(transactions)) // Ensure the channel can handle the number of transactions
 
+	wg.Add(1) // Add one for the goroutine you are starting
 	go func() {
 		defer wg.Done()
 		for _, customTx := range transactions { // Assuming transactions is of type []*Transaction
@@ -569,22 +565,21 @@ func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.Pri
 			// Correctly use the generated Protobuf type for marshaling
 			txBytes, err := proto.Marshal(protoTx)
 			if err != nil {
-				// Handle error appropriately
+				errChan <- err
 				continue
 			}
 
 			// Ed25519 Signing
 			edSignature := ed25519.Sign(edPrivateKey, txBytes)
 
-			// Update the signature field of the Protobuf Transaction
-			protoTx.Signature = base64.StdEncoding.EncodeToString(edSignature)
+			// Assign the byte slice directly to the protobuf's Signature field
+			protoTx.Signature = edSignature
 
-			// If you also want to update your custom struct, remember to convert the signature back
-			customTx.Signature = protoTx.Signature
+			// Update your custom struct if necessary; ensure its Signature field is also []byte or convert if it's a string
+			customTx.Signature = protoTx.Signature // Adjust this line if customTx expects a string
 		}
 	}()
 
-	wg.Add(2)
 	wg.Wait()
 
 	close(errChan) // Close the channel to signal completion of error collection

@@ -270,7 +270,7 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 		Timestamp:     tx.GetTimestamp(),
 		Inputs:        ConvertProtoInputs(tx.GetInputs()),
 		Outputs:       ConvertProtoOutputs(tx.GetOutputs()),
-		Signature:     tx.GetSignature(),
+		Signature:     tx.GetSignature(), // Convert []byte to string here
 		PreviousTxIds: tx.GetPreviousTxIds(),
 	}
 }
@@ -614,7 +614,7 @@ func ConvertJSONToProto(jsonTx thrylos.TransactionJSON) *thrylos.Transaction {
 	tx := &thrylos.Transaction{
 		Id:        jsonTx.ID,
 		Timestamp: jsonTx.Timestamp,
-		Signature: jsonTx.Signature,
+		Signature: []byte(jsonTx.Signature),
 	}
 
 	for _, input := range jsonTx.Inputs {

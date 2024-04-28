@@ -156,7 +156,7 @@ func ConvertSharedTransactionToProto(tx shared.Transaction) *thrylos.Transaction
 		Timestamp: tx.Timestamp,
 		Inputs:    protoInputs,
 		Outputs:   protoOutputs,
-		Signature: tx.Signature,
+		Signature: []byte(tx.Signature), // Convert string to []byte here
 	}
 }
 
@@ -176,7 +176,7 @@ func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transa
 		Timestamp: protoTx.GetTimestamp(),
 		Inputs:    inputs,
 		Outputs:   outputs,
-		Signature: protoTx.GetSignature(),
+		Signature: protoTx.GetSignature(), // Directly use []byte
 	}
 }
 
@@ -268,7 +268,7 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 		Timestamp int64         `json:"timestamp"`
 		Inputs    []shared.UTXO `json:"inputs"`
 		Outputs   []shared.UTXO `json:"outputs"`
-		Signature string        `json:"signature"`
+		Signature []byte        `json:"signature"`
 	}
 
 	type JSONBlock struct {

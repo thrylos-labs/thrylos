@@ -136,7 +136,7 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 				OwnerAddress: stakeholder.Address,
 				Amount:       stakeholder.Balance,
 			}},
-			Signature: "genesis_signature", // Placeholder
+			Signature: []byte("genesis_signature"), // Placeholder
 		}
 		genesisTransactions = append(genesisTransactions, genesisTx)
 		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance) // Initialize stakeholder stakes
@@ -177,7 +177,7 @@ func (bc *Blockchain) MintTokens(toAddress string, amount int) error {
 			OwnerAddress: toAddress,
 			Amount:       int64(amount),
 		}},
-		Signature: "system_signature", // System signature or a special validation
+		Signature: []byte("system_signature"), // System signature or a special validation
 	}
 
 	// Validate and process the transaction

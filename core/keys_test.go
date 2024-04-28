@@ -213,12 +213,12 @@ func TestTransactionSubmission(t *testing.T) {
 		Timestamp: time.Now().Unix(),
 		Inputs:    []*thrylos.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: senderAddress, Amount: 100}},
 		Outputs:   []*thrylos.UTXO{{TransactionId: "txTest123", Index: 0, OwnerAddress: recipientAddress, Amount: 95}},
-		Signature: "",
+		Signature: []byte(""),
 	}
 
 	txBytes, _ := json.Marshal(transaction)
 	signature := ed25519.Sign(senderPrivateKey, txBytes)
-	transaction.Signature = base64.StdEncoding.EncodeToString(signature)
+	transaction.Signature = signature // Assign the signature directly as a byte slice
 
 	blockchain.AddPendingTransaction(transaction)
 
