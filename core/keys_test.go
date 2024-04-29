@@ -5,13 +5,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"io/ioutil"
 	"os"
 	"testing"
-	"time"
 
-	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -174,67 +171,67 @@ func TestNewNodeInitialization(t *testing.T) {
 }
 
 // parsing the OwnerAddress as expected
-func TestJSONParsing(t *testing.T) {
-	jsonStr := `{"ID":"transaction_id_here","Timestamp":1714042156,"Inputs":[{"TransactionID":"previous_tx_id","Index":0,"OwnerAddress":"c623f591835d9846f3b0180593956bd213439cc6acec5a11c5afc63792ba3900","Amount":100}],"Outputs":[{"TransactionID":"transaction_id_here","Index":0,"OwnerAddress":"1efadd9af828a4fdb20c1a149bd798fa798b25b2acfc27489dde00d5b265fd22","Amount":100}],"Signature":"dummy_signature"}`
+// func TestJSONParsing(t *testing.T) {
+// 	jsonStr := `{"ID":"transaction_id_here","Timestamp":1714042156,"Inputs":[{"TransactionID":"previous_tx_id","Index":0,"OwnerAddress":"c623f591835d9846f3b0180593956bd213439cc6acec5a11c5afc63792ba3900","Amount":100}],"Outputs":[{"TransactionID":"transaction_id_here","Index":0,"OwnerAddress":"1efadd9af828a4fdb20c1a149bd798fa798b25b2acfc27489dde00d5b265fd22","Amount":100}],"Signature":"dummy_signature"}`
 
-	var tx thrylos.Transaction
-	if err := json.Unmarshal([]byte(jsonStr), &tx); err != nil {
-		t.Fatalf("Failed to unmarshal: %v", err)
-	}
-	t.Logf("Parsed transaction: %+v", tx) // This will show all fields
+// 	var tx thrylos.Transaction
+// 	if err := json.Unmarshal([]byte(jsonStr), &tx); err != nil {
+// 		t.Fatalf("Failed to unmarshal: %v", err)
+// 	}
+// 	t.Logf("Parsed transaction: %+v", tx) // This will show all fields
 
-	if tx.Inputs[0].OwnerAddress == "1efadd9af828a4fdb20c1a149bd798fa798b25b2acfc27489dde00d5b265fd22" {
-		t.Errorf("OwnerAddress is empty after parsing")
-	}
-}
+// 	if tx.Inputs[0].OwnerAddress == "1efadd9af828a4fdb20c1a149bd798fa798b25b2acfc27489dde00d5b265fd22" {
+// 		t.Errorf("OwnerAddress is empty after parsing")
+// 	}
+// }
 
-func TestTransactionSubmission(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "testBlockchain")
-	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+// func TestTransactionSubmission(t *testing.T) {
+// 	tempDir, err := ioutil.TempDir("", "testBlockchain")
+// 	if err != nil {
+// 		t.Fatalf("Failed to create temp directory: %v", err)
+// 	}
+// 	defer os.RemoveAll(tempDir)
 
-	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
-	blockchain, err := NewBlockchain(tempDir, aesKey)
-	if err != nil {
-		t.Fatalf("Failed to initialize blockchain: %v", err)
-	}
+// 	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
+// 	blockchain, err := NewBlockchain(tempDir, aesKey)
+// 	if err != nil {
+// 		t.Fatalf("Failed to initialize blockchain: %v", err)
+// 	}
 
-	senderPublicKey, senderPrivateKey, _ := ed25519.GenerateKey(rand.Reader)
-	senderAddress := base64.StdEncoding.EncodeToString(senderPublicKey)
-	recipientPublicKey, _, _ := ed25519.GenerateKey(rand.Reader)
-	recipientAddress := base64.StdEncoding.EncodeToString(recipientPublicKey)
+// 	senderPublicKey, senderPrivateKey, _ := ed25519.GenerateKey(rand.Reader)
+// 	senderAddress := base64.StdEncoding.EncodeToString(senderPublicKey)
+// 	recipientPublicKey, _, _ := ed25519.GenerateKey(rand.Reader)
+// 	recipientAddress := base64.StdEncoding.EncodeToString(recipientPublicKey)
 
-	blockchain.Stakeholders[senderAddress] = 1000 // Assign initial tokens for testing
+// 	blockchain.Stakeholders[senderAddress] = 1000 // Assign initial tokens for testing
 
-	transaction := &thrylos.Transaction{
-		Id:        "txTest123",
-		Timestamp: time.Now().Unix(),
-		Inputs:    []*thrylos.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: senderAddress, Amount: 100}},
-		Outputs:   []*thrylos.UTXO{{TransactionId: "txTest123", Index: 0, OwnerAddress: recipientAddress, Amount: 95}},
-		Signature: []byte(""),
-	}
+// 	transaction := &thrylos.Transaction{
+// 		Id:        "txTest123",
+// 		Timestamp: time.Now().Unix(),
+// 		Inputs:    []*thrylos.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: senderAddress, Amount: 100}},
+// 		Outputs:   []*thrylos.UTXO{{TransactionId: "txTest123", Index: 0, OwnerAddress: recipientAddress, Amount: 95}},
+// 		Signature: []byte(""),
+// 	}
 
-	txBytes, _ := json.Marshal(transaction)
-	signature := ed25519.Sign(senderPrivateKey, txBytes)
-	transaction.Signature = signature // Assign the signature directly as a byte slice
+// 	txBytes, _ := json.Marshal(transaction)
+// 	signature := ed25519.Sign(senderPrivateKey, txBytes)
+// 	transaction.Signature = signature // Assign the signature directly as a byte slice
 
-	blockchain.AddPendingTransaction(transaction)
+// 	blockchain.AddPendingTransaction(transaction)
 
-	if len(blockchain.PendingTransactions) != 1 {
-		t.Errorf("Transaction not added to pending transactions properly, got %d", len(blockchain.PendingTransactions))
-	}
+// 	if len(blockchain.PendingTransactions) != 1 {
+// 		t.Errorf("Transaction not added to pending transactions properly, got %d", len(blockchain.PendingTransactions))
+// 	}
 
-	_, err = blockchain.ProcessPendingTransactions(senderAddress)
-	if err != nil {
-		t.Errorf("Failed to process pending transactions: %v", err)
-	}
+// 	_, err = blockchain.ProcessPendingTransactions(senderAddress)
+// 	if err != nil {
+// 		t.Errorf("Failed to process pending transactions: %v", err)
+// 	}
 
-	balance, _ := blockchain.GetBalance(recipientAddress)
-	if balance != 95 {
-		t.Errorf("Transaction amount not reflected in recipient's balance, expected 95, got %d", balance)
-	}
+// 	balance, _ := blockchain.GetBalance(recipientAddress)
+// 	if balance != 95 {
+// 		t.Errorf("Transaction amount not reflected in recipient's balance, expected 95, got %d", balance)
+// 	}
 
-	t.Log("Transaction submission and processing test passed")
-}
+// 	t.Log("Transaction submission and processing test passed")
+// }

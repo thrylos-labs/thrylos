@@ -68,37 +68,61 @@ func (b *Block) InitializeVerkleTree() error {
 	builder := flatbuffers.NewBuilder(0)
 
 	for _, tx := range b.Transactions {
-		// Reset the builder for each transaction
 		builder.Reset()
 
-		// Serialize the inputs and outputs
-		inputsOffsets, err := shared.SerializeUTXOs(builder, shared.ConvertToUTXOPtrs(tx.Inputs))
+		// Serialize inputs
+		numInputs := tx.InputsLength()
+		inputs := make([]shared.UTXO, numInputs)
+		var protoInput thrylos.UTXO
+		for i := 0; i < numInputs; i++ {
+			if tx.Inputs(&protoInput, i) {
+				inputs[i] = ConvertFlatUTXOToShared(&protoInput)
+			}
+		}
+		inputsPtrs := shared.ConvertToUTXOPtrs(inputs)
+		inputsOffsets, err := shared.SerializeUTXOs(builder, inputsPtrs)
 		if err != nil {
 			log.Printf("Error serializing inputs: %v", err)
-			continue // or handle error more critically based on your use case
+			continue
 		}
 
-		outputsOffsets, err := shared.SerializeUTXOs(builder, shared.ConvertToUTXOPtrs(tx.Outputs))
+		// Serialize outputs
+		numOutputs := tx.OutputsLength()
+		outputs := make([]shared.UTXO, numOutputs)
+		var protoOutput thrylos.UTXO
+		for i := 0; i < numOutputs; i++ {
+			if tx.Outputs(&protoOutput, i) {
+				outputs[i] = ConvertFlatUTXOToShared(&protoOutput)
+			}
+		}
+		outputsPtrs := shared.ConvertToUTXOPtrs(outputs)
+		outputsOffsets, err := shared.SerializeUTXOs(builder, outputsPtrs)
 		if err != nil {
 			log.Printf("Error serializing outputs: %v", err)
-			continue // or handle error more critically based on your use case
+			continue
 		}
 
-		// Other fields of the transaction
-		idOffset := builder.CreateString(tx.ID)
-		encryptedInputsOffset := builder.CreateByteVector(tx.EncryptedInputs)
-		encryptedOutputsOffset := builder.CreateByteVector(tx.EncryptedOutputs)
-		previousTxIdsOffset := createStringVector(builder, tx.PreviousTxIds)
-		encryptedAesKeyOffset := builder.CreateByteVector(tx.EncryptedAESKey)
-		senderOffset := builder.CreateString(tx.Sender)
+		// Serialize other transaction fields
+		idOffset := builder.CreateString(string(tx.Id()))
+		encryptedInputsOffset := builder.CreateByteVector(tx.EncryptedInputsBytes())
+		encryptedOutputsOffset := builder.CreateByteVector(tx.EncryptedOutputsBytes())
+		prevTxIds := make([]string, tx.PreviousTxIdsLength())
+		for i := 0; i < tx.PreviousTxIdsLength(); i++ {
+			prevTxIds[i] = string(tx.PreviousTxIds(i))
+		}
+		previousTxIdsOffset := createStringVector(builder, prevTxIds)
+		encryptedAesKeyOffset := builder.CreateByteVector(tx.EncryptedAesKeyBytes())
+		senderOffset := builder.CreateString(string(tx.Sender()))
+		signatureBytes := make([]byte, tx.SignatureLength())
+		for i := 0; i < tx.SignatureLength(); i++ {
+			signatureBytes[i] = tx.Signature(i)
+		}
+		signatureOffset := builder.CreateByteVector(signatureBytes)
 
-		// Add the transaction signature if included
-		signatureOffset := builder.CreateByteVector(tx.Signature)
-
-		// Start building the transaction object
+		// Start building the transaction object in FlatBuffers
 		thrylos.TransactionStart(builder)
 		thrylos.TransactionAddId(builder, idOffset)
-		thrylos.TransactionAddTimestamp(builder, tx.Timestamp)
+		thrylos.TransactionAddTimestamp(builder, tx.Timestamp())
 		thrylos.TransactionAddInputs(builder, inputsOffsets)
 		thrylos.TransactionAddOutputs(builder, outputsOffsets)
 		thrylos.TransactionAddEncryptedInputs(builder, encryptedInputsOffset)
@@ -108,13 +132,10 @@ func (b *Block) InitializeVerkleTree() error {
 		thrylos.TransactionAddEncryptedAesKey(builder, encryptedAesKeyOffset)
 		thrylos.TransactionAddSender(builder, senderOffset)
 		transactionOffset := thrylos.TransactionEnd(builder)
-
-		// Finish the transaction object and get the serialized bytes
 		builder.Finish(transactionOffset)
 		txData = append(txData, builder.FinishedBytes())
 	}
 
-	// Proceed with Verkle tree initialization if there is any transaction data
 	if len(txData) > 0 {
 		var wg sync.WaitGroup
 		wg.Add(1)
@@ -133,21 +154,28 @@ func (b *Block) InitializeVerkleTree() error {
 		wg.Wait()
 	}
 
-	return b.Error // return any error that occurred during processing
+	return b.Error // Return any error that occurred during processing
 }
 
 // NewGenesisBlock creates and returns the genesis block for the blockchain. The genesis block
 // is the first block in the blockchain, serving as the foundation upon which the entire chain is built.
-func NewGenesisBlock() *Block {
+func NewGenesisBlock(transactions []*thrylos.Transaction) *Block {
 	block := &Block{
-		Index:      0,
-		Timestamp:  time.Now().Unix(),
-		VerkleRoot: []byte{}, // Or some predefined value, since it's a special case.
-		PrevHash:   "",
-		Hash:       "",
-		Validator:  "",
+		Index:        0,
+		Timestamp:    time.Now().Unix(),
+		Transactions: transactions, // Include the transactions in the genesis block
+		VerkleRoot:   []byte{},     // Or some predefined value, since it's a special case.
+		PrevHash:     "",
+		Hash:         "",
+		Validator:    "",
 	}
-	block.Hash = block.ComputeHash()
+
+	// Optionally, compute hashes or perform any initial setup necessary for the transactions
+	// For instance, updating the Verkle Tree or computing the overall block hash including transactions
+	if len(transactions) > 0 {
+		block.ComputeHash()
+	}
+	block.Hash = block.ComputeHash() // Recompute the hash after adding transactions
 	return block
 }
 

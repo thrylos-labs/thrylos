@@ -11,69 +11,41 @@ import (
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
-// setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.
-func setupTestBlockchain(t *testing.T) *Blockchain {
-	// Create a temporary directory for blockchain data
-	tempDir, err := ioutil.TempDir("", "blockchain_test")
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
-
-	// Clean up the temporary directory after the test
-	defer os.RemoveAll(tempDir)
-
-	// Generate a dummy AES key for testing
-	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
-	if err != nil {
-		t.Fatalf("Failed to generate AES key: %v", err)
-	}
-
-	// You should ensure the temporary directory is cleaned up after the test runs,
-	// possibly in the test function that calls setupTestBlockchain
-	// defer os.RemoveAll(tempDir)
-
-	// Initialize the blockchain using the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey)
-	if err != nil {
-		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
-	}
-
-	// Add a genesis block if it's not automatically created by NewBlockchain
-	if len(bc.Blocks) == 0 {
-		genesis := NewGenesisBlock()
-		bc.Blocks = append(bc.Blocks, genesis)
-		// If needed, insert the genesis block into the database here
-	}
-
-	return bc
-}
+// go test -v -timeout 30s -run ^TestGenesisBlockCreation$ github.com/thrylos-labs/thrylos/core
 
 func TestGenesisBlockCreation(t *testing.T) {
-	// Create a temporary directory for blockchain data
-	tempDir, err := ioutil.TempDir("", "blockchain_test")
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
-	// Clean up the temporary directory after the test
-	defer os.RemoveAll(tempDir)
-
-	// Generate a dummy AES key for testing
-	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
-	if err != nil {
-		t.Fatalf("Failed to generate AES key: %v", err)
-	}
-	// Initialize the blockchain with the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey)
-	if err != nil {
-		t.Fatalf("Failed to initialize blockchain: %v", err)
-	}
+	// Set up the blockchain with a genesis block
+	bc := setupTestBlockchain(t)
 
 	// Check if the first block is the genesis block
 	if len(bc.Blocks) == 0 || bc.Blocks[0] != bc.Genesis {
 		t.Errorf("Genesis block is not the first block in the blockchain")
 	}
+}
 
-	// Additional checks can include validating genesis block's specific properties.
+func setupTestBlockchain(t *testing.T) *Blockchain {
+	tempDir, err := ioutil.TempDir("", "blockchain_test")
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	bc, err := NewBlockchain(tempDir, aesKey)
+	if err != nil {
+		t.Fatalf("Failed to initialize blockchain: %v", err)
+	}
+
+	if len(bc.Blocks) == 0 {
+		genesis := NewGenesisBlock(nil) // Assuming no transactions in genesis for simplicity
+		bc.Blocks = append(bc.Blocks, genesis)
+	}
+
+	return bc
 }
 
 func TestTransactionSigningAndVerification(t *testing.T) {

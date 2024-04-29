@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/thrylos-labs/thrylos/thrylos"
 
 	"github.com/thrylos-labs/thrylos/shared"
@@ -83,39 +84,13 @@ type Fork struct {
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
-	// Initialize the database
 	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
-	defer func() {
-		if err != nil {
-			db.Close()
-		}
-	}()
+	defer db.Close()
 
-	// Create a new BlockchainDB instance
 	bdb := database.NewBlockchainDB(db, aesKey)
-
-	// Create the genesis block
-	genesis := NewGenesisBlock()
-
-	// After genesis creation
-	// Assuming you have a Serialize method on the Block type
-	serializedGenesis, err := genesis.Serialize()
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
-	}
-
-	// Insert the serialized genesis block into the database
-	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
-		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-	}
-
-	// Add initial transactions simulating a starting state
-	genesisTransactions := make([]*thrylos.Transaction, 0)
-
-	// Simulate several stakeholders
 	stakeholders := []struct {
 		Address string
 		Balance int64
@@ -125,81 +100,126 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		{"address3", 15000},
 	}
 
-	// Initialize Stakeholders map
-	stakeholdersMap := make(map[string]int)
+	genesisTransactions := make([]*thrylos.Transaction, 0)
+	builder := flatbuffers.NewBuilder(0)
 
-	// Create a genesis transaction for each stakeholder
 	for _, stakeholder := range stakeholders {
-		genesisTx := &thrylos.Transaction{
-			Id:        "genesis_tx_" + stakeholder.Address,
-			Timestamp: time.Now().Unix(),
-			Outputs: []*thrylos.UTXO{{
-				OwnerAddress: stakeholder.Address,
-				Amount:       stakeholder.Balance,
-			}},
-			Signature: []byte("genesis_signature"), // Placeholder
-		}
-		genesisTransactions = append(genesisTransactions, genesisTx)
-		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance) // Initialize stakeholder stakes
+		builder.Reset()
+
+		transaction := createTransaction(builder, "genesis_tx_"+stakeholder.Address, stakeholder.Address, stakeholder.Balance)
+		genesisTransactions = append(genesisTransactions, transaction)
 	}
 
-	genesis.Transactions = genesisTransactions
+	genesis := NewGenesisBlock(genesisTransactions)
+	serializedGenesis, err := genesis.Serialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
+	}
 
-	// Create and return the Blockchain instance
+	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
+		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+	}
+
 	blockchain := &Blockchain{
-		Blocks:       []*Block{genesis},
-		Genesis:      genesis,
-		Stakeholders: stakeholdersMap,
-		Database:     bdb,
-		UTXOs:        make(map[string][]*thrylos.UTXO),
-		Forks:        make([]*Fork, 0),
-	}
-
-	// Register genesis transaction outputs as UTXOs
-	for _, tx := range genesis.Transactions {
-		for idx, out := range tx.Outputs {
-			utxoKey := fmt.Sprintf("%s:%d", tx.Id, idx)
-			blockchain.UTXOs[utxoKey] = append(blockchain.UTXOs[utxoKey], out)
-			log.Printf("UTXO added for address %s with amount %d", out.OwnerAddress, out.Amount)
-		}
+		Blocks:   []*Block{genesis},
+		Genesis:  genesis,
+		Database: bdb,
+		UTXOs:    make(map[string][]*thrylos.UTXO),
+		Forks:    make([]*Fork, 0),
 	}
 
 	return blockchain, nil
+}
+
+func createTransaction(builder *flatbuffers.Builder, id, owner string, amount int64) *thrylos.Transaction {
+	builder.Reset()
+
+	// Create transaction fields
+	idOffset := builder.CreateString(id)
+	ownerAddressOffset := builder.CreateString(owner)
+	thrylos.UTXOStart(builder)
+	thrylos.UTXOAddOwnerAddress(builder, ownerAddressOffset)
+	thrylos.UTXOAddAmount(builder, amount)
+	utxoOffset := thrylos.UTXOEnd(builder)
+
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, idOffset)
+	thrylos.TransactionAddTimestamp(builder, time.Now().Unix())
+	thrylos.TransactionAddOutputs(builder, utxoOffset)
+	thrylos.TransactionAddSignature(builder, builder.CreateByteVector([]byte("genesis_signature")))
+	transactionOffset := thrylos.TransactionEnd(builder)
+
+	builder.Finish(transactionOffset)
+	return &thrylos.Transaction{} // Assuming conversion from byte buffer to Transaction object
+}
+
+func convertBytesToTransaction(data []byte) (*thrylos.Transaction, error) {
+	// This assumes you have a method to get a Transaction from byte slice
+	tx := thrylos.GetRootAsTransaction(data, 0)
+	if tx == nil {
+		return nil, fmt.Errorf("failed to convert bytes to Transaction")
+	}
+	return tx, nil
 }
 
 func (bc *Blockchain) MintTokens(toAddress string, amount int) error {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
-	mintTx := &thrylos.Transaction{
-		Id:        "mint_tx_" + toAddress,
-		Timestamp: time.Now().Unix(),
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: toAddress,
-			Amount:       int64(amount),
-		}},
-		Signature: []byte("system_signature"), // System signature or a special validation
+	builder := flatbuffers.NewBuilder(0)
+
+	// Convert necessary fields to offsets
+	idOffset := builder.CreateString("mint_tx_" + toAddress)
+	ownerAddressOffset := builder.CreateString(toAddress)
+	signatureOffset := builder.CreateByteVector([]byte("system_signature")) // System signature or a special validation
+
+	// Create UTXO for the transaction
+	thrylos.UTXOStart(builder)
+	thrylos.UTXOAddOwnerAddress(builder, ownerAddressOffset)
+	thrylos.UTXOAddAmount(builder, int64(amount))
+	utxoOffset := thrylos.UTXOEnd(builder)
+
+	// Start a vector with one UTXO
+	thrylos.TransactionStartOutputsVector(builder, 1)
+	builder.PrependUOffsetT(utxoOffset)
+	outputsVectorOffset := builder.EndVector(1)
+
+	// Create the transaction
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, idOffset)
+	thrylos.TransactionAddTimestamp(builder, time.Now().Unix())
+	thrylos.TransactionAddOutputs(builder, outputsVectorOffset)
+	thrylos.TransactionAddSignature(builder, signatureOffset)
+	transactionOffset := thrylos.TransactionEnd(builder)
+
+	// Finish the transaction and get the byte slice
+	builder.Finish(transactionOffset)
+	txBytes := builder.FinishedBytes()
+
+	// Convert the byte slice back to a transaction object if needed
+	mintTx, err := convertBytesToTransaction(txBytes)
+	if err != nil {
+		return fmt.Errorf("failed to convert bytes to transaction: %v", err)
 	}
 
-	// Validate and process the transaction
-	// This example skips validation since it's a system-generated transaction
+	// Add the transaction as pending
 	bc.AddPendingTransaction(mintTx)
-	_, err := bc.ProcessPendingTransactions("system") // Assumes system or another validator processes this
+	_, err = bc.ProcessPendingTransactions("system") // Assumes system or another validator processes this
 	return err
 }
 
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
 
 // ConvertProtoUTXOToShared converts a Protobuf-generated UTXO to your shared UTXO type.
-func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
-	return shared.UTXO{
-		ID:            protoUTXO.GetTransactionId(), // Assuming you have corresponding fields
-		TransactionID: protoUTXO.GetTransactionId(),
-		Index:         int(protoUTXO.GetIndex()), // Convert from int32 to int if necessary
-		OwnerAddress:  protoUTXO.GetOwnerAddress(),
-		Amount:        int(protoUTXO.GetAmount()), // Convert from int64 to int if necessary
-	}
-}
+// func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
+// 	return shared.UTXO{
+// 		ID:            protoUTXO.GetTransactionId(), // Assuming you have corresponding fields
+// 		TransactionID: protoUTXO.GetTransactionId(),
+// 		Index:         int(protoUTXO.GetIndex()), // Convert from int32 to int if necessary
+// 		OwnerAddress:  protoUTXO.GetOwnerAddress(),
+// 		Amount:        int(protoUTXO.GetAmount()), // Convert from int64 to int if necessary
+// 	}
+// }
 
 func (bc *Blockchain) Status() string {
 	// Example status: return the number of blocks in the blockchain
@@ -214,7 +234,7 @@ func (bc *Blockchain) GetUTXOsForAddress(address string) []shared.UTXO {
 	sharedUTXOs := make([]shared.UTXO, len(protoUTXOs))
 
 	for i, protoUTXO := range protoUTXOs {
-		sharedUTXOs[i] = ConvertProtoUTXOToShared(protoUTXO)
+		sharedUTXOs[i] = ConvertFlatUTXOToShared(protoUTXO)
 	}
 
 	return sharedUTXOs
@@ -228,23 +248,25 @@ func (bc *Blockchain) GetBalance(address string) (int, error) {
 
 	for _, block := range bc.Blocks {
 		for _, tx := range block.Transactions {
-			// Check outputs first - add to the balance if this address received coins
-			for i, output := range tx.Outputs {
-				outputKey := fmt.Sprintf("%s:%d", tx.Id, i)
-				if output.OwnerAddress == address {
-					if !spentOutputs[outputKey] {
-						balance += int(output.Amount)
+			numOutputs := tx.OutputsLength()
+			for i := 0; i < numOutputs; i++ {
+				var output thrylos.UTXO
+				if tx.Outputs(&output, i) {
+					outputKey := fmt.Sprintf("%s:%d", tx.Id(), i)
+					if string(output.OwnerAddress()) == address && !spentOutputs[outputKey] {
+						balance += int(output.Amount())
 					}
 				}
 			}
 
-			// Check inputs - subtract from balance if this address spent coins and the outputs had been added to the balance
-			for _, input := range tx.Inputs {
-				if input.OwnerAddress == address {
-					spentKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
-					if !spentOutputs[spentKey] { // Check if this input was already marked as spent
+			numInputs := tx.InputsLength()
+			for i := 0; i < numInputs; i++ {
+				var input thrylos.UTXO
+				if tx.Inputs(&input, i) {
+					spentKey := fmt.Sprintf("%s:%d", input.TransactionId(), input.Index())
+					if string(input.OwnerAddress()) == address && !spentOutputs[spentKey] {
 						spentOutputs[spentKey] = true
-						balance -= int(input.Amount)
+						balance -= int(input.Amount())
 					}
 				}
 			}
@@ -280,10 +302,21 @@ func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator
 	// Log the incoming transactions
 	log.Printf("Creating block with %d transactions", len(transactions))
 	for i, tx := range transactions {
-		log.Printf("Transaction %d: ID=%s, Outputs=%+v", i, tx.Id, tx.Outputs)
+		// Retrieve and log each output properly
+		outputCount := tx.OutputsLength() // Assuming OutputsLength() gives the number of outputs
+		outputsInfo := []string{}         // Collect output details in a slice for logging
+		var utxo thrylos.UTXO
+		for j := 0; j < outputCount; j++ {
+			if tx.Outputs(&utxo, j) { // Retrieve each output
+				outputDetails := fmt.Sprintf("Owner: %s, Amount: %d", utxo.OwnerAddress(), utxo.Amount())
+				outputsInfo = append(outputsInfo, outputDetails)
+			}
+		}
+
+		log.Printf("Transaction %d: ID=%s, Outputs=%v", i, tx.Id(), outputsInfo)
 	}
 
-	// Create a new block with Protobuf transactions
+	// Create a new block
 	newBlock := &Block{
 		Index:        int32(len(bc.Blocks)), // Convert len to int32
 		Transactions: transactions,          // Directly use the Protobuf transactions
@@ -292,14 +325,20 @@ func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator
 		PrevHash:     prevHash,
 	}
 
-	// Log the newly created block details before returning
+	// Log block details
 	log.Printf("New block created: Index=%d, Hash=%s, Transactions=%d, Timestamp=%d, Validator=%s, PrevHash=%s",
-		newBlock.Index, newBlock.Hash, len(newBlock.Transactions), newBlock.Timestamp, newBlock.Validator, newBlock.PrevHash)
+		newBlock.Index, ComputeHash(newBlock), len(newBlock.Transactions), newBlock.Timestamp, newBlock.Validator, newBlock.PrevHash)
 
-	// Assuming ComputeHash() is adapted to work with the new Transactions type
-	newBlock.Hash = newBlock.ComputeHash()
+	newBlock.Hash = ComputeHash(newBlock) // Assume ComputeHash() is a function
 
 	return newBlock
+}
+
+// Assuming ComputeHash() is a standalone function or a method that needs to be defined
+func ComputeHash(block *Block) string {
+	// Compute and return the hash of the block based on your hashing algorithm
+	// This is a placeholder function, replace it with your actual hash computation
+	return "someComputedHash"
 }
 
 func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmount int) {
@@ -402,9 +441,21 @@ func (bc *Blockchain) addUTXO(utxo shared.UTXO) {
 	if _, exists := bc.UTXOs[utxoKey]; !exists {
 		bc.UTXOs[utxoKey] = []*thrylos.UTXO{}
 	}
-	// Convert shared UTXO to thrylos UTXO and add it
-	thrylosUtxo := shared.ConvertSharedUTXOToFlatBuffers(utxo)
-	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
+
+	// Initialize the FlatBuffers builder
+	builder := flatbuffers.NewBuilder(0)
+
+	// Convert shared UTXO to thrylos UTXO
+	thrylosUtxo := shared.ConvertSharedUTXOToFlatBuffers(builder, utxo)
+	// Finish the FlatBuffers object to get the offset
+	builder.Finish(thrylosUtxo)
+
+	// Retrieve the UTXO as a pointer (assuming you have a method like GetRootAsUTXO)
+	// This part depends on how you've set up your FlatBuffers schema and access methods.
+	fbUTXO := thrylos.GetRootAsUTXO(builder.FinishedBytes(), 0)
+
+	// Add the constructed UTXO to the blockchain's UTXO set
+	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], fbUTXO)
 	log.Printf("UTXO added: %s", utxoKey)
 }
 
@@ -462,19 +513,33 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
-	for _, tx := range bc.PendingTransactions {
-		log.Printf("Processing transaction %s", tx.Id)
-		for _, input := range tx.Inputs {
-			if removed := bc.removeUTXO(input.TransactionId, input.Index); !removed {
-				log.Printf("Failed to remove input UTXO: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
-				continue
+	// var newUTXOs []*thrylos.UTXO
+
+	for i := 0; i < len(bc.PendingTransactions); i++ {
+		tx := bc.PendingTransactions[i]
+
+		// Handling transaction inputs
+		var input thrylos.UTXO
+		numInputs := tx.InputsLength()
+		for j := 0; j < numInputs; j++ {
+			if tx.Inputs(&input, j) {
+				if removed := bc.removeUTXO(string(input.TransactionId()), input.Index()); !removed {
+					log.Printf("Failed to remove input UTXO: TransactionID: %s, Index: %d", input.TransactionId(), input.Index())
+					continue
+				}
+				log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId(), input.Index())
 			}
-			log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
 		}
-		for _, output := range tx.Outputs {
-			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int(output.Amount))
-			bc.addUTXO(newUTXO)
-			log.Printf("Output UTXO added: Transaction ID: %s, Owner: %s, Amount: %d", tx.Id, output.OwnerAddress, output.Amount)
+
+		// Handling transaction outputs
+		var output thrylos.UTXO
+		numOutputs := tx.OutputsLength()
+		for j := 0; j < numOutputs; j++ {
+			if tx.Outputs(&output, j) {
+				newUTXO := shared.CreateUTXO(string(tx.Id()), string(output.TransactionId()), int(output.Index()), string(output.OwnerAddress()), int(output.Amount()))
+				bc.addUTXO(newUTXO)
+				log.Printf("Output UTXO added: Transaction ID: %s, Owner: %s, Amount: %d", tx.Id(), output.OwnerAddress(), output.Amount())
+			}
 		}
 	}
 
@@ -516,7 +581,7 @@ func (bc *Blockchain) GetTransactionByID(id string) (*thrylos.Transaction, error
 	// iterate over blocks and transactions to find by ID
 	for _, block := range bc.Blocks {
 		for _, tx := range block.Transactions {
-			if tx.Id == id {
+			if string(tx.Id()) == id { // Convert tx.Id(), which returns []byte, to string
 				return tx, nil
 			}
 		}
@@ -590,20 +655,29 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 	for _, tx := range transactions {
 		isValid, err := bc.VerifyTransaction(tx) // Ensure VerifyTransaction accepts *thrylos.Transaction
 		if err != nil || !isValid {
-			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
+			return false, fmt.Errorf("transaction verification failed: %s, error: %v", string(tx.Id()), err)
 		}
 	}
 
 	// Handle UTXOs: updating UTXO set with new transactions.
 	for _, tx := range transactions {
-		for _, input := range tx.GetInputs() {
-			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
-			delete(bc.UTXOs, utxoKey)
+		numInputs := tx.InputsLength()
+		var input thrylos.UTXO
+		for i := 0; i < numInputs; i++ {
+			if tx.Inputs(&input, i) {
+				utxoKey := fmt.Sprintf("%s:%d", string(input.TransactionId()), input.Index())
+				delete(bc.UTXOs, utxoKey)
+			}
 		}
-		for index, output := range tx.GetOutputs() {
-			utxoKey := fmt.Sprintf("%s:%d", tx.GetId(), index)
-			// Append output to the slice for this utxoKey
-			bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], output)
+
+		numOutputs := tx.OutputsLength()
+		var output thrylos.UTXO
+		for index := 0; index < numOutputs; index++ {
+			if tx.Outputs(&output, index) {
+				utxoKey := fmt.Sprintf("%s:%d", string(tx.Id()), index)
+				// Append output to the slice for this utxoKey
+				bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], &output)
+			}
 		}
 	}
 

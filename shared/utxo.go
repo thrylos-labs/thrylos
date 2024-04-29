@@ -21,7 +21,7 @@ type UTXO struct {
 }
 
 // This function will iterate over a slice of UTXO and create a new slice containing pointers to the elements of the original slice:
-func convertToUTXOPtrs(utxos []UTXO) []*UTXO {
+func ConvertToUTXOPtrs(utxos []UTXO) []*UTXO {
 	utxoPtrs := make([]*UTXO, len(utxos))
 	for i := range utxos {
 		utxoPtrs[i] = &utxos[i]
@@ -85,7 +85,7 @@ func CreateUTXO(id, txID string, index int, owner string, amount int) UTXO {
 }
 
 // This utilizes the custom MarshalJSON method defined in the UTXO struct if present.
-func serializeUTXOs(builder *flatbuffers.Builder, utxos []*UTXO) (flatbuffers.UOffsetT, error) {
+func SerializeUTXOs(builder *flatbuffers.Builder, utxos []*UTXO) (flatbuffers.UOffsetT, error) {
 	if len(utxos) == 0 {
 		return 0, fmt.Errorf("no UTXOs provided")
 	}
