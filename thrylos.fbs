@@ -7,6 +7,14 @@ table UTXO {
     amount:int64;
 }
 
+table Block {
+    index:int;
+    transactions:[Transaction];
+    hash:[ubyte]; // Assuming hash is stored as a byte array
+    validator:string;
+    timestamp:int64;
+}
+
 table Transaction {
     id:string;
     timestamp:int64;

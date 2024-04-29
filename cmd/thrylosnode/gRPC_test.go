@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/thrylos-labs/thrylos/thrylos"
 
 	"github.com/stretchr/testify/assert"
-	pb "github.com/thrylos-labs/thrylos"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -56,43 +56,55 @@ func TestSubmitTransaction(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
-	// Prepare and send the request
-	transaction := &pb.Transaction{
-		Id:        "transaction-id",
-		Timestamp: time.Now().Unix(),
-		Inputs: []*pb.UTXO{
-			{
-				TransactionId: "prev-tx-id",
-				Index:         0,
-				OwnerAddress:  "owner-address-example",
-				Amount:        50,
-			},
-		},
-		Outputs: []*pb.UTXO{
-			{
-				TransactionId: "new-tx-id",
-				Index:         0,
-				OwnerAddress:  "recipient-address-example",
-				Amount:        50,
-			},
-		},
-		Signature: []byte("transaction-signature"),
-		Sender:    "sender-address",
-	}
-	r, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
+	// Prepare and send the request using FlatBuffers
+	builder := flatbuffers.NewBuilder(0)
+	txnID := builder.CreateString("transaction-id")
+	prevTxID := builder.CreateString("prev-tx-id")
+	newTxID := builder.CreateString("new-tx-id")
+	ownerAddr := builder.CreateString("owner-address-example")
+	recipientAddr := builder.CreateString("recipient-address-example")
+	signature := builder.CreateByteVector([]byte("transaction-signature"))
+	sender := builder.CreateString("sender-address")
+
+	// Start the UTXOs
+	thrylos.UTXOStart(builder)
+	thrylos.UTXOAddTransactionId(builder, prevTxID)
+	thrylos.UTXOAddIndex(builder, 0)
+	thrylos.UTXOAddOwnerAddress(builder, ownerAddr)
+	thrylos.UTXOAddAmount(builder, 50)
+	inputUTXO := thrylos.UTXOEnd(builder)
+
+	thrylos.UTXOStart(builder)
+	thrylos.UTXOAddTransactionId(builder, newTxID)
+	thrylos.UTXOAddIndex(builder, 0)
+	thrylos.UTXOAddOwnerAddress(builder, recipientAddr)
+	thrylos.UTXOAddAmount(builder, 50)
+	outputUTXO := thrylos.UTXOEnd(builder)
+
+	// Create Transaction
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, txnID)
+	thrylos.TransactionAddTimestamp(builder, time.Now().Unix())
+	thrylos.TransactionAddInputs(builder, inputUTXO)
+	thrylos.TransactionAddOutputs(builder, outputUTXO)
+	thrylos.TransactionAddSignature(builder, signature)
+	thrylos.TransactionAddSender(builder, sender)
+	transaction := thrylos.TransactionEnd(builder)
+
+	thrylos.TransactionRequestStart(builder)
+	thrylos.TransactionRequestAddTransaction(builder, transaction)
+	requestOffset := thrylos.TransactionRequestEnd(builder)
+	builder.Finish(requestOffset)
+
+	r, err := client.SubmitTransaction(ctx, builder)
 	assert.NoError(t, err)
 	assert.NotNil(t, r)
-	assert.Equal(t, "Transaction added successfully", r.Status)
-}
 
-type mockBlockchainServer struct {
-	pb.UnimplementedBlockchainServiceServer
-}
-
-func (s *mockBlockchainServer) SubmitTransaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {
-	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
+	// Read the response
+	response := thrylos.GetRootAsTransactionResponse(r.FinishedBytes(), 0)
+	assert.Equal(t, "Transaction added successfully", string(response.Status()))
 }
 
 // // go test -v -timeout 30s -run ^TestBlockTimeWithGRPC$ github.com/thrylos-labs/thrylos/cmd/thrylosnode
@@ -106,7 +118,7 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 		t.Fatalf("Failed to dial server: %v", err)
 	}
 	defer conn.Close()
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	numTransactions := 1000
 	transactionsPerBlock := 100
@@ -121,14 +133,14 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 			defer wg.Done()
 			blockStartTime := time.Now()
 
-			var blockTransactions []*pb.Transaction
+			var blockTransactions []*thrylos.Transaction
 			for j := startIndex; j < startIndex+transactionsPerBlock && j < numTransactions; j++ {
 				txID := fmt.Sprintf("tx%d", j)
-				transaction := &pb.Transaction{
+				transaction := &thrylos.Transaction{
 					Id:        txID,
 					Timestamp: time.Now().Unix(),
-					Inputs:    []*pb.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-					Outputs:   []*pb.UTXO{{TransactionId: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
+					Inputs:    []*thrylos.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+					Outputs:   []*thrylos.UTXO{{TransactionId: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
 				}
 				_, edPrivateKey, _ := ed25519.GenerateKey(rand.Reader)
 				txBytes, _ := json.Marshal(transaction)
@@ -136,7 +148,7 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 				transaction.Signature = edSignature
 
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
+				_, err := client.SubmitTransaction(ctx, &thrylos.TransactionRequest{Transaction: transaction})
 				cancel()
 				if err != nil {
 					t.Errorf("Error submitting transaction %d: %v", j, err)

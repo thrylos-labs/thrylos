@@ -8,15 +8,17 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
 	"time"
 
-	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/shared"
-
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/joho/godotenv"
+	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/templates"
+	"github.com/thrylos-labs/thrylos/thrylos"
 )
 
 // Vote represents a vote cast by a validator for a specific block. It includes the block hash being voted for,
@@ -134,7 +136,7 @@ func (n *Node) HasBlock(blockHash string) bool {
 // HasTransaction checks whether a transaction with the specified ID exists in the node's pool of pending transactions.
 func (node *Node) HasTransaction(txID string) bool {
 	for _, tx := range node.PendingTransactions {
-		if tx.GetId() == txID {
+		if string(tx.Id()) == txID { // Convert byte slice to string for comparison
 			return true
 		}
 	}
@@ -213,13 +215,20 @@ func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
+// VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
-	if len(tx.Inputs) == 0 {
+	// Count inputs
+	var count int
+	var tempUTXO thrylos.UTXO
+	for tx.Inputs(&tempUTXO, count) {
+		count++
+	}
+	if count == 0 {
 		return fmt.Errorf("transaction has no inputs")
 	}
 
 	// Retrieve the sender's address from the transaction directly
-	senderAddress := tx.Sender
+	senderAddress := string(tx.Sender()) // Convert byte slice to string
 	if senderAddress == "" {
 		log.Printf("Transaction with empty sender address: %+v", tx)
 		return fmt.Errorf("sender address is empty")
@@ -239,7 +248,7 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("failed to retrieve or validate Ed25519 public key: %v", err)
 	}
 
-	// Verify the transaction signature with the retrieved public keys
+	// Verify the transaction signature with the retrieved public key
 	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
@@ -265,44 +274,94 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 	if tx == nil {
 		return nil
 	}
-	return &shared.Transaction{
-		ID:            tx.GetId(),
-		Timestamp:     tx.GetTimestamp(),
-		Inputs:        ConvertProtoInputs(tx.GetInputs()),
-		Outputs:       ConvertProtoOutputs(tx.GetOutputs()),
-		Signature:     tx.GetSignature(), // Convert []byte to string here
-		PreviousTxIds: tx.GetPreviousTxIds(),
+
+	// Prepare conversion for PreviousTxIds
+	var previousTxIds []string
+	numPreviousTxIds := tx.PreviousTxIdsLength()
+	for i := 0; i < numPreviousTxIds; i++ {
+		previousTxIds = append(previousTxIds, string(tx.PreviousTxIds(i)))
 	}
+
+	// Extract signature bytes
+	signatureBytes := make([]byte, tx.SignatureLength())
+	for i := 0; i < tx.SignatureLength(); i++ {
+		signatureBytes[i] = tx.Signature(i)
+	}
+
+	// Assuming shared.Transaction is a struct you have defined to match the thrylos.Transaction
+	sharedTx := &shared.Transaction{
+		ID:            string(tx.Id()),
+		Timestamp:     tx.Timestamp(),
+		Inputs:        ConvertProtoInputs(tx),
+		Outputs:       ConvertProtoOutputs(tx),
+		Signature:     signatureBytes,
+		PreviousTxIds: previousTxIds,
+	}
+
+	return sharedTx
 }
 
-func ConvertProtoInputs(inputs []*thrylos.UTXO) []shared.UTXO {
-	sharedInputs := make([]shared.UTXO, len(inputs))
-	for i, input := range inputs {
-		if input != nil {
+func ConvertProtoInputs(tx *thrylos.Transaction) []shared.UTXO {
+	numInputs := tx.InputsLength()
+	sharedInputs := make([]shared.UTXO, numInputs)
+	var input thrylos.UTXO
+	for i := 0; i < numInputs; i++ {
+		if tx.Inputs(&input, i) {
 			sharedInputs[i] = shared.UTXO{
-				TransactionID: input.GetTransactionId(),
-				Index:         int(input.GetIndex()), // Corrected type conversion
-				OwnerAddress:  input.GetOwnerAddress(),
-				Amount:        int(input.GetAmount()), // Corrected type conversion
+				TransactionID: string(input.TransactionId()),
+				Index:         int(input.Index()),
+				OwnerAddress:  string(input.OwnerAddress()),
+				Amount:        safeIntConversion(input.Amount()),
 			}
 		}
 	}
 	return sharedInputs
 }
 
-func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
-	sharedOutputs := make([]shared.UTXO, len(outputs))
-	for i, output := range outputs {
-		if output != nil {
+func ConvertProtoOutputs(tx *thrylos.Transaction) []shared.UTXO {
+	numOutputs := tx.OutputsLength()
+	sharedOutputs := make([]shared.UTXO, numOutputs)
+	var output thrylos.UTXO
+	for i := 0; i < numOutputs; i++ {
+		if tx.Outputs(&output, i) {
 			sharedOutputs[i] = shared.UTXO{
-				TransactionID: output.GetTransactionId(),
-				Index:         int(output.GetIndex()), // Corrected type conversion
-				OwnerAddress:  output.GetOwnerAddress(),
-				Amount:        int(output.GetAmount()), // Corrected type conversion
+				TransactionID: string(output.TransactionId()),
+				Index:         int(output.Index()),
+				OwnerAddress:  string(output.OwnerAddress()),
+				Amount:        safeIntConversion(output.Amount()),
 			}
 		}
 	}
 	return sharedOutputs
+}
+
+// safeIntConversion safely converts int64 to int
+func safeIntConversion(num int64) int {
+	if num > int64(math.MaxInt) || num < int64(math.MinInt) {
+		// Handle overflow or decide on a fallback
+		log.Printf("Warning: Integer overflow in conversion, value: %d", num)
+		return math.MaxInt // or another fallback value
+	}
+	return int(num)
+}
+
+// Helper function to convert byte slices from FlatBuffers to string slice
+func convertByteVectorToStringSlice(bytes []byte) []string {
+	// Your conversion logic here; example placeholder
+	var result []string
+	current := ""
+	for _, b := range bytes {
+		if b == 0 { // Assuming null-terminated strings
+			result = append(result, current)
+			current = ""
+		} else {
+			current += string(b)
+		}
+	}
+	if current != "" {
+		result = append(result, current)
+	}
+	return result
 }
 
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
@@ -610,32 +669,72 @@ func (node *Node) SyncBlockchain() {
 	}
 }
 
-func ConvertJSONToProto(jsonTx thrylos.TransactionJSON) *thrylos.Transaction {
-	tx := &thrylos.Transaction{
-		Id:        jsonTx.ID,
-		Timestamp: jsonTx.Timestamp,
-		Signature: []byte(jsonTx.Signature),
-	}
+func ConvertJSONToProto(jsonTx templates.TransactionJSON) *thrylos.Transaction {
+	builder := flatbuffers.NewBuilder(0)
 
-	for _, input := range jsonTx.Inputs {
-		tx.Inputs = append(tx.Inputs, &thrylos.UTXO{
-			TransactionId: input.TransactionID,
-			Index:         input.Index,
-			OwnerAddress:  input.OwnerAddress,
-			Amount:        input.Amount,
-		})
-	}
+	// Create strings and vectors in FlatBuffers.
+	idOffset := builder.CreateString(jsonTx.ID)
+	sigBytes := builder.CreateByteVector([]byte(jsonTx.Signature))
+	senderOffset := builder.CreateString(jsonTx.Sender)
+	prevTxIDs := createStringVector(builder, jsonTx.PreviousTxIds)
 
-	for _, output := range jsonTx.Outputs {
-		tx.Outputs = append(tx.Outputs, &thrylos.UTXO{
-			TransactionId: output.TransactionID,
-			Index:         output.Index,
-			OwnerAddress:  output.OwnerAddress,
-			Amount:        output.Amount,
-		})
-	}
+	// Convert UTXOs from JSON to FlatBuffers.
+	inputsOffsets := processUTXOs(builder, jsonTx.Inputs)
+	outputsOffsets := processUTXOs(builder, jsonTx.Outputs)
 
-	return tx
+	// Add the UTXOs to the builder.
+	thrylos.TransactionStartInputsVector(builder, len(inputsOffsets))
+	for i := len(inputsOffsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(inputsOffsets[i])
+	}
+	inputsVec := builder.EndVector(len(inputsOffsets))
+
+	thrylos.TransactionStartOutputsVector(builder, len(outputsOffsets))
+	for i := len(outputsOffsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(outputsOffsets[i])
+	}
+	outputsVec := builder.EndVector(len(outputsOffsets))
+
+	// Create the transaction in FlatBuffers.
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, idOffset)
+	thrylos.TransactionAddTimestamp(builder, jsonTx.Timestamp)
+	thrylos.TransactionAddInputs(builder, inputsVec)
+	thrylos.TransactionAddOutputs(builder, outputsVec)
+	thrylos.TransactionAddSignature(builder, sigBytes)
+	thrylos.TransactionAddPreviousTxIds(builder, prevTxIDs)
+	thrylos.TransactionAddSender(builder, senderOffset)
+	tx := thrylos.TransactionEnd(builder)
+
+	builder.Finish(tx)
+	return thrylos.GetRootAsTransaction(builder.FinishedBytes(), 0)
+}
+
+func processUTXOs(builder *flatbuffers.Builder, utxos []templates.UTXOJSON) []flatbuffers.UOffsetT {
+	offsets := make([]flatbuffers.UOffsetT, len(utxos))
+	for i, utxo := range utxos {
+		transactionID := builder.CreateString(utxo.TransactionID)
+		ownerAddress := builder.CreateString(utxo.OwnerAddress)
+		thrylos.UTXOStart(builder)
+		thrylos.UTXOAddTransactionId(builder, transactionID)
+		thrylos.UTXOAddIndex(builder, int32(utxo.Index))
+		thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
+		thrylos.UTXOAddAmount(builder, utxo.Amount)
+		offsets[i] = thrylos.UTXOEnd(builder)
+	}
+	return offsets
+}
+
+func createStringVector(builder *flatbuffers.Builder, items []string) flatbuffers.UOffsetT {
+	offsets := make([]flatbuffers.UOffsetT, len(items))
+	for i, s := range items {
+		offsets[i] = builder.CreateString(s)
+	}
+	thrylos.TransactionStartPreviousTxIdsVector(builder, len(items))
+	for i := len(items) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(offsets[i])
+	}
+	return builder.EndVector(len(items))
 }
 
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
@@ -727,24 +826,20 @@ func (node *Node) Start() {
 	})
 
 	mux.HandleFunc("/transaction", func(w http.ResponseWriter, r *http.Request) {
-		// Assuming you have a struct that mirrors thrylos.Transaction for JSON purposes
-		var jsonTx thrylos.TransactionJSON
+		var jsonTx templates.TransactionJSON
 		if err := json.NewDecoder(r.Body).Decode(&jsonTx); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Convert jsonTx to thrylos.Transaction
 		tx := ConvertJSONToProto(jsonTx)
-
 		if err := node.VerifyAndProcessTransaction(tx); err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 
-		// Assuming AddPendingTransaction accepts *thrylos.Transaction
 		node.AddPendingTransaction(tx)
-		fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.GetId())
+		fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.Id())
 		w.WriteHeader(http.StatusCreated)
 	})
 

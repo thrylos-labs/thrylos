@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/thrylos"
+
+	flatbuffers "github.com/google/flatbuffers/go"
 )
 
 // UTXO represents an Unspent Transaction Output, which is the output of a blockchain transaction
@@ -18,16 +20,32 @@ type UTXO struct {
 	Amount        int    `json:"Amount"`
 }
 
-// When creating or updating transactions to be serialized with Protobuf, you'll use ConvertSharedUTXOToProto to convert your application's internal UTXO representations into the format expected by Protobuf before serialization.
+// This function will iterate over a slice of UTXO and create a new slice containing pointers to the elements of the original slice:
+func convertToUTXOPtrs(utxos []UTXO) []*UTXO {
+	utxoPtrs := make([]*UTXO, len(utxos))
+	for i := range utxos {
+		utxoPtrs[i] = &utxos[i]
+	}
+	return utxoPtrs
+}
 
 // ConvertSharedUTXOToProto converts a shared.UTXO to a protobuf UTXO message.
-func ConvertSharedUTXOToProto(u UTXO) *thrylos.UTXO {
-	return &thrylos.UTXO{
-		TransactionId: u.TransactionID,
-		Index:         int32(u.Index),
-		OwnerAddress:  u.OwnerAddress,
-		Amount:        int64(u.Amount),
-	}
+func ConvertSharedUTXOToFlatBuffers(builder *flatbuffers.Builder, u UTXO) flatbuffers.UOffsetT {
+	// Create the strings in the builder.
+	transactionID := builder.CreateString(u.TransactionID)
+	ownerAddress := builder.CreateString(u.OwnerAddress)
+
+	// Start the UTXO object.
+	thrylos.UTXOStart(builder)
+
+	// Add data to it.
+	thrylos.UTXOAddTransactionId(builder, transactionID)
+	thrylos.UTXOAddIndex(builder, int32(u.Index))
+	thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
+	thrylos.UTXOAddAmount(builder, int64(u.Amount))
+
+	// End the object and get the offset.
+	return thrylos.UTXOEnd(builder)
 }
 
 // GetUTXOsForUser scans through all available UTXOs and returns those owned by a specific user.
@@ -67,8 +85,30 @@ func CreateUTXO(id, txID string, index int, owner string, amount int) UTXO {
 }
 
 // This utilizes the custom MarshalJSON method defined in the UTXO struct if present.
-func serializeUTXOs(utxos []UTXO) ([]byte, error) {
-	return json.Marshal(utxos)
+func serializeUTXOs(builder *flatbuffers.Builder, utxos []*UTXO) (flatbuffers.UOffsetT, error) {
+	if len(utxos) == 0 {
+		return 0, fmt.Errorf("no UTXOs provided")
+	}
+
+	offsets := make([]flatbuffers.UOffsetT, len(utxos))
+	for i, utxo := range utxos {
+		if utxo == nil {
+			return 0, fmt.Errorf("nil UTXO found at index %d", i)
+		}
+		transactionID := builder.CreateString(utxo.TransactionID)
+		ownerAddress := builder.CreateString(utxo.OwnerAddress)
+		thrylos.UTXOStart(builder)
+		thrylos.UTXOAddTransactionId(builder, transactionID)
+		thrylos.UTXOAddIndex(builder, int32(utxo.Index)) // Convert Index to int32
+		thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
+		thrylos.UTXOAddAmount(builder, int64(utxo.Amount)) // Convert Amount to int64
+		offsets[i] = thrylos.UTXOEnd(builder)
+	}
+	thrylos.TransactionStartInputsVector(builder, len(offsets))
+	for i := len(offsets) - 1; i >= 0; i-- {
+		builder.PrependUOffsetT(offsets[i])
+	}
+	return builder.EndVector(len(offsets)), nil
 }
 
 // MarkUTXOAsSpent removes a UTXO from the set of available UTXOs, effectively marking it as spent.

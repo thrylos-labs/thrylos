@@ -12,14 +12,12 @@ import (
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/thrylos-labs/thrylos/thrylos"
 
-	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/thrylos"
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/gballet/go-verkle"
-	"google.golang.org/protobuf/proto"
 	// other necessary imports
 )
 
@@ -67,20 +65,56 @@ type Block struct {
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
 func (b *Block) InitializeVerkleTree() error {
 	var txData [][]byte
+	builder := flatbuffers.NewBuilder(0)
 
 	for _, tx := range b.Transactions {
-		builder := flatbuffers.NewBuilder(0)
-		// Serialize the transaction - Example based on assuming a method to build the transaction exists
-		thrylos.TransactionStart(builder)
-		// Assume functions like TransactionAddId, TransactionAddInputs, etc., are available to add transaction fields
-		// Example: thrylos.TransactionAddId(builder, builder.CreateString(tx.Id))
-		transactionOffset := thrylos.TransactionEnd(builder)
-		builder.Finish(transactionOffset)
+		// Reset the builder for each transaction
+		builder.Reset()
 
-		// Append the serialized transaction to txData
+		// Serialize the inputs and outputs
+		inputsOffsets, err := shared.SerializeUTXOs(builder, shared.ConvertToUTXOPtrs(tx.Inputs))
+		if err != nil {
+			log.Printf("Error serializing inputs: %v", err)
+			continue // or handle error more critically based on your use case
+		}
+
+		outputsOffsets, err := shared.SerializeUTXOs(builder, shared.ConvertToUTXOPtrs(tx.Outputs))
+		if err != nil {
+			log.Printf("Error serializing outputs: %v", err)
+			continue // or handle error more critically based on your use case
+		}
+
+		// Other fields of the transaction
+		idOffset := builder.CreateString(tx.ID)
+		encryptedInputsOffset := builder.CreateByteVector(tx.EncryptedInputs)
+		encryptedOutputsOffset := builder.CreateByteVector(tx.EncryptedOutputs)
+		previousTxIdsOffset := createStringVector(builder, tx.PreviousTxIds)
+		encryptedAesKeyOffset := builder.CreateByteVector(tx.EncryptedAESKey)
+		senderOffset := builder.CreateString(tx.Sender)
+
+		// Add the transaction signature if included
+		signatureOffset := builder.CreateByteVector(tx.Signature)
+
+		// Start building the transaction object
+		thrylos.TransactionStart(builder)
+		thrylos.TransactionAddId(builder, idOffset)
+		thrylos.TransactionAddTimestamp(builder, tx.Timestamp)
+		thrylos.TransactionAddInputs(builder, inputsOffsets)
+		thrylos.TransactionAddOutputs(builder, outputsOffsets)
+		thrylos.TransactionAddEncryptedInputs(builder, encryptedInputsOffset)
+		thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputsOffset)
+		thrylos.TransactionAddSignature(builder, signatureOffset)
+		thrylos.TransactionAddPreviousTxIds(builder, previousTxIdsOffset)
+		thrylos.TransactionAddEncryptedAesKey(builder, encryptedAesKeyOffset)
+		thrylos.TransactionAddSender(builder, senderOffset)
+		transactionOffset := thrylos.TransactionEnd(builder)
+
+		// Finish the transaction object and get the serialized bytes
+		builder.Finish(transactionOffset)
 		txData = append(txData, builder.FinishedBytes())
 	}
 
+	// Proceed with Verkle tree initialization if there is any transaction data
 	if len(txData) > 0 {
 		var wg sync.WaitGroup
 		wg.Add(1)
@@ -90,14 +124,15 @@ func (b *Block) InitializeVerkleTree() error {
 			b.verkleTree, err = NewVerkleTree(txData)
 			if err != nil {
 				b.Error = fmt.Errorf("failed to create Verkle tree: %v", err)
-			} else {
-				root := b.verkleTree.Commitment().BytesUncompressedTrusted()
-				b.VerkleRoot = make([]byte, len(root))
-				copy(b.VerkleRoot, root[:])
+				return
 			}
+			root := b.verkleTree.Commitment().BytesUncompressedTrusted()
+			b.VerkleRoot = make([]byte, len(root))
+			copy(b.VerkleRoot, root[:])
 		}()
 		wg.Wait()
 	}
+
 	return b.Error // return any error that occurred during processing
 }
 
@@ -167,13 +202,19 @@ func ConvertFlatTransactionToShared(fbTx *thrylos.Transaction) shared.Transactio
 		}
 	}
 
+	// Collecting the entire signature byte slice
+	signatureBytes := make([]byte, fbTx.SignatureLength())
+	for j := 0; j < fbTx.SignatureLength(); j++ {
+		signatureBytes[j] = fbTx.Signature(j)
+	}
+
 	// Accessing fields directly, as Get methods do not exist in FlatBuffers
 	return shared.Transaction{
 		ID:        string(fbTx.Id()), // FlatBuffers uses direct byte slices, convert to string
 		Timestamp: fbTx.Timestamp(),
 		Inputs:    inputs,
 		Outputs:   outputs,
-		Signature: fbTx.Signature(), // Already a byte slice
+		Signature: signatureBytes, // Correctly pass the byte slice
 		// Additional fields such as EncryptedData if your application uses them
 	}
 }
@@ -181,10 +222,10 @@ func ConvertFlatTransactionToShared(fbTx *thrylos.Transaction) shared.Transactio
 // Assuming you have a similar function for converting UTXO
 func ConvertFlatUTXOToShared(fbUTXO *thrylos.UTXO) shared.UTXO {
 	return shared.UTXO{
-		TransactionID: string(fbUTXO.TransactionId()),
-		Index:         fbUTXO.Index(),
-		OwnerAddress:  string(fbUTXO.OwnerAddress()),
-		Amount:        fbUTXO.Amount(),
+		TransactionID: string(fbUTXO.TransactionId()), // Convert byte slice to string
+		Index:         int(fbUTXO.Index()),            // Convert int32 to int
+		OwnerAddress:  string(fbUTXO.OwnerAddress()),  // Convert byte slice to string
+		Amount:        int(fbUTXO.Amount()),           // Convert int64 to int
 	}
 }
 
@@ -204,9 +245,9 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 	}
 
 	for _, tx := range transactions {
-		protoTx := ConvertSharedTransactionToProto(tx)
+		protoTx := ConvertSharedTransactionToThrylos(tx)
 		if protoTx == nil {
-			fmt.Println("Failed to convert transaction to Protobuf format.")
+			fmt.Println("Failed to convert transaction to FlatBuffers format.")
 			continue
 		}
 		block.Transactions = append(block.Transactions, protoTx)
@@ -225,6 +266,36 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 	block.Hash = block.ComputeHash()
 	fmt.Printf("Block created - Index: %d, Hash: %s, Transactions: %d\n", block.Index, block.Hash, len(block.Transactions))
 	return block
+}
+
+// ConvertSharedTransactionToThrylos converts a shared transaction to a thrylos.Transaction.
+func ConvertSharedTransactionToThrylos(tx shared.Transaction) *thrylos.Transaction {
+	builder := flatbuffers.NewBuilder(0)
+
+	idOffset := builder.CreateString(tx.ID)
+	senderOffset := builder.CreateString(tx.Sender) // Assuming there's a sender field
+	signatureOffset := builder.CreateByteVector(tx.Signature)
+
+	// Assuming Inputs and Outputs are already prepared as FlatBuffer vectors elsewhere
+	inputsOffset, outputsOffset := prepareInputsOutputs(builder, tx.Inputs, tx.Outputs)
+
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, idOffset)
+	thrylos.TransactionAddTimestamp(builder, tx.Timestamp)
+	thrylos.TransactionAddSender(builder, senderOffset)
+	thrylos.TransactionAddSignature(builder, signatureOffset)
+	thrylos.TransactionAddInputs(builder, inputsOffset)
+	thrylos.TransactionAddOutputs(builder, outputsOffset)
+	txOffset := thrylos.TransactionEnd(builder)
+
+	builder.Finish(txOffset)
+	return thrylos.GetRootAsTransaction(builder.FinishedBytes(), 0)
+}
+
+// Helper function to create input and output vectors.
+func prepareInputsOutputs(builder *flatbuffers.Builder, inputs, outputs []shared.UTXO) (flatbuffers.UOffsetT, flatbuffers.UOffsetT) {
+	// Conversion logic here...
+	return 0, 0 // Return proper offsets
 }
 
 // NewBlockWithTimestamp is similar to NewBlock but allows for specifying the timestamp directly.
@@ -268,15 +339,26 @@ func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHas
 	return block
 }
 
-func convertBlockToJSON(block *Block) ([]byte, error) {
-	log.Printf("Converting block Index=%d with %d transactions to JSON", block.Index, len(block.Transactions)) // Log the block details
+// Convert the whole hash byte vector to a slice and then to a string.
+func getHashAsString(block *thrylos.Block) string {
+	hashLength := block.HashLength() // Gets the length of the hash vector.
+	hashBytes := make([]byte, hashLength)
+	for i := 0; i < hashLength; i++ {
+		hashBytes[i] = block.Hash(i) // Access each byte using the index.
+	}
+	return encodeBytesToString(hashBytes) // Now we have a []byte that can be encoded to string.
+}
+
+func convertBlockToJSON(block *thrylos.Block) ([]byte, error) {
+	log.Printf("Converting block Index=%d with %d transactions to JSON", block.Index(), block.TransactionsLength()) // Log the block details
 
 	type JSONTransaction struct {
-		ID        string        `json:"id"`
-		Timestamp int64         `json:"timestamp"`
-		Inputs    []shared.UTXO `json:"inputs"`
-		Outputs   []shared.UTXO `json:"outputs"`
-		Signature []byte        `json:"signature"`
+		ID            string        `json:"id"`
+		Timestamp     int64         `json:"timestamp"`
+		Inputs        []shared.UTXO `json:"inputs"`
+		Outputs       []shared.UTXO `json:"outputs"`
+		Signature     string        `json:"signature"`
+		PreviousTxIds []string      `json:"previousTxIds"`
 	}
 
 	type JSONBlock struct {
@@ -287,33 +369,45 @@ func convertBlockToJSON(block *Block) ([]byte, error) {
 		Validator    string            `json:"validator"`
 	}
 
+	// Use helper function to encode Hash and Validator as strings.
 	jsonBlock := JSONBlock{
-		Index:     block.Index,
-		Timestamp: block.Timestamp,
-		Hash:      block.Hash,
-		Validator: block.Validator,
+		Index:     block.Index(),
+		Timestamp: block.Timestamp(),
+		Hash:      getHashAsString(block),
+		Validator: encodeBytesToString(block.Validator()),
 	}
 
-	for _, trx := range block.Transactions {
-		jsonTrx := JSONTransaction{
-			ID:        trx.Id,
-			Timestamp: trx.Timestamp,
-			Signature: trx.Signature,
-		}
+	for i := 0; i < block.TransactionsLength(); i++ {
+		var trx thrylos.Transaction
+		if block.Transactions(&trx, i) {
+			signatureBytes := make([]byte, trx.SignatureLength())
+			for j := 0; j < trx.SignatureLength(); j++ {
+				signatureBytes[j] = trx.Signature(j)
+			}
 
-		for _, input := range trx.Inputs {
-			jsonTrx.Inputs = append(jsonTrx.Inputs, ConvertProtoUTXOToShared(input))
-		}
+			jsonTrx := JSONTransaction{
+				ID:        string(trx.Id()),
+				Timestamp: trx.Timestamp(),
+				Signature: encodeBytesToString(signatureBytes),
+				Inputs:    ConvertProtoInputs(&trx),
+				Outputs:   ConvertProtoOutputs(&trx),
+			}
 
-		for _, output := range trx.Outputs {
-			jsonTrx.Outputs = append(jsonTrx.Outputs, ConvertProtoUTXOToShared(output))
-		}
+			// Convert previous transaction IDs
+			for j := 0; j < trx.PreviousTxIdsLength(); j++ {
+				jsonTrx.PreviousTxIds = append(jsonTrx.PreviousTxIds, string(trx.PreviousTxIds(j)))
+			}
 
-		jsonBlock.Transactions = append(jsonBlock.Transactions, jsonTrx)
-		log.Printf("Added transaction %s with %d outputs", trx.Id, len(trx.Outputs)) // Log each transaction detail
+			jsonBlock.Transactions = append(jsonBlock.Transactions, jsonTrx)
+			log.Printf("Added transaction %s with %d outputs", jsonTrx.ID, len(jsonTrx.Outputs))
+		}
 	}
 
 	return json.Marshal(jsonBlock)
+}
+
+func encodeBytesToString(data []byte) string {
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 func (b *Block) ComputeHash() string {
@@ -321,35 +415,28 @@ func (b *Block) ComputeHash() string {
 		return b.Hash // Use the cached hash if available
 	}
 
-	// Create a new BLAKE2b-256 hasher
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		log.Printf("Failed to create hasher: %v", err)
 		return ""
 	}
 
-	// Hash block's static components
 	hasher.Write([]byte(fmt.Sprintf("%d", b.Index)))
 	hasher.Write([]byte(fmt.Sprintf("%d", b.Timestamp)))
 	hasher.Write([]byte(b.PrevHash))
 	hasher.Write([]byte(b.Validator))
 
-	// Process transactions
-	for _, tx := range b.Transactions {
-		txBytes, err := proto.Marshal(tx)
+	for _, fbTx := range b.Transactions {
+		goTx := shared.ConvertFBToGoTransaction(fbTx)
+		txBytes, err := goTx.SerializeForHashing()
 		if err != nil {
-			log.Printf("Failed to serialize transaction: %v", err)
-			return "" // Return an empty string or handle the error as per your error policy
+			log.Printf("Error serializing transaction for hashing: %v", err)
+			continue
 		}
 		txHash := blake2b.Sum256(txBytes)
 		hasher.Write(txHash[:])
 	}
 
-	if len(b.VerkleRoot) > 0 {
-		hasher.Write(b.VerkleRoot)
-	}
-
-	// Compute and store the hash
 	b.Hash = hex.EncodeToString(hasher.Sum(nil))
 	return b.Hash
 }
