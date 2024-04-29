@@ -163,11 +163,11 @@ func NewGenesisBlock(transactions []*thrylos.Transaction) *Block {
 	block := &Block{
 		Index:        0,
 		Timestamp:    time.Now().Unix(),
-		Transactions: transactions, // Include the transactions in the genesis block
-		VerkleRoot:   []byte{},     // Or some predefined value, since it's a special case.
-		PrevHash:     "",
+		Transactions: transactions,                                                       // Ensure these are valid and correctly initialized
+		VerkleRoot:   []byte{},                                                           // Set an actual value if needed
+		PrevHash:     "0000000000000000000000000000000000000000000000000000000000000000", // Example placeholder
 		Hash:         "",
-		Validator:    "",
+		Validator:    "genesis_validator", // Example default validator
 	}
 
 	// Optionally, compute hashes or perform any initial setup necessary for the transactions

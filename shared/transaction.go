@@ -304,7 +304,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	}
 
 	// Create the transaction object in FlatBuffers
-	thrylosTxOffset, err := createThrylosTransaction(builder, id, sender, encryptedInputs, encryptedOutputs, previousTxIDs)
+	thrylosTxOffset, err := CreateThrylosTransaction(builder, id, sender, encryptedInputs, encryptedOutputs, previousTxIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +332,7 @@ func handleUTXOs(builder *flatbuffers.Builder, utxos []UTXO, aesKey []byte) ([]b
 	return encryptedData, nil
 }
 
-func createThrylosTransaction(builder *flatbuffers.Builder, id, sender string, encryptedInputs, encryptedOutputs []byte, previousTxIDs []string) (flatbuffers.UOffsetT, error) {
+func CreateThrylosTransaction(builder *flatbuffers.Builder, id, sender string, encryptedInputs, encryptedOutputs []byte, previousTxIDs []string) (flatbuffers.UOffsetT, error) {
 	// Create the transaction data in the builder
 	idOffset := builder.CreateString(id)
 	senderOffset := builder.CreateString(sender)
