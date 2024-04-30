@@ -37,10 +37,9 @@ func (s *server) SubmitTransaction(ctx context.Context, req *thrylos.Transaction
 		return nil, status.Error(codes.InvalidArgument, "Request cannot be nil")
 	}
 
-	// Directly get the Transaction object from the request.
-	// The GetTransaction() method should be generated based on your FlatBuffers schema.
-	transaction := req.Transaction(nil) // this might return a *Transaction if that's how your FlatBuffers schema is set up
-	if transaction == nil {
+	// Assuming the Transaction is correctly parsed from the request
+	transaction := new(thrylos.Transaction)
+	if req.Transaction(transaction) == nil {
 		return nil, status.Errorf(codes.InvalidArgument, "Transaction data is nil")
 	}
 
@@ -48,14 +47,17 @@ func (s *server) SubmitTransaction(ctx context.Context, req *thrylos.Transaction
 	transactionID := string(transaction.Id())
 	log.Printf("Received transaction %s for processing", transactionID)
 
-	// Process the transaction in your application logic
-	// Here you would convert and validate the transaction, apply business logic, etc.
-	err := s.db.AddTransaction(core.ConvertFlatTransactionToShared(transaction))
+	// Convert the FlatBuffers Transaction to your application's internal transaction type
+	// Assuming `ConvertFlatTransactionToShared` is properly implemented to handle this conversion
+	tx := core.ConvertFlatTransactionToShared(transaction)
+
+	// Process the transaction
+	err := s.db.AddTransaction(tx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Transaction processing failed: %v", err)
 	}
 
-	// Prepare and send the response using FlatBuffers
+	// If the transaction is processed successfully, prepare a response
 	builder := flatbuffers.NewBuilder(0)
 	statusOffset := builder.CreateString("Transaction processed successfully")
 	thrylos.TransactionResponseStart(builder)
@@ -63,6 +65,7 @@ func (s *server) SubmitTransaction(ctx context.Context, req *thrylos.Transaction
 	responseOffset := thrylos.TransactionResponseEnd(builder)
 	builder.Finish(responseOffset)
 
+	// Return the builder with the response
 	return builder, nil
 }
 
