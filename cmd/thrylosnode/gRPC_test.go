@@ -143,7 +143,7 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 				blockTransactions = append(blockTransactions, transaction)
 			}
 
-			time.Sleep(time.Millisecond * 500) // Simulate block finalization
+			// time.Sleep(time.Millisecond * 500) // Simulate block finalization
 			blockEndTime := time.Now()
 			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
 		}(i)
