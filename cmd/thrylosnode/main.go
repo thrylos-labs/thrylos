@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/thrylos"
 
 	"github.com/thrylos-labs/thrylos/core"
@@ -33,26 +32,25 @@ type server struct {
 	db *database.BlockchainDB // Pointer to your blockchain database
 }
 
-// SubmitTransaction processes an incoming transaction request.
 func (s *server) SubmitTransaction(ctx context.Context, req *thrylos.TransactionRequest) (*flatbuffers.Builder, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "Request cannot be nil")
 	}
 
-	// Extract the Transaction from the request using the accessor provided by FlatBuffers.
-	transaction := req.Transaction(nil)
+	// Directly get the Transaction object from the request.
+	// The GetTransaction() method should be generated based on your FlatBuffers schema.
+	transaction := req.Transaction(nil) // this might return a *Transaction if that's how your FlatBuffers schema is set up
 	if transaction == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "Transaction data is nil or corrupt")
+		return nil, status.Errorf(codes.InvalidArgument, "Transaction data is nil")
 	}
 
-	// Convert Flatbuffers Transaction to a Go Transaction
-	internalTransaction := shared.ConvertFBToGoTransaction(transaction)
-	if internalTransaction == nil {
-		return nil, status.Error(codes.Internal, "Failed to convert transaction")
-	}
+	// Log transaction ID for tracking and debugging
+	transactionID := string(transaction.Id())
+	log.Printf("Received transaction %s for processing", transactionID)
 
-	// Process the transaction in the database
-	err := s.db.AddTransaction(*internalTransaction)
+	// Process the transaction in your application logic
+	// Here you would convert and validate the transaction, apply business logic, etc.
+	err := s.db.AddTransaction(core.ConvertFlatTransactionToShared(transaction))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Transaction processing failed: %v", err)
 	}

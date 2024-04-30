@@ -249,7 +249,9 @@ func ConvertFlatTransactionToShared(fbTx *thrylos.Transaction) shared.Transactio
 
 	// Collecting the entire signature byte slice
 	signatureBytes := make([]byte, fbTx.SignatureLength())
-	copy(signatureBytes, fbTx.SignatureBytes())
+	for j := 0; j < fbTx.SignatureLength(); j++ {
+		signatureBytes[j] = fbTx.Signature(j)
+	}
 
 	// Accessing fields directly, as Get methods do not exist in FlatBuffers
 	return shared.Transaction{

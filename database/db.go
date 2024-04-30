@@ -65,7 +65,7 @@ func NewBlockchainDB(db *badger.DB, encryptionKey []byte) *BlockchainDB {
 }
 
 // encryptData encrypts data using AES-256 GCM.
-func (bdb *BlockchainDB) EncryptData(data []byte) ([]byte, error) {
+func (bdb *BlockchainDB) encryptData(data []byte) ([]byte, error) {
 	block, err := aes.NewCipher(bdb.encryptionKey)
 	if err != nil {
 		return nil, err
@@ -119,7 +119,7 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 	}
 
 	// Step 3: Encrypt the transaction data
-	encryptedData, err := bdb.EncryptData(jsonData)
+	encryptedData, err := bdb.encryptData(jsonData)
 	if err != nil {
 		return false, fmt.Errorf("error encrypting transaction data: %v", err)
 	}
@@ -174,7 +174,7 @@ func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []b
 	encodedKey := base64.StdEncoding.EncodeToString(privateKey)
 	log.Printf("Base64 encoded key: %s", encodedKey)
 
-	encryptedKey, err := bdb.EncryptData([]byte(encodedKey))
+	encryptedKey, err := bdb.encryptData([]byte(encodedKey))
 	if err != nil {
 		log.Printf("Error encrypting private key for address %s: %v", address, err)
 		return fmt.Errorf("error encrypting private key: %v", err)
