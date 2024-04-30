@@ -1,71 +1,44 @@
 package main
 
-import (
-	"context"
-	"log"
-	"time"
+// func main() {
+// 	var wg sync.WaitGroup
+// 	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+// 	if err != nil {
+// 		log.Fatalf("Did not connect: %v", err)
+// 	}
+// 	defer conn.Close()
 
-	"github.com/thrylos-labs/thrylos/thrylos"
+// 	client := thrylos.NewBlockchainServiceClient(conn)
 
-	flatbuffers "github.com/google/flatbuffers/go"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/keepalive"
-)
+// 	numTransactions := 1000
+// 	wg.Add(numTransactions)
 
-func main() {
-	var kacp = keepalive.ClientParameters{
-		Time:                10 * time.Second,
-		Timeout:             time.Second,
-		PermitWithoutStream: true,
-	}
+// 	for i := 0; i < numTransactions; i++ {
+// 		go func(txnID int) {
+// 			defer wg.Done()
+// 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// 			defer cancel()
 
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(),
-		grpc.WithBlock(),
-		grpc.WithKeepaliveParams(kacp),
-		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1024*1024*10))) // 10 MB
-	if err != nil {
-		log.Fatalf("Did not connect: %v", err)
-	}
-	defer conn.Close()
+// 			builder := flatbuffers.NewBuilder(0)
+// 			transactionId := builder.CreateString("transaction-id-" + strconv.Itoa(txnID))
+// 			sender := builder.CreateString("sender-address")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// 			thrylos.TransactionStart(builder)
+// 			thrylos.TransactionAddId(builder, transactionId)
+// 			thrylos.TransactionAddSender(builder, sender)
+// 			transaction := thrylos.TransactionEnd(builder)
 
-	builder := flatbuffers.NewBuilder(0)
+// 			thrylos.TransactionRequestStart(builder)
+// 			thrylos.TransactionRequestAddTransaction(builder, transaction)
+// 			builder.Finish(thrylos.TransactionRequestEnd(builder))
 
-	// Example transaction building
-	transactionId := builder.CreateString("transaction-id")
-	sender := builder.CreateString("sender-address")
+// 			// Create a gRPC-compliant message from the FlatBuffers builder
+// 			msg := &TransactionMessage{Data: builder.FinishedBytes()}
+// 			if _, err := client.SubmitTransaction(ctx, msg); err != nil {
+// 				log.Printf("Could not submit transaction %d: %v", txnID, err)
+// 			}
+// 		}(i)
+// 	}
 
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, transactionId)
-	thrylos.TransactionAddSender(builder, sender)
-	transaction := thrylos.TransactionEnd(builder)
-
-	thrylos.TransactionRequestStart(builder)
-	thrylos.TransactionRequestAddTransaction(builder, transaction)
-	reqOffset := thrylos.TransactionRequestEnd(builder)
-	builder.Finish(reqOffset) // Important: Finish building the buffer
-
-	client := thrylos.NewBlockchainServiceClient(conn)
-
-	// Send the transaction using the client
-	responseBuf, err := client.SubmitTransaction(ctx, builder)
-	if err != nil {
-		log.Fatalf("Could not submit transaction: %v", err)
-	}
-
-	// Assume responseBuf is now a *TransactionResponse object
-	if responseBuf == nil {
-		log.Fatalf("Failed to parse transaction response")
-	}
-
-	// Access the status field
-	statusBytes := responseBuf.Status() // Make sure you handle the byte slice correctly
-	if statusBytes == nil {
-		log.Println("No status returned in the response")
-	} else {
-		status := string(statusBytes)
-		log.Printf("Transaction Status: %s", status)
-	}
-}
+// 	wg.Wait()
+// }

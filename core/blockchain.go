@@ -93,31 +93,44 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	bdb := database.NewBlockchainDB(db, aesKey)
 	stakeholders := []Stakeholder{
 		{"address1", 10000},
-		{"address2", 20000},
-		{"address3", 15000},
+		{"address2", 10000},
+		{"address3", 10000},
 	}
 
 	genesisTransactions := make([]*thrylos.Transaction, 0)
 	builder := flatbuffers.NewBuilder(0)
 
+	// Assuming stakeholders are defined with initial stakes, and these stakes are to be recorded as outputs in the genesis transactions
 	for _, stakeholder := range stakeholders {
-		builder.Reset()
+		// Inputs and outputs might be empty or symbolic since it's the genesis block
+		encryptedInputs := []byte{}  // No inputs in the genesis block
+		encryptedOutputs := []byte{} // Outputs can be initialized here if needed
+		previousTxIDs := []string{}  // No previous transactions in the genesis block
 
-		transactionOffset, err := shared.CreateThrylosTransaction(builder, "genesis_tx_"+stakeholder.Address, stakeholder.Address, []byte{}, []byte{}, []string{})
+		// Create transaction using the function
+		transactionOffset, err := shared.CreateThrylosTransaction(builder, "genesis_"+stakeholder.Address, stakeholder.Address, encryptedInputs, encryptedOutputs, previousTxIDs)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create transaction for stakeholder %s: %v", stakeholder.Address, err)
+			return nil, fmt.Errorf("failed to create genesis transaction for %s: %v", stakeholder.Address, err)
 		}
-
 		builder.Finish(transactionOffset)
 		txBytes := builder.FinishedBytes()
 		genesisTx, err := convertBytesToTransaction(txBytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert bytes to transaction for stakeholder %s: %v", stakeholder.Address, err)
+			return nil, fmt.Errorf("failed to convert bytes to transaction for genesis: %v", err)
 		}
 		genesisTransactions = append(genesisTransactions, genesisTx)
+
+		// Optionally add UTXOs corresponding to each stakeholder's initial stake
+		// utxoKey := fmt.Sprintf("%s:0", genesisTx.Id()) // Assuming each genesis transaction has a single output
+		// shared.UTXO[utxoKey] = append(bc.UTXOs[utxoKey], &thrylos.UTXO{
+		// 	OwnerAddress: []byte(stakeholder.Address),
+		// 	Amount:       stakeholder.Stake,
+		// 	// Set other necessary fields as required
+		// })
 	}
 
 	genesis := NewGenesisBlock(genesisTransactions)
+
 	serializedGenesis, err := genesis.Serialize()
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
