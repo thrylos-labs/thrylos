@@ -1,13 +1,11 @@
 package shared
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,96 +18,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/thrylos"
-
-	flatbuffers "github.com/google/flatbuffers/go"
+	"github.com/thrylos-labs/thrylos"
 	"golang.org/x/crypto/blake2b"
+	"google.golang.org/protobuf/proto"
 )
-
-// Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
-// and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
-type Transaction struct {
-	ID               string   `json:"ID"`
-	Timestamp        int64    `json:"Timestamp"`
-	Inputs           []UTXO   `json:"Inputs"`
-	Outputs          []UTXO   `json:"Outputs"`
-	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
-	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty"`
-	Signature        []byte   `json:"Signature"`
-	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
-	PreviousTxIds    []string `json:"PreviousTxIds,omitempty"`
-	Sender           string   `json:"sender"`
-}
-
-func (tx *Transaction) SerializeForHashing() ([]byte, error) {
-	var b bytes.Buffer
-
-	// Write ID
-	b.Write([]byte(tx.ID))
-
-	// Write Timestamp
-	tsBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(tsBytes, uint64(tx.Timestamp))
-	b.Write(tsBytes)
-
-	// Write Encrypted Inputs
-	b.Write(tx.EncryptedInputs)
-
-	// Write Encrypted Outputs
-	b.Write(tx.EncryptedOutputs)
-
-	// Write Signature
-	b.Write(tx.Signature)
-
-	// Write Encrypted AES Key
-	b.Write(tx.EncryptedAESKey)
-
-	// Write Sender
-	b.Write([]byte(tx.Sender))
-
-	// Serialize and append each UTXO (simplified)
-	for _, utxo := range tx.Inputs {
-		b.Write([]byte(utxo.TransactionID))
-		indexBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(indexBytes, uint32(utxo.Index))
-		b.Write(indexBytes)
-		b.Write([]byte(utxo.OwnerAddress))
-		amountBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(amountBytes, uint64(utxo.Amount))
-		b.Write(amountBytes)
-	}
-	for _, utxo := range tx.Outputs {
-		b.Write([]byte(utxo.TransactionID))
-		indexBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(indexBytes, uint32(utxo.Index))
-		b.Write(indexBytes)
-		b.Write([]byte(utxo.OwnerAddress))
-		amountBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(amountBytes, uint64(utxo.Amount))
-		b.Write(amountBytes)
-	}
-
-	// Previous Transaction IDs
-	for _, ptid := range tx.PreviousTxIds {
-		b.Write([]byte(ptid))
-	}
-
-	return b.Bytes(), nil
-}
-
-func ConvertFBToGoTransaction(fbTx *thrylos.Transaction) *Transaction {
-	// Convert FlatBuffers Transaction to Go Transaction
-	tx := &Transaction{
-		ID:               string(fbTx.Id()),
-		Timestamp:        fbTx.Timestamp(),
-		EncryptedInputs:  fbTx.EncryptedInputsBytes(),
-		EncryptedOutputs: fbTx.EncryptedOutputsBytes(),
-		Signature:        fbTx.SignatureBytes(),
-		Sender:           string(fbTx.Sender()),
-		// Conversion for UTXOs and other fields as necessary
-	}
-	return tx
-}
 
 func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
 	// Create a new BLAKE2b hasher for OAEP
@@ -261,6 +173,42 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+// CreateMockSignedTransaction generates a transaction and signs it.
+// CreateMockSignedTransaction generates a transaction, serializes it without the signature, signs it, and returns the signed transaction.
+// func CreateMockDualSignedTransaction(transactionID string, ed25519PrivateKey ed25519.PrivateKey, []byte) (*thrylos.Transaction, error) {
+// 	// Initialize the transaction as before
+// 	tx := &thrylos.Transaction{
+// 		Id:        transactionID,
+// 		Timestamp: time.Now().Unix(),
+// 		Inputs: []*thrylos.UTXO{{
+// 			TransactionId: "tx0",
+// 			Index:         0,
+// 			OwnerAddress:  "Alice",
+// 			Amount:        100,
+// 		}},
+// 		Outputs: []*thrylos.UTXO{{
+// 			TransactionId: transactionID,
+// 			Index:         0,
+// 			OwnerAddress:  "Bob",
+// 			Amount:        100,
+// 		}},
+// 	}
+
+// 	// Serialize the transaction for signing
+// 	txBytes, err := proto.Marshal(tx)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
+// 	}
+
+// 	// Sign with Ed25519
+// 	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
+
+// 	// Set both signatures on the transaction and return
+// 	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
+
+// 	return tx, nil
+// }
+
 // HashData hashes input data using SHA-256 and returns the hash as a byte slice.
 func HashData(data []byte) []byte {
 	hash, err := blake2b.New256(nil) // No key, simple hash
@@ -269,6 +217,21 @@ func HashData(data []byte) []byte {
 	}
 	hash.Write(data)
 	return hash.Sum(nil)
+}
+
+// Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
+// and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
+type Transaction struct {
+	ID               string   `json:"ID"`
+	Timestamp        int64    `json:"Timestamp"`
+	Inputs           []UTXO   `json:"Inputs"`
+	Outputs          []UTXO   `json:"Outputs"`
+	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
+	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty"`
+	Signature        []byte   `json:"Signature"`
+	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
+	PreviousTxIds    []string `json:"PreviousTxIds,omitempty"`
+	Sender           string   `json:"sender"`
 }
 
 // select tips:
@@ -280,335 +243,171 @@ func selectTips() ([]string, error) {
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519.
 // Assuming Transaction is the correct type across your application:
 func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, aesKey []byte) (*Transaction, error) {
+	// Select previous transactions to reference
 	previousTxIDs, err := selectTips()
 	if err != nil {
 		return nil, fmt.Errorf("failed to select previous transactions: %v", err)
 	}
 
-	// Initialize FlatBuffers builder
-	builder := flatbuffers.NewBuilder(0)
-
-	// Handle serialization and encryption of inputs
-	encryptedInputs, err := handleUTXOs(builder, inputs, aesKey)
+	// Serialize and Encrypt the sensitive parts of the transaction (Inputs)
+	serializedInputs, err := serializeUTXOs(inputs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to serialize inputs: %v", err)
 	}
-
-	// Reset builder for outputs
-	builder.Reset()
-
-	// Handle serialization and encryption of outputs
-	encryptedOutputs, err := handleUTXOs(builder, outputs, aesKey)
+	encryptedInputs, err := EncryptWithAES(aesKey, serializedInputs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to encrypt inputs: %v", err)
 	}
 
-	// Create the transaction object in FlatBuffers
-	thrylosTxOffset, err := createThrylosTransaction(builder, id, sender, encryptedInputs, encryptedOutputs, previousTxIDs)
+	// Serialize and Encrypt the sensitive parts of the transaction (Outputs)
+	serializedOutputs, err := serializeUTXOs(outputs)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to serialize outputs: %v", err)
 	}
-
-	// Finish the transaction object creation
-	builder.Finish(thrylosTxOffset)
-
-	// Sign the transaction and convert back to local format
-	return signAndConvertTransaction(builder, thrylosTxOffset, ed25519PrivateKey)
-}
-
-func handleUTXOs(builder *flatbuffers.Builder, utxos []UTXO, aesKey []byte) ([]byte, error) {
-	utxoPtrs := convertToUTXOPtrs(utxos)
-	serializedOffset, err := SerializeUTXOs(builder, utxoPtrs)
+	encryptedOutputs, err := EncryptWithAES(aesKey, serializedOutputs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to serialize UTXOs: %v", err)
+		return nil, fmt.Errorf("failed to encrypt outputs: %v", err)
 	}
 
-	builder.Finish(serializedOffset)
-	serializedData := builder.FinishedBytes()
-	encryptedData, err := EncryptWithAES(aesKey, serializedData)
+	// Initialize the transaction, now including PreviousTxIDs
+	tx := Transaction{
+		ID:               id,
+		Sender:           sender,
+		EncryptedInputs:  encryptedInputs,
+		EncryptedOutputs: encryptedOutputs,
+		PreviousTxIds:    previousTxIDs,
+		Timestamp:        time.Now().Unix(),
+	}
+
+	// Convert the Transaction type to *thrylos.Transaction for signing
+	// Assuming there's an existing function like convertLocalTransactionToThrylosTransaction that you can use
+	thrylosTx, err := ConvertLocalTransactionToThrylosTransaction(tx) // Use tx directly
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt UTXOs: %v", err)
+		return nil, fmt.Errorf("failed to convert transaction for signing: %v", err)
 	}
-	return encryptedData, nil
-}
 
-func createThrylosTransaction(builder *flatbuffers.Builder, id, sender string, encryptedInputs, encryptedOutputs []byte, previousTxIDs []string) (flatbuffers.UOffsetT, error) {
-	// Create the transaction data in the builder
-	idOffset := builder.CreateString(id)
-	senderOffset := builder.CreateString(sender)
-	encryptedInputsOffset := builder.CreateByteVector(encryptedInputs)
-	encryptedOutputsOffset := builder.CreateByteVector(encryptedOutputs)
-
-	// Convert previous transaction IDs into a vector of offsets
-	prevTxIDsOffsets := make([]flatbuffers.UOffsetT, len(previousTxIDs))
-	for i, txID := range previousTxIDs {
-		prevTxIDsOffsets[i] = builder.CreateString(txID)
+	// Sign the transaction
+	if err := SignTransaction(thrylosTx, ed25519PrivateKey); err != nil {
+		return nil, fmt.Errorf("failed to sign transaction: %v", err)
 	}
-	thrylos.TransactionStartPreviousTxIdsVector(builder, len(previousTxIDs))
-	for i := len(previousTxIDs) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(prevTxIDsOffsets[i])
-	}
-	prevTxIDsVec := builder.EndVector(len(previousTxIDs))
 
-	// Start the transaction object
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, idOffset)
-	thrylos.TransactionAddSender(builder, senderOffset)
-	thrylos.TransactionAddEncryptedInputs(builder, encryptedInputsOffset)
-	thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputsOffset)
-	thrylos.TransactionAddPreviousTxIds(builder, prevTxIDsVec)
-	transactionOffset := thrylos.TransactionEnd(builder)
-
-	return transactionOffset, nil
-}
-
-func signAndConvertTransaction(builder *flatbuffers.Builder, thrylosTxOffset flatbuffers.UOffsetT, privateKey ed25519.PrivateKey) (*Transaction, error) {
-	// Extract the byte slice for signing from the builder's data
-	builder.Finish(thrylosTxOffset)
-	txBytes := builder.FinishedBytes() // This is the byte slice of the whole transaction
-
-	// Sign the transaction with the Ed25519 private key
-	signature := ed25519.Sign(privateKey, txBytes)
-
-	// Convert the signed FlatBuffers transaction back to the local Transaction structure
-	// (Assuming you have a function that can interpret the FlatBuffers byte slice back into a Transaction struct)
-	tx, err := convertFlatBuffersToTransaction(txBytes)
+	// Convert the signed thrylos.Transaction back to your local Transaction format
+	signedTx, err := convertThrylosTransactionToLocal(thrylosTx) // Ensure this function exists and is correct
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert transaction: %v", err)
-	}
-	tx.Signature = signature // Attach the signature to the local transaction struct
-
-	return tx, nil
-}
-
-func convertFlatBuffersToTransaction(data []byte) (*Transaction, error) {
-	// Assuming `GetRootAsTransaction` is a method generated by FlatBuffers, which initializes a Transaction object from data
-	fbTx := thrylos.GetRootAsTransaction(data, 0)
-
-	// Now, extract the data using the getters
-	tx := &Transaction{
-		ID:               string(fbTx.Id()), // Assuming Id() returns a byte slice
-		Timestamp:        fbTx.Timestamp(),
-		EncryptedInputs:  fbTx.EncryptedInputsBytes(), // Assuming EncryptedInputsBytes() that returns the byte slice
-		EncryptedOutputs: fbTx.EncryptedOutputsBytes(),
-		Signature:        []byte{}, // Initially empty, to be filled by the caller
-		Sender:           string(fbTx.Sender()),
+		return nil, fmt.Errorf("failed to convert signed transaction back to local format: %v", err)
 	}
 
-	// Extracting array of PreviousTxIds
-	numPrevTxIds := fbTx.PreviousTxIdsLength()
-	tx.PreviousTxIds = make([]string, numPrevTxIds)
-	for i := 0; i < numPrevTxIds; i++ {
-		tx.PreviousTxIds[i] = string(fbTx.PreviousTxIds(i))
-	}
-
-	// Handling UTXOs might require more elaborate processing depending on their complexity
-	// Assuming we have methods like InputsLength and Inputs to access UTXO data
-	numInputs := fbTx.InputsLength()
-	tx.Inputs = make([]UTXO, numInputs)
-	var fbUTXO thrylos.UTXO // A hypothetical FlatBuffers UTXO object
-	for i := 0; i < numInputs; i++ {
-		if fbTx.Inputs(&fbUTXO, i) {
-			tx.Inputs[i] = UTXO{
-				TransactionID: string(fbUTXO.TransactionId()),
-				Index:         int(fbUTXO.Index()),
-				OwnerAddress:  string(fbUTXO.OwnerAddress()),
-				Amount:        int(fbUTXO.Amount()),
-			}
-		}
-	}
-
-	// Similar extraction for Outputs
-	numOutputs := fbTx.OutputsLength()
-	tx.Outputs = make([]UTXO, numOutputs)
-	for i := 0; i < numOutputs; i++ {
-		if fbTx.Outputs(&fbUTXO, i) {
-			tx.Outputs[i] = UTXO{
-				TransactionID: string(fbUTXO.TransactionId()),
-				Index:         int(fbUTXO.Index()),
-				OwnerAddress:  string(fbUTXO.OwnerAddress()),
-				Amount:        int(fbUTXO.Amount()),
-			}
-		}
-	}
-
-	return tx, nil
+	// Return the signed transaction
+	return &signedTx, nil
 }
 
 // Hypothetical conversion function from your local Transaction type to *thrylos.Transaction
-func ConvertLocalTransactionToThrylosTransaction(builder *flatbuffers.Builder, tx Transaction) (*flatbuffers.Builder, flatbuffers.UOffsetT, error) {
-	// Start building the transaction inputs and outputs
-	thrylos.UTXOStart(builder)
-	inputsOffsets := make([]flatbuffers.UOffsetT, len(tx.Inputs))
+func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Transaction, error) {
+	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
-		transactionID := builder.CreateString(input.TransactionID)
-		ownerAddress := builder.CreateString(input.OwnerAddress)
-		thrylos.UTXOStart(builder)
-		thrylos.UTXOAddTransactionId(builder, transactionID)
-		thrylos.UTXOAddIndex(builder, int32(input.Index))
-		thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
-		thrylos.UTXOAddAmount(builder, int64(input.Amount))
-		inputsOffsets[i] = thrylos.UTXOEnd(builder)
+		thrylosInputs[i] = &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			Index:         int32(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		}
 	}
 
-	// Do similar steps for outputs
-	outputsOffsets := make([]flatbuffers.UOffsetT, len(tx.Outputs))
+	thrylosOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
 	for i, output := range tx.Outputs {
-		transactionID := builder.CreateString(output.TransactionID)
-		ownerAddress := builder.CreateString(output.OwnerAddress)
-		thrylos.UTXOStart(builder)
-		thrylos.UTXOAddTransactionId(builder, transactionID)
-		thrylos.UTXOAddIndex(builder, int32(output.Index))
-		thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
-		thrylos.UTXOAddAmount(builder, int64(output.Amount))
-		outputsOffsets[i] = thrylos.UTXOEnd(builder)
+		thrylosOutputs[i] = &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+		}
 	}
 
-	// Create vectors for inputs and outputs
-	thrylos.TransactionStartInputsVector(builder, len(inputsOffsets))
-	for i := len(inputsOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(inputsOffsets[i])
-	}
-	inputsVec := builder.EndVector(len(inputsOffsets))
-
-	thrylos.TransactionStartOutputsVector(builder, len(outputsOffsets))
-	for i := len(outputsOffsets) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(outputsOffsets[i])
-	}
-	outputsVec := builder.EndVector(len(outputsOffsets))
-
-	// Create the transaction
-	transactionID := builder.CreateString(tx.ID)
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, transactionID)
-	thrylos.TransactionAddInputs(builder, inputsVec)
-	thrylos.TransactionAddOutputs(builder, outputsVec)
-	thrylos.TransactionAddTimestamp(builder, tx.Timestamp)
-	// Handle previous transaction IDs similarly if needed
-	transaction := thrylos.TransactionEnd(builder)
-
-	return builder, transaction, nil
+	return &thrylos.Transaction{
+		Id:            tx.ID,
+		Inputs:        thrylosInputs,
+		Outputs:       thrylosOutputs,
+		Timestamp:     tx.Timestamp,
+		PreviousTxIds: tx.PreviousTxIds, // Ensure this matches your local struct field
+		// Leave Signature for the SignTransaction to fill
+	}, nil
 }
 
 // Hypothetical conversion back to local Transaction type, if needed
 func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, error) {
-	// Assuming tx.PreviousTxIdsLength() and tx.PreviousTxIds(j int) methods exist
-	previousTxIdsLength := tx.PreviousTxIdsLength()
-	previousTxIds := make([]string, previousTxIdsLength)
-	for i := 0; i < previousTxIdsLength; i++ {
-		previousTxIds[i] = string(tx.PreviousTxIds(i)) // Assuming PreviousTxIds(i) returns []byte
+	localInputs := make([]UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		localInputs[i] = UTXO{
+			TransactionID: input.TransactionId,
+			Index:         int(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int(input.Amount),
+		}
 	}
 
-	// Convert other fields similar to previous example
-	localInputs, localOutputs := convertUTXOFields(tx)
+	localOutputs := make([]UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		localOutputs[i] = UTXO{
+			TransactionID: output.TransactionId,
+			Index:         int(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int(output.Amount),
+		}
+	}
 
 	return Transaction{
-		ID:            string(tx.Id()), // Assuming Id() returns a []byte
+		ID:            tx.Id,
 		Inputs:        localInputs,
 		Outputs:       localOutputs,
-		Timestamp:     tx.Timestamp(),
-		Signature:     tx.SignatureBytes(), // Assuming SignatureBytes() returns the full slice
-		PreviousTxIds: previousTxIds,
+		Timestamp:     tx.Timestamp,
+		Signature:     tx.Signature,
+		PreviousTxIds: tx.PreviousTxIds, // Match this with the Protobuf field
+
 	}, nil
 }
 
-// Separate the conversion of UTXO fields into a helper function for clarity
-func convertUTXOFields(tx *thrylos.Transaction) ([]UTXO, []UTXO) {
-	inputLength := tx.InputsLength()
-	localInputs := make([]UTXO, inputLength)
-	for i := 0; i < inputLength; i++ {
-		var input thrylos.UTXO
-		if tx.Inputs(&input, i) {
-			localInputs[i] = UTXO{
-				TransactionID: string(input.TransactionId()),
-				Index:         int(input.Index()),
-				OwnerAddress:  string(input.OwnerAddress()),
-				Amount:        int(input.Amount()),
-			}
-		}
+func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
+	protoTx := &thrylos.Transaction{
+		Id:        tx.ID,
+		Sender:    tx.Sender,
+		Timestamp: tx.Timestamp,
+		Signature: tx.Signature,
 	}
 
-	outputLength := tx.OutputsLength()
-	localOutputs := make([]UTXO, outputLength)
-	for i := 0; i < outputLength; i++ {
-		var output thrylos.UTXO
-		if tx.Outputs(&output, i) {
-			localOutputs[i] = UTXO{
-				TransactionID: string(output.TransactionId()),
-				Index:         int(output.Index()),
-				OwnerAddress:  string(output.OwnerAddress()),
-				Amount:        int(output.Amount()),
-			}
-		}
+	for _, input := range tx.Inputs {
+		protoTx.Inputs = append(protoTx.Inputs, &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			Index:         int32(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		})
 	}
 
-	return localInputs, localOutputs
-}
-
-func SerializeTransactionToFlatBuffers(tx *Transaction, includeSignature bool) []byte {
-	builder := flatbuffers.NewBuilder(0)
-
-	// Convert UTXOs to pointer slices for serialization
-	inputPtrs := convertToUTXOPtrs(tx.Inputs)
-	outputPtrs := convertToUTXOPtrs(tx.Outputs)
-
-	// Serialize UTXOs for inputs and outputs
-	inputsOffsets, err := SerializeUTXOs(builder, inputPtrs)
-	if err != nil {
-		log.Fatalf("Error serializing inputs: %v", err)
-		return nil // Consider handling the error more gracefully
-	}
-	outputsOffsets, err := SerializeUTXOs(builder, outputPtrs)
-	if err != nil {
-		log.Fatalf("Error serializing outputs: %v", err)
-		return nil // Consider handling the error more gracefully
+	for _, output := range tx.Outputs {
+		protoTx.Outputs = append(protoTx.Outputs, &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+		})
 	}
 
-	// Create other transaction fields in FlatBuffers
-	id := builder.CreateString(tx.ID)
-	encryptedInputs := builder.CreateByteVector(tx.EncryptedInputs)
-	encryptedOutputs := builder.CreateByteVector(tx.EncryptedOutputs)
-	previousTxIdsOffset := createStringVector(builder, tx.PreviousTxIds)
-	encryptedAesKey := builder.CreateByteVector(tx.EncryptedAESKey)
-	sender := builder.CreateString(tx.Sender)
-
-	// Optionally add the signature
-	var signature flatbuffers.UOffsetT
-	if includeSignature {
-		signature = builder.CreateByteVector(tx.Signature)
-	}
-
-	// Start building the Transaction object
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, id)
-	thrylos.TransactionAddTimestamp(builder, tx.Timestamp)
-	thrylos.TransactionAddInputs(builder, inputsOffsets)
-	thrylos.TransactionAddOutputs(builder, outputsOffsets)
-	thrylos.TransactionAddEncryptedInputs(builder, encryptedInputs)
-	thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputs)
-	if includeSignature {
-		thrylos.TransactionAddSignature(builder, signature)
-	}
-	thrylos.TransactionAddPreviousTxIds(builder, previousTxIdsOffset)
-	thrylos.TransactionAddEncryptedAesKey(builder, encryptedAesKey)
-	thrylos.TransactionAddSender(builder, sender)
-	transaction := thrylos.TransactionEnd(builder)
-
-	// Finish the transaction object and return the bytes
-	builder.Finish(transaction)
-	return builder.FinishedBytes()
+	return protoTx
 }
 
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
 // The signature is created by first hashing the transaction data, then signing the hash with the private key.
 // SignTransaction creates a signature for a transaction using the sender's private Ed25519 key.
-func SignTransaction(tx *Transaction, edPrivateKey ed25519.PrivateKey) error {
-	// Serialize the transaction without including the signature
-	txBytes := SerializeTransactionToFlatBuffers(tx, false) // Passing false to not include the signature
+func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateKey) error {
+	// Serialize the transaction for signing
+	txBytes, err := proto.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("failed to serialize transaction: %v", err)
+	}
 
-	// Sign the transaction with the Ed25519 private key
-	signature := ed25519.Sign(edPrivateKey, txBytes)
-	tx.Signature = signature // Update the transaction object with the new signature
+	// Ed25519 Signature
+	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
+	tx.Signature = ed25519Signature // Directly assign the byte slice
 
 	return nil
 }
@@ -635,92 +434,31 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 
 // VerifyTransactionSignature verifies both the Ed25519 of a given transaction.
 func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed25519.PublicKey) error {
-	builder := flatbuffers.NewBuilder(0)
-
-	// Convert byte arrays to strings
-	transactionID := string(tx.Id())
-	sender := string(tx.Sender())
-
-	// Extracting and rebuilding the previous transaction IDs
-	prevTxIdsCount := tx.PreviousTxIdsLength()
-	prevTxIds := make([]string, prevTxIdsCount)
-	for i := 0; i < prevTxIdsCount; i++ {
-		prevTxIds[i] = string(tx.PreviousTxIds(i))
+	// Deserialize the transaction for verification
+	txBytes, err := proto.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("failed to serialize transaction for verification: %v", err)
 	}
 
-	// Create FlatBuffers offsets for all items
-	transactionIDOffset := builder.CreateString(transactionID)
-	senderOffset := builder.CreateString(sender)
-	encryptedInputsOffset := builder.CreateByteVector(tx.EncryptedInputsBytes())
-	encryptedOutputsOffset := builder.CreateByteVector(tx.EncryptedOutputsBytes())
-	previousTxIDsVectorOffset := createStringVector(builder, prevTxIds)
-
-	// Start building the transaction object excluding the signature
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, transactionIDOffset)
-	thrylos.TransactionAddSender(builder, senderOffset)
-	thrylos.TransactionAddEncryptedInputs(builder, encryptedInputsOffset)
-	thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputsOffset)
-	thrylos.TransactionAddPreviousTxIds(builder, previousTxIDsVectorOffset)
-	thrylos.TransactionAddTimestamp(builder, tx.Timestamp())
-	finalTransactionOffset := thrylos.TransactionEnd(builder)
-
-	builder.Finish(finalTransactionOffset)
-	txBytes := builder.FinishedBytes() // Byte slice of the transaction without the signature
-
-	// Retrieve the signature from the original transaction
-	signature := tx.SignatureBytes() // Assuming this method returns the signature as a byte slice
-
-	// Verify the signature
-	if !ed25519.Verify(ed25519PublicKey, txBytes, signature) {
+	// The tx.Signature is already a byte slice, no need for decoding
+	if !ed25519.Verify(ed25519PublicKey, txBytes, tx.Signature) {
 		return errors.New("Ed25519 signature verification failed")
 	}
 
 	return nil
 }
 
-// Helper to convert a FlatBuffers vector of bytes (each slice represents a string) to a slice of strings.
-func convertByteVectorToStringSlice(vector []byte) []string {
-	// Example implementation assuming each string is null-terminated within the byte vector
-	strings := []string{}
-	current := ""
-	for _, b := range vector {
-		if b == 0 {
-			strings = append(strings, current)
-			current = ""
-		} else {
-			current += string(b)
-		}
-	}
-	if current != "" {
-		strings = append(strings, current)
-	}
-	return strings
-}
-
-// Helper to create a vector of strings in FlatBuffers
-func createStringVector(builder *flatbuffers.Builder, items []string) flatbuffers.UOffsetT {
-	offsets := make([]flatbuffers.UOffsetT, len(items))
-	for i, s := range items {
-		offsets[i] = builder.CreateString(s)
-	}
-	thrylos.TransactionStartPreviousTxIdsVector(builder, len(items))
-	for i := len(items) - 1; i >= 0; i-- {
-		builder.PrependUOffsetT(offsets[i])
-	}
-	return builder.EndVector(len(items))
-}
-
 // VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
 // the existence and ownership of UTXOs in its inputs, and the equality of input and output values.
 func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (ed25519.PublicKey, error)) (bool, error) {
+
 	// Check if there are any inputs in the transaction
-	if tx.InputsLength() == 0 {
+	if len(tx.GetInputs()) == 0 {
 		return false, errors.New("Transaction has no inputs")
 	}
 
 	// Assuming all inputs come from the same sender for simplicity
-	senderAddress := string(tx.Sender()) // Convert byte slice to string
+	senderAddress := tx.Sender // Use the sender field directly
 
 	// Retrieve the Ed25519 public key for the sender
 	ed25519PublicKey, err := getPublicKeyFunc(senderAddress)
@@ -728,39 +466,28 @@ func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO
 		return false, fmt.Errorf("Error retrieving Ed25519 public key for address %s: %v", senderAddress, err)
 	}
 
-	// Rebuild the transaction excluding the signature for verification
-	builder := flatbuffers.NewBuilder(0)
-	recreateTransactionForVerification(tx, builder)
-	txBytes := builder.FinishedBytes() // Byte slice of the transaction without the signature
+	// Make a copy of the transaction to manipulate for verification
+	txCopy := proto.Clone(tx).(*thrylos.Transaction)
+	txCopy.Signature = []byte("") // Reset signature for serialization
 
-	// Retrieve the signature from the transaction
-	signature := make([]byte, tx.SignatureLength())
-	for i := 0; i < tx.SignatureLength(); i++ {
-		signature[i] = tx.Signature(i)
+	// Serialize the transaction for verification
+	txBytes, err := proto.Marshal(txCopy)
+	if err != nil {
+		return false, fmt.Errorf("Error serializing transaction for verification: %v", err)
 	}
 
-	// Verify the signature
-	if !ed25519.Verify(ed25519PublicKey, txBytes, signature) {
-		return false, errors.New("Ed25519 signature verification failed")
+	// Log the serialized transaction data without the signature
+	log.Printf("Serialized transaction for verification: %x", txBytes)
+
+	// Verify the transaction signature using both public keys
+	err = VerifyTransactionSignature(tx, ed25519PublicKey)
+	if err != nil {
+		return false, fmt.Errorf("Transaction signature verification failed: %v", err)
 	}
 
-	// Assuming UTXO checks and sum validation is performed here...
-	// Logic for UTXO checks and sum validation remains unchanged
+	// The remaining logic for UTXO checks and sum validation remains unchanged...
 
 	return true, nil
-}
-
-func recreateTransactionForVerification(tx *thrylos.Transaction, builder *flatbuffers.Builder) {
-	// Example function to demonstrate reconstruction without signature
-	// Implementation depends on your schema specifics
-	// You'll recreate all transaction fields except the signature
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, builder.CreateString(string(tx.Id())))
-	thrylos.TransactionAddTimestamp(builder, tx.Timestamp())
-	// Add other fields like inputs, outputs, etc., as necessary
-	// Do not add the signature field
-	transactionOffset := thrylos.TransactionEnd(builder)
-	builder.Finish(transactionOffset)
 }
 
 // NewTransaction creates a new Transaction instance with the specified ID, inputs, outputs, and records
@@ -850,37 +577,43 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 }
 
 // BatchSignTransactions signs a slice of transactions using both Ed25519.
-// BatchSignTransactions signs a slice of transactions using both Ed25519.
 func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(transactions))
+	errChan := make(chan error, len(transactions)) // Ensure the channel can handle the number of transactions
 
-	wg.Add(len(transactions))
-	for _, tx := range transactions {
-		go func(tx *Transaction) {
-			defer wg.Done()
+	wg.Add(1) // Add one for the goroutine you are starting
+	go func() {
+		defer wg.Done()
+		for _, customTx := range transactions { // Assuming transactions is of type []*Transaction
+			// Convert the custom Transaction struct to the Protobuf-generated Transaction type
+			protoTx := ConvertToProtoTransaction(customTx)
 
-			// Serialize transaction using FlatBuffers without including the signature
-			txBytes := SerializeTransactionToFlatBuffers(tx, false) // now passing false for includeSignature
+			// Correctly use the generated Protobuf type for marshaling
+			txBytes, err := proto.Marshal(protoTx)
+			if err != nil {
+				errChan <- err
+				continue
+			}
 
 			// Ed25519 Signing
 			edSignature := ed25519.Sign(edPrivateKey, txBytes)
 
-			// Update your transaction's signature field
-			tx.Signature = edSignature
+			// Assign the byte slice directly to the protobuf's Signature field
+			protoTx.Signature = edSignature
 
-			// Re-serialize with signature to update the transaction object
-			_ = SerializeTransactionToFlatBuffers(tx, true) // Optional, depending on whether you need to use the serialized form immediately
-		}(tx)
-	}
+			// Update your custom struct if necessary; ensure its Signature field is also []byte or convert if it's a string
+			customTx.Signature = protoTx.Signature // Adjust this line if customTx expects a string
+		}
+	}()
 
 	wg.Wait()
-	close(errChan)
+
+	close(errChan) // Close the channel to signal completion of error collection
 
 	// Check for errors
 	for e := range errChan {
 		if e != nil {
-			return e
+			return e // Return the first encountered error (or aggregate as needed)
 		}
 	}
 

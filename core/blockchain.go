@@ -13,8 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/thrylos"
-
+	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 
 	"github.com/thrylos-labs/thrylos/database"
@@ -403,7 +402,7 @@ func (bc *Blockchain) addUTXO(utxo shared.UTXO) {
 		bc.UTXOs[utxoKey] = []*thrylos.UTXO{}
 	}
 	// Convert shared UTXO to thrylos UTXO and add it
-	thrylosUtxo := shared.ConvertSharedUTXOToFlatBuffers(utxo)
+	thrylosUtxo := shared.ConvertSharedUTXOToProto(utxo)
 	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
 	log.Printf("UTXO added: %s", utxoKey)
 }

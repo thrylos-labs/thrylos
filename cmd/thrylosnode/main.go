@@ -32,41 +32,49 @@ type server struct {
 	db *database.BlockchainDB // Pointer to your blockchain database
 }
 
-func (s *server) SubmitTransaction(ctx context.Context, req *thrylos.TransactionRequest) (*flatbuffers.Builder, error) {
+func (s *server) SubmitTransaction(ctx context.Context, builder *flatbuffers.Builder) (*flatbuffers.Builder, error) {
+	// Get the byte slice from the builder
+	buf := builder.FinishedBytes()
+
+	// Deserialize the TransactionRequest from the byte slice
+	req := thrylos.GetRootAsTransactionRequest(buf, 0)
 	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "Request cannot be nil")
+		return nil, status.Error(codes.InvalidArgument, "Invalid request format")
 	}
 
-	// Assuming the Transaction is correctly parsed from the request
+	// Access the Transaction object from the request
 	transaction := new(thrylos.Transaction)
 	if req.Transaction(transaction) == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "Transaction data is nil")
+		return nil, status.Error(codes.InvalidArgument, "Transaction data is nil")
 	}
 
-	// Log transaction ID for tracking and debugging
+	// Log the received transaction ID
 	transactionID := string(transaction.Id())
 	log.Printf("Received transaction %s for processing", transactionID)
 
-	// Convert the FlatBuffers Transaction to your application's internal transaction type
-	// Assuming `ConvertFlatTransactionToShared` is properly implemented to handle this conversion
+	// Convert FlatBuffers Transaction to your shared transaction type
+	// This assumes you have a function to handle this conversion
 	tx := core.ConvertFlatTransactionToShared(transaction)
 
-	// Process the transaction
+	// Process the transaction using your blockchain core logic
 	err := s.db.AddTransaction(tx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "Transaction processing failed: %v", err)
+		return nil, status.Errorf(codes.Internal, "Transaction failed: %v", err)
 	}
 
-	// If the transaction is processed successfully, prepare a response
-	builder := flatbuffers.NewBuilder(0)
-	statusOffset := builder.CreateString("Transaction processed successfully")
-	thrylos.TransactionResponseStart(builder)
-	thrylos.TransactionResponseAddStatus(builder, statusOffset)
-	responseOffset := thrylos.TransactionResponseEnd(builder)
-	builder.Finish(responseOffset)
+	// Log the successful transaction addition
+	log.Printf("Transaction %s added successfully", transactionID)
 
-	// Return the builder with the response
-	return builder, nil
+	// Prepare the response using FlatBuffers
+	responseBuilder := flatbuffers.NewBuilder(0)
+	statusOffset := responseBuilder.CreateString("Transaction added successfully")
+	thrylos.TransactionResponseStart(responseBuilder)
+	thrylos.TransactionResponseAddStatus(responseBuilder, statusOffset)
+	response := thrylos.TransactionResponseEnd(responseBuilder)
+	responseBuilder.Finish(response)
+
+	// Return the builder containing the response
+	return responseBuilder, nil
 }
 
 func init() {
