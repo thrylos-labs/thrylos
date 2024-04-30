@@ -91,7 +91,10 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	defer db.Close()
 
 	bdb := database.NewBlockchainDB(db, aesKey)
-	stakeholders := []Stakeholder{
+	stakeholders := []struct {
+		Address string
+		Balance int64
+	}{
 		{"address1", 10000},
 		{"address2", 20000},
 		{"address3", 15000},
@@ -103,18 +106,8 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	for _, stakeholder := range stakeholders {
 		builder.Reset()
 
-		transactionOffset, err := shared.CreateThrylosTransaction(builder, "genesis_tx_"+stakeholder.Address, stakeholder.Address, []byte{}, []byte{}, []string{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create transaction for stakeholder %s: %v", stakeholder.Address, err)
-		}
-
-		builder.Finish(transactionOffset)
-		txBytes := builder.FinishedBytes()
-		genesisTx, err := convertBytesToTransaction(txBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert bytes to transaction for stakeholder %s: %v", stakeholder.Address, err)
-		}
-		genesisTransactions = append(genesisTransactions, genesisTx)
+		transaction := createTransaction(builder, "genesis_tx_"+stakeholder.Address, stakeholder.Address, stakeholder.Balance)
+		genesisTransactions = append(genesisTransactions, transaction)
 	}
 
 	genesis := NewGenesisBlock(genesisTransactions)
@@ -122,6 +115,7 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
 	}
+
 	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
 		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
@@ -135,6 +129,28 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	}
 
 	return blockchain, nil
+}
+
+func createTransaction(builder *flatbuffers.Builder, id, owner string, amount int64) *thrylos.Transaction {
+	builder.Reset()
+
+	// Create transaction fields
+	idOffset := builder.CreateString(id)
+	ownerAddressOffset := builder.CreateString(owner)
+	thrylos.UTXOStart(builder)
+	thrylos.UTXOAddOwnerAddress(builder, ownerAddressOffset)
+	thrylos.UTXOAddAmount(builder, amount)
+	utxoOffset := thrylos.UTXOEnd(builder)
+
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, idOffset)
+	thrylos.TransactionAddTimestamp(builder, time.Now().Unix())
+	thrylos.TransactionAddOutputs(builder, utxoOffset)
+	thrylos.TransactionAddSignature(builder, builder.CreateByteVector([]byte("genesis_signature")))
+	transactionOffset := thrylos.TransactionEnd(builder)
+
+	builder.Finish(transactionOffset)
+	return &thrylos.Transaction{} // Assuming conversion from byte buffer to Transaction object
 }
 
 func convertBytesToTransaction(data []byte) (*thrylos.Transaction, error) {

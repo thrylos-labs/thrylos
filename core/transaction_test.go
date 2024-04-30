@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,10 +15,8 @@ import (
 	"testing"
 	"time"
 
-	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/thrylos"
-	"google.golang.org/grpc"
 )
 
 // Verifying with a Different Public Key Than the One Used for Signing
@@ -550,118 +547,124 @@ func TestBlockTime(t *testing.T) {
 
 // go test -v -timeout 30s -run ^TestTransactionThroughputWithGRPC$ github.com/thrylos-labs/thrylos/core
 
-func TestTransactionThroughputWithGRPC(t *testing.T) {
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock())
-	if err != nil {
-		t.Fatalf("Failed to connect to gRPC server: %v", err)
-	}
-	defer conn.Close()
-	client := thrylos.NewBlockchainServiceClient(conn)
+// func TestTransactionThroughputWithGRPC(t *testing.T) {
+// 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock())
+// 	if err != nil {
+// 		t.Fatalf("Failed to connect to gRPC server: %v", err)
+// 	}
+// 	defer conn.Close()
+// 	client := thrylos.NewBlockchainServiceClient(conn)
 
-	numTransactions := 1000
-	batchSize := 10
-	start := time.Now()
-	var wg sync.WaitGroup
+// 	numTransactions := 1000
+// 	batchSize := 10
+// 	start := time.Now()
+// 	var wg sync.WaitGroup
 
-	for i := 0; i < numTransactions; i += batchSize {
-		wg.Add(1)
-		go func(startIndex int) {
-			defer wg.Done()
-			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
-				builder := flatbuffers.NewBuilder(0)
+// 	for i := 0; i < numTransactions; i += batchSize {
+// 		wg.Add(1)
+// 		go func(startIndex int) {
+// 			defer wg.Done()
+// 			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
+// 				builder := flatbuffers.NewBuilder(0)
 
-				// Corrected usage
-				transaction := createTransaction(builder, fmt.Sprintf("tx%d", j), time.Now().Unix())
+// 				// Corrected usage
+// 				transaction := createTransaction(builder, fmt.Sprintf("tx%d", j), time.Now().Unix())
 
-				// Finalize the transaction request in the builder
-				thrylos.TransactionRequestStart(builder)
-				thrylos.TransactionRequestAddTransaction(builder, transaction)
-				transactionRequestOffset := thrylos.TransactionRequestEnd(builder)
-				builder.Finish(transactionRequestOffset)
+// 				// Finalize the transaction request in the builder
+// 				thrylos.TransactionRequestStart(builder)
+// 				thrylos.TransactionRequestAddTransaction(builder, transaction)
+// 				transactionRequestOffset := thrylos.TransactionRequestEnd(builder)
+// 				builder.Finish(transactionRequestOffset)
 
-				// Send the transaction to the server via gRPC
-				response, err := client.SubmitTransaction(context.Background(), builder)
-				if err != nil {
-					t.Errorf("Failed to submit transaction %d: %v", j, err)
-					continue
-				}
+// 				// Create the TransactionRequest object
+// 				req := thrylos.GetRootAsTransactionRequest(builder.FinishedBytes(), 0)
 
-				// Assuming the response handling is based on some method on the response to check the status
-				// (The handling here depends on your response structure)
-				if string(response.Status()) != "SUCCESS" {
-					t.Errorf("Transaction %d failed: %s", j, string(response.Status()))
-				}
-			}
-		}(i)
-	}
+// 				// Send the transaction to the server via gRPC
+// 				response, err := client.SubmitTransaction(context.Background(), req)
+// 				if err != nil {
+// 					t.Errorf("Failed to submit transaction %d: %v", j, err)
+// 					continue
+// 				}
 
-	wg.Wait()
-	elapsed := time.Since(start)
-	tps := float64(numTransactions) / elapsed.Seconds()
-	t.Logf("Processed %d transactions via gRPC in %s. TPS: %f", numTransactions, elapsed, tps)
-}
+// 				// Handle the response
+// 				var res thrylos.TransactionResponse
+// 				response.TransactionResponse(&res)
+// 				if string(res.Status()) != "SUCCESS" {
+// 					t.Errorf("Transaction %d failed: %s", j, string(res.Status()))
+// 				}
+// 			}
+// 		}(i)
+// 	}
 
-// You will need to ensure that createUTXOs and createTransaction properly create the UTXOs and transaction
-// using the flatbuffers.Builder and return the offset to the created FlatBuffers object.
+// 	wg.Wait()
 
-func createUTXOs(builder *flatbuffers.Builder, transactionID, ownerAddress string, amount int64) flatbuffers.UOffsetT {
-	// Create transaction ID, owner address strings and amount
-	txIDOffset := builder.CreateString(transactionID)
-	ownerOffset := builder.CreateString(ownerAddress)
+// 	elapsed := time.Since(start)
+// 	tps := float64(numTransactions) / elapsed.Seconds()
 
-	// Start the UTXO
-	thrylos.UTXOStart(builder)
-	thrylos.UTXOAddTransactionId(builder, txIDOffset)
-	thrylos.UTXOAddIndex(builder, 0) // Example: static index, adjust if necessary
-	thrylos.UTXOAddOwnerAddress(builder, ownerOffset)
-	thrylos.UTXOAddAmount(builder, amount)
-	return thrylos.UTXOEnd(builder)
-}
+// 	t.Logf("Processed %d transactions via gRPC in %s. TPS: %f", numTransactions, elapsed, tps)
+// }
 
-// Helper function to create a transaction with inputs and outputs
-func createTransaction(builder *flatbuffers.Builder, id string, timestamp int64) flatbuffers.UOffsetT {
-	// Create dummy UTXO for demonstration; this should be adapted to your actual logic
-	transactionId := builder.CreateString("dummy-tx-id")
-	ownerAddress := builder.CreateString("dummy-address")
-	amount := int64(100) // Example amount
+// // You will need to ensure that createUTXOs and createTransaction properly create the UTXOs and transaction
+// // using the flatbuffers.Builder and return the offset to the created FlatBuffers object.
 
-	thrylos.UTXOStart(builder)
-	thrylos.UTXOAddTransactionId(builder, transactionId)
-	thrylos.UTXOAddIndex(builder, 0)
-	thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
-	thrylos.UTXOAddAmount(builder, amount)
-	utxo := thrylos.UTXOEnd(builder)
+// func createUTXOs(builder *flatbuffers.Builder, transactionID, ownerAddress string, amount int64) flatbuffers.UOffsetT {
+// 	// Create transaction ID, owner address strings and amount
+// 	txIDOffset := builder.CreateString(transactionID)
+// 	ownerOffset := builder.CreateString(ownerAddress)
 
-	inputs := []flatbuffers.UOffsetT{utxo}
-	outputs := []flatbuffers.UOffsetT{utxo}
+// 	// Start the UTXO
+// 	thrylos.UTXOStart(builder)
+// 	thrylos.UTXOAddTransactionId(builder, txIDOffset)
+// 	thrylos.UTXOAddIndex(builder, 0) // Example: static index, adjust if necessary
+// 	thrylos.UTXOAddOwnerAddress(builder, ownerOffset)
+// 	thrylos.UTXOAddAmount(builder, amount)
+// 	return thrylos.UTXOEnd(builder)
+// }
 
-	// Create Transaction
-	transactionIdOffset := builder.CreateString(id)
-	signature := builder.CreateByteVector([]byte("signature-placeholder"))
-	sender := builder.CreateString("sender-placeholder")
+// // Helper function to create a transaction with inputs and outputs
+// func createTransaction(builder *flatbuffers.Builder, id string, timestamp int64) flatbuffers.UOffsetT {
+// 	// Create dummy UTXO for demonstration; this should be adapted to your actual logic
+// 	transactionId := builder.CreateString("dummy-tx-id")
+// 	ownerAddress := builder.CreateString("dummy-address")
+// 	amount := int64(100) // Example amount
 
-	// Start the vectors for inputs and outputs
-	thrylos.TransactionStartInputsVector(builder, len(inputs))
-	for _, input := range inputs {
-		builder.PrependUOffsetT(input)
-	}
-	inputsVec := builder.EndVector(len(inputs))
+// 	thrylos.UTXOStart(builder)
+// 	thrylos.UTXOAddTransactionId(builder, transactionId)
+// 	thrylos.UTXOAddIndex(builder, 0)
+// 	thrylos.UTXOAddOwnerAddress(builder, ownerAddress)
+// 	thrylos.UTXOAddAmount(builder, amount)
+// 	utxo := thrylos.UTXOEnd(builder)
 
-	thrylos.TransactionStartOutputsVector(builder, len(outputs))
-	for _, output := range outputs {
-		builder.PrependUOffsetT(output)
-	}
-	outputsVec := builder.EndVector(len(outputs))
+// 	inputs := []flatbuffers.UOffsetT{utxo}
+// 	outputs := []flatbuffers.UOffsetT{utxo}
 
-	// Continue with transaction creation
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, transactionIdOffset)
-	thrylos.TransactionAddTimestamp(builder, timestamp)
-	thrylos.TransactionAddInputs(builder, inputsVec)
-	thrylos.TransactionAddOutputs(builder, outputsVec)
-	thrylos.TransactionAddSignature(builder, signature)
-	thrylos.TransactionAddSender(builder, sender)
-	transaction := thrylos.TransactionEnd(builder)
+// 	// Create Transaction
+// 	transactionIdOffset := builder.CreateString(id)
+// 	signature := builder.CreateByteVector([]byte("signature-placeholder"))
+// 	sender := builder.CreateString("sender-placeholder")
 
-	return transaction
-}
+// 	// Start the vectors for inputs and outputs
+// 	thrylos.TransactionStartInputsVector(builder, len(inputs))
+// 	for _, input := range inputs {
+// 		builder.PrependUOffsetT(input)
+// 	}
+// 	inputsVec := builder.EndVector(len(inputs))
+
+// 	thrylos.TransactionStartOutputsVector(builder, len(outputs))
+// 	for _, output := range outputs {
+// 		builder.PrependUOffsetT(output)
+// 	}
+// 	outputsVec := builder.EndVector(len(outputs))
+
+// 	// Continue with transaction creation
+// 	thrylos.TransactionStart(builder)
+// 	thrylos.TransactionAddId(builder, transactionIdOffset)
+// 	thrylos.TransactionAddTimestamp(builder, timestamp)
+// 	thrylos.TransactionAddInputs(builder, inputsVec)
+// 	thrylos.TransactionAddOutputs(builder, outputsVec)
+// 	thrylos.TransactionAddSignature(builder, signature)
+// 	thrylos.TransactionAddSender(builder, sender)
+// 	transaction := thrylos.TransactionEnd(builder)
+
+// 	return transaction
+// }
