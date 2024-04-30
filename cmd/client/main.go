@@ -14,12 +14,11 @@ import (
 
 func main() {
 	var kacp = keepalive.ClientParameters{
-		Time:                10 * time.Second, // send keepalive pings every 10 seconds if there is no activity
-		Timeout:             time.Second,      // wait 1 second for ping ack before considering the connection dead
-		PermitWithoutStream: true,             // send pings even without active streams
+		Time:                10 * time.Second,
+		Timeout:             time.Second,
+		PermitWithoutStream: true,
 	}
 
-	// Connect to the gRPC server with keepalive parameters
 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(),
 		grpc.WithBlock(),
 		grpc.WithKeepaliveParams(kacp),
@@ -29,69 +28,44 @@ func main() {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Adjust timeout based on expected operation time
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	builder := flatbuffers.NewBuilder(0)
 
-	// Create UTXO for inputs
-	transactionIdInput := builder.CreateString("prev-tx-id")
-	ownerAddressInput := builder.CreateString("owner-address-example")
-	thrylos.UTXOStart(builder)
-	thrylos.UTXOAddTransactionId(builder, transactionIdInput)
-	thrylos.UTXOAddIndex(builder, 0)
-	thrylos.UTXOAddOwnerAddress(builder, ownerAddressInput)
-	thrylos.UTXOAddAmount(builder, 50)
-	utxoInput := thrylos.UTXOEnd(builder)
-
-	// Create UTXO for outputs
-	transactionIdOutput := builder.CreateString("new-tx-id")
-	ownerAddressOutput := builder.CreateString("recipient-address-example")
-	thrylos.UTXOStart(builder)
-	thrylos.UTXOAddTransactionId(builder, transactionIdOutput)
-	thrylos.UTXOAddIndex(builder, 0)
-	thrylos.UTXOAddOwnerAddress(builder, ownerAddressOutput)
-	thrylos.UTXOAddAmount(builder, 100)
-	utxoOutput := thrylos.UTXOEnd(builder)
-
-	// Create an array for inputs and outputs
-	thrylos.TransactionStartInputsVector(builder, 1)
-	builder.PrependUOffsetT(utxoInput)
-	inputs := builder.EndVector(1)
-	thrylos.TransactionStartOutputsVector(builder, 1)
-	builder.PrependUOffsetT(utxoOutput)
-	outputs := builder.EndVector(1)
-
-	// Create Transaction
+	// Example transaction building
 	transactionId := builder.CreateString("transaction-id")
-	signature := builder.CreateByteVector([]byte("transaction-signature"))
-	encryptedInputs := builder.CreateByteVector([]byte("encrypted-inputs-data"))
-	encryptedOutputs := builder.CreateByteVector([]byte("encrypted-outputs-data"))
 	sender := builder.CreateString("sender-address")
+
 	thrylos.TransactionStart(builder)
 	thrylos.TransactionAddId(builder, transactionId)
-	thrylos.TransactionAddTimestamp(builder, time.Now().Unix())
-	thrylos.TransactionAddInputs(builder, inputs)
-	thrylos.TransactionAddOutputs(builder, outputs)
-	thrylos.TransactionAddSignature(builder, signature)
-	thrylos.TransactionAddEncryptedInputs(builder, encryptedInputs)
-	thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputs)
 	thrylos.TransactionAddSender(builder, sender)
 	transaction := thrylos.TransactionEnd(builder)
 
 	thrylos.TransactionRequestStart(builder)
 	thrylos.TransactionRequestAddTransaction(builder, transaction)
-	transReq := thrylos.TransactionRequestEnd(builder)
-	builder.Finish(transReq)
+	reqOffset := thrylos.TransactionRequestEnd(builder)
+	builder.Finish(reqOffset) // Important: Finish building the buffer
 
-	// Assuming `c` is a client of the generated FlatBuffers gRPC service
-	c := thrylos.NewBlockchainServiceClient(conn)
-	r, err := c.SubmitTransaction(ctx, builder) // Directly pass the builder
+	client := thrylos.NewBlockchainServiceClient(conn)
+
+	// Send the transaction using the client
+	responseBuf, err := client.SubmitTransaction(ctx, builder)
 	if err != nil {
 		log.Fatalf("Could not submit transaction: %v", err)
 	}
 
-	// Assuming `r` is the response object that has a method to access its data
-	status := string(r.Status()) // How you access this depends on your generated code
-	log.Printf("Transaction Status: %s", status)
+	// Assume responseBuf is now a *TransactionResponse object
+	if responseBuf == nil {
+		log.Fatalf("Failed to parse transaction response")
+	}
+
+	// Access the status field
+	statusBytes := responseBuf.Status() // Make sure you handle the byte slice correctly
+	if statusBytes == nil {
+		log.Println("No status returned in the response")
+	} else {
+		status := string(statusBytes)
+		log.Printf("Transaction Status: %s", status)
+	}
 }

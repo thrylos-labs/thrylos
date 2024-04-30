@@ -111,6 +111,42 @@ func ConvertFBToGoTransaction(fbTx *thrylos.Transaction) *Transaction {
 	return tx
 }
 
+func SerializeTransactionWithFlatbuffers(tx *thrylos.Transaction, builder *flatbuffers.Builder) flatbuffers.UOffsetT {
+	// The function body would use the thrylos.Transaction's fields or methods to build the Flatbuffers object.
+	// Example implementation, assuming thrylos.Transaction methods are used to access fields:
+	idOffset := builder.CreateString(string(tx.Id()))
+	senderOffset := builder.CreateString(string(tx.Sender()))
+	signatureOffset := builder.CreateByteVector(tx.SignatureBytes())
+	encryptedInputsOffset := builder.CreateByteVector(tx.EncryptedInputsBytes())
+	encryptedOutputsOffset := builder.CreateByteVector(tx.EncryptedOutputsBytes())
+	encryptedAesKeyOffset := builder.CreateByteVector(tx.EncryptedAesKeyBytes())
+
+	thrylos.TransactionStart(builder)
+	thrylos.TransactionAddId(builder, idOffset)
+	thrylos.TransactionAddSender(builder, senderOffset)
+	thrylos.TransactionAddSignature(builder, signatureOffset)
+	thrylos.TransactionAddEncryptedInputs(builder, encryptedInputsOffset)
+	thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputsOffset)
+	thrylos.TransactionAddEncryptedAesKey(builder, encryptedAesKeyOffset)
+	// Continue adding other fields as necessary
+	transaction := thrylos.TransactionEnd(builder)
+
+	return transaction
+}
+
+// Example helper function to create a UTXO Flatbuffers object
+func createUTXO(builder *flatbuffers.Builder, utxo UTXO) flatbuffers.UOffsetT {
+	transactionIDOffset := builder.CreateString(utxo.TransactionID)
+	ownerAddressOffset := builder.CreateString(utxo.OwnerAddress)
+
+	thrylos.UTXOStart(builder)
+	thrylos.UTXOAddTransactionId(builder, transactionIDOffset)
+	thrylos.UTXOAddIndex(builder, int32(utxo.Index))
+	thrylos.UTXOAddOwnerAddress(builder, ownerAddressOffset)
+	thrylos.UTXOAddAmount(builder, int64(utxo.Amount))
+	return thrylos.UTXOEnd(builder)
+}
+
 func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
 	// Create a new BLAKE2b hasher for OAEP
 	blake2bHasher, err := blake2b.New256(nil)

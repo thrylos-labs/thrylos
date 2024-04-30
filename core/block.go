@@ -1,9 +1,7 @@
 package core
 
 import (
-	"bytes"
 	"encoding/base64"
-	"encoding/gob"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -187,28 +185,47 @@ func (b *Block) GetVerkleRootBase64() string {
 // Serialize converts the block into a byte slice, facilitating storage or transmission. It encodes
 // the block's data into a format that can be easily saved to disk or sent over the network.
 
+// Example: Serialize a Block using Flatbuffers
 func (b *Block) Serialize() ([]byte, error) {
-	var result bytes.Buffer
+	builder := flatbuffers.NewBuilder(0)
+	transactionsData := make([]flatbuffers.UOffsetT, len(b.Transactions))
 
-	encoder := gob.NewEncoder(&result)
-	if err := encoder.Encode(b); err != nil {
-		return nil, err
+	for i, tx := range b.Transactions {
+		// Use the shared package's function to serialize the transaction
+		transactionsData[i] = shared.SerializeTransactionWithFlatbuffers(tx, builder)
 	}
 
-	return result.Bytes(), nil
+	// Create a vector for transactions in Flatbuffers
+	thrylos.BlockStartTransactionsVector(builder, len(transactionsData))
+	for _, txOffset := range transactionsData {
+		builder.PrependUOffsetT(txOffset)
+	}
+	transactions := builder.EndVector(len(transactionsData))
+
+	// Start building the Block structure in Flatbuffers
+	thrylos.BlockStart(builder)
+	thrylos.BlockAddTransactions(builder, transactions)
+	// Optionally add other Block fields such as index, hash, validator, etc. if necessary.
+	block := thrylos.BlockEnd(builder)
+	builder.Finish(block)
+
+	return builder.FinishedBytes(), nil
 }
 
-// Deserialize takes a byte slice and reconstructs the block. This method is essential for reading
-// blocks from disk or decoding them from network payloads, restoring the original Block struct.
+// Example: Deserialize a Block using Flatbuffers
 func Deserialize(data []byte) (*Block, error) {
-	var block Block
-
-	decoder := gob.NewDecoder(bytes.NewReader(data))
-	if err := decoder.Decode(&block); err != nil {
-		return nil, err
+	block := thrylos.GetRootAsBlock(data, 0)
+	var b Block
+	b.Index = block.Index()
+	b.Timestamp = block.Timestamp()
+	// Convert Flatbuffers transactions to Go transactions
+	for i := 0; i < block.TransactionsLength(); i++ {
+		var t thrylos.Transaction
+		if block.Transactions(&t, i) {
+			b.Transactions = append(b.Transactions, &t)
+		}
 	}
-
-	return &block, nil
+	return &b, nil
 }
 
 func ConvertFlatTransactionToShared(fbTx *thrylos.Transaction) shared.Transaction {

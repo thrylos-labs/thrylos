@@ -88,7 +88,7 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
-	defer db.Close()
+	// Remove defer db.Close() from here to manage it outside of this function
 
 	bdb := database.NewBlockchainDB(db, aesKey)
 	stakeholders := []Stakeholder{

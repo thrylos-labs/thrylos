@@ -1,25 +1,5 @@
 package main
 
-// import (
-// 	"context"
-// 	"crypto/ed25519"
-// 	"crypto/rand"
-// 	"encoding/json"
-// 	"fmt"
-// 	"log"
-// 	"net"
-// 	"sync"
-// 	"testing"
-// 	"time"
-
-// 	flatbuffers "github.com/google/flatbuffers/go"
-// 	"github.com/thrylos-labs/thrylos/thrylos"
-
-// 	"github.com/stretchr/testify/assert"
-// 	"google.golang.org/grpc"
-// 	"google.golang.org/grpc/test/bufconn"
-// )
-
 // const bufSize = 1024 * 1024
 
 // var lis *bufconn.Listener
@@ -107,7 +87,7 @@ package main
 // 	assert.Equal(t, "Transaction added successfully", string(response.Status()))
 // }
 
-// // // go test -v -timeout 30s -run ^TestBlockTimeWithGRPC$ github.com/thrylos-labs/thrylos/cmd/thrylosnode
+// // go test -v -timeout 30s -run ^TestBlockTimeWithGRPC$ github.com/thrylos-labs/thrylos/cmd/thrylosnode
 
 // func TestBlockTimeWithGRPC(t *testing.T) {
 // 	server := startMockServer() // Start your in-memory gRPC server
