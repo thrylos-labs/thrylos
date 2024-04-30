@@ -317,7 +317,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 }
 
 func handleUTXOs(builder *flatbuffers.Builder, utxos []UTXO, aesKey []byte) ([]byte, error) {
-	utxoPtrs := ConvertToUTXOPtrs(utxos)
+	utxoPtrs := convertToUTXOPtrs(utxos)
 	serializedOffset, err := SerializeUTXOs(builder, utxoPtrs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize UTXOs: %v", err)
@@ -549,8 +549,8 @@ func SerializeTransactionToFlatBuffers(tx *Transaction, includeSignature bool) [
 	builder := flatbuffers.NewBuilder(0)
 
 	// Convert UTXOs to pointer slices for serialization
-	inputPtrs := ConvertToUTXOPtrs(tx.Inputs)
-	outputPtrs := ConvertToUTXOPtrs(tx.Outputs)
+	inputPtrs := convertToUTXOPtrs(tx.Inputs)
+	outputPtrs := convertToUTXOPtrs(tx.Outputs)
 
 	// Serialize UTXOs for inputs and outputs
 	inputsOffsets, err := SerializeUTXOs(builder, inputPtrs)
