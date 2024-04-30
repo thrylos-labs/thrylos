@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package thrylos;
+
+option go_package = "github.com/thrylos-labs/thrylos";
+
+message Transaction {
+  string id = 1 [json_name = "id"];
+  int64 timestamp = 2 [json_name = "timestamp"];
+  repeated UTXO inputs = 3 [json_name = "inputs"];
+  repeated UTXO outputs = 4 [json_name = "outputs"];
+  bytes encrypted_inputs = 5 [json_name = "encryptedInputs"];
+  bytes encrypted_outputs = 6 [json_name = "encryptedOutputs"];
+  bytes signature = 7 [json_name = "signature"];
+  repeated string previous_tx_ids = 8 [json_name = "previousTxIds"];
+  bytes encrypted_aes_key = 9 [json_name = "encryptedAESKey"];
+  string sender = 10 [json_name = "sender"];
+}
+
+message UTXO {
+  string transaction_id = 1 [json_name = "transactionId"];
+  int32 index = 2 [json_name = "index"];
+  string owner_address = 3 [json_name = "ownerAddress"];
+  int64 amount = 4 [json_name = "amount"];
+}
+
+service BlockchainService {
+  rpc SubmitTransaction(TransactionRequest) returns (TransactionResponse);
+  rpc GetBlock(GetBlockRequest) returns (BlockResponse);
+  rpc GetTransaction(GetTransactionRequest) returns (TransactionResponse);
+  rpc GetLastBlock(EmptyRequest) returns (BlockResponse);
+  rpc GetBalance(GetBalanceRequest) returns (BalanceResponse);
+  rpc GetStats(GetStatsRequest) returns (StatsResponse);
+  rpc GetPendingTransactions(GetPendingTransactionsRequest) returns (PendingTransactionsResponse);
+}
+
+message TransactionRequest {
+  Transaction transaction = 1; // Embedding the Transaction message
+}
+
+message TransactionResponse {
+  string status = 1;
+}
+
+message GetBlockRequest {
+  int32 id = 1;
+}
+
+message BlockResponse {
+  bytes blockData = 1; // Correct type for binary data
+  int32 blockIndex = 2;
+}
+
+message GetTransactionRequest {
+  string id = 1;
+}
+
+message BalanceResponse {
+  double balance = 1;
+}
+
+message GetBalanceRequest {
+  string address = 1; // The blockchain address for which the balance is requested
+}
+
+message GetStatsRequest {}
+
+message StatsResponse {
+  string stats = 1;
+}
+
+message GetPendingTransactionsRequest {}
+
+message PendingTransactionsResponse {
+  string transactions = 1;
+}
+
+message Input {
+  string previousTx = 1;
+  int32 index = 2;
+  string signature = 3;
+  string ownerAddress = 4;
+}
+
+message Output {
+  double amount = 1;
+  string address = 2;
+}
+
+message EmptyRequest {}
+
+// to generate the file again run:
+// protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative transactions.proto

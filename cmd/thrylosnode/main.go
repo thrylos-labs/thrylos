@@ -12,11 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	flatbuffers "github.com/google/flatbuffers/go"
-	"github.com/thrylos-labs/thrylos/thrylos"
-
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
+
+	pb "github.com/thrylos-labs/thrylos"
 
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
@@ -28,33 +27,19 @@ import (
 )
 
 type server struct {
-	thrylos.UnimplementedBlockchainServiceServer
-	db *database.BlockchainDB // Pointer to your blockchain database
+	pb.UnimplementedBlockchainServiceServer
+	db *database.BlockchainDB // Include a pointer to BlockchainDB
 }
 
-func (s *server) SubmitTransaction(ctx context.Context, builder *flatbuffers.Builder) (*flatbuffers.Builder, error) {
-	// Get the byte slice from the builder
-	buf := builder.FinishedBytes()
-
-	// Deserialize the TransactionRequest from the byte slice
-	req := thrylos.GetRootAsTransactionRequest(buf, 0)
-	if req == nil {
-		return nil, status.Error(codes.InvalidArgument, "Invalid request format")
+func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {
+	if req == nil || req.Transaction == nil {
+		return nil, status.Error(codes.InvalidArgument, "Transaction request or transaction data is nil")
 	}
 
-	// Access the Transaction object from the request
-	transaction := new(thrylos.Transaction)
-	if req.Transaction(transaction) == nil {
-		return nil, status.Error(codes.InvalidArgument, "Transaction data is nil")
-	}
+	log.Printf("Received transaction %s for processing", req.Transaction.Id)
 
-	// Log the received transaction ID
-	transactionID := string(transaction.Id())
-	log.Printf("Received transaction %s for processing", transactionID)
-
-	// Convert FlatBuffers Transaction to your shared transaction type
-	// This assumes you have a function to handle this conversion
-	tx := core.ConvertFlatTransactionToShared(transaction)
+	// Convert the protobuf Transaction to your shared transaction type
+	tx := core.ConvertProtoTransactionToShared(req.Transaction)
 
 	// Process the transaction using your blockchain core logic
 	err := s.db.AddTransaction(tx)
@@ -62,19 +47,8 @@ func (s *server) SubmitTransaction(ctx context.Context, builder *flatbuffers.Bui
 		return nil, status.Errorf(codes.Internal, "Transaction failed: %v", err)
 	}
 
-	// Log the successful transaction addition
-	log.Printf("Transaction %s added successfully", transactionID)
-
-	// Prepare the response using FlatBuffers
-	responseBuilder := flatbuffers.NewBuilder(0)
-	statusOffset := responseBuilder.CreateString("Transaction added successfully")
-	thrylos.TransactionResponseStart(responseBuilder)
-	thrylos.TransactionResponseAddStatus(responseBuilder, statusOffset)
-	response := thrylos.TransactionResponseEnd(responseBuilder)
-	responseBuilder.Finish(response)
-
-	// Return the builder containing the response
-	return responseBuilder, nil
+	log.Printf("Transaction %s added successfully", req.Transaction.Id)
+	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
 }
 
 func init() {
@@ -238,8 +212,7 @@ func main() {
 	}
 
 	s := grpc.NewServer()
-
-	thrylos.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
+	pb.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
 
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 	if err := s.Serve(lis); err != nil {

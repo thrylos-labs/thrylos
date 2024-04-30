@@ -5,9 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/thrylos"
-
-	flatbuffers "github.com/google/flatbuffers/go"
+	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
@@ -29,69 +27,43 @@ func main() {
 	}
 	defer conn.Close()
 
+	c := pb.NewBlockchainServiceClient(conn) // Use the correct client constructor from generated protobuf code
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Adjust timeout based on expected operation time
 	defer cancel()
 
-	builder := flatbuffers.NewBuilder(0)
+	// Correctly prepare Inputs and Outputs according to the UTXO structure
+	inputs := []*pb.UTXO{{
+		TransactionId: "prev-tx-id",
+		Index:         0,
+		OwnerAddress:  "owner-address-example",
+		Amount:        50, // Example amount, ensure this matches the expected logic
+	}}
+	outputs := []*pb.UTXO{{
+		TransactionId: "new-tx-id",
+		Index:         0,
+		OwnerAddress:  "recipient-address-example",
+		Amount:        100, // As an example
+	}}
 
-	// Create UTXO for inputs
-	transactionIdInput := builder.CreateString("prev-tx-id")
-	ownerAddressInput := builder.CreateString("owner-address-example")
-	thrylos.UTXOStart(builder)
-	thrylos.UTXOAddTransactionId(builder, transactionIdInput)
-	thrylos.UTXOAddIndex(builder, 0)
-	thrylos.UTXOAddOwnerAddress(builder, ownerAddressInput)
-	thrylos.UTXOAddAmount(builder, 50)
-	utxoInput := thrylos.UTXOEnd(builder)
+	// Build the transaction
+	transaction := &pb.Transaction{
+		Id:               "transaction-id",
+		Timestamp:        time.Now().Unix(),
+		Inputs:           inputs,
+		Outputs:          outputs,
+		Signature:        []byte("transaction-signature"),
+		PreviousTxIds:    []string{"prev-tx-id1", "prev-tx-id2"},
+		EncryptedAesKey:  []byte("example-encrypted-key"),
+		EncryptedInputs:  []byte("encrypted-inputs-data"),
+		EncryptedOutputs: []byte("encrypted-outputs-data"),
+		Sender:           "sender-address",
+	}
 
-	// Create UTXO for outputs
-	transactionIdOutput := builder.CreateString("new-tx-id")
-	ownerAddressOutput := builder.CreateString("recipient-address-example")
-	thrylos.UTXOStart(builder)
-	thrylos.UTXOAddTransactionId(builder, transactionIdOutput)
-	thrylos.UTXOAddIndex(builder, 0)
-	thrylos.UTXOAddOwnerAddress(builder, ownerAddressOutput)
-	thrylos.UTXOAddAmount(builder, 100)
-	utxoOutput := thrylos.UTXOEnd(builder)
-
-	// Create an array for inputs and outputs
-	thrylos.TransactionStartInputsVector(builder, 1)
-	builder.PrependUOffsetT(utxoInput)
-	inputs := builder.EndVector(1)
-	thrylos.TransactionStartOutputsVector(builder, 1)
-	builder.PrependUOffsetT(utxoOutput)
-	outputs := builder.EndVector(1)
-
-	// Create Transaction
-	transactionId := builder.CreateString("transaction-id")
-	signature := builder.CreateByteVector([]byte("transaction-signature"))
-	encryptedInputs := builder.CreateByteVector([]byte("encrypted-inputs-data"))
-	encryptedOutputs := builder.CreateByteVector([]byte("encrypted-outputs-data"))
-	sender := builder.CreateString("sender-address")
-	thrylos.TransactionStart(builder)
-	thrylos.TransactionAddId(builder, transactionId)
-	thrylos.TransactionAddTimestamp(builder, time.Now().Unix())
-	thrylos.TransactionAddInputs(builder, inputs)
-	thrylos.TransactionAddOutputs(builder, outputs)
-	thrylos.TransactionAddSignature(builder, signature)
-	thrylos.TransactionAddEncryptedInputs(builder, encryptedInputs)
-	thrylos.TransactionAddEncryptedOutputs(builder, encryptedOutputs)
-	thrylos.TransactionAddSender(builder, sender)
-	transaction := thrylos.TransactionEnd(builder)
-
-	thrylos.TransactionRequestStart(builder)
-	thrylos.TransactionRequestAddTransaction(builder, transaction)
-	transReq := thrylos.TransactionRequestEnd(builder)
-	builder.Finish(transReq)
-
-	// Assuming `c` is a client of the generated FlatBuffers gRPC service
-	c := thrylos.NewBlockchainServiceClient(conn)
-	r, err := c.SubmitTransaction(ctx, builder) // Directly pass the builder
+	// Create TransactionRequest with the transaction
+	r, err := c.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
 	if err != nil {
 		log.Fatalf("Could not submit transaction: %v", err)
 	}
-
-	// Assuming `r` is the response object that has a method to access its data
-	status := string(r.Status()) // How you access this depends on your generated code
-	log.Printf("Transaction Status: %s", status)
+	log.Printf("Transaction Status: %s", r.Status)
 }

@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/thrylos"
-
 	"github.com/stretchr/testify/assert"
 	pb "github.com/thrylos-labs/thrylos"
 	"google.golang.org/grpc"
@@ -35,7 +33,7 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 
 func startMockServer() *grpc.Server {
 	server := grpc.NewServer()
-	thrylos.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
+	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
 	go func() {
 		if err := server.Serve(lis); err != nil {
 			log.Fatalf("Server exited with error: %v", err)
