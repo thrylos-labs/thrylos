@@ -1,18 +1,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 
+	pb "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"google.golang.org/grpc"
 )
 
-// Example of CLI command integration for creating and signing a transaction
 func main() {
 	sender := flag.String("sender", "", "Sender address")
 	receiver := flag.String("receiver", "", "Receiver address")
 	amount := flag.Int("amount", 0, "Amount to transfer")
+	grpcAddress := flag.String("grpcAddress", "localhost:50051", "gRPC server address")
 	flag.Parse()
 
 	if *sender == "" || *receiver == "" || *amount == 0 {
@@ -33,4 +36,24 @@ func main() {
 	}
 
 	fmt.Printf("Transaction created and signed successfully: %+v\n", transaction)
+
+	// Setup gRPC connection
+	conn, err := grpc.Dial(*grpcAddress, grpc.WithInsecure())
+	if err != nil {
+		log.Fatalf("Failed to connect to gRPC server: %v", err)
+	}
+	defer conn.Close()
+
+	client := pb.NewBlockchainServiceClient(conn)
+	transactionReq := &pb.TransactionRequest{
+		Transaction: shared.ConvertToProtoTransaction(transaction),
+	}
+
+	// Send the transaction
+	response, err := client.SubmitTransaction(context.Background(), transactionReq)
+	if err != nil {
+		log.Fatalf("Failed to submit transaction: %v", err)
+	}
+
+	fmt.Printf("Transaction submission response: %s\n", response.Status)
 }

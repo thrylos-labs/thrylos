@@ -13,7 +13,6 @@ import (
 	"io"
 	"log"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -539,105 +538,6 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 	}
 
 	return true
-}
-
-// transaction processing function
-// processTransactions processes a slice of transactions concurrently.
-
-func ProcessTransactions(transactions []*thrylos.Transaction, privateKey ed25519.PrivateKey, publicKey ed25519.PublicKey) error {
-	numWorkers := runtime.NumCPU() // Dynamically determine the number of workers based on available CPUs
-	var wg sync.WaitGroup
-	transactionsChan := make(chan *thrylos.Transaction, len(transactions))
-
-	// Launch workers to process transactions concurrently
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for tx := range transactionsChan {
-				if err := ProcessSingleTransaction(tx, privateKey, publicKey); err != nil {
-					log.Printf("Error processing transaction: %v", err)
-					// Handle error appropriately, e.g., discard transaction or retry
-				}
-			}
-		}()
-	}
-
-	// Distribute transactions to workers
-	for _, tx := range transactions {
-		transactionsChan <- tx
-	}
-	close(transactionsChan)
-	wg.Wait()
-	return nil
-}
-
-// Example conversion function (implement according to your struct fields)
-func ConvertToThrylosTransaction(tx *Transaction) *thrylos.Transaction {
-	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
-	for i, input := range tx.Inputs {
-		thrylosInputs[i] = &thrylos.UTXO{
-			TransactionId: input.TransactionID,
-			Index:         int32(input.Index),
-			OwnerAddress:  input.OwnerAddress,
-			Amount:        int64(input.Amount),
-		}
-	}
-
-	thrylosOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
-	for i, output := range tx.Outputs {
-		thrylosOutputs[i] = &thrylos.UTXO{
-			TransactionId: output.TransactionID,
-			Index:         int32(output.Index),
-			OwnerAddress:  output.OwnerAddress,
-			Amount:        int64(output.Amount),
-		}
-	}
-
-	// Assuming thrylos.Transaction has similar fields
-	return &thrylos.Transaction{
-
-		Id:            tx.ID,
-		Inputs:        thrylosInputs,
-		Outputs:       thrylosOutputs,
-		Timestamp:     tx.Timestamp,
-		PreviousTxIds: tx.PreviousTxIds, // Ensure this matches your local struct field
-		// Add other necessary conversions
-	}
-}
-
-// processSingleTransaction handles the processing of a single transaction.
-// processSingleTransaction processes a transaction by serializing, encrypting, signing, and verifying it.
-func ProcessSingleTransaction(tx *thrylos.Transaction, edPrivateKey ed25519.PrivateKey, edPublicKey ed25519.PublicKey) error {
-	// Step 1: Serialize the transaction using protobuf
-	txData, err := proto.Marshal(tx)
-	if err != nil {
-		return fmt.Errorf("error serializing transaction: %v", err)
-	}
-
-	// Step 2: Encrypt sensitive data
-	// Note: Adjust encryption logic based on your actual security needs
-	if len(tx.EncryptedOutputs) == 0 && len(tx.Outputs) > 0 {
-		// Assuming Outputs need to be encrypted and that EncryptedAESKey is already properly set up
-		encryptedOutputs, err := EncryptWithAES(tx.EncryptedAesKey, txData) // Encrypt entire transaction for simplicity in this example
-		if err != nil {
-			return fmt.Errorf("error encrypting outputs: %v", err)
-		}
-		tx.EncryptedOutputs = encryptedOutputs
-	}
-
-	// Step 3: Sign the transaction
-	if len(tx.Signature) == 0 {
-		signature := ed25519.Sign(edPrivateKey, txData) // Corrected signature creation
-		tx.Signature = signature
-	}
-
-	// Step 4: Verify the transaction (optional, can be used for testing or double-checking before broadcast)
-	if !ed25519.Verify(edPublicKey, txData, tx.Signature) {
-		return fmt.Errorf("failed to verify transaction signature")
-	}
-
-	return nil
 }
 
 // SanitizeAndFormatAddress cleans and validates blockchain addresses.

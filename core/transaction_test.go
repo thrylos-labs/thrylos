@@ -270,7 +270,9 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 }
 
 // Find out the test
-// go test -v -timeout 30s -run ^TestTransactionThroughput$ Thrylos/core
+
+// go test -v -timeout 30s -run ^TestTransactionThroughput$ github.com/thrylos-labs/thrylos/core
+
 func TestTransactionThroughput(t *testing.T) {
 	// Generate Ed25519 keys
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -554,13 +556,7 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 	client := pb.NewBlockchainServiceClient(conn)
 
 	numTransactions := 1000
-	batchSize := 10
-
-	// Generate ed25519 keys
-	publicKey, privateKey, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("Failed to generate keys: %v", err)
-	}
+	batchSize := 20
 
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -569,11 +565,6 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 	transactions := make([]*thrylos.Transaction, 0, numTransactions)
 	for i := 0; i < numTransactions; i++ {
 		transactions = append(transactions, createThrylosTransaction(i))
-	}
-
-	// Process all transactions concurrently
-	if err := shared.ProcessTransactions(transactions, privateKey, publicKey); err != nil {
-		t.Fatalf("Failed to process transactions: %v", err)
 	}
 
 	// Submit transactions in batches

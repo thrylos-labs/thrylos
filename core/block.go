@@ -198,12 +198,6 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 		protoTransactions = append(protoTransactions, protoTx)
 	}
 
-	// Process transactions before including them in the block
-	if err := shared.ProcessTransactions(protoTransactions, privateKey, publicKey); err != nil {
-		fmt.Printf("Error processing transactions: %v\n", err)
-		return nil
-	}
-
 	block := &Block{
 		Index:        int32(index),
 		Timestamp:    currentTimestamp,

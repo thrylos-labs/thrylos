@@ -99,8 +99,7 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	// Create the genesis block
 	genesis := NewGenesisBlock()
 
-	// After genesis creation
-	// Assuming you have a Serialize method on the Block type
+	// Serialize the genesis block
 	serializedGenesis, err := genesis.Serialize()
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
@@ -111,23 +110,31 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
-	// Add initial transactions simulating a starting state
-	genesisTransactions := make([]*thrylos.Transaction, 0)
-
 	// Simulate several stakeholders
 	stakeholders := []struct {
 		Address string
 		Balance int64
 	}{
-		{"address1", 10000},
-		{"address2", 20000},
-		{"address3", 15000},
+		{"6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19", 10000},
+		{"8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7", 20000},
 	}
 
 	// Initialize Stakeholders map
 	stakeholdersMap := make(map[string]int)
+	for _, stakeholder := range stakeholders {
+		publicKey, _, err := shared.GenerateEd25519Keys() // Public/Private Key Pair is generated
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate keys for stakeholder: %v", err)
+		}
 
-	// Create a genesis transaction for each stakeholder
+		if err := bdb.InsertOrUpdateEd25519PublicKey(stakeholder.Address, publicKey); err != nil {
+			return nil, fmt.Errorf("failed to store public key for address %s: %v", stakeholder.Address, err)
+		}
+
+		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance)
+	}
+
+	genesisTransactions := make([]*thrylos.Transaction, 0)
 	for _, stakeholder := range stakeholders {
 		genesisTx := &thrylos.Transaction{
 			Id:        "genesis_tx_" + stakeholder.Address,
@@ -139,12 +146,10 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 			Signature: []byte("genesis_signature"), // Placeholder
 		}
 		genesisTransactions = append(genesisTransactions, genesisTx)
-		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance) // Initialize stakeholder stakes
 	}
 
 	genesis.Transactions = genesisTransactions
 
-	// Create and return the Blockchain instance
 	blockchain := &Blockchain{
 		Blocks:       []*Block{genesis},
 		Genesis:      genesis,
@@ -154,12 +159,10 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		Forks:        make([]*Fork, 0),
 	}
 
-	// Register genesis transaction outputs as UTXOs
 	for _, tx := range genesis.Transactions {
 		for idx, out := range tx.Outputs {
 			utxoKey := fmt.Sprintf("%s:%d", tx.Id, idx)
 			blockchain.UTXOs[utxoKey] = append(blockchain.UTXOs[utxoKey], out)
-			log.Printf("UTXO added for address %s with amount %d", out.OwnerAddress, out.Amount)
 		}
 	}
 

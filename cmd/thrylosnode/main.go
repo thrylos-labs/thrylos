@@ -33,6 +33,7 @@ type server struct {
 }
 
 func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {
+	log.Printf("Received transaction request: %+v", req)
 	if req == nil || req.Transaction == nil {
 		return nil, status.Error(codes.InvalidArgument, "Transaction request or transaction data is nil")
 	}
@@ -144,9 +145,10 @@ func main() {
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:6080"}, // Allow frontend domain
-		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type"},
+		AllowedOrigins:   []string{"http://localhost:3000"}, // Frontend server address
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization"}, // Add any other headers your frontend might send
+		AllowCredentials: true,                                      // If you use cookies or auth tokens requiring credentials
 	})
 
 	// Define HTTP routes and handlers within a single handler function wrapped by CORS
@@ -155,6 +157,7 @@ func main() {
 		case "/status":
 			fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 		case "/submit-transaction":
+			log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
 			node.SubmitTransactionHandler()(w, r)
 		case "/get-block":
 			node.GetBlockHandler()(w, r)
@@ -259,31 +262,7 @@ func executeWasm(wasmBytes []byte) int {
 	}
 }
 
-// first run the blockchain: go run main.go
-// open a new terminal and run:
-
-// go run main.go --address=localhost:8080 --data=./node1_data --testnet
-
-// curl -X POST http://localhost:8080/submit-transaction \
-//   -H "Content-Type: application/json" \
-//   -d '{
-//     "inputs": [
-//       {
-//         "previousTx": "mock-previous-tx-hash",
-//         "index": 0,
-//         "signature": "mock-signature",
-//         "ownerAddress": "254f89bd52362ee777407df6a9e96f05346b56ef763678a07e004cd76eb7870b"
-//       }
-//     ],
-//     "outputs": [
-//       {
-//         "amount": 100,
-//         "address": "75911a37b6861ac3a81a9aaddf89d7e2c95dfbadac4f7f9e489f4f1f98a4fae2"
-//       }
-//     ]
-//   }'
-
-// Get the blockchain stats: curl http://localhost:8080/get-stats
-// Retrieve the genesis block: curl "http://localhost:8080/get-block?id=0"
-// Retrieve pending transactions: curl http://localhost:8080/pending-transactions
-// Retrive a balance from a specific address: curl "http://localhost:8080/get-balance?address=your_address_here"
+// Get the blockchain stats: curl http://localhost:6080/get-stats
+// Retrieve the genesis block: curl "http://localhost:6080/get-block?id=0"
+// Retrieve pending transactions: curl http://localhost:6080/pending-transactions
+// Retrive a balance from a specific address: curl "http://localhost:6080/get-balance?address=your_address_here"
