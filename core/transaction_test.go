@@ -17,6 +17,7 @@ import (
 	"time"
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
+	thrylos "github.com/thrylos-labs/thrylos"
 
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/grpc"
@@ -552,53 +553,64 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewBlockchainServiceClient(conn)
 
-	// Define the number of transactions and the size of each batch
 	numTransactions := 1000
-	batchSize := 10 // Define an appropriate batch size
+	batchSize := 10
+
+	// Generate ed25519 keys
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("Failed to generate keys: %v", err)
+	}
 
 	start := time.Now()
-
 	var wg sync.WaitGroup
+	errorChan := make(chan error, numTransactions)
 
-	// Process transactions in batches
+	transactions := make([]*thrylos.Transaction, 0, numTransactions)
+	for i := 0; i < numTransactions; i++ {
+		transactions = append(transactions, createThrylosTransaction(i))
+	}
+
+	// Process all transactions concurrently
+	if err := shared.ProcessTransactions(transactions, privateKey, publicKey); err != nil {
+		t.Fatalf("Failed to process transactions: %v", err)
+	}
+
+	// Submit transactions in batches
 	for i := 0; i < numTransactions; i += batchSize {
 		wg.Add(1)
 		go func(startIndex int) {
 			defer wg.Done()
 			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
-				// Simulate creating a transaction
-				tx := &pb.Transaction{
-					Id: fmt.Sprintf("tx%d", j),
-					Inputs: []*pb.UTXO{{
-						TransactionId: "prev-tx-id",
-						Index:         0,
-						OwnerAddress:  "Alice",
-						Amount:        100,
-					}},
-					Outputs: []*pb.UTXO{{
-						TransactionId: fmt.Sprintf("tx%d", j),
-						Index:         0,
-						OwnerAddress:  "Bob",
-						Amount:        100,
-					}},
-					Timestamp: time.Now().Unix(),
-					Signature: []byte(""), // Would be set properly in real usage
-					Sender:    "Alice",
-				}
-
-				// Send the transaction to the server via gRPC
-				_, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: tx})
+				_, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: transactions[j]})
 				if err != nil {
-					t.Errorf("Failed to submit transaction: %v", err)
+					errorChan <- err
 				}
 			}
 		}(i)
 	}
 
 	wg.Wait()
+	close(errorChan)
+
+	errors := 0
+	for err := range errorChan {
+		t.Log("Failed to submit transaction:", err)
+		errors++
+	}
 
 	elapsed := time.Since(start)
-	tps := float64(numTransactions) / elapsed.Seconds()
+	tps := float64(numTransactions-errors) / elapsed.Seconds()
+	t.Logf("Processed %d transactions with %d errors in %s. TPS: %f", numTransactions, errors, elapsed, tps)
+}
 
-	t.Logf("Processed %d transactions via gRPC in %s. TPS: %f", numTransactions, elapsed, tps)
+func createThrylosTransaction(id int) *thrylos.Transaction {
+	return &thrylos.Transaction{
+		Id:        fmt.Sprintf("tx%d", id),
+		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		Timestamp: time.Now().Unix(),
+		Signature: []byte("signature"), // This should be properly generated or mocked
+		Sender:    "Alice",
+	}
 }

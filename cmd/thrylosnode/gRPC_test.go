@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -113,37 +110,23 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 
 	start := time.Now()
 
+	// Adjust block processing to better simulate the production behavior
 	for i := 0; i < numTransactions; i += transactionsPerBlock {
 		wg.Add(1)
 		go func(startIndex int) {
 			defer wg.Done()
 			blockStartTime := time.Now()
 
-			var blockTransactions []*pb.Transaction
-			for j := startIndex; j < startIndex+transactionsPerBlock && j < numTransactions; j++ {
-				txID := fmt.Sprintf("tx%d", j)
-				transaction := &pb.Transaction{
-					Id:        txID,
-					Timestamp: time.Now().Unix(),
-					Inputs:    []*pb.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-					Outputs:   []*pb.UTXO{{TransactionId: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
-				}
-				_, edPrivateKey, _ := ed25519.GenerateKey(rand.Reader)
-				txBytes, _ := json.Marshal(transaction)
-				edSignature := ed25519.Sign(edPrivateKey, txBytes)
-				transaction.Signature = edSignature
+			// Simulate transaction batch processing
+			blockTransactions := simulateTransactionBatch(startIndex, transactionsPerBlock)
 
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
-				cancel()
-				if err != nil {
-					t.Errorf("Error submitting transaction %d: %v", j, err)
-					continue
-				}
-				blockTransactions = append(blockTransactions, transaction)
+			// Assume a function `submitTransactions` that processes the batch as a block
+			if err := submitTransactions(client, blockTransactions); err != nil {
+				t.Errorf("Error submitting block starting at transaction %d: %v", startIndex, err)
+				return
 			}
 
-			// time.Sleep(time.Millisecond * 500) // Simulate block finalization
+			// Adjust the sleep time or remove based on new processing time expectations
 			blockEndTime := time.Now()
 			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
 		}(i)
@@ -159,4 +142,32 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 
 	elapsedOverall := time.Since(start)
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
+}
+
+// Assume `simulateTransactionBatch` generates a batch of transactions for submission
+func simulateTransactionBatch(startIndex, batchSize int) []*pb.Transaction {
+	var transactions []*pb.Transaction
+	for j := startIndex; j < startIndex+batchSize && j < 1000; j++ {
+		txID := fmt.Sprintf("tx%d", j)
+		transaction := &pb.Transaction{
+			Id:        txID,
+			Timestamp: time.Now().Unix(),
+			Inputs:    []*pb.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+			Outputs:   []*pb.UTXO{{TransactionId: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		}
+		transactions = append(transactions, transaction)
+	}
+	return transactions
+}
+
+// Assume `submitTransactions` sends a batch of transactions as a block to the server
+func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Transaction) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, tx := range transactions {
+		if _, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: tx}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
@@ -66,4 +67,27 @@ func main() {
 		log.Fatalf("Could not submit transaction: %v", err)
 	}
 	log.Printf("Transaction Status: %s", r.Status)
+}
+
+// This function sends transactions asynchronously and uses a WaitGroup to wait for all transactions to be processed, which can be particularly effective in a high-concurrency environment.
+
+func submitTransactionsAsync(client pb.BlockchainServiceClient, transactions []*pb.Transaction) {
+	var wg sync.WaitGroup
+	wg.Add(len(transactions))
+
+	for _, tx := range transactions {
+		go func(tx *pb.Transaction) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			_, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: tx})
+			if err != nil {
+				log.Printf("Failed to submit transaction %v: %v", tx.Id, err)
+				// Handle error, e.g., retry or log
+			}
+		}(tx)
+	}
+
+	wg.Wait() // Wait for all transactions to be submitted
 }

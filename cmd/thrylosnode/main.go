@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // This is important as it registers pprof handlers with the default mux.
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,7 +144,7 @@ func main() {
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:3000"}, // Allow frontend domain
+		AllowedOrigins: []string{"http://localhost:6080"}, // Allow frontend domain
 		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders: []string{"Content-Type"},
 	})

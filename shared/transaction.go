@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -542,22 +543,21 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 
 // transaction processing function
 // processTransactions processes a slice of transactions concurrently.
-func processTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, edPublicKey ed25519.PublicKey) {
-	var wg sync.WaitGroup
-	numWorkers := 10 // Number of concurrent workers
-	transactionsChan := make(chan *Transaction, len(transactions))
 
-	// Launch workers
+func ProcessTransactions(transactions []*thrylos.Transaction, privateKey ed25519.PrivateKey, publicKey ed25519.PublicKey) error {
+	numWorkers := runtime.NumCPU() // Dynamically determine the number of workers based on available CPUs
+	var wg sync.WaitGroup
+	transactionsChan := make(chan *thrylos.Transaction, len(transactions))
+
+	// Launch workers to process transactions concurrently
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for tx := range transactionsChan {
-				// Convert or cast tx to *thrylos.Transaction if necessary
-				thrylosTx := convertToThrylosTransaction(tx) // Implement this function based on your struct definitions
-				if err := ProcessSingleTransaction(thrylosTx, edPrivateKey, edPublicKey); err != nil {
+				if err := ProcessSingleTransaction(tx, privateKey, publicKey); err != nil {
 					log.Printf("Error processing transaction: %v", err)
-					// Handle error, e.g., logging, retrying, etc.
+					// Handle error appropriately, e.g., discard transaction or retry
 				}
 			}
 		}()
@@ -567,12 +567,13 @@ func processTransactions(transactions []*Transaction, edPrivateKey ed25519.Priva
 	for _, tx := range transactions {
 		transactionsChan <- tx
 	}
-	close(transactionsChan) // No more transactions to process
-	wg.Wait()               // Wait for all goroutines to finish
+	close(transactionsChan)
+	wg.Wait()
+	return nil
 }
 
 // Example conversion function (implement according to your struct fields)
-func convertToThrylosTransaction(tx *Transaction) *thrylos.Transaction {
+func ConvertToThrylosTransaction(tx *Transaction) *thrylos.Transaction {
 	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		thrylosInputs[i] = &thrylos.UTXO{

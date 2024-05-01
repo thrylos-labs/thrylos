@@ -2,10 +2,10 @@ package core
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -183,9 +183,26 @@ func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transa
 // NewBlock creates a new block with the specified parameters, including the index, transactions,
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
-func NewBlock(index int, transactions []shared.Transaction, prevHash string, validator string, prevTimestamp int64) *Block {
+func NewBlock(index int, transactions []shared.Transaction, prevHash string, validator string, prevTimestamp int64, privateKey ed25519.PrivateKey, publicKey ed25519.PublicKey) *Block {
 	fmt.Printf("Creating new block at index %d with %d transactions.\n", index, len(transactions))
 	currentTimestamp := max(time.Now().Unix(), prevTimestamp+1)
+
+	// Convert shared.Transaction to thrylos.Transaction
+	protoTransactions := make([]*thrylos.Transaction, 0, len(transactions))
+	for _, tx := range transactions {
+		protoTx := ConvertSharedTransactionToProto(tx)
+		if protoTx == nil {
+			fmt.Println("Failed to convert transaction to Protobuf format.")
+			continue
+		}
+		protoTransactions = append(protoTransactions, protoTx)
+	}
+
+	// Process transactions before including them in the block
+	if err := shared.ProcessTransactions(protoTransactions, privateKey, publicKey); err != nil {
+		fmt.Printf("Error processing transactions: %v\n", err)
+		return nil
+	}
 
 	block := &Block{
 		Index:        int32(index),
@@ -217,95 +234,6 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 	block.Hash = block.ComputeHash()
 	fmt.Printf("Block created - Index: %d, Hash: %s, Transactions: %d\n", block.Index, block.Hash, len(block.Transactions))
 	return block
-}
-
-// NewBlockWithTimestamp is similar to NewBlock but allows for specifying the timestamp directly.
-// This can be useful in scenarios where the exact creation time of the block needs to be controlled
-// or replicated, such as during testing or when integrating with legacy systems.
-func NewBlockWithTimestamp(index int, transactions []shared.Transaction, prevHash string, validator string, timestamp int64) *Block {
-	var txData [][]byte
-	for _, tx := range transactions {
-		txByte, _ := json.Marshal(tx)
-		txData = append(txData, txByte)
-	}
-
-	verkleTree, err := NewVerkleTree(txData)
-	if err != nil {
-		fmt.Println("Failed to create Verkle tree:", err)
-		return nil
-	}
-
-	// Get the Verkle root as a point
-	verkleRootPoint := verkleTree.Commitment()
-
-	// Use BytesUncompressedTrusted() to get the uncompressed byte array
-	verkleRootBytes := verkleRootPoint.BytesUncompressedTrusted() // This returns an array
-
-	// Convert array to slice for use
-	verkleRootBytesSlice := verkleRootBytes[:]
-
-	block := &Block{
-		Index:      int32(index),         // Convert index to int32
-		Timestamp:  timestamp,            // Use the provided timestamp here
-		VerkleRoot: verkleRootBytesSlice, // Convert array to slice
-		PrevHash:   prevHash,
-		Hash:       "",
-		Validator:  validator,
-	}
-
-	// Debugging: Print the timestamp set in this new block
-	fmt.Printf("Timestamp set in the new block: %d\n", block.Timestamp)
-
-	block.Hash = block.ComputeHash()
-	return block
-}
-
-func convertBlockToJSON(block *Block) ([]byte, error) {
-	log.Printf("Converting block Index=%d with %d transactions to JSON", block.Index, len(block.Transactions)) // Log the block details
-
-	type JSONTransaction struct {
-		ID        string        `json:"id"`
-		Timestamp int64         `json:"timestamp"`
-		Inputs    []shared.UTXO `json:"inputs"`
-		Outputs   []shared.UTXO `json:"outputs"`
-		Signature []byte        `json:"signature"`
-	}
-
-	type JSONBlock struct {
-		Index        int32             `json:"index"`
-		Timestamp    int64             `json:"timestamp"`
-		Transactions []JSONTransaction `json:"transactions"`
-		Hash         string            `json:"hash"`
-		Validator    string            `json:"validator"`
-	}
-
-	jsonBlock := JSONBlock{
-		Index:     block.Index,
-		Timestamp: block.Timestamp,
-		Hash:      block.Hash,
-		Validator: block.Validator,
-	}
-
-	for _, trx := range block.Transactions {
-		jsonTrx := JSONTransaction{
-			ID:        trx.Id,
-			Timestamp: trx.Timestamp,
-			Signature: trx.Signature,
-		}
-
-		for _, input := range trx.Inputs {
-			jsonTrx.Inputs = append(jsonTrx.Inputs, ConvertProtoUTXOToShared(input))
-		}
-
-		for _, output := range trx.Outputs {
-			jsonTrx.Outputs = append(jsonTrx.Outputs, ConvertProtoUTXOToShared(output))
-		}
-
-		jsonBlock.Transactions = append(jsonBlock.Transactions, jsonTrx)
-		log.Printf("Added transaction %s with %d outputs", trx.Id, len(trx.Outputs)) // Log each transaction detail
-	}
-
-	return json.Marshal(jsonBlock)
 }
 
 func (b *Block) ComputeHash() string {
