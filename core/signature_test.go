@@ -9,7 +9,7 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-// HashData uses SHA-256 to hash the input data
+// HashData uses blake2b to hash the input data
 func HashData(data []byte) []byte {
 	hash, err := blake2b.New256(nil) // No key, simple hash
 	if err != nil {
@@ -41,7 +41,7 @@ func TestHashDataConsistency(t *testing.T) {
 
 	// Here you should provide the actual expected hash for the serializedTx
 	// For demonstration, this is just a placeholder and needs to be replaced with the actual expected hash value
-	expectedHash := "9631a8d4886623276af58d9259cc774fc8e10943f1bea7accfb7bd025aaa9d3a"
+	expectedHash := "8eaf8b2d42f4c2b7a3946bbd0c6fc5821282e2b2ea2445e00f0c1c2a9f48b02c"
 
 	// Convert hash to a hexadecimal string for comparison
 	hashHex := fmt.Sprintf("%x", hash)
@@ -72,7 +72,7 @@ func TestSerializeWithoutSignature(t *testing.T) {
 	}
 
 	// Step 3: Define the hardcoded expected JSON string
-	expectedJSON := `{"ID":"tx123","Inputs":[{"ID":"","TransactionID":"tx0","Index":0,"OwnerAddress":"Alice","Amount":100}],"Outputs":[{"ID":"","TransactionID":"tx123","Index":0,"OwnerAddress":"Bob","Amount":100}],"Timestamp":1630000000}`
+	expectedJSON := `{"ID":"tx123","Sender":"","Inputs":[{"TransactionID":"tx0","Index":0,"OwnerAddress":"Alice","Amount":100}],"Outputs":[{"TransactionID":"tx123","Index":0,"OwnerAddress":"Bob","Amount":100}],"Timestamp":1630000000}`
 
 	// Convert serializedTx (byte array) to string for comparison
 	serializedTxStr := string(serializedTx)

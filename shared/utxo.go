@@ -3,22 +3,64 @@ package shared
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
+	lru "github.com/hashicorp/golang-lru"
 	"github.com/thrylos-labs/thrylos"
+	"github.com/willf/bloom"
 )
 
 // UTXO represents an Unspent Transaction Output, which is the output of a blockchain transaction
 // that has not been spent and can be used as an input in a new transaction. UTXOs are fundamental
 // to understanding a user's balance within the blockchain.
 type UTXO struct {
-	ID            string `json:"ID,omitempty"` // Use omitempty if the field can be empty
+	ID            string `json:"ID,omitempty"`
 	TransactionID string `json:"TransactionID"`
 	Index         int    `json:"Index"`
 	OwnerAddress  string `json:"OwnerAddress"`
 	Amount        int    `json:"Amount"`
 }
 
-// When creating or updating transactions to be serialized with Protobuf, you'll use ConvertSharedUTXOToProto to convert your application's internal UTXO representations into the format expected by Protobuf before serialization.
+type UTXOCache struct {
+	cache *lru.Cache
+	mu    sync.Mutex
+	bf    *bloom.BloomFilter
+}
+
+func NewUTXOCache(size int, bloomSize uint, falsePositiveRate float64) (*UTXOCache, error) {
+	c, err := lru.New(size)
+	if err != nil {
+		return nil, err
+	}
+	bf := bloom.NewWithEstimates(bloomSize, falsePositiveRate)
+	return &UTXOCache{cache: c, bf: bf}, nil
+}
+
+func (uc *UTXOCache) Get(key string) (*UTXO, bool) {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	if !uc.bf.TestString(key) {
+		return nil, false
+	}
+	value, ok := uc.cache.Get(key)
+	if !ok {
+		return nil, false
+	}
+	return value.(*UTXO), true
+}
+
+func (uc *UTXOCache) Add(key string, utxo *UTXO) {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	uc.cache.Add(key, utxo)
+	uc.bf.AddString(key)
+}
+
+func (uc *UTXOCache) Remove(key string) {
+	uc.mu.Lock()
+	defer uc.mu.Unlock()
+	uc.cache.Remove(key)
+}
 
 // ConvertSharedUTXOToProto converts a shared.UTXO to a protobuf UTXO message.
 func ConvertSharedUTXOToProto(u UTXO) *thrylos.UTXO {
@@ -59,7 +101,7 @@ func CreateUTXO(id, txID string, index int, owner string, amount int) UTXO {
 	fmt.Printf("Creating UTXO with ID: %s, TransactionID: %s, Index: %d, Owner: %s, Amount: %d\n", id, txID, index, owner, amount)
 	return UTXO{
 		ID:            id,
-		TransactionID: txID, // Ensure this is the ID of the transaction creating this UTXO
+		TransactionID: txID,
 		Index:         index,
 		OwnerAddress:  owner,
 		Amount:        amount,

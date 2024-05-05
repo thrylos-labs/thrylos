@@ -91,3 +91,13 @@ func submitTransactionsAsync(client pb.BlockchainServiceClient, transactions []*
 
 	wg.Wait() // Wait for all transactions to be submitted
 }
+
+// Client Setup:
+// Initialize keepalive parameters for maintaining a gRPC connection.
+// Connect to the gRPC server using these parameters.
+// Create a blockchain service client using the connected gRPC channel.
+// Transaction Creation and Submission:
+// Build a transaction with inputs and outputs as per the UTXO model.
+// Send the transaction through the gRPC client, handle errors, and log the transaction status.
+// Asynchronous Transaction Submission:
+// Submit multiple transactions asynchronously, using goroutines and a wait group to manage concurrency.

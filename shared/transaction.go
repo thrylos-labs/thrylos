@@ -23,19 +23,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
-	// Create a new BLAKE2b hasher for OAEP
-	blake2bHasher, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, err
-	}
+var blake2bHasher, _ = blake2b.New256(nil)
 
+func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
 	encryptedKey, err := rsa.EncryptOAEP(
-		blake2bHasher, // Using BLAKE2b for OAEP
+		blake2bHasher,
 		rand.Reader,
 		recipientPublicKey,
 		aesKey,
-		nil, // Optional label for additional data, can be nil if not used
+		nil,
 	)
 	if err != nil {
 		return nil, err
@@ -87,15 +83,8 @@ func DecryptWithAES(key, ciphertext []byte) ([]byte, error) {
 
 // DecryptTransactionData function should be already defined and be similar to this
 func DecryptTransactionData(encryptedData, encryptedKey []byte, recipientPrivateKey *rsa.PrivateKey) ([]byte, error) {
-	// Create a new BLAKE2b hasher for OAEP
-	blake2bHasher, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decrypt the AES key first
 	aesKey, err := rsa.DecryptOAEP(
-		blake2bHasher, // Use BLAKE2b hasher
+		blake2bHasher,
 		rand.Reader,
 		recipientPrivateKey,
 		encryptedKey,
@@ -104,8 +93,6 @@ func DecryptTransactionData(encryptedData, encryptedKey []byte, recipientPrivate
 	if err != nil {
 		return nil, err
 	}
-
-	// Now decrypt the actual transaction data with the AES key
 	return DecryptWithAES(aesKey, encryptedData)
 }
 
@@ -116,7 +103,6 @@ var (
 )
 
 // PublicKeyToAddressWithCache converts an Ed25519 public key to a blockchain address string,
-// using SHA-256 hashing, and caches the result.
 func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
 	pubKeyStr := hex.EncodeToString(pubKey) // Convert public key to string for map key
 
@@ -138,6 +124,17 @@ func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
 	cacheMutex.Unlock()
 
 	return address
+}
+
+func CreateThrylosTransaction(id int) *thrylos.Transaction {
+	return &thrylos.Transaction{
+		Id:        fmt.Sprintf("tx%d", id),
+		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		Timestamp: time.Now().Unix(),
+		Signature: []byte("signature"), // This should be properly generated or mocked
+		Sender:    "Alice",
+	}
 }
 
 // computeAddressFromPublicKey performs the actual computation of the address from a public key.
@@ -173,43 +170,7 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// CreateMockSignedTransaction generates a transaction and signs it.
-// CreateMockSignedTransaction generates a transaction, serializes it without the signature, signs it, and returns the signed transaction.
-// func CreateMockDualSignedTransaction(transactionID string, ed25519PrivateKey ed25519.PrivateKey, []byte) (*thrylos.Transaction, error) {
-// 	// Initialize the transaction as before
-// 	tx := &thrylos.Transaction{
-// 		Id:        transactionID,
-// 		Timestamp: time.Now().Unix(),
-// 		Inputs: []*thrylos.UTXO{{
-// 			TransactionId: "tx0",
-// 			Index:         0,
-// 			OwnerAddress:  "Alice",
-// 			Amount:        100,
-// 		}},
-// 		Outputs: []*thrylos.UTXO{{
-// 			TransactionId: transactionID,
-// 			Index:         0,
-// 			OwnerAddress:  "Bob",
-// 			Amount:        100,
-// 		}},
-// 	}
-
-// 	// Serialize the transaction for signing
-// 	txBytes, err := proto.Marshal(tx)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
-// 	}
-
-// 	// Sign with Ed25519
-// 	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
-
-// 	// Set both signatures on the transaction and return
-// 	tx.Signature = base64.StdEncoding.EncodeToString(ed25519Signature)
-
-// 	return tx, nil
-// }
-
-// HashData hashes input data using SHA-256 and returns the hash as a byte slice.
+// HashData hashes input data using blake2b and returns the hash as a byte slice.
 func HashData(data []byte) []byte {
 	hash, err := blake2b.New256(nil) // No key, simple hash
 	if err != nil {
@@ -292,7 +253,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	}
 
 	// Convert the signed thrylos.Transaction back to your local Transaction format
-	signedTx, err := convertThrylosTransactionToLocal(thrylosTx) // Ensure this function exists and is correct
+	signedTx, err := ConvertThrylosTransactionToLocal(thrylosTx) // Ensure this function exists and is correct
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert signed transaction back to local format: %v", err)
 	}
@@ -334,7 +295,7 @@ func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Trans
 }
 
 // Hypothetical conversion back to local Transaction type, if needed
-func convertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, error) {
+func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, error) {
 	localInputs := make([]UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		localInputs[i] = UTXO{
@@ -393,6 +354,38 @@ func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
 	}
 
 	return protoTx
+}
+
+func BatchSignTransactionsConcurrently(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(transactions))
+
+	for _, customTx := range transactions {
+		wg.Add(1)
+		go func(customTx *Transaction) {
+			defer wg.Done()
+			protoTx := ConvertToProtoTransaction(customTx)
+			txBytes, err := proto.Marshal(protoTx)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			edSignature := ed25519.Sign(edPrivateKey, txBytes)
+			protoTx.Signature = edSignature
+			customTx.Signature = protoTx.Signature
+		}(customTx)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for e := range errChan {
+		if e != nil {
+			return e
+		}
+	}
+
+	return nil
 }
 
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
@@ -560,42 +553,25 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 
 // BatchSignTransactions signs a slice of transactions using both Ed25519.
 func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(transactions)) // Ensure the channel can handle the number of transactions
+	errChan := make(chan error, len(transactions))
 
-	wg.Add(1) // Add one for the goroutine you are starting
-	go func() {
-		defer wg.Done()
-		for _, customTx := range transactions { // Assuming transactions is of type []*Transaction
-			// Convert the custom Transaction struct to the Protobuf-generated Transaction type
-			protoTx := ConvertToProtoTransaction(customTx)
-
-			// Correctly use the generated Protobuf type for marshaling
-			txBytes, err := proto.Marshal(protoTx)
-			if err != nil {
-				errChan <- err
-				continue
-			}
-
-			// Ed25519 Signing
-			edSignature := ed25519.Sign(edPrivateKey, txBytes)
-
-			// Assign the byte slice directly to the protobuf's Signature field
-			protoTx.Signature = edSignature
-
-			// Update your custom struct if necessary; ensure its Signature field is also []byte or convert if it's a string
-			customTx.Signature = protoTx.Signature // Adjust this line if customTx expects a string
+	for _, customTx := range transactions {
+		protoTx := ConvertToProtoTransaction(customTx)
+		txBytes, err := proto.Marshal(protoTx)
+		if err != nil {
+			errChan <- err
+			continue
 		}
-	}()
+		edSignature := ed25519.Sign(edPrivateKey, txBytes)
+		protoTx.Signature = edSignature
+		customTx.Signature = protoTx.Signature
+	}
 
-	wg.Wait()
+	close(errChan)
 
-	close(errChan) // Close the channel to signal completion of error collection
-
-	// Check for errors
 	for e := range errChan {
 		if e != nil {
-			return e // Return the first encountered error (or aggregate as needed)
+			return e
 		}
 	}
 

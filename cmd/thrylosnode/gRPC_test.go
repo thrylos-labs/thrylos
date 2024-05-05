@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	pb "github.com/thrylos-labs/thrylos"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -93,48 +94,46 @@ func (s *mockBlockchainServer) SubmitTransaction(ctx context.Context, req *pb.Tr
 // // go test -v -timeout 30s -run ^TestBlockTimeWithGRPC$ github.com/thrylos-labs/thrylos/cmd/thrylosnode
 
 func TestBlockTimeWithGRPC(t *testing.T) {
-	server := startMockServer() // Start your in-memory gRPC server
+	server := startMockServer()
 	defer server.Stop()
 
-	conn, err := grpc.Dial("", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
+	conn, err := grpc.Dial(":0", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithContextDialer(bufDialer))
 	if err != nil {
 		t.Fatalf("Failed to dial server: %v", err)
 	}
 	defer conn.Close()
-	client := pb.NewBlockchainServiceClient(conn)
 
+	client := pb.NewBlockchainServiceClient(conn)
 	numTransactions := 1000
-	transactionsPerBlock := 100
+	transactionsPerBlock := 10
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	var blockFinalizeTimes []time.Duration
 
 	start := time.Now()
 
-	// Adjust block processing to better simulate the production behavior
 	for i := 0; i < numTransactions; i += transactionsPerBlock {
 		wg.Add(1)
 		go func(startIndex int) {
 			defer wg.Done()
 			blockStartTime := time.Now()
 
-			// Simulate transaction batch processing
 			blockTransactions := simulateTransactionBatch(startIndex, transactionsPerBlock)
-
-			// Assume a function `submitTransactions` that processes the batch as a block
 			if err := submitTransactions(client, blockTransactions); err != nil {
 				t.Errorf("Error submitting block starting at transaction %d: %v", startIndex, err)
 				return
 			}
 
-			// Adjust the sleep time or remove based on new processing time expectations
 			blockEndTime := time.Now()
+			mu.Lock()
 			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
+			mu.Unlock()
 		}(i)
 	}
 
 	wg.Wait()
 
-	var totalBlockTime time.Duration
+	totalBlockTime := time.Duration(0)
 	for _, bt := range blockFinalizeTimes {
 		totalBlockTime += bt
 	}
@@ -144,7 +143,6 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
 }
 
-// Assume `simulateTransactionBatch` generates a batch of transactions for submission
 func simulateTransactionBatch(startIndex, batchSize int) []*pb.Transaction {
 	var transactions []*pb.Transaction
 	for j := startIndex; j < startIndex+batchSize && j < 1000; j++ {
@@ -160,7 +158,6 @@ func simulateTransactionBatch(startIndex, batchSize int) []*pb.Transaction {
 	return transactions
 }
 
-// Assume `submitTransactions` sends a batch of transactions as a block to the server
 func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Transaction) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -170,4 +167,65 @@ func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Tr
 		}
 	}
 	return nil
+}
+
+func TestRealisticBlockTimeWithGRPC(t *testing.T) {
+	server := startMockServer()
+	defer server.Stop()
+
+	conn, err := grpc.Dial("", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
+	if err != nil {
+		t.Fatalf("Failed to dial server: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewBlockchainServiceClient(conn)
+
+	numTransactions := 1000
+	transactionsPerBlock := 10
+	var wg sync.WaitGroup
+	var blockFinalizeTimes []time.Duration
+
+	averageNetworkLatency := 100 * time.Millisecond
+	averageBlockValidationTime := 300 * time.Millisecond
+	averageTransactionProcessingTime := 50 * time.Millisecond
+
+	start := time.Now()
+
+	// Process transactions with more realistic times
+	for i := 0; i < numTransactions; i += transactionsPerBlock {
+		wg.Add(1)
+		go func(startIndex int) {
+			defer wg.Done()
+			blockStartTime := time.Now()
+
+			// Simulate transaction batch processing
+			blockTransactions := simulateTransactionBatch(startIndex, transactionsPerBlock)
+
+			// Simulate network latency for each transaction
+			for _, tx := range blockTransactions {
+				if _, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: tx}); err != nil {
+					t.Errorf("Error submitting block starting at transaction %d: %v", startIndex, err)
+					return
+				}
+				time.Sleep(averageNetworkLatency)
+			}
+
+			// Simulate block processing time
+			time.Sleep(averageBlockValidationTime + averageTransactionProcessingTime*time.Duration(len(blockTransactions)))
+
+			blockEndTime := time.Now()
+			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
+		}(i)
+	}
+
+	wg.Wait()
+
+	var totalBlockTime time.Duration
+	for _, bt := range blockFinalizeTimes {
+		totalBlockTime += bt
+	}
+	averageBlockTime := totalBlockTime / time.Duration(len(blockFinalizeTimes))
+
+	elapsedOverall := time.Since(start)
+	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
 }

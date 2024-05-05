@@ -90,3 +90,6 @@ func (s *Shard) distributeUTXOs() map[string][]*thrylos.UTXO {
 
 	return distributedUTXOs
 }
+
+// Shard Initialization and Node Management: Shards are subsets of the network designed to scale by distributing the workload. Nodes are added to shards, and their capacity is managed to prevent overloading.
+// Data Redistribution: Implements logic for distributing data (like UTXOs) among nodes in a shard to balance load and ensure efficient data management.

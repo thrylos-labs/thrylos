@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/joho/godotenv"
+	"github.com/thrylos-labs/thrylos"
 )
 
 // TestWasmIntegration checks if the WebAssembly module functions as expected within the blockchain context.
@@ -30,7 +31,7 @@ func TestWasmIntegration(t *testing.T) {
 	}
 
 	// Execute the WebAssembly module
-	result := executeWasm(wasmBytes)
+	result := thrylos.ExecuteWasm(wasmBytes)
 	expectedResult := 20 // Adjust based on your expectations and what process_transaction does
 
 	// Verify the result

@@ -87,28 +87,10 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
-	defer func() {
-		if err != nil {
-			db.Close()
-		}
-	}()
-
-	// Create a new BlockchainDB instance
 	bdb := database.NewBlockchainDB(db, aesKey)
 
 	// Create the genesis block
 	genesis := NewGenesisBlock()
-
-	// Serialize the genesis block
-	serializedGenesis, err := genesis.Serialize()
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
-	}
-
-	// Insert the serialized genesis block into the database
-	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
-		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-	}
 
 	// Simulate several stakeholders
 	stakeholders := []struct {
@@ -121,21 +103,12 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 
 	// Initialize Stakeholders map
 	stakeholdersMap := make(map[string]int)
+
+	// Precompute genesis transactions and UTXOs
+	genesisTransactions := make([]*thrylos.Transaction, 0, len(stakeholders))
+	utxoMap := make(map[string][]*thrylos.UTXO, len(stakeholders))
 	for _, stakeholder := range stakeholders {
-		publicKey, _, err := shared.GenerateEd25519Keys() // Public/Private Key Pair is generated
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate keys for stakeholder: %v", err)
-		}
-
-		if err := bdb.InsertOrUpdateEd25519PublicKey(stakeholder.Address, publicKey); err != nil {
-			return nil, fmt.Errorf("failed to store public key for address %s: %v", stakeholder.Address, err)
-		}
-
 		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance)
-	}
-
-	genesisTransactions := make([]*thrylos.Transaction, 0)
-	for _, stakeholder := range stakeholders {
 		genesisTx := &thrylos.Transaction{
 			Id:        "genesis_tx_" + stakeholder.Address,
 			Timestamp: time.Now().Unix(),
@@ -143,51 +116,33 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 				OwnerAddress: stakeholder.Address,
 				Amount:       stakeholder.Balance,
 			}},
-			Signature: []byte("genesis_signature"), // Placeholder
+			Signature: []byte("genesis_signature"),
 		}
 		genesisTransactions = append(genesisTransactions, genesisTx)
+		utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
+		utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 	}
 
 	genesis.Transactions = genesisTransactions
-
 	blockchain := &Blockchain{
 		Blocks:       []*Block{genesis},
 		Genesis:      genesis,
 		Stakeholders: stakeholdersMap,
 		Database:     bdb,
-		UTXOs:        make(map[string][]*thrylos.UTXO),
+		UTXOs:        utxoMap,
 		Forks:        make([]*Fork, 0),
 	}
 
-	for _, tx := range genesis.Transactions {
-		for idx, out := range tx.Outputs {
-			utxoKey := fmt.Sprintf("%s:%d", tx.Id, idx)
-			blockchain.UTXOs[utxoKey] = append(blockchain.UTXOs[utxoKey], out)
-		}
+	// Serialize the genesis block and insert into database
+	serializedGenesis, err := genesis.Serialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
+	}
+	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
+		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
 	return blockchain, nil
-}
-
-func (bc *Blockchain) MintTokens(toAddress string, amount int) error {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
-
-	mintTx := &thrylos.Transaction{
-		Id:        "mint_tx_" + toAddress,
-		Timestamp: time.Now().Unix(),
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: toAddress,
-			Amount:       int64(amount),
-		}},
-		Signature: []byte("system_signature"), // System signature or a special validation
-	}
-
-	// Validate and process the transaction
-	// This example skips validation since it's a system-generated transaction
-	bc.AddPendingTransaction(mintTx)
-	_, err := bc.ProcessPendingTransactions("system") // Assumes system or another validator processes this
-	return err
 }
 
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
@@ -668,3 +623,26 @@ func (bc *Blockchain) CheckChainIntegrity() bool {
 	}
 	return true
 }
+
+// Blockchain Initialization:
+// Initialize the blockchain database and genesis block upon starting the server.
+// Load or create stakeholders, UTXOs, and transactions for the genesis block.
+// Transaction Handling and Block Management:
+// Receive transactions from clients, add to the pending transaction pool, and process them periodically.
+// Create new blocks from pending transactions, ensuring transactions are valid, updating the UTXO set, and managing block links.
+// Fork Resolution and Integrity Checks:
+// Check for forks in the blockchain and resolve by selecting the longest chain.
+// Perform regular integrity checks on the blockchain to ensure no tampering or inconsistencies.
+// Blockchain Operations (Detailed Server-Side)
+// Transaction Verification:
+// Verify each transaction for double spending and proper signature before adding to a block.
+// Manage UTXOs to reflect current ownership states.
+// Block Creation:
+// On achieving a sufficient number of transactions or a time limit, attempt to create a new block.
+// Validate the new block against the previous block and the blockchain's proof-of-stake rules.
+// Consensus and Blockchain Updates:
+// If a new block is validated successfully, append it to the blockchain.
+// Update the blockchain state, including UTXOs and potentially resolving forks.
+// Blockchain Maintenance Tasks:
+// Regularly check and ensure the blockchain's integrity using hash checks and timestamp validations.
+// Optionally, handle rewards for validators and manage the stakeholder map based on proof-of-stake consensus.

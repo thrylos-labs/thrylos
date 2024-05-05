@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 
@@ -20,7 +21,6 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
-	"github.com/wasmerio/wasmer-go/wasmer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -96,7 +96,7 @@ func main() {
 	}
 
 	// Execute the WebAssembly module
-	result := executeWasm(wasmBytes)
+	result := thrylos.ExecuteWasm(wasmBytes)
 	fmt.Printf("Result from wasm: %d\n", result)
 
 	// Fetch the Base64-encoded AES key from the environment variable
@@ -224,45 +224,18 @@ func main() {
 	}
 }
 
-func executeWasm(wasmBytes []byte) int {
-	// Create an instance of the WebAssembly engine
-	engine := wasmer.NewEngine()
-	store := wasmer.NewStore(engine)
-
-	// Compile the WebAssembly module
-	module, err := wasmer.NewModule(store, wasmBytes)
-	if err != nil {
-		log.Fatalf("Failed to compile module: %v", err)
-	}
-
-	// Create an instance of the module
-	instance, err := wasmer.NewInstance(module, wasmer.NewImportObject())
-	if err != nil {
-		log.Fatalf("Failed to instantiate wasm module: %v", err)
-	}
-
-	// Get the `process_transaction` function from the module
-	processTransaction, err := instance.Exports.GetFunction("process_transaction")
-	if err != nil {
-		log.Fatalf("Failed to get process_transaction function: %v", err)
-	}
-
-	// Call the WebAssembly function
-	result, err := processTransaction(10) // passing an example value
-	if err != nil {
-		log.Fatalf("Failed to execute process_transaction function: %v", err)
-	}
-
-	// Assuming the function returns an i32 and converting it properly
-	if processedResult, ok := result.(int32); ok {
-		return int(processedResult) // convert int32 to int
-	} else {
-		log.Fatalf("Failed to convert result to int32")
-		return 0
-	}
-}
-
 // Get the blockchain stats: curl http://localhost:6080/get-stats
 // Retrieve the genesis block: curl "http://localhost:6080/get-block?id=0"
 // Retrieve pending transactions: curl http://localhost:6080/pending-transactions
 // Retrive a balance from a specific address: curl "http://localhost:6080/get-balance?address=your_address_here"
+
+// Server-Side Steps
+// Blockchain Initialization:
+// Initialize the blockchain database and genesis block upon starting the server.
+// Load or create stakeholders, UTXOs, and transactions for the genesis block.
+// Transaction Handling and Block Management:
+// Receive transactions from clients, add to the pending transaction pool, and process them periodically.
+// Create new blocks from pending transactions, ensuring transactions are valid, updating the UTXO set, and managing block links.
+// Fork Resolution and Integrity Checks:
+// Check for forks in the blockchain and resolve by selecting the longest chain.
+// Perform regular integrity checks on the blockchain to ensure no tampering or inconsistencies.

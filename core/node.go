@@ -3,11 +3,13 @@ package core
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"regexp"
@@ -489,6 +491,19 @@ func (node *Node) CountVotes() {
 			break
 		}
 	}
+}
+
+// SecureRandomInt generates a cryptographically secure random integer within the range [0, max).
+// It uses the crypto/rand package to ensure the randomness is suitable for security-sensitive operations.
+// This function can be used in various blockchain contexts where randomness is required, such as
+// selecting a validator randomly in a Proof of Stake (PoS) consensus mechanism or generating nonces.
+
+func SecureRandomInt(max int) (int, error) {
+	nBig, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0, err
+	}
+	return int(nBig.Int64()), nil
 }
 
 const minStakeRequirement = 1000 // This represents the minimum amount of stake required to become a validator.

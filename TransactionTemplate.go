@@ -1,6 +1,6 @@
 package thrylos
 
-// Assuming thrylos is the package where your Protobuf definitions are
+// This needs to stay in the same directory as the Protobuf definitions
 
 // TransactionJSON mirrors the JSON structure of your transaction data
 type TransactionJSON struct {

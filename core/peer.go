@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// Peer Management: Nodes add new peers to their network, avoiding duplicates, and adjust protocols (HTTP/HTTPS) as necessary.
+
+// Peer Discovery: Nodes discover new peers by requesting peer lists from known peers and integrating the discovered peers into their own peer list.
+
+// Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network. If a peer's blockchain is longer, the node updates its blockchain to match.
+
 // AddPeer adds a new peer to the node's list of peers if it is not already present. This function ensures that
 // the node maintains an up-to-date list of peers with which it can communicate. Duplicate addresses are ignored
 // to prevent redundancy.

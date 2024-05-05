@@ -1,0 +1,37 @@
+Given the code you provided, I can outline a flowchart in text form detailing the main steps and functionalities of the blockchain server setup and transaction handling. Let's break it down into a series of steps, reflecting the initialization, server operations, and transaction processing:
+
+Initialization and Setup
+Logging Setup: Configure logging to display output in standard output and include file name and line number for debugging.
+Environment Configuration:
+Load .env file to get environment variables like server addresses, path settings, and network configuration.
+Handle errors if necessary environment variables are not set (like DATA_DIR or WASM_PATH).
+WebAssembly (Wasm) Execution:
+Read and execute a WebAssembly module, handling potential errors in reading or executing.
+AES Key Configuration:
+Fetch and decode the AES key from an environment variable.
+Blockchain and Database Initialization:
+Determine the absolute path for the blockchain data directory.
+Initialize the blockchain with the AES key, perform an integrity check.
+Initialize the blockchain database.
+Server Configuration and Execution
+HTTP Server Setup:
+Set CORS policies for secure cross-origin requests.
+Define HTTP routes and handlers for blockchain operations (like getting blockchain status, submitting transactions, fetching blocks, transactions, and balances).
+Start the HTTP server to listen on the specified address.
+gRPC Server Setup:
+Create a new gRPC server instance.
+Register the blockchain service and its functionalities.
+Start the gRPC server to listen on the specified address.
+Transaction Handling
+Transaction Submission via gRPC:
+Receive and log transaction requests.
+Validate the request to ensure it contains transaction data.
+Convert the transaction from protobuf format to the shared transaction format.
+Add the transaction to the blockchain database and handle errors.
+Additional Functionalities
+Fetching Data and Performing Actions via HTTP:
+Handlers to perform actions based on HTTP requests such as fetching blockchain status, transactions, blocks, and processing pending transactions.
+Periodic and Conditional Operations:
+Integrity checks, updates to peers list, and other network-related configurations.
+Each of these steps represents major functionalities handled by the blockchain server 
+according to the provided main.go code.

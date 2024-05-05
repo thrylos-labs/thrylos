@@ -564,7 +564,11 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 
 	transactions := make([]*thrylos.Transaction, 0, numTransactions)
 	for i := 0; i < numTransactions; i++ {
-		transactions = append(transactions, createThrylosTransaction(i))
+		transactions = append(transactions, shared.CreateThrylosTransaction(i))
+	}
+
+	if err := shared.BatchSignTransactions([]*shared.Transaction{}, ed25519.PrivateKey{}); err != nil {
+		t.Fatalf("Failed to sign transactions: %v", err)
 	}
 
 	// Submit transactions in batches
@@ -595,13 +599,74 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 	t.Logf("Processed %d transactions with %d errors in %s. TPS: %f", numTransactions, errors, elapsed, tps)
 }
 
-func createThrylosTransaction(id int) *thrylos.Transaction {
-	return &thrylos.Transaction{
-		Id:        fmt.Sprintf("tx%d", id),
-		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
-		Timestamp: time.Now().Unix(),
-		Signature: []byte("signature"), // This should be properly generated or mocked
-		Sender:    "Alice",
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithGRPCNew$ github.com/thrylos-labs/thrylos/core
+
+func TestTransactionThroughputWithGRPCNew(t *testing.T) {
+	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock())
+	if err != nil {
+		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
+	defer conn.Close()
+	client := pb.NewBlockchainServiceClient(conn)
+
+	numTransactions := 1000
+	batchSize := 10
+
+	// Generate a valid Ed25519 key pair for signing
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Failed to generate Ed25519 key: %v", err)
+	}
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	errorChan := make(chan error, numTransactions)
+
+	// Pre-create the transactions
+	thrylosTransactions := make([]*thrylos.Transaction, 0, numTransactions)
+	localTransactions := make([]*shared.Transaction, 0, numTransactions)
+
+	for i := 0; i < numTransactions; i++ {
+		thrylosTx := shared.CreateThrylosTransaction(i)
+		thrylosTransactions = append(thrylosTransactions, thrylosTx)
+		localTx, err := shared.ConvertThrylosTransactionToLocal(thrylosTx)
+		if err != nil {
+			t.Fatalf("Failed to convert thrylos transaction to local: %v", err)
+		}
+		localTransactions = append(localTransactions, &localTx)
+	}
+
+	// Parallel batch signing
+	if err := shared.BatchSignTransactionsConcurrently(localTransactions, privateKey); err != nil {
+		t.Fatalf("Failed to sign transactions: %v", err)
+	}
+
+	// Submit transactions in parallel batches
+	for i := 0; i < numTransactions; i += batchSize {
+		wg.Add(1)
+		go func(startIndex int) {
+			defer wg.Done()
+			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				_, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: shared.ConvertToProtoTransaction(localTransactions[j])})
+				if err != nil {
+					errorChan <- err
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errorChan)
+
+	errors := 0
+	for err := range errorChan {
+		t.Log("Failed to submit transaction:", err)
+		errors++
+	}
+
+	elapsed := time.Since(start)
+	tps := float64(numTransactions-errors) / elapsed.Seconds()
+	t.Logf("Processed %d transactions with %d errors in %s. TPS: %f", numTransactions, errors, elapsed, tps)
 }
