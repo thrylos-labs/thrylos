@@ -547,57 +547,57 @@ func TestBlockTime(t *testing.T) {
 
 // go test -v -timeout 30s -run ^TestTransactionThroughputWithGRPC$ github.com/thrylos-labs/thrylos/core
 
-func TestTransactionThroughputWithGRPC(t *testing.T) {
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock())
-	if err != nil {
-		t.Fatalf("Failed to connect to gRPC server: %v", err)
-	}
-	defer conn.Close()
-	client := pb.NewBlockchainServiceClient(conn)
+// func TestTransactionThroughputWithGRPC(t *testing.T) {
+// 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock())
+// 	if err != nil {
+// 		t.Fatalf("Failed to connect to gRPC server: %v", err)
+// 	}
+// 	defer conn.Close()
+// 	client := pb.NewBlockchainServiceClient(conn)
 
-	numTransactions := 1000
-	batchSize := 20
+// 	numTransactions := 1000
+// 	batchSize := 20
 
-	start := time.Now()
-	var wg sync.WaitGroup
-	errorChan := make(chan error, numTransactions)
+// 	start := time.Now()
+// 	var wg sync.WaitGroup
+// 	errorChan := make(chan error, numTransactions)
 
-	transactions := make([]*thrylos.Transaction, 0, numTransactions)
-	for i := 0; i < numTransactions; i++ {
-		transactions = append(transactions, shared.CreateThrylosTransaction(i))
-	}
+// 	transactions := make([]*thrylos.Transaction, 0, numTransactions)
+// 	for i := 0; i < numTransactions; i++ {
+// 		transactions = append(transactions, shared.CreateThrylosTransaction(i))
+// 	}
 
-	if err := shared.BatchSignTransactions([]*shared.Transaction{}, ed25519.PrivateKey{}); err != nil {
-		t.Fatalf("Failed to sign transactions: %v", err)
-	}
+// 	if err := shared.BatchSignTransactions([]*shared.Transaction{}, ed25519.PrivateKey{}), err != nil {
+// 		t.Fatalf("Failed to sign transactions: %v", err)
+// 	}
 
-	// Submit transactions in batches
-	for i := 0; i < numTransactions; i += batchSize {
-		wg.Add(1)
-		go func(startIndex int) {
-			defer wg.Done()
-			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
-				_, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: transactions[j]})
-				if err != nil {
-					errorChan <- err
-				}
-			}
-		}(i)
-	}
+// 	// Submit transactions in batches
+// 	for i := 0; i < numTransactions; i += batchSize {
+// 		wg.Add(1)
+// 		go func(startIndex int) {
+// 			defer wg.Done()
+// 			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
+// 				_, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: transactions[j]})
+// 				if err != nil {
+// 					errorChan <- err
+// 				}
+// 			}
+// 		}(i)
+// 	}
 
-	wg.Wait()
-	close(errorChan)
+// 	wg.Wait()
+// 	close(errorChan)
 
-	errors := 0
-	for err := range errorChan {
-		t.Log("Failed to submit transaction:", err)
-		errors++
-	}
+// 	errors := 0
+// 	for err := range errorChan {
+// 		t.Log("Failed to submit transaction:", err)
+// 		errors++
+// 	}
 
-	elapsed := time.Since(start)
-	tps := float64(numTransactions-errors) / elapsed.Seconds()
-	t.Logf("Processed %d transactions with %d errors in %s. TPS: %f", numTransactions, errors, elapsed, tps)
-}
+// 	elapsed := time.Since(start)
+// 	tps := float64(numTransactions-errors) / elapsed.Seconds()
+// 	t.Logf("Processed %d transactions with %d errors in %s. TPS: %f", numTransactions, errors, elapsed, tps)
+// }
 
 // go test -v -timeout 30s -run ^TestTransactionThroughputWithGRPCNew$ github.com/thrylos-labs/thrylos/core
 
