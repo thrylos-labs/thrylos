@@ -52,7 +52,7 @@ type Blockchain struct {
 
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
-	Mu sync.Mutex
+	Mu sync.RWMutex
 
 	// lastTimestamp records the timestamp of the last added block. This is used to ensure that
 	// blocks are added in chronological order, preserving the integrity of the blockchain's timeline.
@@ -479,6 +479,31 @@ func (bc *Blockchain) GetTransactionByID(id string) (*thrylos.Transaction, error
 		}
 	}
 	return nil, errors.New("transaction not found")
+}
+
+// This function should return the number of blocks in the blockchain.
+
+func (bc *Blockchain) GetBlockCount() int {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+	return len(bc.Blocks)
+}
+
+// This function should return the number of transactions for a given address, which is often referred to as the "nonce."
+
+func (bc *Blockchain) GetTransactionCount(address string) int {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+
+	count := 0
+	for _, block := range bc.Blocks {
+		for _, transaction := range block.Transactions {
+			if transaction.Sender == address {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
