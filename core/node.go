@@ -658,6 +658,10 @@ func ConvertJSONToProto(jsonTx thrylos.TransactionJSON) *thrylos.Transaction {
 func (node *Node) Start() {
 	mux := http.NewServeMux() // Create a new ServeMux
 
+	// JSON-RPC handler for MetaMask
+	jsonRPCHandler := NewJSONRPCHandler(node)
+	mux.Handle("/jsonrpc", jsonRPCHandler)
+
 	// Define handlers for various endpoints
 	mux.HandleFunc("/blockchain", func(w http.ResponseWriter, r *http.Request) {
 		data, err := json.Marshal(node.Blockchain)
