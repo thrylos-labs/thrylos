@@ -3,10 +3,13 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+const localChainID = "0x539" // Local development network chain ID (1337 in decimal)
 
 type RPCRequest struct {
 	Jsonrpc string        `json:"jsonrpc"`
@@ -39,8 +42,11 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req RPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON-RPC request", http.StatusBadRequest)
+		log.Printf("Error decoding JSON-RPC request: %v", err)
 		return
 	}
+
+	log.Printf("Received JSON-RPC request: %v", req)
 
 	var res RPCResponse
 	switch req.Method {
@@ -55,6 +61,7 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "eth_sendTransaction":
 		res = h.handleSendTransaction(req)
 	default:
+		log.Printf("Method not found: %s", req.Method)
 		res = RPCResponse{
 			Jsonrpc: "2.0",
 			Error: &RPCError{
@@ -65,6 +72,8 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	log.Printf("Sending JSON-RPC response: %v", res)
+
 	resBytes, _ := json.Marshal(res)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(resBytes)
@@ -73,7 +82,7 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *JSONRPCHandler) handleChainID(req RPCRequest) RPCResponse {
 	return RPCResponse{
 		Jsonrpc: "2.0",
-		Result:  "0x1", // replace with your actual chain ID
+		Result:  localChainID, // Local development network chain ID (1337 in decimal)
 		ID:      req.ID,
 	}
 }
@@ -91,7 +100,19 @@ func (h *JSONRPCHandler) handleGetBalance(req RPCRequest) RPCResponse {
 	address, _ := req.Params[0].(string)
 	address = strings.ToLower(address)
 
-	balance, _ := h.node.Blockchain.GetBalance(address)
+	balance, err := h.node.Blockchain.GetBalance(address)
+	if err != nil {
+		log.Printf("Error getting balance for address %s: %v", address, err)
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32000,
+				Message: "Failed to get balance",
+			},
+			ID: req.ID,
+		}
+	}
+
 	return RPCResponse{
 		Jsonrpc: "2.0",
 		Result:  fmt.Sprintf("0x%x", balance),
@@ -121,6 +142,7 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 
 	err := h.node.CreateAndBroadcastTransaction(to, nil, int(value), nil, nil)
 	if err != nil {
+		log.Printf("Transaction creation failed: %v", err)
 		return RPCResponse{
 			Jsonrpc: "2.0",
 			Error: &RPCError{
@@ -133,7 +155,7 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 
 	return RPCResponse{
 		Jsonrpc: "2.0",
-		Result:  fmt.Sprintf("0x%x", value), // Dummy value
+		Result:  "0x1", // Dummy value indicating success
 		ID:      req.ID,
 	}
 }

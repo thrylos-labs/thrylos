@@ -169,6 +169,8 @@ func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Tr
 	return nil
 }
 
+// // go test -v -timeout 30s -run ^TestRealisticBlockTimeWithGRPC github.com/thrylos-labs/thrylos/cmd/thrylosnode
+
 func TestRealisticBlockTimeWithGRPC(t *testing.T) {
 	server := startMockServer()
 	defer server.Stop()

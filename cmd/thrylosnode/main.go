@@ -76,13 +76,16 @@ func main() {
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
 	wasmPath := os.Getenv("WASM_PATH")
 	dataDir := os.Getenv("DATA_DIR")
+	chainID := "0x539" // Default local chain ID (1337 in decimal)
+
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
 	}
 
 	if testnet {
 		fmt.Println("Running in Testnet Mode")
-		// Specific settings for testnet can be configured here
+		httpAddress = "0.0.0.0:8546" // Example testnet address
+		chainID = "0x5"              // Goerli Testnet chain ID
 	}
 
 	if wasmPath == "" {
@@ -142,10 +145,11 @@ func main() {
 		peersList = strings.Split(knownPeers, ",")
 	}
 	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil, false)
+	node.SetChainID(chainID) // Set the chain ID for the node
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000"}, // Frontend server address
+		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization"}, // Add any other headers your frontend might send
 		AllowCredentials: true,                                      // If you use cookies or auth tokens requiring credentials
@@ -186,6 +190,9 @@ func main() {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(data)
+		case "/jsonrpc":
+			jsonRPCHandler := core.NewJSONRPCHandler(node)
+			jsonRPCHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}

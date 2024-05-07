@@ -270,6 +270,10 @@ func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmou
 	}
 }
 
+func (bc *Blockchain) GetChainID() string {
+	return "0x1" // Mainnet (adjust as per your chain)
+}
+
 func (bc *Blockchain) ResolveForks() {
 	var longestFork *Fork
 	longestLength := len(bc.Blocks)

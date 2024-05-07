@@ -41,7 +41,12 @@ type Node struct {
 	Shard               *Shard      // Reference to the shard this node is part of, if sharding is implemented.
 	PendingTransactions []*thrylos.Transaction
 	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
+	chainID             string
+}
 
+// Hold the chain ID and then proviude a method to set it
+func (n *Node) SetChainID(chainID string) {
+	n.chainID = chainID
 }
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
