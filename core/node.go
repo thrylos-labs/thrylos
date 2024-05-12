@@ -172,30 +172,43 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
-func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, aesKey []byte, amount int, ed25519PrivateKey ed25519.PrivateKey, additionalData []byte) error {
-	// Attempt to gather inputs for the transaction along with change and potential error
+func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *string, amount int, data *[]byte, gas *int) error {
+	// For simplicity, assume 'from', 'data', and 'gas' are optional and adjust the logic accordingly.
+
+	var ed25519PrivateKey ed25519.PrivateKey
+	var aesKey []byte
+	// var additionalData []byte
+
+	// Example: Assume `data` can optionally contain the AES key.
+	if data != nil {
+		aesKey = *data
+	}
+
+	// Handling 'from' if needed for any logic, for now, it's ignored in this example as your existing logic uses `node.Address`
+	if from != nil {
+		// Optional: Handle retrieval or conversion of the private key associated with 'from'
+	}
+
+	// Optional: Use 'gas' if your transaction logic needs to account for transaction fees or similar parameters.
+
+	// The existing logic to collect inputs, prepare outputs, and broadcast a transaction.
 	inputs, change, err := node.CollectInputsForTransaction(amount, node.Address)
 	if err != nil {
 		return fmt.Errorf("failed to collect inputs for transaction: %v", err)
 	}
 
-	// Prepare outputs for the transaction
 	outputs := []shared.UTXO{{OwnerAddress: recipientAddress, Amount: amount}}
-	// If there's change, add a new UTXO to outputs for the sender's change
 	if change > 0 {
 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
 	}
 
-	// The transaction ID generation needs to be handled; here, it's statically assigned for example purposes
-	transactionID := "unique_transaction_id" // Replace with actual transaction ID logic
+	transactionID := "unique_transaction_id" // Replace with actual ID logic
 
-	// Create and sign the transaction using Ed25519, now also passing the sender's address
 	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)
 	}
 
-	// Broadcast the transaction to the network
 	node.BroadcastTransaction(transaction)
 	return nil
 }
@@ -423,6 +436,11 @@ func (node *Node) GetTransactionHandler() http.HandlerFunc {
 
 		sendResponse(w, txJSON)
 	}
+}
+
+func (node *Node) GetBalance(address string) (int64, error) {
+	balance, err := node.Blockchain.GetBalance(address)
+	return int64(balance), err // Cast the balance to int64 if necessary
 }
 
 func (node *Node) GetBalanceHandler() http.HandlerFunc {
@@ -656,6 +674,11 @@ func ConvertJSONToProto(jsonTx thrylos.TransactionJSON) *thrylos.Transaction {
 	}
 
 	return tx
+}
+
+// Assuming this is part of the Node struct
+func (node *Node) GetBlockCount() int {
+	return node.Blockchain.GetBlockCount()
 }
 
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,

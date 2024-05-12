@@ -10,6 +10,14 @@ Our project follows industry-standard coding practices and principles to ensure 
 - **Comments and Documentation**: Write comments and documentation for your code where necessary. Use Go's godoc conventions to document packages, functions, structs, and methods.
 - **Tests**: Write unit tests for your functions and methods wherever possible. Aim for a high coverage and use table-driven tests where appropriate.
 
+## Make sure we are
+
+- **Optimising the blockchain**
+- **Reducing unnecessary steps where possible**
+- **Avoiding complicated implimentations**
+- **Understanding the why each decision**
+
+
 ## Commit Message Conventions
 
 Clear and consistent commit messages are vital for understanding the history of the project and the purpose of changes. Follow these guidelines for your commit messages:

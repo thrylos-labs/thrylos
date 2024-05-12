@@ -1,14 +1,35 @@
 # Thrylos Blockchain Project
 
-Welcome to our Blockchain Project, an open-source initiative designed to revolutionize the way transactions are managed and recorded. Developed in Go, this platform emphasizes security, efficiency, and decentralization, offering a robust solution for maintaining a transparent ledger.
+Welcome to our Blockchain Project, an open-source blockchain, developed in Go. This platform emphasizes security, efficiency, and decentralization, offering a robust solution for maintaining a transparent ledger.
 
 ## Quick Start
 
 Jump into action with these simple steps:
 
 1. **Set Up**: Clone the repository to your local machine.
-2. **Navigate**: Change directory to `cmd`.
-3. **Run**: Execute `go run main.go` in your terminal.
+
+2. **Generate AES Key**: This key needs to be generated for encryption.
+
+3. **Create a .env file**: in the .env file it needs to have the following:
+
+HTTP_NODE_ADDRESS=localhost:6080
+GRPC_NODE_ADDRESS=localhost:50051
+PEERS=
+DATA=./blockchain_data
+TESTNET=true
+AES_KEY_ENV_VAR=['Generatethiskey']
+WASM_PATH=[LeaveOut]
+DATA_DIR=/database
+
+4. **Navigate**: In terminal change directory to `cd cmd/thrylosnode`.
+
+5. **Run**: Execute `go run main.go` in your terminal.
+
+## send a transaction using the cli signer 
+
+6. **Navigate**: in a new terminal change directory to `cd cmd/clisigner`.
+
+7. **Run**: Execute `go run . --sender=6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19 --receiver=8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7 --amount=500` in your terminal.
 
 ## Inside the Blockchain
 

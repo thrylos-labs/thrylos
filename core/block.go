@@ -140,7 +140,10 @@ func Deserialize(data []byte) (*Block, error) {
 	return &block, nil
 }
 
-func ConvertSharedTransactionToProto(tx shared.Transaction) *thrylos.Transaction {
+func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transaction {
+	if tx == nil {
+		return nil
+	}
 	protoInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		protoInputs[i] = shared.ConvertSharedUTXOToProto(input)
@@ -156,7 +159,7 @@ func ConvertSharedTransactionToProto(tx shared.Transaction) *thrylos.Transaction
 		Timestamp: tx.Timestamp,
 		Inputs:    protoInputs,
 		Outputs:   protoOutputs,
-		Signature: []byte(tx.Signature), // Convert string to []byte here
+		Signature: tx.Signature, // Assuming Signature is already a []byte
 	}
 }
 
@@ -189,8 +192,8 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 
 	// Convert shared.Transaction to thrylos.Transaction
 	protoTransactions := make([]*thrylos.Transaction, 0, len(transactions))
-	for _, tx := range transactions {
-		protoTx := ConvertSharedTransactionToProto(tx)
+	for i := range transactions {
+		protoTx := ConvertSharedTransactionToProto(&transactions[i])
 		if protoTx == nil {
 			fmt.Println("Failed to convert transaction to Protobuf format.")
 			continue
@@ -206,8 +209,8 @@ func NewBlock(index int, transactions []shared.Transaction, prevHash string, val
 		Transactions: make([]*thrylos.Transaction, 0, len(transactions)),
 	}
 
-	for _, tx := range transactions {
-		protoTx := ConvertSharedTransactionToProto(tx)
+	for i := range transactions {
+		protoTx := ConvertSharedTransactionToProto(&transactions[i])
 		if protoTx == nil {
 			fmt.Println("Failed to convert transaction to Protobuf format.")
 			continue

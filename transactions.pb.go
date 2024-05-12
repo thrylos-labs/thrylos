@@ -25,15 +25,15 @@ type Transaction struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Id               string   `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Id               string   `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // Removed json_name, as it's redundant in proto3 when matching the field name exactly.
 	Timestamp        int64    `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	Inputs           []*UTXO  `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
 	Outputs          []*UTXO  `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
 	EncryptedInputs  []byte   `protobuf:"bytes,5,opt,name=encrypted_inputs,json=encryptedInputs,proto3" json:"encrypted_inputs,omitempty"`
 	EncryptedOutputs []byte   `protobuf:"bytes,6,opt,name=encrypted_outputs,json=encryptedOutputs,proto3" json:"encrypted_outputs,omitempty"`
-	Signature        []byte   `protobuf:"bytes,7,opt,name=signature,proto3" json:"signature,omitempty"`
-	PreviousTxIds    []string `protobuf:"bytes,8,rep,name=previous_tx_ids,json=previousTxIds,proto3" json:"previous_tx_ids,omitempty"`
-	EncryptedAesKey  []byte   `protobuf:"bytes,9,opt,name=encrypted_aes_key,json=encryptedAESKey,proto3" json:"encrypted_aes_key,omitempty"`
+	Signature        []byte   `protobuf:"bytes,7,opt,name=signature,proto3" json:"signature,omitempty"`                                      // Use bytes for binary data.
+	PreviousTxIds    []string `protobuf:"bytes,8,rep,name=previous_tx_ids,json=previousTxIds,proto3" json:"previous_tx_ids,omitempty"`       // Consider if large, split loading.
+	EncryptedAesKey  []byte   `protobuf:"bytes,9,opt,name=encrypted_aes_key,json=encryptedAesKey,proto3" json:"encrypted_aes_key,omitempty"` // Keep as bytes, ensure encryption keys are not logged or misused.
 	Sender           string   `protobuf:"bytes,10,opt,name=sender,proto3" json:"sender,omitempty"`
 }
 
@@ -139,15 +139,16 @@ func (x *Transaction) GetSender() string {
 	return ""
 }
 
+// UTXO message optimized for size and clarity.
 type UTXO struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
 	TransactionId string `protobuf:"bytes,1,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
-	Index         int32  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	Index         int32  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"` // int32 is generally enough for indexing.
 	OwnerAddress  string `protobuf:"bytes,3,opt,name=owner_address,json=ownerAddress,proto3" json:"owner_address,omitempty"`
-	Amount        int64  `protobuf:"varint,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	Amount        int64  `protobuf:"varint,4,opt,name=amount,proto3" json:"amount,omitempty"` // Consider if int64 is necessary vs. int32 depending on the range of values.
 }
 
 func (x *UTXO) Reset() {
@@ -907,7 +908,7 @@ var file_transactions_proto_rawDesc = []byte{
 	0x69, 0x6f, 0x75, 0x73, 0x54, 0x78, 0x49, 0x64, 0x73, 0x12, 0x2a, 0x0a, 0x11, 0x65, 0x6e, 0x63,
 	0x72, 0x79, 0x70, 0x74, 0x65, 0x64, 0x5f, 0x61, 0x65, 0x73, 0x5f, 0x6b, 0x65, 0x79, 0x18, 0x09,
 	0x20, 0x01, 0x28, 0x0c, 0x52, 0x0f, 0x65, 0x6e, 0x63, 0x72, 0x79, 0x70, 0x74, 0x65, 0x64, 0x41,
-	0x45, 0x53, 0x4b, 0x65, 0x79, 0x12, 0x16, 0x0a, 0x06, 0x73, 0x65, 0x6e, 0x64, 0x65, 0x72, 0x18,
+	0x65, 0x73, 0x4b, 0x65, 0x79, 0x12, 0x16, 0x0a, 0x06, 0x73, 0x65, 0x6e, 0x64, 0x65, 0x72, 0x18,
 	0x0a, 0x20, 0x01, 0x28, 0x09, 0x52, 0x06, 0x73, 0x65, 0x6e, 0x64, 0x65, 0x72, 0x22, 0x80, 0x01,
 	0x0a, 0x04, 0x55, 0x54, 0x58, 0x4f, 0x12, 0x25, 0x0a, 0x0e, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x61,
 	0x63, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0d,

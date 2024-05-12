@@ -5,23 +5,24 @@ package thrylos;
 option go_package = "github.com/thrylos-labs/thrylos";
 
 message Transaction {
-  string id = 1 [json_name = "id"];
-  int64 timestamp = 2 [json_name = "timestamp"];
-  repeated UTXO inputs = 3 [json_name = "inputs"];
-  repeated UTXO outputs = 4 [json_name = "outputs"];
-  bytes encrypted_inputs = 5 [json_name = "encryptedInputs"];
-  bytes encrypted_outputs = 6 [json_name = "encryptedOutputs"];
-  bytes signature = 7 [json_name = "signature"];
-  repeated string previous_tx_ids = 8 [json_name = "previousTxIds"];
-  bytes encrypted_aes_key = 9 [json_name = "encryptedAESKey"];
-  string sender = 10 [json_name = "sender"];
+  string id = 1; // Removed json_name, as it's redundant in proto3 when matching the field name exactly.
+  int64 timestamp = 2;
+  repeated UTXO inputs = 3;
+  repeated UTXO outputs = 4;
+  bytes encrypted_inputs = 5;
+  bytes encrypted_outputs = 6;
+  bytes signature = 7; // Use bytes for binary data.
+  repeated string previous_tx_ids = 8; // Consider if large, split loading.
+  bytes encrypted_aes_key = 9; // Keep as bytes, ensure encryption keys are not logged or misused.
+  string sender = 10;
 }
 
+// UTXO message optimized for size and clarity.
 message UTXO {
-  string transaction_id = 1 [json_name = "transactionId"];
-  int32 index = 2 [json_name = "index"];
-  string owner_address = 3 [json_name = "ownerAddress"];
-  int64 amount = 4 [json_name = "amount"];
+  string transaction_id = 1;
+  int32 index = 2; // int32 is generally enough for indexing.
+  string owner_address = 3;
+  int64 amount = 4; // Consider if int64 is necessary vs. int32 depending on the range of values.
 }
 
 service BlockchainService {

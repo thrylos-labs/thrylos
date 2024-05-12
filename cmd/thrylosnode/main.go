@@ -149,10 +149,10 @@ func main() {
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   []string{"http://localhost:3000", "http://127.0.0.1:8545", "http://127.0.0.1:8546", "chrome-extension://*"},
 		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"}, // Add any other headers your frontend might send
-		AllowCredentials: true,                                      // If you use cookies or auth tokens requiring credentials
+		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowCredentials: true,
 	})
 
 	// Define HTTP routes and handlers within a single handler function wrapped by CORS
