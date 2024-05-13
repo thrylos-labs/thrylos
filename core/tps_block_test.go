@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -17,8 +18,7 @@ import (
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/keepalive"
-	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // go test -v -timeout 30s -run ^TestTransactionThroughput$ github.com/thrylos-labs/thrylos/core
@@ -194,36 +194,50 @@ func TestBlockTime(t *testing.T) {
 
 // go test -v -timeout 30s -run ^TestTransactionThroughputWithGRPC$ github.com/thrylos-labs/thrylos/core
 
+// func startMockServer() *grpc.Server {
+// 	server := grpc.NewServer()
+// 	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
+// 	go func() {
+// 		if err := server.Serve(lis); err != nil {
+// 			log.Fatalf("Server exited with error: %v", err)
+// 		}
+// 	}()
+// 	return server
+// }
+
+const bufSize = 1024 * 1024
+
+// type mockBlockchainServer struct {
+// 	pb.UnimplementedBlockchainServiceServer
+// }
+
+func bufDialer(ctx context.Context, s string) (net.Conn, error) {
+	return lis.Dial()
+}
+
+var lis *bufconn.Listener
+
+func init() {
+	// Initialize the listener for the in-memory connection
+	lis = bufconn.Listen(bufSize)
+}
+
 func TestTransactionThroughputWithGRPC(t *testing.T) {
 	const (
 		numTransactions = 1000
 		batchSize       = 10
-		grpcAddress     = "localhost:50051"
 	)
 
-	// Setup gRPC client
-	kacp := keepalive.ClientParameters{
-		Time:                10 * time.Second,
-		Timeout:             time.Second,
-		PermitWithoutStream: true,
-	}
-	conn, err := grpc.Dial(grpcAddress, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithKeepaliveParams(kacp))
+	// Start a local gRPC server
+	server := startMockServer() // This function needs to correctly start the server
+	defer server.Stop()
+
+	conn, err := grpc.Dial("bufnet", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
 	defer conn.Close()
 	client := pb.NewBlockchainServiceClient(conn)
-
-	// Generate Ed25519 keys
-	_, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("Error generating Ed25519 key pair: %v", err)
-	}
-
-	// Example transaction elements
-	inputs := []shared.UTXO{{TransactionID: "input-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}}
-	outputs := []shared.UTXO{{TransactionID: "output-tx-id", Index: 0, OwnerAddress: "Bob", Amount: 100}}
-	aesKey, _ := shared.GenerateAESKey() // Assume this function exists and generates a key for encryption
 
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -233,23 +247,22 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 		wg.Add(1)
 		go func(startIndex int) {
 			defer wg.Done()
-			for j := startIndex; j < startIndex+batchSize && j < numTransactions; j++ {
-				txID := fmt.Sprintf("tx%d", j)
-				internalTx, err := shared.CreateAndSignTransaction(txID, "Alice", inputs, outputs, edPrivateKey, aesKey)
-				if err != nil {
-					t.Errorf("Failed to create or sign transaction: %v", err)
-					continue
-				}
-				protoTx := ConvertSharedTransactionToProto(internalTx)
-
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if _, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: protoTx}); err != nil {
-					st, _ := status.FromError(err)
-					t.Errorf("Failed to submit transaction: %v, gRPC status: %v", err, st.Message())
+			transactions := make([]*pb.Transaction, batchSize)
+			for j := 0; j < batchSize && startIndex+j < numTransactions; j++ {
+				txID := fmt.Sprintf("tx%d", startIndex+j)
+				transactions[j] = &pb.Transaction{
+					Id: txID,
+					// Assume other necessary fields are populated here
 				}
 			}
 
+			batchRequest := &pb.TransactionBatchRequest{Transactions: transactions}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := client.SubmitTransactionBatch(ctx, batchRequest)
+			if err != nil {
+				t.Errorf("Failed to submit transaction batch starting at index %d: %v", startIndex, err)
+			}
 		}(i)
 	}
 

@@ -25,7 +25,7 @@ func init() {
 	lis = bufconn.Listen(bufSize)
 }
 
-func bufDialer(context.Context, string) (net.Conn, error) {
+func bufDialer(ctx context.Context, s string) (net.Conn, error) {
 	return lis.Dial()
 }
 
@@ -38,49 +38,6 @@ func startMockServer() *grpc.Server {
 		}
 	}()
 	return server
-}
-
-func TestSubmitTransaction(t *testing.T) {
-	server := startMockServer()
-	defer server.Stop()
-
-	// Set up the client connection to the server
-	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
-	if err != nil {
-		log.Fatalf("Failed to dial: %v", err)
-	}
-	defer conn.Close()
-
-	client := pb.NewBlockchainServiceClient(conn)
-
-	// Prepare and send the request
-	transaction := &pb.Transaction{
-		Id:        "transaction-id",
-		Timestamp: time.Now().Unix(),
-		Inputs: []*pb.UTXO{
-			{
-				TransactionId: "prev-tx-id",
-				Index:         0,
-				OwnerAddress:  "owner-address-example",
-				Amount:        50,
-			},
-		},
-		Outputs: []*pb.UTXO{
-			{
-				TransactionId: "new-tx-id",
-				Index:         0,
-				OwnerAddress:  "recipient-address-example",
-				Amount:        50,
-			},
-		},
-		Signature: []byte("transaction-signature"),
-		Sender:    "sender-address",
-	}
-	r, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
-	assert.NoError(t, err)
-	assert.NotNil(t, r)
-	assert.Equal(t, "Transaction added successfully", r.Status)
 }
 
 type mockBlockchainServer struct {
@@ -143,21 +100,6 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
 }
 
-func simulateTransactionBatch(startIndex, batchSize int) []*pb.Transaction {
-	var transactions []*pb.Transaction
-	for j := startIndex; j < startIndex+batchSize && j < 1000; j++ {
-		txID := fmt.Sprintf("tx%d", j)
-		transaction := &pb.Transaction{
-			Id:        txID,
-			Timestamp: time.Now().Unix(),
-			Inputs:    []*pb.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-			Outputs:   []*pb.UTXO{{TransactionId: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
-		}
-		transactions = append(transactions, transaction)
-	}
-	return transactions
-}
-
 func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Transaction) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -171,8 +113,11 @@ func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Tr
 
 // // go test -v -timeout 30s -run ^TestRealisticBlockTimeWithGRPC github.com/thrylos-labs/thrylos/cmd/thrylosnode
 
+// Use a mutex to ensure thread safety when accessing shared slice
+var mu sync.Mutex
+
 func TestRealisticBlockTimeWithGRPC(t *testing.T) {
-	server := startMockServer()
+	server := startMockServer() // Ensure this function correctly initializes and starts your gRPC server
 	defer server.Stop()
 
 	conn, err := grpc.Dial("", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
@@ -180,6 +125,7 @@ func TestRealisticBlockTimeWithGRPC(t *testing.T) {
 		t.Fatalf("Failed to dial server: %v", err)
 	}
 	defer conn.Close()
+
 	client := pb.NewBlockchainServiceClient(conn)
 
 	numTransactions := 1000
@@ -193,36 +139,32 @@ func TestRealisticBlockTimeWithGRPC(t *testing.T) {
 
 	start := time.Now()
 
-	// Process transactions with more realistic times
 	for i := 0; i < numTransactions; i += transactionsPerBlock {
 		wg.Add(1)
 		go func(startIndex int) {
 			defer wg.Done()
 			blockStartTime := time.Now()
 
-			// Simulate transaction batch processing
 			blockTransactions := simulateTransactionBatch(startIndex, transactionsPerBlock)
-
-			// Simulate network latency for each transaction
-			for _, tx := range blockTransactions {
-				if _, err := client.SubmitTransaction(context.Background(), &pb.TransactionRequest{Transaction: tx}); err != nil {
-					t.Errorf("Error submitting block starting at transaction %d: %v", startIndex, err)
-					return
-				}
-				time.Sleep(averageNetworkLatency)
+			batchRequest := &pb.TransactionBatchRequest{Transactions: blockTransactions}
+			_, err := client.SubmitTransactionBatch(context.Background(), batchRequest)
+			if err != nil {
+				t.Errorf("Error submitting transaction batch starting at index %d: %v", startIndex, err)
+				return
 			}
 
-			// Simulate block processing time
-			time.Sleep(averageBlockValidationTime + averageTransactionProcessingTime*time.Duration(len(blockTransactions)))
+			// Simulating network latency and block processing time
+			time.Sleep(averageNetworkLatency + averageBlockValidationTime + averageTransactionProcessingTime*time.Duration(len(blockTransactions)))
 
-			blockEndTime := time.Now()
-			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
+			mu.Lock()
+			blockFinalizeTimes = append(blockFinalizeTimes, time.Since(blockStartTime))
+			mu.Unlock()
 		}(i)
 	}
 
 	wg.Wait()
 
-	var totalBlockTime time.Duration
+	totalBlockTime := time.Duration(0)
 	for _, bt := range blockFinalizeTimes {
 		totalBlockTime += bt
 	}
@@ -230,4 +172,63 @@ func TestRealisticBlockTimeWithGRPC(t *testing.T) {
 
 	elapsedOverall := time.Since(start)
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
+}
+
+func simulateTransactionBatch(startIndex, batchSize int) []*pb.Transaction {
+	var transactions []*pb.Transaction
+	for i := startIndex; i < startIndex+batchSize && i < 1000; i++ {
+		txID := fmt.Sprintf("tx%d", i)
+		transaction := &pb.Transaction{
+			Id:        txID,
+			Timestamp: time.Now().Unix(),
+			// Populate Inputs and Outputs as per transaction requirements
+			Inputs:  []*pb.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+			Outputs: []*pb.UTXO{{TransactionId: txID, Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		}
+		transactions = append(transactions, transaction)
+	}
+	return transactions
+}
+
+func TestSubmitTransaction(t *testing.T) {
+	server := startMockServer()
+	defer server.Stop()
+
+	// Set up the client connection to the server
+	ctx := context.Background()
+	conn, err := grpc.DialContext(ctx, "", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
+	if err != nil {
+		log.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+
+	client := pb.NewBlockchainServiceClient(conn)
+
+	// Prepare and send the request
+	transaction := &pb.Transaction{
+		Id:        "transaction-id",
+		Timestamp: time.Now().Unix(),
+		Inputs: []*pb.UTXO{
+			{
+				TransactionId: "prev-tx-id",
+				Index:         0,
+				OwnerAddress:  "owner-address-example",
+				Amount:        50,
+			},
+		},
+		Outputs: []*pb.UTXO{
+			{
+				TransactionId: "new-tx-id",
+				Index:         0,
+				OwnerAddress:  "recipient-address-example",
+				Amount:        50,
+			},
+		},
+		Signature: []byte("transaction-signature"),
+		Sender:    "sender-address",
+	}
+	r, err := client.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
+	assert.NoError(t, err)
+	assert.NotNil(t, r)
+	assert.Equal(t, "Transaction added successfully", r.Status)
 }

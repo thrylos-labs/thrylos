@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos"
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -14,9 +13,9 @@ import (
 
 func main() {
 	var kacp = keepalive.ClientParameters{
-		Time:                10 * time.Second, // send keepalive pings every 10 seconds if there is no activity
-		Timeout:             time.Second,      // wait 1 second for ping ack before considering the connection dead
-		PermitWithoutStream: true,             // send pings even without active streams
+		Time:                10 * time.Second, // Send keepalive pings every 10 seconds if there is no activity
+		Timeout:             time.Second,      // Wait 1 second for ping ack before considering the connection dead
+		PermitWithoutStream: true,             // Send pings even without active streams
 	}
 
 	// Connect to the gRPC server with keepalive parameters
@@ -31,43 +30,15 @@ func main() {
 
 	c := pb.NewBlockchainServiceClient(conn) // Use the correct client constructor from generated protobuf code
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Adjust timeout based on expected operation time
-	defer cancel()
-
-	// Correctly prepare Inputs and Outputs according to the UTXO structure
-	inputs := []*pb.UTXO{{
-		TransactionId: "prev-tx-id",
-		Index:         0,
-		OwnerAddress:  "owner-address-example",
-		Amount:        50, // Example amount, ensure this matches the expected logic
-	}}
-	outputs := []*pb.UTXO{{
-		TransactionId: "new-tx-id",
-		Index:         0,
-		OwnerAddress:  "recipient-address-example",
-		Amount:        100, // As an example
-	}}
-
-	// Build the transaction
-	transaction := &pb.Transaction{
-		Id:               "transaction-id",
-		Timestamp:        time.Now().Unix(),
-		Inputs:           inputs,
-		Outputs:          outputs,
-		Signature:        []byte("transaction-signature"),
-		PreviousTxIds:    []string{"prev-tx-id1", "prev-tx-id2"},
-		EncryptedAesKey:  []byte("example-encrypted-key"),
-		EncryptedInputs:  []byte("encrypted-inputs-data"),
-		EncryptedOutputs: []byte("encrypted-outputs-data"),
-		Sender:           "sender-address",
+	// Example transaction batch processing
+	transactions := []*pb.Transaction{
+		{Id: "tx1", Timestamp: time.Now().Unix()}, // Add more details as necessary
+		{Id: "tx2", Timestamp: time.Now().Unix()},
 	}
-
-	// Create TransactionRequest with the transaction
-	r, err := c.SubmitTransaction(ctx, &pb.TransactionRequest{Transaction: transaction})
+	err = submitTransactionBatch(c, transactions)
 	if err != nil {
-		log.Fatalf("Could not submit transaction: %v", err)
+		log.Fatalf("Could not submit transaction batch: %v", err)
 	}
-	log.Printf("Transaction Status: %s", r.Status)
 }
 
 // This function sends transactions asynchronously and uses a WaitGroup to wait for all transactions to be processed, which can be particularly effective in a high-concurrency environment.
@@ -93,11 +64,11 @@ func submitTransactionsAsync(client pb.BlockchainServiceClient, transactions []*
 	wg.Wait() // Wait for all transactions to be submitted
 }
 
-func submitTransactionBatch(client thrylos.BlockchainServiceClient, transactions []*thrylos.Transaction) error {
+func submitTransactionBatch(client pb.BlockchainServiceClient, transactions []*pb.Transaction) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	batch := &thrylos.TransactionBatchRequest{
+	batch := &pb.TransactionBatchRequest{
 		Transactions: transactions,
 	}
 	_, err := client.SubmitTransactionBatch(ctx, batch)
