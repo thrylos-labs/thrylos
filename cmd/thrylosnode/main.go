@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
+	"github.com/thrylos-labs/thrylos/shared"
 
 	pb "github.com/thrylos-labs/thrylos"
 
@@ -29,7 +31,123 @@ import (
 
 type server struct {
 	pb.UnimplementedBlockchainServiceServer
-	db *database.BlockchainDB // Include a pointer to BlockchainDB
+	db           *database.BlockchainDB       // Include a pointer to BlockchainDB
+	PublicKeyMap map[string]ed25519.PublicKey // Maps sender addresses to their public keys
+}
+
+func NewServer(db *database.BlockchainDB) *server {
+	return &server{
+		db:           db,
+		PublicKeyMap: make(map[string]ed25519.PublicKey),
+	}
+}
+
+func (s *server) SubmitTransactionBatch(ctx context.Context, req *thrylos.TransactionBatchRequest) (*thrylos.TransactionBatchResponse, error) {
+	if req == nil || len(req.Transactions) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "Transaction batch request is nil or empty")
+	}
+
+	var failedTransactions []*thrylos.FailedTransaction // Use the new FailedTransaction message
+	for _, transaction := range req.Transactions {
+		if err := s.processTransaction(transaction); err != nil {
+			log.Printf("Failed to process transaction %s: %v", transaction.Id, err)
+			failedTransaction := &thrylos.FailedTransaction{
+				TransactionId: transaction.Id,
+				ErrorMessage:  err.Error(),
+			}
+			failedTransactions = append(failedTransactions, failedTransaction)
+		}
+	}
+
+	response := &thrylos.TransactionBatchResponse{
+		Status:             "Processed with some errors",
+		FailedTransactions: failedTransactions,
+	}
+
+	if len(failedTransactions) == 0 {
+		response.Status = "Batch processed successfully"
+	}
+
+	return response, nil
+}
+
+func (s *server) processTransaction(transaction *thrylos.Transaction) error {
+	if transaction == nil {
+		return fmt.Errorf("received nil transaction")
+	}
+
+	// Convert thrylos.Transaction to shared.Transaction
+	sharedTx := core.ThrylosToShared(transaction)
+	if sharedTx == nil {
+		return fmt.Errorf("conversion failed for transaction ID %s", transaction.Id)
+	}
+
+	// Validate the converted transaction
+	if !s.validateTransaction(sharedTx) {
+		return fmt.Errorf("validation failed for transaction ID %s", sharedTx.ID)
+	}
+
+	// Process the transaction including UTXO updates and adding the transaction
+	return s.db.ProcessTransaction(sharedTx)
+}
+
+func (s *server) validateTransaction(tx *shared.Transaction) bool {
+	if tx == nil || tx.Signature == nil {
+		log.Println("Transaction or its signature is nil")
+		return false
+	}
+
+	// Retrieve the sender's public key from the node's public key map
+	publicKey, ok := s.PublicKeyMap[tx.Sender]
+	if !ok {
+		log.Printf("No public key found for sender: %s", tx.Sender)
+		return false
+	}
+
+	// Serialize the transaction without its signature
+	serializedTx, err := tx.SerializeWithoutSignature()
+	if err != nil {
+		log.Printf("Failed to serialize transaction without signature: %v", err)
+		return false
+	}
+
+	// Validate the transaction signature
+	if !ed25519.Verify(publicKey, serializedTx, tx.Signature) {
+		log.Printf("Invalid signature for transaction ID: %s", tx.ID)
+		return false
+	}
+
+	// Retrieve UTXOs required to verify inputs and calculate input sum
+	totalInputs := 0
+	for _, input := range tx.Inputs {
+		utxo, err := shared.GetUTXO(input.TransactionID, input.Index)
+		if err != nil || utxo == nil {
+			log.Printf("UTXO not found or error retrieving UTXO: %v", err)
+			return false
+		}
+		if utxo.IsSpent {
+			log.Println("Referenced UTXO has already been spent")
+			return false
+		}
+		totalInputs += utxo.Amount
+	}
+
+	// Calculate the total outputs and ensure it matches inputs (conservation of value)
+	totalOutputs := 0
+	for _, output := range tx.Outputs {
+		totalOutputs += output.Amount
+	}
+
+	if totalInputs != totalOutputs {
+		log.Printf("Input total %d does not match output total %d for transaction ID %s", totalInputs, totalOutputs, tx.ID)
+		return false
+	}
+
+	return true
+}
+
+func (s *server) addPublicKey(sender string, pubKey ed25519.PublicKey) {
+	s.PublicKeyMap[sender] = pubKey
 }
 
 func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {

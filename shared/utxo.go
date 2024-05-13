@@ -19,6 +19,7 @@ type UTXO struct {
 	Index         int    `json:"Index"`
 	OwnerAddress  string `json:"OwnerAddress"`
 	Amount        int    `json:"Amount"`
+	IsSpent       bool   `json:"IsSpent"` // Indicates whether the UTXO has been spent
 }
 
 type UTXOCache struct {
@@ -82,6 +83,19 @@ func GetUTXOsForUser(user string, allUTXOs map[string]UTXO) []UTXO {
 		}
 	}
 	return userUTXOs
+}
+
+// Assuming the UTXOCache is a global variable or accessible somehow in your server structure
+var globalUTXOCache *UTXOCache
+
+// GetUTXO retrieves a UTXO by its key.
+func GetUTXO(txID string, index int) (*UTXO, error) {
+	key := fmt.Sprintf("%s-%d", txID, index)
+	utxo, exists := globalUTXOCache.Get(key)
+	if !exists {
+		return nil, fmt.Errorf("UTXO not found")
+	}
+	return utxo, nil
 }
 
 // MarshalJSON customizes the JSON representation of the UTXO struct. This can be useful for

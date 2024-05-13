@@ -30,6 +30,7 @@ service BlockchainService {
   rpc GetBlock(GetBlockRequest) returns (BlockResponse);
   rpc GetTransaction(GetTransactionRequest) returns (TransactionResponse);
   rpc GetLastBlock(EmptyRequest) returns (BlockResponse);
+  rpc SubmitTransactionBatch(TransactionBatchRequest) returns (TransactionBatchResponse);
   rpc GetBalance(GetBalanceRequest) returns (BalanceResponse);
   rpc GetStats(GetStatsRequest) returns (StatsResponse);
   rpc GetPendingTransactions(GetPendingTransactionsRequest) returns (PendingTransactionsResponse);
@@ -50,6 +51,20 @@ message GetBlockRequest {
 message BlockResponse {
   bytes blockData = 1; // Correct type for binary data
   int32 blockIndex = 2;
+}
+
+message TransactionBatchRequest {
+  repeated Transaction transactions = 1; // List of transactions in a batch
+}
+
+message TransactionBatchResponse {
+  string status = 1; // Status of the batch processing
+  repeated FailedTransaction failed_transactions = 2; // Added to provide detailed error info
+}
+
+message FailedTransaction {
+  string transaction_id = 1; // The ID of the transaction
+  string error_message = 2; // Error message explaining why the transaction failed
 }
 
 message GetTransactionRequest {

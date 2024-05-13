@@ -41,6 +41,16 @@ var (
 	once sync.Once
 )
 
+var globalUTXOCache *shared.UTXOCache
+
+func init() {
+	var err error
+	globalUTXOCache, err = shared.NewUTXOCache(1024, 10000, 0.01) // Adjust size and parameters as needed
+	if err != nil {
+		panic("Failed to create UTXO cache: " + err.Error())
+	}
+}
+
 // InitializeDatabase sets up the initial database schema including tables for blocks,
 // public keys, and transactions. It ensures the database is ready to store blockchain data.
 // InitializeDatabase ensures that BadgerDB is only initialized once
@@ -130,27 +140,23 @@ func (bdb *BlockchainDB) SendTransaction(fromAddress, toAddress string, amount i
 		return false, fmt.Errorf("error signing transaction: %v", err)
 	}
 
-	// Step 5: Store the encrypted transaction and signature in the database
-	err = bdb.storeTransaction(encryptedData, signature, fromAddress, toAddress)
+	// Step 5: Store the encrypted transaction and signature in the database atomically
+	txn := bdb.DB.NewTransaction(true)
+	defer txn.Discard()
+
+	err = bdb.storeTransactionInTxn(txn, encryptedData, signature, fromAddress, toAddress)
 	if err != nil {
 		return false, fmt.Errorf("error storing transaction in the database: %v", err)
+	}
+
+	if err := txn.Commit(); err != nil {
+		return false, fmt.Errorf("transaction commit failed: %v", err)
 	}
 
 	return true, nil
 }
 
-func (bdb *BlockchainDB) hashData(data []byte) []byte {
-	hasher, _ := blake2b.New256(nil)
-	hasher.Write(data)
-	return hasher.Sum(nil)
-}
-
-func (bdb *BlockchainDB) storeTransaction(encryptedData, signature []byte, fromAddress, toAddress string) error {
-	// Implement actual database interaction here
-	// This is a simplified example of how you might store the transaction
-	txn := bdb.DB.NewTransaction(true)
-	defer txn.Discard()
-
+func (bdb *BlockchainDB) storeTransactionInTxn(txn *badger.Txn, encryptedData, signature []byte, fromAddress, toAddress string) error {
 	err := txn.Set([]byte(fmt.Sprintf("transaction:%s:%s", fromAddress, toAddress)), encryptedData)
 	if err != nil {
 		return err
@@ -159,147 +165,155 @@ func (bdb *BlockchainDB) storeTransaction(encryptedData, signature []byte, fromA
 	if err != nil {
 		return err
 	}
+	return nil
+}
 
-	return txn.Commit()
+func (bdb *BlockchainDB) hashData(data []byte) []byte {
+	hasher, _ := blake2b.New256(nil)
+	hasher.Write(data)
+	return hasher.Sum(nil)
 }
 
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 // InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
 func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []byte) error {
-
-	// Log the private key bytes before base64 encoding
-	log.Printf("Private key bytes before base64 encoding: %v", privateKey)
-
-	// Base64 encode the private key first
+	// Encode and encrypt the private key
 	encodedKey := base64.StdEncoding.EncodeToString(privateKey)
-	log.Printf("Base64 encoded key: %s", encodedKey)
-
 	encryptedKey, err := bdb.encryptData([]byte(encodedKey))
 	if err != nil {
-		log.Printf("Error encrypting private key for address %s: %v", address, err)
 		return fmt.Errorf("error encrypting private key: %v", err)
 	}
 
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte("privateKey-"+address), encryptedKey)
-	})
-	if err != nil {
-		log.Printf("Error storing encrypted private key for address %s: %v", address, err)
+	// Start a new transaction
+	txn := bdb.DB.NewTransaction(true)
+	defer txn.Discard() // Ensure the transaction is discarded if not committed
+
+	// Attempt to set the private key in the database
+	if err := txn.Set([]byte("privateKey-"+address), encryptedKey); err != nil {
 		return fmt.Errorf("error storing encrypted private key: %v", err)
 	}
 
-	log.Printf("Successfully inserted/updated private key for address %s", address)
+	// Commit the transaction
+	if err := txn.Commit(); err != nil {
+		return fmt.Errorf("transaction commit failed: %v", err)
+	}
+
 	return nil
 }
 
 // RetrievePrivateKey retrieves the private key for the given address, decrypting it before returning.
 func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
-	log.Printf("Retrieving private key for address: %s", address)
-	storageKey := "privateKey-" + address + "-ed25519"
-	log.Printf("Looking for storage key: %s", storageKey)
-
 	var encryptedKey []byte
 	err := bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte(storageKey))
+		item, err := txn.Get([]byte("privateKey-" + address))
 		if err != nil {
-			log.Printf("Key not found in database: %s, error: %v", storageKey, err)
-			return err
+			return fmt.Errorf("error retrieving private key: %v", err)
 		}
-
 		encryptedKey, err = item.ValueCopy(nil)
-		if err != nil {
-			log.Printf("Failed to get value for key: %s, error: %v", storageKey, err)
-			return err
-		}
-		return nil
+		return err
 	})
-
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
+		return nil, err
 	}
 
 	decryptedData, err := bdb.decryptData(encryptedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
 	}
-	log.Printf("Decrypted base64 string: %s", string(decryptedData))
 
-	decodedData, err := base64.StdEncoding.DecodeString(string(decryptedData))
-	if err != nil {
-		log.Printf("Error decoding base64 data: %v", err)
-		return nil, err
-	}
-	log.Printf("Decoded private key data: %v", decodedData)
-
-	return decodedData, nil
+	return decryptedData, nil
 }
 
 // fetching of UTXOs from BadgerDB
-func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
+func (bdb *BlockchainDB) GetUTXOsForAddress(txn *badger.Txn, address string) ([]shared.UTXO, error) {
 	var utxos []shared.UTXO
-	err := bdb.DB.View(func(txn *badger.Txn) error {
-		prefix := []byte(fmt.Sprintf("utxo-%s-", address)) // Assuming keys are prefixed with utxo-{address}-
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
 
-		for it.Rewind(); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				var utxo shared.UTXO
-				if err := json.Unmarshal(val, &utxo); err != nil {
-					return err
-				}
-				utxos = append(utxos, utxo)
-				return nil
-			})
-			if err != nil {
+	prefix := []byte(fmt.Sprintf("utxo-%s-", address))
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = prefix
+	it := txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Rewind(); it.ValidForPrefix(prefix); it.Next() {
+		item := it.Item()
+		err := item.Value(func(val []byte) error {
+			var utxo shared.UTXO
+			if err := json.Unmarshal(val, &utxo); err != nil {
 				return err
 			}
+			utxos = append(utxos, utxo)
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("error retrieving UTXOs for address %s: %v", address, err)
 	}
+
 	return utxos, nil
 }
 
-func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {
-	address = strings.TrimSpace(address)
-	address = strings.ToLower(address)
+func (bdb *BlockchainDB) RetrieveTransaction(txn *badger.Txn, transactionID string) (*shared.Transaction, error) {
+	var tx shared.Transaction
 
-	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
-	if !addressRegex.MatchString(address) {
-		return "", fmt.Errorf("invalid address format: %s", address)
-	}
-	return address, nil
-}
+	key := []byte("transaction-" + transactionID)
 
-func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, publicKey []byte) error {
-	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
+	item, err := txn.Get(key)
 	if err != nil {
-		log.Printf("Address formatting error: %v", err)
-		return err
+		return nil, err
 	}
 
-	log.Printf("Attempting to insert public key for address: %s", formattedAddress)
-	data, err := json.Marshal(map[string][]byte{"ed25519PublicKey": publicKey})
-	if err != nil {
-		log.Printf("Failed to marshal public key: %v", err)
-		return err
-	}
-
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte("publicKey-"+formattedAddress), data)
+	err = item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &tx)
 	})
 	if err != nil {
-		log.Printf("Failed to insert public key for address %s: %v", formattedAddress, err)
+		return nil, fmt.Errorf("error unmarshaling transaction: %v", err)
+	}
+
+	return &tx, nil
+}
+
+func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error) {
+	trimmedAddress := strings.TrimSpace(address)
+
+	if len(trimmedAddress) == 0 {
+		return "", fmt.Errorf("invalid address: empty or only whitespace")
+	}
+
+	formattedAddress := strings.ToLower(trimmedAddress)
+
+	if !regexp.MustCompile(`^[a-z0-9]+$`).MatchString(formattedAddress) {
+		return "", fmt.Errorf("invalid address: contains invalid characters")
+	}
+
+	return formattedAddress, nil
+}
+
+func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
+	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
+	if err != nil {
 		return err
 	}
-	log.Printf("Successfully inserted public key for address: %s", formattedAddress)
+
+	// Prepare the data to be inserted or updated
+	data, err := json.Marshal(map[string][]byte{"ed25519PublicKey": ed25519PublicKey})
+	if err != nil {
+		return fmt.Errorf("Failed to marshal public key: %v", err)
+	}
+
+	// Start a new transaction for the database operation
+	txn := bdb.DB.NewTransaction(true)
+	defer txn.Discard() // Ensure that the transaction is discarded if not committed
+
+	// Attempt to set the public key in the database
+	if err := txn.Set([]byte("publicKey-"+formattedAddress), data); err != nil {
+		return fmt.Errorf("Failed to insert public key for address %s: %v", formattedAddress, err)
+	}
+
+	// Commit the transaction
+	if err := txn.Commit(); err != nil {
+		return fmt.Errorf("Transaction commit failed for public key update for address %s: %v", formattedAddress, err)
+	}
+
 	return nil
 }
 
@@ -310,16 +324,13 @@ type publicKeyData struct {
 func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
 	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
-		log.Printf("Address formatting error: %v", err)
 		return nil, err
 	}
 
-	log.Printf("Attempting to retrieve public key for address: %s", formattedAddress)
 	var publicKeyData []byte
 	err = bdb.DB.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("publicKey-" + formattedAddress))
 		if err != nil {
-			log.Printf("Failed to find public key for address %s: %v", formattedAddress, err)
 			return err
 		}
 		return item.Value(func(val []byte) error {
@@ -332,14 +343,9 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 		})
 	})
 	if err != nil {
-		log.Printf("Failed to retrieve public key for address %s: %v", formattedAddress, err)
 		return nil, err
 	}
-	if publicKeyData == nil || len(publicKeyData) == 0 {
-		log.Printf("No public key found for address %s", formattedAddress)
-		return nil, fmt.Errorf("no Ed25519 public key found for address %s", formattedAddress)
-	}
-	log.Printf("Successfully retrieved public key for address: %s", formattedAddress)
+
 	return ed25519.PublicKey(publicKeyData), nil
 }
 
@@ -421,23 +427,22 @@ func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO
 // AddTransaction stores a new transaction in the database. It serializes transaction inputs,
 // outputs, and the signature for persistent storage.
 func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
-	// Serialize the entire transaction object to JSON for storage.
+	txn := bdb.DB.NewTransaction(true)
+	defer txn.Discard()
+
 	txJSON, err := json.Marshal(tx)
 	if err != nil {
 		return fmt.Errorf("error marshaling transaction: %v", err)
 	}
 
-	// Use the transaction ID as the key for the key-value store.
 	key := []byte("transaction-" + tx.ID)
 
-	// Start a write transaction in BadgerDB.
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		// Put the serialized transaction data into the BadgerDB store.
-		return txn.Set(key, txJSON)
-	})
-
-	if err != nil {
+	if err := txn.Set(key, txJSON); err != nil {
 		return fmt.Errorf("error storing transaction in BadgerDB: %v", err)
+	}
+
+	if err := txn.Commit(); err != nil {
+		return fmt.Errorf("transaction commit failed: %v", err)
 	}
 
 	return nil
@@ -569,6 +574,56 @@ func (bdb *BlockchainDB) GetLatestBlockData() ([]byte, error) {
 	}
 
 	return latestBlockData, nil
+}
+
+func (bdb *BlockchainDB) ProcessTransaction(tx *shared.Transaction) error {
+	return bdb.DB.Update(func(txn *badger.Txn) error {
+		if err := bdb.updateUTXOsInTxn(txn, tx.Inputs, tx.Outputs); err != nil {
+			return err
+		}
+		if err := bdb.addTransactionInTxn(txn, tx); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func (bdb *BlockchainDB) updateUTXOsInTxn(txn *badger.Txn, inputs, outputs []shared.UTXO) error {
+	for _, input := range inputs {
+		key := []byte(fmt.Sprintf("utxo-%s-%d", input.TransactionID, input.Index))
+		input.IsSpent = true
+		utxoData, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set(key, utxoData); err != nil {
+			return err
+		}
+		globalUTXOCache.Remove(fmt.Sprintf("%s-%d", input.TransactionID, input.Index))
+	}
+
+	for _, output := range outputs {
+		key := []byte(fmt.Sprintf("utxo-%s-%d", output.TransactionID, output.Index))
+		utxoData, err := json.Marshal(output)
+		if err != nil {
+			return err
+		}
+		if err := txn.Set(key, utxoData); err != nil {
+			return err
+		}
+		globalUTXOCache.Add(fmt.Sprintf("%s-%d", output.TransactionID, output.Index), &output)
+	}
+
+	return nil
+}
+
+func (bdb *BlockchainDB) addTransactionInTxn(txn *badger.Txn, tx *shared.Transaction) error {
+	key := []byte("transaction-" + tx.ID)
+	value, err := json.Marshal(tx)
+	if err != nil {
+		return err
+	}
+	return txn.Set(key, value)
 }
 
 func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int) error {

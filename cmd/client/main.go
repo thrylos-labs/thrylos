@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thrylos-labs/thrylos"
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -90,6 +91,17 @@ func submitTransactionsAsync(client pb.BlockchainServiceClient, transactions []*
 	}
 
 	wg.Wait() // Wait for all transactions to be submitted
+}
+
+func submitTransactionBatch(client thrylos.BlockchainServiceClient, transactions []*thrylos.Transaction) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	batch := &thrylos.TransactionBatchRequest{
+		Transactions: transactions,
+	}
+	_, err := client.SubmitTransactionBatch(ctx, batch)
+	return err
 }
 
 // Client Setup:

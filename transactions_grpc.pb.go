@@ -23,6 +23,7 @@ const (
 	BlockchainService_GetBlock_FullMethodName               = "/thrylos.BlockchainService/GetBlock"
 	BlockchainService_GetTransaction_FullMethodName         = "/thrylos.BlockchainService/GetTransaction"
 	BlockchainService_GetLastBlock_FullMethodName           = "/thrylos.BlockchainService/GetLastBlock"
+	BlockchainService_SubmitTransactionBatch_FullMethodName = "/thrylos.BlockchainService/SubmitTransactionBatch"
 	BlockchainService_GetBalance_FullMethodName             = "/thrylos.BlockchainService/GetBalance"
 	BlockchainService_GetStats_FullMethodName               = "/thrylos.BlockchainService/GetStats"
 	BlockchainService_GetPendingTransactions_FullMethodName = "/thrylos.BlockchainService/GetPendingTransactions"
@@ -36,6 +37,7 @@ type BlockchainServiceClient interface {
 	GetBlock(ctx context.Context, in *GetBlockRequest, opts ...grpc.CallOption) (*BlockResponse, error)
 	GetTransaction(ctx context.Context, in *GetTransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error)
 	GetLastBlock(ctx context.Context, in *EmptyRequest, opts ...grpc.CallOption) (*BlockResponse, error)
+	SubmitTransactionBatch(ctx context.Context, in *TransactionBatchRequest, opts ...grpc.CallOption) (*TransactionBatchResponse, error)
 	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error)
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*StatsResponse, error)
 	GetPendingTransactions(ctx context.Context, in *GetPendingTransactionsRequest, opts ...grpc.CallOption) (*PendingTransactionsResponse, error)
@@ -85,6 +87,15 @@ func (c *blockchainServiceClient) GetLastBlock(ctx context.Context, in *EmptyReq
 	return out, nil
 }
 
+func (c *blockchainServiceClient) SubmitTransactionBatch(ctx context.Context, in *TransactionBatchRequest, opts ...grpc.CallOption) (*TransactionBatchResponse, error) {
+	out := new(TransactionBatchResponse)
+	err := c.cc.Invoke(ctx, BlockchainService_SubmitTransactionBatch_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *blockchainServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error) {
 	out := new(BalanceResponse)
 	err := c.cc.Invoke(ctx, BlockchainService_GetBalance_FullMethodName, in, out, opts...)
@@ -120,6 +131,7 @@ type BlockchainServiceServer interface {
 	GetBlock(context.Context, *GetBlockRequest) (*BlockResponse, error)
 	GetTransaction(context.Context, *GetTransactionRequest) (*TransactionResponse, error)
 	GetLastBlock(context.Context, *EmptyRequest) (*BlockResponse, error)
+	SubmitTransactionBatch(context.Context, *TransactionBatchRequest) (*TransactionBatchResponse, error)
 	GetBalance(context.Context, *GetBalanceRequest) (*BalanceResponse, error)
 	GetStats(context.Context, *GetStatsRequest) (*StatsResponse, error)
 	GetPendingTransactions(context.Context, *GetPendingTransactionsRequest) (*PendingTransactionsResponse, error)
@@ -141,6 +153,9 @@ func (UnimplementedBlockchainServiceServer) GetTransaction(context.Context, *Get
 }
 func (UnimplementedBlockchainServiceServer) GetLastBlock(context.Context, *EmptyRequest) (*BlockResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetLastBlock not implemented")
+}
+func (UnimplementedBlockchainServiceServer) SubmitTransactionBatch(context.Context, *TransactionBatchRequest) (*TransactionBatchResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SubmitTransactionBatch not implemented")
 }
 func (UnimplementedBlockchainServiceServer) GetBalance(context.Context, *GetBalanceRequest) (*BalanceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetBalance not implemented")
@@ -236,6 +251,24 @@ func _BlockchainService_GetLastBlock_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BlockchainService_SubmitTransactionBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransactionBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BlockchainServiceServer).SubmitTransactionBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BlockchainService_SubmitTransactionBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BlockchainServiceServer).SubmitTransactionBatch(ctx, req.(*TransactionBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BlockchainService_GetBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetBalanceRequest)
 	if err := dec(in); err != nil {
@@ -312,6 +345,10 @@ var BlockchainService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetLastBlock",
 			Handler:    _BlockchainService_GetLastBlock_Handler,
+		},
+		{
+			MethodName: "SubmitTransactionBatch",
+			Handler:    _BlockchainService_SubmitTransactionBatch_Handler,
 		},
 		{
 			MethodName: "GetBalance",
