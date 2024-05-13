@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
@@ -245,21 +246,42 @@ func (b *Block) ComputeHash() string {
 		return ""
 	}
 
-	// Hash block's static components
-	hasher.Write([]byte(fmt.Sprintf("%d", b.Index)))
-	hasher.Write([]byte(fmt.Sprintf("%d", b.Timestamp)))
+	// Using binary encoding to convert integers directly to bytes
+	binary.Write(hasher, binary.BigEndian, b.Index)
+	binary.Write(hasher, binary.BigEndian, b.Timestamp)
 	hasher.Write([]byte(b.PrevHash))
 	hasher.Write([]byte(b.Validator))
 
-	// Process transactions
+	// Process transactions concurrently if possible
+	// Example placeholder for transaction hashing
+	txHashes := make(chan []byte, len(b.Transactions))
+	var wg sync.WaitGroup
+
 	for _, tx := range b.Transactions {
-		txBytes, err := proto.Marshal(tx)
-		if err != nil {
-			log.Printf("Failed to serialize transaction: %v", err)
-			return "" // Return an empty string or handle the error as per your error policy
+		wg.Add(1)
+		go func(tx *thrylos.Transaction) {
+			defer wg.Done()
+			txBytes, err := proto.Marshal(tx)
+			if err != nil {
+				log.Printf("Failed to serialize transaction: %v", err)
+				txHashes <- nil
+				return
+			}
+			txHash := blake2b.Sum256(txBytes)
+			txHashes <- txHash[:]
+		}(tx)
+	}
+
+	go func() {
+		wg.Wait()
+		close(txHashes)
+	}()
+
+	// Collect hashes from the channel
+	for txHash := range txHashes {
+		if txHash != nil {
+			hasher.Write(txHash)
 		}
-		txHash := blake2b.Sum256(txBytes)
-		hasher.Write(txHash[:])
 	}
 
 	if len(b.VerkleRoot) > 0 {
