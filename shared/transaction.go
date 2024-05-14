@@ -533,6 +533,33 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 	return true
 }
 
+// GenerateTransactionID creates a unique identifier for a transaction based on its contents.
+func GenerateTransactionID(inputs []UTXO, outputs []UTXO, address string, amount, gasFee int) (string, error) {
+	var builder strings.Builder
+
+	// Append the sender's address
+	builder.WriteString(address)
+
+	// Append the amount and gas fee
+	builder.WriteString(fmt.Sprintf("%d%d", amount, gasFee))
+
+	// Append details of inputs and outputs
+	for _, input := range inputs {
+		builder.WriteString(fmt.Sprintf("%s%d", input.OwnerAddress, input.Amount))
+	}
+	for _, output := range outputs {
+		builder.WriteString(fmt.Sprintf("%s%d", output.OwnerAddress, output.Amount))
+	}
+
+	// Create a BLAKE2b hash of the builder's string
+	hash, err := blake2b.New256(nil)
+	if err != nil {
+		return "", err // Handle error appropriately
+	}
+	hash.Write([]byte(builder.String()))
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // SanitizeAndFormatAddress cleans and validates blockchain addresses.
 func SanitizeAndFormatAddress(address string) (string, error) {
 	originalAddress := address // Store the original address for logging

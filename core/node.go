@@ -152,7 +152,6 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 	var collectedAmount int
 	var collectedInputs []shared.UTXO
 
-	// Assuming your Blockchain has a method GetUTXOsForAddress that returns all UTXOs for a given address.
 	utxos := node.Blockchain.GetUTXOsForAddress(senderAddress)
 	for _, utxo := range utxos {
 		if collectedAmount >= amount {
@@ -170,29 +169,38 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 	return collectedInputs, change, nil
 }
 
+// CalculateGas computes the gas fee based on the size of the transaction data.
+func CalculateGas(dataSize int) int {
+	baseFee := 10   // Base fee for transaction processing
+	perByteFee := 1 // Fee per byte of transaction data
+	return baseFee + (dataSize * perByteFee)
+}
+
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
 func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *string, amount int, data *[]byte, gas *int) error {
-	// For simplicity, assume 'from', 'data', and 'gas' are optional and adjust the logic accordingly.
-
+	// Retrieve the private key securely
 	var ed25519PrivateKey ed25519.PrivateKey
-	var aesKey []byte
-	// var additionalData []byte
 
-	// Example: Assume `data` can optionally contain the AES key.
+	var aesKey []byte
 	if data != nil {
 		aesKey = *data
 	}
 
-	// Handling 'from' if needed for any logic, for now, it's ignored in this example as your existing logic uses `node.Address`
-	if from != nil {
-		// Optional: Handle retrieval or conversion of the private key associated with 'from'
+	// Calculate gas based on data size if not provided
+	var gasFee int
+	if gas != nil {
+		gasFee = *gas
+	} else if data != nil {
+		gasFee = CalculateGas(len(*data))
+	} else {
+		gasFee = CalculateGas(0) // Default base fee if no data is present
 	}
 
-	// Optional: Use 'gas' if your transaction logic needs to account for transaction fees or similar parameters.
+	// Total amount includes the gas fee
+	totalAmount := amount + gasFee
 
-	// The existing logic to collect inputs, prepare outputs, and broadcast a transaction.
-	inputs, change, err := node.CollectInputsForTransaction(amount, node.Address)
+	inputs, change, err := node.CollectInputsForTransaction(totalAmount, node.Address)
 	if err != nil {
 		return fmt.Errorf("failed to collect inputs for transaction: %v", err)
 	}
@@ -202,7 +210,13 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *s
 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
 	}
 
-	transactionID := "unique_transaction_id" // Replace with actual ID logic
+	// Generate a unique transaction ID
+	// Generate a unique transaction ID
+	transactionID, err := shared.GenerateTransactionID(inputs, outputs, node.Address, amount, gasFee)
+	if err != nil {
+		// Handle the error appropriately, perhaps by returning it or logging it
+		return fmt.Errorf("failed to generate transaction ID: %v", err)
+	}
 
 	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey)
 	if err != nil {
