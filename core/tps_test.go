@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
+	thrylos "github.com/thrylos-labs/thrylos"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -171,4 +172,58 @@ func TestBlockTimeWithGRPCDistributed(t *testing.T) {
 	t.Logf("Average block time: %s", averageBlockTime)
 	elapsedOverall := time.Since(start)
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
+}
+
+// go test -v -timeout 30s -run ^TestTransactionCosts$ github.com/thrylos-labs/thrylos/core
+
+func TestTransactionCosts(t *testing.T) {
+	const (
+		smallDataSize  = 10    // 10 bytes
+		mediumDataSize = 1000  // 1000 bytes
+		largeDataSize  = 10000 // 10 KB
+	)
+
+	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	if err != nil {
+		t.Fatalf("Failed to connect to gRPC server: %v", err)
+	}
+	defer conn.Close()
+	client := thrylos.NewBlockchainServiceClient(conn)
+
+	testCases := []struct {
+		name        string
+		dataSize    int
+		expectedGas int
+	}{
+		{"SmallData", smallDataSize, CalculateGas(smallDataSize)},
+		{"MediumData", mediumDataSize, CalculateGas(mediumDataSize)},
+		{"LargeData", largeDataSize, CalculateGas(largeDataSize)},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := make([]byte, tc.dataSize)
+			transaction := &thrylos.Transaction{
+				Id:        fmt.Sprintf("%s-transaction", tc.name),
+				Timestamp: time.Now().Unix(),
+				// Assuming encrypted data is representative of actual transaction data
+				EncryptedInputs:  data,
+				EncryptedOutputs: data,
+				Signature:        []byte("dummy-signature"),
+				Sender:           "test-sender",
+			}
+
+			request := &thrylos.TransactionRequest{Transaction: transaction}
+			_, err := client.SubmitTransaction(context.Background(), request)
+			if err != nil {
+				t.Errorf("Failed to submit transaction: %v", err)
+			}
+
+			// Log the expected gas cost for the transaction
+			t.Logf("Transaction %s expected to cost %d gas units", tc.name, tc.expectedGas)
+
+			// Optionally, validate that the gas cost matches expected values
+			// This might involve querying a mock or actual database, or adjusting the test setup to capture this data.
+		})
+	}
 }
