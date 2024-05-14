@@ -18,6 +18,7 @@ import (
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
+	"golang.org/x/crypto/blake2b"
 
 	pb "github.com/thrylos-labs/thrylos"
 
@@ -33,12 +34,17 @@ type server struct {
 	pb.UnimplementedBlockchainServiceServer
 	db           *database.BlockchainDB       // Include a pointer to BlockchainDB
 	PublicKeyMap map[string]ed25519.PublicKey // Maps sender addresses to their public keys
+	hasherPool   *XOFPool                     // Add the hasher pool here
+
 }
 
 func NewServer(db *database.BlockchainDB) *server {
+	pool := NewXOFPool(10) // Adjust the pool size based on expected load
+
 	return &server{
 		db:           db,
 		PublicKeyMap: make(map[string]ed25519.PublicKey),
+		hasherPool:   pool,
 	}
 }
 
@@ -71,11 +77,62 @@ func (s *server) SubmitTransactionBatch(ctx context.Context, req *thrylos.Transa
 	return response, nil
 }
 
+type XOFPool struct {
+	pool chan blake2b.XOF
+}
+
+func NewXOFPool(size int) *XOFPool {
+	pool := make(chan blake2b.XOF, size)
+	for i := 0; i < size; i++ {
+		xof, err := blake2b.NewXOF(blake2b.OutputLengthUnknown, nil) // Adjust parameters as needed
+		if err != nil {
+			log.Printf("Failed to create XOF: %v", err)
+			continue
+		}
+		pool <- xof
+	}
+	return &XOFPool{pool: pool}
+}
+
+func (p *XOFPool) GetXOF() blake2b.XOF {
+	return <-p.pool
+}
+
+func (p *XOFPool) ReleaseXOF(xof blake2b.XOF) {
+	// Resetting XOF might not be straightforward; consider re-creating if necessary
+	p.pool <- xof
+}
+
 func (s *server) processTransaction(transaction *thrylos.Transaction) error {
 	if transaction == nil {
 		return fmt.Errorf("received nil transaction")
 	}
 
+	// Acquire a hasher from the pool
+	hasher := s.hasherPool.GetXOF()
+	defer s.hasherPool.ReleaseXOF(hasher)
+
+	// Serialize and hash the transaction for verification/logging
+	txData, err := json.Marshal(transaction)
+	if err != nil {
+		return fmt.Errorf("error serializing transaction: %v", err)
+	}
+
+	// Write data to hasher and calculate the hash
+	if _, err := hasher.Write(txData); err != nil {
+		return fmt.Errorf("hashing error: %v", err)
+	}
+
+	// Read the hash output
+	hashOutput := make([]byte, 32) // Adjust size based on your security requirements
+	if _, err := hasher.Read(hashOutput); err != nil {
+		return fmt.Errorf("error reading hash output: %v", err)
+	}
+
+	// Log the transaction hash (or use it in further validations)
+	log.Printf("Processed transaction %s with hash %x", transaction.Id, hashOutput)
+
+	// Continue with conversion and validation...
 	// Convert thrylos.Transaction to shared.Transaction
 	sharedTx := core.ThrylosToShared(transaction)
 	if sharedTx == nil {
@@ -87,7 +144,7 @@ func (s *server) processTransaction(transaction *thrylos.Transaction) error {
 		return fmt.Errorf("validation failed for transaction ID %s", sharedTx.ID)
 	}
 
-	// Process the transaction including UTXO updates and adding the transaction
+	// Process the transaction including UTXO updates and adding the transaction to the blockchain
 	return s.db.ProcessTransaction(sharedTx)
 }
 
