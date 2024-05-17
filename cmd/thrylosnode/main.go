@@ -26,12 +26,10 @@ import (
 	// Import your blockchain package
 )
 
-func init() {
+func main() {
 	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
 	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
-}
 
-func main() {
 	// Load configuration from .env file
 	envPath := "../../.env"
 	if err := godotenv.Load(envPath); err != nil {
@@ -46,6 +44,7 @@ func main() {
 	wasmPath := os.Getenv("WASM_PATH")
 	dataDir := os.Getenv("DATA_DIR")
 	chainID := "0x539" // Default local chain ID (1337 in decimal)
+	domainName := os.Getenv("DOMAIN_NAME")
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
@@ -175,8 +174,6 @@ func main() {
 		}
 	}))
 
-	// Set up autocert manager
-	domainName := os.Getenv("DOMAIN_NAME") // Ensure DOMAIN_NAME is correctly set in your .env
 	certManager := autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Cache:      autocert.DirCache("certs"),         // Folder to store the certificates
@@ -185,8 +182,8 @@ func main() {
 
 	// Set up HTTPS server
 	httpsServer := &http.Server{
-		Addr:    ":https", // Standard HTTPS port
-		Handler: handler,  // Reference the CORS-wrapped handler
+		Addr:    ":443",  // Standard HTTPS port
+		Handler: handler, // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
 			GetCertificate: certManager.GetCertificate, // Let autocert handle the certificates
 		},
@@ -195,7 +192,7 @@ func main() {
 	// Serve using HTTPS, autocert handles the certificates
 	log.Printf("Starting HTTPS server on %s\n", httpsServer.Addr)
 	go func() {
-		err := httpsServer.ListenAndServeTLS("", "") // autocert manages the certs
+		err := httpsServer.ListenAndServeTLS("", "")
 		if err != nil {
 			log.Fatalf("Failed to start HTTPS server: %v", err)
 		}
