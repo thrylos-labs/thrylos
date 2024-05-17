@@ -121,10 +121,19 @@ func main() {
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://127.0.0.1:8545", "http://127.0.0.1:8546", "chrome-extension://*"},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedOrigins: []string{
+			"chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn", // MetaMask extension ID
+			"http://localhost:3000",                               // Your development frontend
+			"http://127.0.0.1:3000",                               // Another common localhost format
+			"http://localhost:8545",
+			"http://127.0.0.1:8545",
+			"http://localhost:8546",
+			"http://127.0.0.1:8546",
+		},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
+		Debug:            true,
 	})
 
 	// Define HTTP routes and handlers within a single handler function wrapped by CORS

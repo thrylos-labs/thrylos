@@ -23,7 +23,7 @@ DATA_DIR=/database
 
 4. **Navigate**: In terminal change directory to `cd cmd/thrylosnode`.
 
-5. **Run**: Execute `go run main.go` in your terminal.
+5. **Run**: Execute `'go run .'` in your terminal.
 
 ## send a transaction using the cli signer 
 

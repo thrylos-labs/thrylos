@@ -17,7 +17,7 @@ type MockNode struct {
 	balance      map[string]int64
 	blockNumber  int64
 	transactions []string // to track transactions broadcast
-
+	accounts     []string
 }
 
 func (m *MockNode) CreateAndBroadcastTransaction(to string, from *string, value int, data *[]byte, gas *int) error {
@@ -61,6 +61,7 @@ func (m *MockNode) GetBlockCount() int {
 	return int(m.blockNumber) // Assuming blockNumber is an int64 and needs to be converted
 }
 
+// Constructor for MockNode
 func NewMockNode() *MockNode {
 	return &MockNode{
 		balance: map[string]int64{
@@ -68,7 +69,41 @@ func NewMockNode() *MockNode {
 			"0x456": 0,
 		},
 		blockNumber: 1024,
+		accounts:    []string{"0x123", "0x456"},
 	}
+}
+
+// Implement GetTransactionReceipt method
+func (node *MockNode) GetTransactionReceipt(txHash string) (map[string]interface{}, error) {
+	// Return a mock receipt
+	return map[string]interface{}{
+		"transactionHash":   txHash,
+		"transactionIndex":  1,
+		"blockHash":         "0xabc",
+		"blockNumber":       node.blockNumber,
+		"cumulativeGasUsed": 21000,
+		"gasUsed":           21000,
+		"contractAddress":   nil,
+		"logs":              []interface{}{},
+		"status":            "1",
+	}, nil
+}
+
+// Implement EstimateGas method
+func (node *MockNode) EstimateGas(tx map[string]interface{}) (uint64, error) {
+	// Return a mock gas estimate
+	return 21000, nil
+}
+
+// Implement CallContract method
+func (node *MockNode) CallContract(tx map[string]interface{}) (string, error) {
+	// Return a mock contract call result
+	return "0x", nil
+}
+
+// Implement GetAccounts method
+func (node *MockNode) GetAccounts() ([]string, error) {
+	return node.accounts, nil
 }
 
 func TestHandleChainID(t *testing.T) {

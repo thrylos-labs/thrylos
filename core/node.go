@@ -227,6 +227,26 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *s
 	return nil
 }
 
+func (node *Node) CallContract(tx map[string]interface{}) (string, error) {
+	// Implementation for calling a contract
+	return "0x", nil
+}
+
+func (node *Node) EstimateGas(tx map[string]interface{}) (uint64, error) {
+	// Implementation here
+	return 0, nil
+}
+
+func (node *Node) GetAccounts() ([]string, error) {
+	// Implementation here
+	return []string{}, nil
+}
+
+func (node *Node) GetTransactionReceipt(txHash string) (map[string]interface{}, error) {
+	// Implementation here
+	return nil, nil
+}
+
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
 	pubKey, exists := node.PublicKeyMap[address]

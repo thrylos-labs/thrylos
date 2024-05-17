@@ -31,8 +31,12 @@ type RPCError struct {
 
 type BlockchainNode interface {
 	GetBalance(address string) (int64, error)
-	GetBlockCount() int // Ensure this matches the return type of your method implementations
+	GetBlockCount() int
 	CreateAndBroadcastTransaction(to string, from *string, value int, data *[]byte, gas *int) error
+	GetTransactionReceipt(txHash string) (map[string]interface{}, error)
+	EstimateGas(tx map[string]interface{}) (uint64, error)
+	CallContract(tx map[string]interface{}) (string, error)
+	GetAccounts() ([]string, error)
 }
 
 type JSONRPCHandler struct {
@@ -53,48 +57,9 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received JSON-RPC request: %v", req)
 
-	// Default ID value to 0
-	id := 0
-	var response RPCResponse
+	var id interface{} = req.ID
 
-	// Determine the appropriate ID based on its type
-	switch v := req.ID.(type) {
-	case string:
-		parsedID, err := strconv.Atoi(v)
-		if err != nil {
-			log.Printf("Invalid ID format: %v", err)
-			response = RPCResponse{
-				Jsonrpc: "2.0",
-				Error:   &RPCError{-32600, "Invalid ID format"},
-				ID:      0, // Set to zero because the ID was invalid
-			}
-			respBytes, _ := json.Marshal(response)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write(respBytes)
-			return
-		}
-		id = parsedID
-	case float64:
-		id = int(v)
-	case int:
-		id = v
-	default:
-		log.Printf("Unsupported ID type: %T", req.ID)
-		response = RPCResponse{
-			Jsonrpc: "2.0",
-			Error:   &RPCError{-32600, "Unsupported ID type"},
-			ID:      0,
-		}
-		respBytes, _ := json.Marshal(response)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write(respBytes)
-		return
-	}
-
-	// Handle the request based on the method
-	response = handleRPCRequest(req, id)
+	response := h.handleRPCRequest(req, id)
 
 	log.Printf("Sending JSON-RPC response: %v", response)
 	respBytes, _ := json.Marshal(response)
@@ -102,8 +67,7 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(respBytes)
 }
 
-func handleRPCRequest(req RPCRequest, id int) RPCResponse {
-	// Handle specific methods here
+func (h *JSONRPCHandler) handleRPCRequest(req RPCRequest, id interface{}) RPCResponse {
 	switch req.Method {
 	case "eth_chainId":
 		return RPCResponse{
@@ -111,6 +75,22 @@ func handleRPCRequest(req RPCRequest, id int) RPCResponse {
 			Result:  localChainID,
 			ID:      id,
 		}
+	case "eth_blockNumber":
+		return h.handleBlockNumber(req)
+	case "eth_getBalance":
+		return h.handleGetBalance(req)
+	case "eth_sendTransaction":
+		return h.handleSendTransaction(req)
+	case "eth_getTransactionReceipt":
+		return h.handleGetTransactionReceipt(req)
+	case "eth_estimateGas":
+		return h.handleEstimateGas(req)
+	case "eth_call":
+		return h.handleCall(req)
+	case "eth_accounts":
+		return h.handleAccounts(req)
+	case "net_version":
+		return h.handleNetVersion(req)
 	default:
 		return RPCResponse{
 			Jsonrpc: "2.0",
@@ -162,7 +142,6 @@ func (h *JSONRPCHandler) handleGetBalance(req RPCRequest) RPCResponse {
 }
 
 func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
-	// Perform type assertion to convert req.ID to an int
 	var id int
 	switch v := req.ID.(type) {
 	case string:
@@ -173,10 +152,10 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 			return RPCResponse{
 				Jsonrpc: "2.0",
 				Error: &RPCError{
-					Code:    -32600, // Standard JSON-RPC error code for invalid request
+					Code:    -32600,
 					Message: "Invalid ID format",
 				},
-				ID: 0, // Set to zero or some default value to indicate error
+				ID: 0,
 			}
 		}
 	case float64:
@@ -195,10 +174,8 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 		}
 	}
 
-	// Extract transaction parameters from the request
 	txMap, _ := req.Params[0].(map[string]interface{})
 
-	// Ensure the transaction has a valid recipient
 	to, ok := txMap["to"].(string)
 	if !ok {
 		return RPCResponse{
@@ -211,7 +188,6 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 		}
 	}
 
-	// Convert the value to int64
 	valueHex, ok := txMap["value"].(string)
 	if !ok {
 		return RPCResponse{
@@ -224,7 +200,6 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 		}
 	}
 
-	// Parse the hex value
 	value, err := strconv.ParseInt(valueHex, 0, 64)
 	if err != nil {
 		return RPCResponse{
@@ -237,7 +212,6 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 		}
 	}
 
-	// Attempt to create and broadcast the transaction
 	err = h.node.CreateAndBroadcastTransaction(to, nil, int(value), nil, nil)
 	if err != nil {
 		log.Printf("Transaction creation failed: %v", err)
@@ -253,8 +227,124 @@ func (h *JSONRPCHandler) handleSendTransaction(req RPCRequest) RPCResponse {
 
 	return RPCResponse{
 		Jsonrpc: "2.0",
-		Result:  "0x1", // Success indicator
+		Result:  "0x1",
 		ID:      id,
+	}
+}
+
+func (h *JSONRPCHandler) handleGetTransactionReceipt(req RPCRequest) RPCResponse {
+	txHash, ok := req.Params[0].(string)
+	if !ok {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32602,
+				Message: "Invalid params",
+			},
+			ID: req.ID,
+		}
+	}
+
+	receipt, err := h.node.GetTransactionReceipt(txHash)
+	if err != nil {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+			ID: req.ID,
+		}
+	}
+
+	return RPCResponse{
+		Jsonrpc: "2.0",
+		Result:  receipt,
+		ID:      req.ID,
+	}
+}
+
+func (h *JSONRPCHandler) handleEstimateGas(req RPCRequest) RPCResponse {
+	txMap, ok := req.Params[0].(map[string]interface{})
+	if !ok {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32602,
+				Message: "Invalid params",
+			},
+			ID: req.ID,
+		}
+	}
+
+	gas, err := h.node.EstimateGas(txMap)
+	if err != nil {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+			ID: req.ID,
+		}
+	}
+
+	return RPCResponse{
+		Jsonrpc: "2.0",
+		Result:  fmt.Sprintf("0x%x", gas),
+		ID:      req.ID,
+	}
+}
+
+func (h *JSONRPCHandler) handleCall(req RPCRequest) RPCResponse {
+	txMap, ok := req.Params[0].(map[string]interface{})
+	if !ok {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32602,
+				Message: "Invalid params",
+			},
+			ID: req.ID,
+		}
+	}
+
+	result, err := h.node.CallContract(txMap)
+	if err != nil {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+			ID: req.ID,
+		}
+	}
+
+	return RPCResponse{
+		Jsonrpc: "2.0",
+		Result:  result,
+		ID:      req.ID,
+	}
+}
+
+func (h *JSONRPCHandler) handleAccounts(req RPCRequest) RPCResponse {
+	accounts, err := h.node.GetAccounts()
+	if err != nil {
+		return RPCResponse{
+			Jsonrpc: "2.0",
+			Error: &RPCError{
+				Code:    -32000,
+				Message: err.Error(),
+			},
+			ID: req.ID,
+		}
+	}
+
+	return RPCResponse{
+		Jsonrpc: "2.0",
+		Result:  accounts,
+		ID:      req.ID,
 	}
 }
 
