@@ -90,9 +90,28 @@ func (node *MockNode) GetTransactionReceipt(txHash string) (map[string]interface
 }
 
 // Implement EstimateGas method
+// Implement EstimateGas method
 func (node *MockNode) EstimateGas(tx map[string]interface{}) (uint64, error) {
-	// Return a mock gas estimate
-	return 21000, nil
+	// Basic gas cost for a simple transfer
+	baseGas := uint64(21000)
+
+	// Check if there is data in the transaction to simulate complexity
+	if data, exists := tx["data"]; exists && data != nil {
+		// Simulate additional gas for transactions involving data (e.g., contract interactions)
+		dataString, ok := data.(string)
+		if !ok {
+			return 0, fmt.Errorf("invalid data format")
+		}
+
+		// Calculate additional gas assuming 10 gas per byte of data
+		additionalGas := uint64(len(dataString) * 10)
+
+		// Return the sum of base gas and additional gas
+		return baseGas + additionalGas, nil
+	}
+
+	// If no additional data, return the base gas cost
+	return baseGas, nil
 }
 
 // Implement CallContract method

@@ -57,14 +57,39 @@ func (h *JSONRPCHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received JSON-RPC request: %v", req)
 
-	var id interface{} = req.ID
+	// Validate ID type; only integer and string types are valid
+	switch req.ID.(type) {
+	case string:
+		if _, err := strconv.Atoi(req.ID.(string)); err != nil {
+			sendError(w, -32600, "Invalid ID format", nil)
+			return
+		}
+	case float64, int, int64: // JSON numbers are decoded into float64 by default in Go
+	default:
+		sendError(w, -32600, "Invalid ID type", nil)
+		return
+	}
 
-	response := h.handleRPCRequest(req, id)
+	response := h.handleRPCRequest(req, req.ID)
 
 	log.Printf("Sending JSON-RPC response: %v", response)
 	respBytes, _ := json.Marshal(response)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(respBytes)
+}
+
+func sendError(w http.ResponseWriter, code int, msg string, id interface{}) {
+	errorResponse := RPCResponse{
+		Jsonrpc: "2.0",
+		Error: &RPCError{
+			Code:    code,
+			Message: msg,
+		},
+		ID: id,
+	}
+	respBytes, _ := json.Marshal(errorResponse)
+	w.Header().Set("Content-Type", "application/json")
+	http.Error(w, string(respBytes), http.StatusBadRequest)
 }
 
 func (h *JSONRPCHandler) handleRPCRequest(req RPCRequest, id interface{}) RPCResponse {
