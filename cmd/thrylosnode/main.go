@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
+	"golang.org/x/crypto/acme/autocert"
 
 	pb "github.com/thrylos-labs/thrylos"
 
@@ -24,24 +26,19 @@ import (
 	// Import your blockchain package
 )
 
-// This setup ensures that all logs generated from this package are consistent and provide sufficient detail for development and debugging purposes without needing to configure these settings multiple times throughout your code.
 func init() {
 	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
 	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
 }
 
 func main() {
-
 	// Load configuration from .env file
-	// Specify the path to your .env file
 	envPath := "../../.env"
 	if err := godotenv.Load(envPath); err != nil {
 		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
 	}
 
 	// Environment variables
-
-	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
@@ -56,8 +53,7 @@ func main() {
 
 	if testnet {
 		fmt.Println("Running in Testnet Mode")
-		httpAddress = "0.0.0.0:8546" // Example testnet address
-		chainID = "0x5"              // Goerli Testnet chain ID
+		chainID = "0x5" // Goerli Testnet chain ID
 	}
 
 	if wasmPath == "" {
@@ -179,17 +175,29 @@ func main() {
 		}
 	}))
 
-	// Listen for HTTP server
-	httpLis, err := net.Listen("tcp", httpAddress)
-	if err != nil {
-		log.Fatalf("Failed to listen for HTTP: %v", err)
+	// Set up autocert manager
+	domainName := os.Getenv("DOMAIN_NAME") // Ensure DOMAIN_NAME is correctly set in your .env
+	certManager := autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		Cache:      autocert.DirCache("certs"),         // Folder to store the certificates
+		HostPolicy: autocert.HostWhitelist(domainName), // Only request certs for your domain
 	}
 
-	// Start the HTTP server with CORS-enabled handler
+	// Set up HTTPS server
+	httpsServer := &http.Server{
+		Addr:    ":https", // Standard HTTPS port
+		Handler: handler,  // Reference the CORS-wrapped handler
+		TLSConfig: &tls.Config{
+			GetCertificate: certManager.GetCertificate, // Let autocert handle the certificates
+		},
+	}
+
+	// Serve using HTTPS, autocert handles the certificates
+	log.Printf("Starting HTTPS server on %s\n", httpsServer.Addr)
 	go func() {
-		fmt.Printf("Starting HTTP server on %s\n", httpAddress)
-		if err := http.Serve(httpLis, handler); err != nil {
-			log.Fatalf("Failed to start HTTP server: %v", err)
+		err := httpsServer.ListenAndServeTLS("", "") // autocert manages the certs
+		if err != nil {
+			log.Fatalf("Failed to start HTTPS server: %v", err)
 		}
 	}()
 
