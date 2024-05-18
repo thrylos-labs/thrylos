@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/go-verkle"
+	"github.com/gballet/go-verkle"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
