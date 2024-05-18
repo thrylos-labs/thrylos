@@ -4,6 +4,7 @@ go 1.21.4
 
 require (
     github.com/dgraph-io/badger v1.6.2
+    github.com/thrylos-labs/go-verkle v1.0.0
     github.com/hashicorp/golang-lru v1.0.2
     github.com/joho/godotenv v1.5.1
     github.com/rs/cors v1.10.1
@@ -42,4 +43,4 @@ require (
     rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/gballet/go-verkle => github.com/thrylos-labs/go-verkle v0.1.0
+replace github.com/thrylos-labs/go-verkle => github.com/thrylos-labs/go-verkle v1.0.0
