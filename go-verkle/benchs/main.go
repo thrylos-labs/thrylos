@@ -7,7 +7,7 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/thrylos-labs/go-verkle"
+	"github.com/ethereum/go-verkle"
 )
 
 func main() {
