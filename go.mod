@@ -43,4 +43,4 @@ require (
 	rsc.io/tmplfunc v0.0.3 // indirect
 )
 
-replace github.com/gballet/go-verkle => /Users/ned/Documents/GitHub/thrylos/go-verkle
+replace github.com/gballet/go-verkle => ./go-verkle
