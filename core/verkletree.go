@@ -3,7 +3,7 @@ package core
 import (
 	"errors"
 
-	"github.com/gballet/go-verkle"
+	"github.com/thrylos-labs/go-verkle"
 )
 
 const (
