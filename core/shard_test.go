@@ -5,6 +5,8 @@ import (
 	"io/ioutil"
 	"os"
 	"testing"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // TestNewShard tests the creation of a new shard.
@@ -198,6 +200,94 @@ func TestShardDataConsistency(t *testing.T) {
 	// Simulate activities that change the state
 	// Ensure that the state changes are consistent and synchronized across all nodes in the shard
 	// ...
+}
+
+func NewTestNode(address string, shard *Shard) *Node {
+	// Use a static directory and empty slice for peers for testing
+	tempDir := "/tmp" // This would be a mock or a suitable temporary directory.
+	knownPeers := []string{}
+	return NewNode(address, knownPeers, tempDir, shard, true) // true indicates it is a test environment
+}
+
+func TestDistributeUTXOs(t *testing.T) {
+	shard := NewShard(1, 3)
+
+	// Temporary directory paths and known peers setup for example purposes
+	tempDir1, tempDir2, tempDir3 := "/tmp/node1", "/tmp/node2", "/tmp/node3"
+	knownPeers := []string{} // assuming no known peers for simplicity
+
+	node1 := NewNode("node1", knownPeers, tempDir1, shard, true) // Set isTest to true
+	node2 := NewNode("node2", knownPeers, tempDir2, shard, true) // Set isTest to true
+	node3 := NewNode("node3", knownPeers, tempDir3, shard, true) // Set isTest to true
+
+	shard.AddNode(node1)
+	shard.AddNode(node2)
+	shard.AddNode(node3)
+
+	ring := NewConsistentHashRing()
+	nodes := []*Node{node1, node2, node3}
+	for _, node := range nodes {
+		ring.AddNode(node.Address)
+	}
+
+	// Populate shared.AllUTXOs with some test data
+	shared.AllUTXOs = []shared.UTXO{
+		{TransactionID: "tx1", Index: 0, OwnerAddress: "addr1", Amount: 100},
+		{TransactionID: "tx2", Index: 0, OwnerAddress: "addr2", Amount: 200},
+		{TransactionID: "tx3", Index: 0, OwnerAddress: "addr3", Amount: 300},
+	}
+
+	allUTXOs := shared.GetAllUTXOs()
+
+	// Debug: Print all UTXOs fetched
+	fmt.Printf("All UTXOs: %+v\n", allUTXOs)
+
+	distributedUTXOs := shard.distributeUTXOs(allUTXOs)
+
+	// Debug: Print the distribution map
+	for key, _ := range allUTXOs {
+		nodeAddr := ring.GetNode(key)
+		fmt.Printf("Key %s is mapped to Node %s\n", key, nodeAddr)
+	}
+
+	for nodeAddr, utxos := range distributedUTXOs {
+		fmt.Printf("Node %s received %d UTXOs\n", nodeAddr, len(utxos))
+		if len(utxos) == 0 {
+			t.Errorf("%s received no UTXOs, expected at least one", nodeAddr)
+		}
+	}
+}
+
+// NewTestNode creates a new Node with simplified parameters for testing purposes.
+
+func TestReplicateUTXO(t *testing.T) {
+	shard := NewShard(1, 3)
+	node1 := NewTestNode("node1", shard)
+	node2 := NewTestNode("node2", shard)
+	node3 := NewTestNode("node3", shard)
+
+	shard.AddNode(node1)
+	shard.AddNode(node2)
+	shard.AddNode(node3)
+
+	// Initialize the consistent hash ring in shard
+	ring := NewConsistentHashRing()
+	ring.AddNode(node1.Address)
+	ring.AddNode(node2.Address)
+	ring.AddNode(node3.Address)
+
+	// Mock a UTXO and its transaction ID
+	txID := "tx1"
+	utxo := shared.UTXO{TransactionID: txID, OwnerAddress: "addr1", Amount: 100}
+
+	// Replicate the UTXO
+	replicateUTXO(txID, utxo, node1.Address, ring, shard.Nodes)
+
+	// Check if UTXO is replicated correctly
+	if len(node1.ResponsibleUTXOs) == 0 || len(node2.ResponsibleUTXOs) == 0 || len(node3.ResponsibleUTXOs) == 0 {
+		t.Errorf("UTXO replication failed, one of the nodes does not have the UTXO")
+	}
+	// Additional checks for exact replication details
 }
 
 // Additional tests can be written to cover more complex scenarios,

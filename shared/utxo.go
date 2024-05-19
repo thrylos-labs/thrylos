@@ -22,6 +22,18 @@ type UTXO struct {
 	IsSpent       bool   `json:"IsSpent"` // Indicates whether the UTXO has been spent
 }
 
+var AllUTXOs []UTXO
+
+func GetAllUTXOs() map[string]UTXO {
+	allUTXOs := make(map[string]UTXO)
+	// Example data population, replace with actual data retrieval logic
+	for _, utxo := range AllUTXOs {
+		key := fmt.Sprintf("%s-%d", utxo.TransactionID, utxo.Index)
+		allUTXOs[key] = utxo
+	}
+	return allUTXOs
+}
+
 type UTXOCache struct {
 	cache *lru.Cache
 	mu    sync.Mutex

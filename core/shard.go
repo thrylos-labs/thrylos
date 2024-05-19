@@ -2,10 +2,62 @@ package core
 
 import (
 	"fmt"
+	"hash/fnv"
+	"math/rand"
+	"time"
+
+	"github.com/stathat/consistent"
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 )
+
+var rng *rand.Rand
+
+func init() {
+	// Initialize a new random source
+	source := rand.NewSource(time.Now().UnixNano())
+	rng = rand.New(source) // Create a new Rand instance with the source
+}
+
+const replicationFactor = 3 // Define how many nodes each UTXO should be replicated to
+
+type ConsistentHashRing struct {
+	*consistent.Consistent
+}
+
+func NewConsistentHashRing() *ConsistentHashRing {
+	c := consistent.New()
+	return &ConsistentHashRing{c}
+}
+
+func (c *ConsistentHashRing) AddNode(node string) {
+	c.Consistent.Add(node)
+}
+
+func (c *ConsistentHashRing) GetNode(key string) string {
+	node, err := c.Consistent.Get(key)
+	if err != nil {
+		// Handle the error, perhaps returning an empty string or a default node
+		return ""
+	}
+	return node
+}
+
+func (c *ConsistentHashRing) GetReplicas(key string, count int) []string {
+	nodes, err := c.Consistent.GetN(key, count)
+	if err != nil {
+		// Handle the error, perhaps returning nil or an empty slice
+		return []string{}
+	}
+	return nodes
+}
+
+func (c *ConsistentHashRing) ProxyGetHash(value string) uint32 {
+	h := fnv.New32a() // Or any other hash function used by your consistent hash library
+	h.Write([]byte(value))
+	return h.Sum32()
+}
 
 // Shard represents a subset of the blockchain network, designed to scale the network by dividing
 // the transaction and block processing workload among multiple shards. Each shard maintains its own
@@ -16,6 +68,47 @@ type Shard struct {
 	UTXOs    map[string]shared.UTXO // Current state of unspent transaction outputs managed by this shard.
 	Blocks   []*Block               // Blocks that have been confirmed and added to the shard's blockchain.
 	MaxNodes int                    // Maximum number of nodes allowed to be part of the shard.
+}
+
+// Initialize or update the shard, including UTXO redistribution
+// Initialize or update the shard, including UTXO redistribution
+func (s *Shard) InitializeOrUpdateShard() {
+	allUTXOs := shared.GetAllUTXOs() // Now returns a map
+	s.UTXOs = allUTXOs               // Ensure s.UTXOs is also a map of the same type
+
+	// Redistribute data among nodes
+	s.RedistributeData()
+
+	// Distribute UTXOs using the new shard configuration
+	distributedUTXOs := s.distributeUTXOs(allUTXOs)
+	s.applyDistributedUTXOs(distributedUTXOs)
+}
+
+// Applies the UTXO distribution to the nodes within the shard
+func (s *Shard) applyDistributedUTXOs(distribution map[string][]*thrylos.UTXO) {
+	// Clear existing UTXOs to avoid duplication
+	for _, node := range s.Nodes {
+		node.ResponsibleUTXOs = make(map[string]shared.UTXO)
+	}
+
+	// Apply the distributed UTXOs
+	for nodeAddr, utxos := range distribution {
+		for _, node := range s.Nodes {
+			if node.Address == nodeAddr {
+				for _, utxo := range utxos {
+					txID := utxo.TransactionId // directly using the string
+					node.ResponsibleUTXOs[txID] = shared.UTXO{
+						TransactionID: txID,
+						Index:         int(utxo.Index),
+						OwnerAddress:  utxo.OwnerAddress,
+						Amount:        int(utxo.Amount),
+					}
+				}
+				break
+			}
+		}
+	}
+
 }
 
 // NewShard initializes a new Shard with a specified identifier and maximum node capacity. It sets up
@@ -59,34 +152,75 @@ func (s *Shard) AssignNode(node *Node) error {
 	return nil
 }
 
-// RedistributeData handles the logic for redistributing data, such as UTXOs, among nodes within the shard.
-// This function is crucial for maintaining an even and efficient distribution of workload and data storage
-// across the shard's nodes.
+// RedistributeData redistributes UTXOs among nodes based on a consistent hashing mechanism
 func (s *Shard) RedistributeData() {
-	// Placeholder for logic to redistribute data among nodes in the shard.
-	// Actual implementation should replace this placeholder with specific logic to ensure even distribution of UTXOs, for example.
+	ring := NewConsistentHashRing()
 	for _, node := range s.Nodes {
-		// Example: Distribute UTXOs evenly among nodes.
-		node.Blockchain.UTXOs = s.distributeUTXOs()
+		ring.AddNode(node.Address)
 	}
+
+	// Example for how UTXOs might be redistributed based on transaction IDs
+	for txID, utxo := range s.UTXOs {
+		responsibleNodeAddr := ring.GetNode(txID)
+		for _, node := range s.Nodes {
+			if node.Address == responsibleNodeAddr {
+				node.ResponsibleUTXOs[txID] = utxo
+				break
+			}
+		}
+	}
+}
+
+func replicateUTXO(txID string, utxo shared.UTXO, primaryAddr string, ring *ConsistentHashRing, nodes []*Node) {
+	responsibleNodeAddr := ring.GetNode(txID)
+	for _, node := range nodes {
+		if node.Address == responsibleNodeAddr {
+			node.AssignUTXO(txID, utxo) // Pass the transaction ID as a string and the UTXO
+			break
+		}
+	}
+
+	// Replicate UTXO responsibility
+	replicas := ring.GetReplicas(txID, replicationFactor)
+	for _, replicaAddr := range replicas {
+		if replicaAddr == responsibleNodeAddr {
+			continue // Skip primary responsible node
+		}
+		for _, node := range nodes {
+			if node.Address == replicaAddr {
+				node.AssignUTXO(txID, utxo) // Pass the transaction ID and the UTXO
+				break
+			}
+		}
+	}
+}
+
+func (n *Node) AssignUTXO(txID string, utxo shared.UTXO) {
+	// Assign UTXO to the node's local storage using a map
+	n.ResponsibleUTXOs[txID] = utxo
 }
 
 // distributeUTXOs serves as a placeholder for the logic required to distribute UTXOs among the nodes in the shard.
 // This method should be implemented to ensure a balanced distribution of transaction outputs for processing and storage.
-func (s *Shard) distributeUTXOs() map[string][]*thrylos.UTXO {
-	// Placeholder function for UTXO distribution logic.
-	// This should return a map with string keys and slices of *thrylos.UTXO values.
+func (s *Shard) distributeUTXOs(allUTXOs map[string]shared.UTXO) map[string][]*thrylos.UTXO {
 	distributedUTXOs := make(map[string][]*thrylos.UTXO)
-	// Implement specific logic for even distribution of UTXOs among shard nodes here.
-	// For example, populate distributedUTXOs with UTXO pointers evenly.
+	ring := NewConsistentHashRing()
 
-	// Placeholder logic to illustrate returning a map of UTXO pointers
-	// Actual distribution logic goes here
-	// for address, utxos := range s.exampleUTXOs() { // Assuming s.exampleUTXOs() returns example data
-	// 	for _, utxo := range utxos {
-	// 		distributedUTXOs[address] = append(distributedUTXOs[address], &utxo)
-	// 	}
-	// }
+	for _, node := range s.Nodes {
+		ring.AddNode(node.Address)
+		distributedUTXOs[node.Address] = []*thrylos.UTXO{} // Ensure initialization
+	}
+
+	for key, utxo := range allUTXOs {
+		saltedKey := fmt.Sprintf("%s-%d", key, rng.Intn(1000000))
+		responsibleNodeAddr := ring.GetNode(saltedKey)
+		protoUTXO := shared.ConvertSharedUTXOToProto(utxo)
+		distributedUTXOs[responsibleNodeAddr] = append(distributedUTXOs[responsibleNodeAddr], protoUTXO)
+	}
+
+	for nodeAddr, utxos := range distributedUTXOs {
+		fmt.Printf("Node %s received %d UTXOs\n", nodeAddr, len(utxos))
+	}
 
 	return distributedUTXOs
 }

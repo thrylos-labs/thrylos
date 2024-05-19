@@ -42,6 +42,8 @@ type Node struct {
 	PendingTransactions []*thrylos.Transaction
 	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
 	chainID             string
+	ResponsibleUTXOs    map[string]shared.UTXO // Tracks UTXOs for which the node is responsible
+
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -87,11 +89,12 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 	}
 
 	node := &Node{
-		Address:      address,
-		Peers:        knownPeers,
-		Blockchain:   bc,
-		Shard:        shard,
-		PublicKeyMap: make(map[string]ed25519.PublicKey), // Initialize the map
+		Address:          address,
+		Peers:            knownPeers,
+		Blockchain:       bc,
+		Shard:            shard,
+		PublicKeyMap:     make(map[string]ed25519.PublicKey), // Initialize the map
+		ResponsibleUTXOs: make(map[string]shared.UTXO),
 	}
 
 	if shard != nil {
