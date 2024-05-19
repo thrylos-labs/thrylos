@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials" // Import for TLS credentials
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -18,13 +19,19 @@ func main() {
 		PermitWithoutStream: true,             // Send pings even without active streams
 	}
 
-	// Connect to the gRPC server with keepalive parameters
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(),
+	// Load TLS credentials from file
+	creds, err := credentials.NewClientTLSFromFile("cert.pem", "")
+	if err != nil {
+		log.Fatalf("could not load TLS cert: %s", err)
+	}
+
+	// Connect to the gRPC server with keepalive and TLS parameters
+	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(creds),
 		grpc.WithBlock(),
 		grpc.WithKeepaliveParams(kacp),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1024*1024*10))) // 10 MB
 	if err != nil {
-		log.Fatalf("Did not connect: %v", err)
+		log.Fatalf("Failed to connect: %v", err)
 	}
 	defer conn.Close()
 

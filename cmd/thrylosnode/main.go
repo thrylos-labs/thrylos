@@ -23,6 +23,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	// Import your blockchain package
 )
 
@@ -202,19 +203,41 @@ func main() {
 	encryptionKey := []byte(aesKey) // This should ideally come from a secure source
 	blockchainDatabase := database.NewBlockchainDB(blockchainDB, encryptionKey)
 
+	// Set up TLS credentials for the gRPC server
+	creds := loadTLSCredentials()
+	if err != nil {
+		log.Fatalf("Failed to load TLS credentials: %v", err)
+	}
+
 	// Setup and start gRPC server
 	lis, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
 		log.Fatalf("Failed to listen on %s: %v", grpcAddress, err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.Creds(creds))
 	pb.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
 
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
 	}
+}
+
+func loadTLSCredentials() credentials.TransportCredentials {
+	// Load the server's certificate and its private key
+	cert, err := tls.LoadX509KeyPair("../../cert.pem", "../../new_key.pem")
+	if err != nil {
+		log.Fatalf("could not load TLS keys: %v", err)
+	}
+
+	// Create the credentials and return them
+	config := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		// Optionally set ClientCAs and ClientAuth if you need client certificates for mutual TLS
+	}
+
+	return credentials.NewTLS(config)
 }
 
 // Get the blockchain stats: curl http://localhost:6080/get-stats
