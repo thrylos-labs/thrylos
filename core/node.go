@@ -54,7 +54,7 @@ func (n *Node) SetChainID(chainID string) {
 func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
 	// Load configuration from .env file, particularly for non-test environments
 	if !isTest {
-		envPath := "/Users/ned/Documents/GitHub/thrylos/.env" // Specify the path to your .env file
+		envPath := "../../.env" // Specify the path to your .env file
 		if err := godotenv.Load(envPath); err != nil {
 			log.Fatalf("Error loading .env file from %s: %v", envPath, err)
 		} else {

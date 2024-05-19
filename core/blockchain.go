@@ -133,11 +133,14 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		Forks:        make([]*Fork, 0),
 	}
 
-	// Serialize the genesis block and insert into database
-	serializedGenesis, err := genesis.Serialize()
-	if err != nil {
+	// Serialize the genesis block and insert into the database
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	if err := encoder.Encode(genesis); err != nil {
 		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
 	}
+	serializedGenesis := buf.Bytes()
+
 	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
 		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
@@ -600,11 +603,12 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 		return false, fmt.Errorf("failed to create or validate a new block")
 	}
 
-	// Serialize the new block for storage
-	blockData, err := newBlock.Serialize()
-	if err != nil {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	if err := encoder.Encode(newBlock); err != nil {
 		return false, fmt.Errorf("failed to serialize new block: %v", err)
 	}
+	blockData := buf.Bytes()
 
 	// Use the length of the blockchain as the new block number
 	blockNumber := len(bc.Blocks) // This should be calculated appropriately

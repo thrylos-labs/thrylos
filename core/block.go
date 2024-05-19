@@ -117,28 +117,34 @@ func (b *Block) GetVerkleRootBase64() string {
 // Serialize converts the block into a byte slice, facilitating storage or transmission. It encodes
 // the block's data into a format that can be easily saved to disk or sent over the network.
 
-func (b *Block) Serialize() ([]byte, error) {
-	var result bytes.Buffer
+// GobEncode overrides the default Gob encoding for Block
+func (b *Block) GobEncode() ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
 
-	encoder := gob.NewEncoder(&result)
-	if err := encoder.Encode(b); err != nil {
-		return nil, err
+	// Encode fields manually, could add additional field-specific validation here
+	if err := encoder.Encode(b.Transactions); err != nil {
+		return nil, fmt.Errorf("error encoding Transactions: %w", err)
 	}
 
-	return result.Bytes(), nil
+	// Add more fields to encode if necessary
+
+	return buf.Bytes(), nil
 }
 
-// Deserialize takes a byte slice and reconstructs the block. This method is essential for reading
-// blocks from disk or decoding them from network payloads, restoring the original Block struct.
-func Deserialize(data []byte) (*Block, error) {
-	var block Block
+// GobDecode overrides the default Gob decoding for Block
+func (b *Block) GobDecode(data []byte) error {
+	buf := bytes.NewReader(data)
+	decoder := gob.NewDecoder(buf)
 
-	decoder := gob.NewDecoder(bytes.NewReader(data))
-	if err := decoder.Decode(&block); err != nil {
-		return nil, err
+	// Decode fields manually, could add additional field-specific validation here
+	if err := decoder.Decode(&b.Transactions); err != nil {
+		return fmt.Errorf("error decoding Transactions: %w", err)
 	}
 
-	return &block, nil
+	// Add more fields to decode if necessary
+
+	return nil
 }
 
 func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transaction {
