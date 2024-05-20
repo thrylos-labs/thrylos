@@ -212,10 +212,11 @@ func (s *Shard) distributeUTXOs(allUTXOs map[string]shared.UTXO) map[string][]*t
 	}
 
 	for key, utxo := range allUTXOs {
-		saltedKey := fmt.Sprintf("%s-%d", key, rng.Intn(1000000))
-		responsibleNodeAddr := ring.GetNode(saltedKey)
-		protoUTXO := shared.ConvertSharedUTXOToProto(utxo)
-		distributedUTXOs[responsibleNodeAddr] = append(distributedUTXOs[responsibleNodeAddr], protoUTXO)
+		replicas := ring.GetReplicas(key, replicationFactor) // Ensure UTXOs are replicated
+		for _, nodeAddr := range replicas {
+			protoUTXO := shared.ConvertSharedUTXOToProto(utxo)
+			distributedUTXOs[nodeAddr] = append(distributedUTXOs[nodeAddr], protoUTXO)
+		}
 	}
 
 	for nodeAddr, utxos := range distributedUTXOs {

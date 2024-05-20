@@ -209,6 +209,8 @@ func NewTestNode(address string, shard *Shard) *Node {
 	return NewNode(address, knownPeers, tempDir, shard, true) // true indicates it is a test environment
 }
 
+// Doesn't test well now
+
 func TestDistributeUTXOs(t *testing.T) {
 	shard := NewShard(1, 3)
 
