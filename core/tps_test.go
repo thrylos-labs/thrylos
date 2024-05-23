@@ -12,6 +12,7 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -111,8 +112,14 @@ func submitTransactionBatch(client pb.BlockchainServiceClient, transactions []*p
 // go test -v -timeout 30s -run ^TestBlockTimeWithGRPCDistributed$ github.com/thrylos-labs/thrylos/core
 
 func TestBlockTimeWithGRPCDistributed(t *testing.T) {
-	// Establish gRPC connections to remote nodes
-	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	// Load the server's public certificate to trust the connection
+	creds, err := credentials.NewClientTLSFromFile("../localhost.crt", "localhost")
+	if err != nil {
+		t.Fatalf("could not load TLS cert: %s", err)
+	}
+
+	// Establish gRPC connections to remote nodes securely
+	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(creds))
 	if err != nil {
 		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}

@@ -20,7 +20,7 @@ func main() {
 	}
 
 	// Load TLS credentials from file
-	creds, err := credentials.NewClientTLSFromFile("cert.pem", "")
+	creds, err := credentials.NewClientTLSFromFile("../localhost.crt", "localhost")
 	if err != nil {
 		log.Fatalf("could not load TLS cert: %s", err)
 	}

@@ -226,7 +226,7 @@ func main() {
 
 func loadTLSCredentials() credentials.TransportCredentials {
 	// Load the server's certificate and its private key
-	cert, err := tls.LoadX509KeyPair("../../cert.pem", "../../new_key.pem")
+	cert, err := tls.LoadX509KeyPair("../../localhost.crt", "../../localhost.key")
 	if err != nil {
 		log.Fatalf("could not load TLS keys: %v", err)
 	}

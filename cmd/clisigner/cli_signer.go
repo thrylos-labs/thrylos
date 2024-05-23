@@ -9,6 +9,7 @@ import (
 	pb "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 func main() {
@@ -37,8 +38,14 @@ func main() {
 
 	fmt.Printf("Transaction created and signed successfully: %+v\n", transaction)
 
+	// Load TLS credentials from file
+	creds, err := credentials.NewClientTLSFromFile("../../localhost.crt", "localhost")
+	if err != nil {
+		log.Fatalf("could not load TLS cert: %s", err)
+	}
+
 	// Setup gRPC connection
-	conn, err := grpc.Dial(*grpcAddress, grpc.WithInsecure())
+	conn, err := grpc.Dial(*grpcAddress, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		log.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
