@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"sync"
@@ -112,14 +113,17 @@ func submitTransactionBatch(client pb.BlockchainServiceClient, transactions []*p
 // go test -v -timeout 30s -run ^TestBlockTimeWithGRPCDistributed$ github.com/thrylos-labs/thrylos/core
 
 func TestBlockTimeWithGRPCDistributed(t *testing.T) {
+	grpcAddress := flag.String("grpcAddress", "localhost:50051", "gRPC server address")
+
 	// Load the server's public certificate to trust the connection
+	// Load TLS credentials from file
 	creds, err := credentials.NewClientTLSFromFile("../localhost.crt", "localhost")
 	if err != nil {
-		t.Fatalf("could not load TLS cert: %s", err)
+		log.Fatalf("could not load TLS cert: %s", err)
 	}
 
-	// Establish gRPC connections to remote nodes securely
-	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(creds))
+	// Setup gRPC connection
+	conn, err := grpc.Dial(*grpcAddress, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}

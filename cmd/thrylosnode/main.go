@@ -16,7 +16,6 @@ import (
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
-	"golang.org/x/crypto/acme/autocert"
 
 	pb "github.com/thrylos-labs/thrylos"
 
@@ -45,7 +44,7 @@ func main() {
 	wasmPath := os.Getenv("WASM_PATH")
 	dataDir := os.Getenv("DATA_DIR")
 	chainID := "0x539" // Default local chain ID (1337 in decimal)
-	domainName := os.Getenv("DOMAIN_NAME")
+	// domainName := os.Getenv("DOMAIN_NAME")
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
@@ -175,22 +174,16 @@ func main() {
 		}
 	}))
 
-	certManager := autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		Cache:      autocert.DirCache("certs"),         // Folder to store the certificates
-		HostPolicy: autocert.HostWhitelist(domainName), // Only request certs for your domain
-	}
-
-	// Set up HTTPS server
+	// Use static certificate files for local development
 	httpsServer := &http.Server{
 		Addr:    ":443",  // Standard HTTPS port
 		Handler: handler, // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
-			GetCertificate: certManager.GetCertificate, // Let autocert handle the certificates
+			Certificates: []tls.Certificate{loadCertificate()}, // Load static certificate
 		},
 	}
 
-	// Serve using HTTPS, autocert handles the certificates
+	// Serve using HTTPS with the static certificate
 	log.Printf("Starting HTTPS server on %s\n", httpsServer.Addr)
 	go func() {
 		err := httpsServer.ListenAndServeTLS("", "")
@@ -240,10 +233,19 @@ func loadTLSCredentials() credentials.TransportCredentials {
 	return credentials.NewTLS(config)
 }
 
-// Get the blockchain stats: curl http://localhost:6080/get-stats
-// Retrieve the genesis block: curl "http://localhost:6080/get-block?id=0"
-// Retrieve pending transactions: curl http://localhost:6080/pending-transactions
-// Retrive a balance from a specific address: curl "http://localhost:6080/get-balance?address=your_address_here"
+func loadCertificate() tls.Certificate {
+	// Load the server's certificate and its private key
+	cert, err := tls.LoadX509KeyPair("../../localhost.crt", "../../localhost.key")
+	if err != nil {
+		log.Fatalf("could not load TLS keys: %v", err)
+	}
+	return cert
+}
+
+// Get the blockchain stats: curl http://localhost:50051/get-stats
+// Retrieve the genesis block: curl "http://localhost:50051/get-block?id=0"
+// Retrieve pending transactions: curl http://localhost:50051/pending-transactions
+// Retrive a balance from a specific address: curl "http://localhost:50051/get-balance?address=your_address_here"
 
 // Server-Side Steps
 // Blockchain Initialization:
