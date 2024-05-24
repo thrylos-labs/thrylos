@@ -2,9 +2,9 @@ package core
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -37,20 +37,13 @@ func (s *mockBlockchainServer) SubmitTransactionBatch(ctx context.Context, req *
 }
 
 func startMockServer() *grpc.Server {
-	lis, err := net.Listen("tcp", "localhost:50051")
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-
 	server := grpc.NewServer()
 	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
-
 	go func() {
 		if err := server.Serve(lis); err != nil {
 			log.Fatalf("Server exited with error: %v", err)
 		}
 	}()
-
 	return server
 }
 
@@ -117,51 +110,24 @@ func submitTransactionBatch(client pb.BlockchainServiceClient, transactions []*p
 	return err
 }
 
-func startMockServerWithTLS() *grpc.Server {
-	certFile := "../localhost.crt" // Path to your certificate file
-	keyFile := "../localhost.key"  // Path to your key file
-
-	creds, err := credentials.NewServerTLSFromFile(certFile, keyFile)
-	if err != nil {
-		log.Fatalf("Failed to generate credentials %v", err)
-	}
-
-	server := grpc.NewServer(grpc.Creds(creds))
-	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
-
-	lis, err := net.Listen("tcp", "localhost:50051")
-	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
-	}
-
-	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Fatalf("Failed to serve: %v", err)
-		}
-	}()
-	return server
-}
-
 // go test -v -timeout 30s -run ^TestBlockTimeWithGRPCDistributed$ github.com/thrylos-labs/thrylos/core
 
 func TestBlockTimeWithGRPCDistributed(t *testing.T) {
-	// Start the mock server with TLS
-	server := startMockServerWithTLS()
-	defer server.Stop()
+	grpcAddress := flag.String("grpcAddress", "localhost:50051", "gRPC server address")
 
-	// Load TLS credentials for the client
+	// Load the server's public certificate to trust the connection
+	// Load TLS credentials from file
 	creds, err := credentials.NewClientTLSFromFile("../localhost.crt", "localhost")
 	if err != nil {
-		t.Fatalf("could not load TLS cert: %s", err)
+		log.Fatalf("could not load TLS cert: %s", err)
 	}
 
-	// Create a secure connection to the mock server
-	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(creds))
+	// Setup gRPC connection
+	conn, err := grpc.Dial(*grpcAddress, grpc.WithTransportCredentials(creds))
 	if err != nil {
-		t.Fatalf("Failed to connect to gRPC server with TLS: %v", err)
+		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
 	defer conn.Close()
-
 	client := pb.NewBlockchainServiceClient(conn)
 
 	// Define the number of transactions and transactions per block
@@ -181,15 +147,21 @@ func TestBlockTimeWithGRPCDistributed(t *testing.T) {
 
 			var blockTransactions []*pb.Transaction
 			for j := startIndex; j < startIndex+transactionsPerBlock && j < numTransactions; j++ {
+				// Create a transaction
 				tx := &pb.Transaction{
 					Id:        fmt.Sprintf("tx%d", j),
+					Inputs:    []*pb.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+					Outputs:   []*pb.UTXO{{TransactionId: fmt.Sprintf("tx%d", j), Index: 0, OwnerAddress: "Bob", Amount: 100}},
 					Timestamp: time.Now().Unix(),
 				}
+
+				// Add transaction to block
 				blockTransactions = append(blockTransactions, tx)
 			}
 
-			// Submit the transaction batch using the mock client
-			if err := submitTransactionBatch(client, blockTransactions); err != nil {
+			// Submit the transaction batch
+			err := submitTransactionBatch(client, blockTransactions)
+			if err != nil {
 				t.Errorf("Error submitting transaction batch: %v", err)
 			}
 
@@ -207,7 +179,7 @@ func TestBlockTimeWithGRPCDistributed(t *testing.T) {
 	}
 	averageBlockTime := totalBlockTime / time.Duration(len(blockFinalizeTimes))
 
-	// Log the results
+	// Logging the result
 	t.Logf("Average block time: %s", averageBlockTime)
 	elapsedOverall := time.Since(start)
 	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
