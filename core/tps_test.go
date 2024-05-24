@@ -117,22 +117,48 @@ func submitTransactionBatch(client pb.BlockchainServiceClient, transactions []*p
 	return err
 }
 
+func startMockServerWithTLS() *grpc.Server {
+	certFile := "../localhost.crt" // Path to your certificate file
+	keyFile := "../localhost.key"  // Path to your key file
+
+	creds, err := credentials.NewServerTLSFromFile(certFile, keyFile)
+	if err != nil {
+		log.Fatalf("Failed to generate credentials %v", err)
+	}
+
+	server := grpc.NewServer(grpc.Creds(creds))
+	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
+
+	lis, err := net.Listen("tcp", "localhost:50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	go func() {
+		if err := server.Serve(lis); err != nil {
+			log.Fatalf("Failed to serve: %v", err)
+		}
+	}()
+	return server
+}
+
 // go test -v -timeout 30s -run ^TestBlockTimeWithGRPCDistributed$ github.com/thrylos-labs/thrylos/core
 
 func TestBlockTimeWithGRPCDistributed(t *testing.T) {
-	// Assume the server is started elsewhere or adjust startMockServer to include TLS setup
+	// Start the mock server with TLS
+	server := startMockServerWithTLS()
+	defer server.Stop()
+
+	// Load TLS credentials for the client
 	creds, err := credentials.NewClientTLSFromFile("../localhost.crt", "localhost")
 	if err != nil {
 		t.Fatalf("could not load TLS cert: %s", err)
 	}
-	// Start the mock server
-	server := startMockServer()
-	defer server.Stop()
 
-	// Create a connection to the mock server
+	// Create a secure connection to the mock server
 	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(creds))
 	if err != nil {
-		t.Fatalf("Failed to connect to gRPC server: %v", err)
+		t.Fatalf("Failed to connect to gRPC server with TLS: %v", err)
 	}
 	defer conn.Close()
 
