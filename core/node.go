@@ -230,24 +230,6 @@ func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *s
 	return nil
 }
 
-func (node *Node) CallContract(tx map[string]interface{}) (string, error) {
-	// This method should execute a smart contract call and return the result.
-	// Here, a simple placeholder response is returned.
-	return "Result from contract call", nil
-}
-
-func (node *Node) EstimateGas(tx map[string]interface{}) (uint64, error) {
-	// This method should estimate the gas required for a transaction.
-	// A default gas estimate is returned for demonstration purposes.
-	return 21000, nil // This is the typical gas limit for a standard transaction
-}
-
-func (node *Node) GetAccounts() ([]string, error) {
-	// This method should return a list of accounts available on the node.
-	// Returning a sample account for testing purposes.
-	return []string{"0xYourAccountAddressHere"}, nil
-}
-
 func (node *Node) GetTransactionReceipt(txHash string) (map[string]interface{}, error) {
 	// This method should return the transaction receipt for a given transaction hash.
 	// A mock receipt is returned for demonstration purposes.
@@ -731,10 +713,6 @@ func (node *Node) GetBlockCount() int {
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
 	mux := http.NewServeMux() // Create a new ServeMux
-
-	// JSON-RPC handler for MetaMask
-	jsonRPCHandler := NewJSONRPCHandler(node)
-	mux.Handle("/jsonrpc", jsonRPCHandler)
 
 	// Define handlers for various endpoints
 	mux.HandleFunc("/blockchain", func(w http.ResponseWriter, r *http.Request) {

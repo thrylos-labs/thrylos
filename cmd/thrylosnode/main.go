@@ -166,9 +166,6 @@ func main() {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Write(data)
-		case "/jsonrpc":
-			jsonRPCHandler := core.NewJSONRPCHandler(node)
-			jsonRPCHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
