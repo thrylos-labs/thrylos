@@ -6,10 +6,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"regexp"
@@ -18,20 +20,35 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
 	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
 )
 
+// TransactionContext wraps a BadgerDB transaction to manage its lifecycle.
+type TransactionContext struct {
+	Txn *badger.Txn
+}
+
+// NewTransactionContext creates a new context for a database transaction.
+func NewTransactionContext(txn *badger.Txn) *TransactionContext {
+	return &TransactionContext{Txn: txn}
+}
+
 var blake2bHasher, _ = blake2b.New256(nil)
 
 func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
+	// Use SHA-256 for OAEP, which is standard and safe for this purpose
+	hasher := sha256.New()
+
+	// The third parameter here is the hash used for OAEP, not the key or data itself
 	encryptedKey, err := rsa.EncryptOAEP(
-		blake2bHasher,
+		hasher,
 		rand.Reader,
 		recipientPublicKey,
 		aesKey,
-		nil,
+		nil, // Often no label is used, hence nil
 	)
 	if err != nil {
 		return nil, err
@@ -103,10 +120,11 @@ var (
 )
 
 // PublicKeyToAddressWithCache converts an Ed25519 public key to a blockchain address string,
+
 func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
 	pubKeyStr := hex.EncodeToString(pubKey) // Convert public key to string for map key
 
-	// Try to get the address from cache
+	// First attempt to get the address from cache without writing
 	cacheMutex.RLock()
 	address, found := addressCache[pubKeyStr]
 	cacheMutex.RUnlock()
@@ -115,13 +133,19 @@ func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
 		return address // Return cached address if available
 	}
 
-	// Compute the address if not found in cache
-	address = computeAddressFromPublicKey(pubKey)
-
-	// Cache the newly computed address
+	// Lock for writing if the address was not found
 	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+
+	// Double-check: Verify the address was not added while acquiring the lock
+	address, found = addressCache[pubKeyStr]
+	if found {
+		return address
+	}
+
+	// Compute the address if still not found in cache
+	address = computeAddressFromPublicKey(pubKey)
 	addressCache[pubKeyStr] = address
-	cacheMutex.Unlock()
 
 	return address
 }
@@ -139,15 +163,8 @@ func CreateThrylosTransaction(id int) *thrylos.Transaction {
 
 // computeAddressFromPublicKey performs the actual computation of the address from a public key.
 func computeAddressFromPublicKey(pubKey ed25519.PublicKey) string {
-	// Create a new BLAKE2b hasher
-	blake2bHasher, err := blake2b.New256(nil)
-	if err != nil {
-		panic(err) // Handle error appropriately in production code
-	}
-
-	// Compute the hash using BLAKE2b
-	hash := blake2bHasher.Sum(pubKey)
-	return hex.EncodeToString(hash)
+	// Compute hash or another identifier from the public key
+	return hex.EncodeToString(pubKey) // Simplified
 }
 
 // GenerateEd25519Keys generates a new Ed25519 public/private key pair.
@@ -170,14 +187,23 @@ func PublicKeyToAddress(pub *rsa.PublicKey) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// HashData hashes input data using blake2b and returns the hash as a byte slice.
+// Use a global hash pool for BLAKE2b hashers to reduce allocation overhead
+var blake2bHasherPool = sync.Pool{
+	New: func() interface{} {
+		hasher, err := blake2b.New256(nil)
+		if err != nil {
+			panic(err) // Proper error handling is essential, though panic should be avoided in production
+		}
+		return hasher
+	},
+}
+
 func HashData(data []byte) []byte {
-	hash, err := blake2b.New256(nil) // No key, simple hash
-	if err != nil {
-		panic(err) // Handle errors appropriately in production code
-	}
-	hash.Write(data)
-	return hash.Sum(nil)
+	hasher := blake2bHasherPool.Get().(hash.Hash)
+	defer blake2bHasherPool.Put(hasher)
+	hasher.Reset()
+	hasher.Write(data)
+	return hasher.Sum(nil) // Correct usage of Sum
 }
 
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
@@ -327,7 +353,10 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 	}, nil
 }
 
-func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
+func ConvertToProtoTransaction(tx *Transaction) (*thrylos.Transaction, error) {
+	if tx == nil {
+		return nil, errors.New("transaction is nil")
+	}
 	protoTx := &thrylos.Transaction{
 		Id:        tx.ID,
 		Sender:    tx.Sender,
@@ -353,7 +382,7 @@ func ConvertToProtoTransaction(tx *Transaction) *thrylos.Transaction {
 		})
 	}
 
-	return protoTx
+	return protoTx, nil
 }
 
 func BatchSignTransactionsConcurrently(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
@@ -364,12 +393,22 @@ func BatchSignTransactionsConcurrently(transactions []*Transaction, edPrivateKey
 		wg.Add(1)
 		go func(customTx *Transaction) {
 			defer wg.Done()
-			protoTx := ConvertToProtoTransaction(customTx)
+
+			// Convert the transaction to its protobuf representation
+			protoTx, err := ConvertToProtoTransaction(customTx)
+			if err != nil {
+				errChan <- err
+				return // ensure we stop processing this transaction on error
+			}
+
+			// Marshal the protobuf transaction into bytes
 			txBytes, err := proto.Marshal(protoTx)
 			if err != nil {
 				errChan <- err
-				return
+				return // stop processing if marshaling fails
 			}
+
+			// Sign the marshaled bytes using the Ed25519 private key
 			edSignature := ed25519.Sign(edPrivateKey, txBytes)
 			protoTx.Signature = edSignature
 			customTx.Signature = protoTx.Signature
@@ -379,6 +418,7 @@ func BatchSignTransactionsConcurrently(transactions []*Transaction, edPrivateKey
 	wg.Wait()
 	close(errChan)
 
+	// Check if there were any errors during the goroutines execution
 	for e := range errChan {
 		if e != nil {
 			return e
@@ -580,8 +620,12 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 
 // BatchSignTransactions signs a slice of transactions using both Ed25519.
 func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, batchSize int) error {
+	if batchSize < 1 {
+		return fmt.Errorf("invalid batch size: %d", batchSize)
+	}
+
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(transactions)/batchSize+1)
+	errChan := make(chan error, (len(transactions)+batchSize-1)/batchSize) // +1 to ensure no blocking
 
 	for i := 0; i < len(transactions); i += batchSize {
 		end := i + batchSize
@@ -595,11 +639,15 @@ func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.Pri
 		go func(batch []*Transaction) {
 			defer wg.Done()
 			for _, customTx := range batch {
-				protoTx := ConvertToProtoTransaction(customTx)
+				protoTx, err := ConvertToProtoTransaction(customTx)
+				if err != nil {
+					errChan <- fmt.Errorf("conversion error: %w", err)
+					return
+				}
 				txBytes, err := proto.Marshal(protoTx)
 				if err != nil {
-					errChan <- err
-					continue
+					errChan <- fmt.Errorf("marshal error: %w", err)
+					return
 				}
 				edSignature := ed25519.Sign(edPrivateKey, txBytes)
 				protoTx.Signature = edSignature
@@ -611,12 +659,11 @@ func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.Pri
 	wg.Wait()
 	close(errChan)
 
-	for e := range errChan {
-		if e != nil {
-			return e
+	for err := range errChan {
+		if err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
@@ -655,4 +702,48 @@ func ParallelVerifyTransactions(
 	}
 
 	return results, nil
+}
+
+func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterface) error {
+	if len(transactions) == 0 {
+		return nil // No transactions to process
+	}
+
+	// Start a transaction
+	txn, err := db.BeginTransaction()
+	if err != nil {
+		return err
+	}
+	defer db.RollbackTransaction(txn) // Ensure rollback if commit does not happen
+
+	for _, tx := range transactions {
+		if err := processSingleTransaction(txn, tx, db); err != nil {
+			return err // Error handling could also include logging, etc.
+		}
+	}
+
+	// Commit all transaction changes as a single batch
+	if err := db.CommitTransaction(txn); err != nil {
+		return fmt.Errorf("transaction commit failed: %v", err)
+	}
+
+	return nil
+}
+
+func processSingleTransaction(txn *TransactionContext, tx *Transaction, db BlockchainDBInterface) error {
+	// Serialize the transaction data to JSON
+	txJSON, err := json.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("error serializing transaction: %v", err)
+	}
+
+	// Generate a unique key for this transaction
+	key := []byte("transaction-" + tx.ID)
+
+	// Store the serialized transaction data
+	if err := db.SetTransaction(txn, key, txJSON); err != nil {
+		return fmt.Errorf("error storing transaction: %v", err)
+	}
+
+	return nil
 }

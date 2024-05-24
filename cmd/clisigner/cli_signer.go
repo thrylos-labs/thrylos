@@ -52,8 +52,15 @@ func main() {
 	defer conn.Close()
 
 	client := pb.NewBlockchainServiceClient(conn)
+
+	// Convert transaction to protobuf format
+	protoTx, err := shared.ConvertToProtoTransaction(transaction)
+	if err != nil {
+		log.Fatalf("Failed to convert transaction to protobuf: %v", err)
+	}
+
 	transactionReq := &pb.TransactionRequest{
-		Transaction: shared.ConvertToProtoTransaction(transaction),
+		Transaction: protoTx,
 	}
 
 	// Send the transaction

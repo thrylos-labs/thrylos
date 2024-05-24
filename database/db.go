@@ -424,6 +424,24 @@ func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO
 	return balance, nil
 }
 
+func (db *BlockchainDB) BeginTransaction() (*shared.TransactionContext, error) {
+	txn := db.DB.NewTransaction(true)
+	return shared.NewTransactionContext(txn), nil
+}
+
+func (db *BlockchainDB) CommitTransaction(txn *shared.TransactionContext) error {
+	return txn.Txn.Commit()
+}
+
+func (db *BlockchainDB) RollbackTransaction(txn *shared.TransactionContext) error {
+	txn.Txn.Discard()
+	return nil
+}
+
+func (db *BlockchainDB) SetTransaction(txn *shared.TransactionContext, key []byte, value []byte) error {
+	return txn.Txn.Set(key, value)
+}
+
 // AddTransaction stores a new transaction in the database. It serializes transaction inputs,
 // outputs, and the signature for persistent storage.
 func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {

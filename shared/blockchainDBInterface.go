@@ -29,4 +29,8 @@ type BlockchainDBInterface interface {
 	InsertOrUpdatePrivateKey(address string, privateKey []byte) error
 	StoreBlock(data []byte, blockNumber int) error
 	RetrieveBlock(blockNumber int) ([]byte, error)
+	BeginTransaction() (*TransactionContext, error)
+	CommitTransaction(txn *TransactionContext) error
+	RollbackTransaction(txn *TransactionContext) error
+	SetTransaction(txn *TransactionContext, key []byte, value []byte) error
 }
