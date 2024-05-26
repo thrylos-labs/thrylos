@@ -30,6 +30,29 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var hashCache sync.Map // A thread-safe map to cache hash results
+
+func cachedHashData(data []byte) []byte {
+	// Convert byte slice to a string key
+	key := string(data)
+
+	// Try to get the hash from cache
+	if val, ok := hashCache.Load(key); ok {
+		return val.([]byte)
+	}
+
+	// Compute the hash if it's not in the cache
+	hasher := blake2bHasherPool.Get().(hash.Hash)
+	defer blake2bHasherPool.Put(hasher)
+	hasher.Reset()
+	hasher.Write(data)
+	computedHash := hasher.Sum(nil)
+
+	// Store the computed hash in the cache
+	hashCache.Store(key, computedHash)
+	return computedHash
+}
+
 // TransactionContext wraps a BadgerDB transaction to manage its lifecycle.
 type TransactionContext struct {
 	Txn *badger.Txn
@@ -208,7 +231,7 @@ func PublicKeyToAddress(pubKey ed25519.PublicKey) string {
 	// Then hash using BLAKE2b-256
 	blakeHasher, _ := blake2b.New256(nil)
 	blakeHasher.Write(shaHashedPubKey)
-	return hex.EncodeToString(blakeHasher.Sum(nil))
+	return hex.EncodeToString(cachedHashData(pubKey))
 }
 
 // Use a global hash pool for BLAKE2b hashers to reduce allocation overhead
@@ -533,13 +556,15 @@ func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO
 		return false, fmt.Errorf("Error serializing transaction for verification: %v", err)
 	}
 
+	// Cache and retrieve the hash of the serialized transaction
+	cachedHash := cachedHashData(txBytes)
+
 	// Log the serialized transaction data without the signature
 	log.Printf("Serialized transaction for verification: %x", txBytes)
 
-	// Verify the transaction signature using both public keys
-	err = VerifyTransactionSignature(tx, ed25519PublicKey)
-	if err != nil {
-		return false, fmt.Errorf("Transaction signature verification failed: %v", err)
+	// Verify the transaction signature using the public key and cached hash
+	if !ed25519.Verify(ed25519PublicKey, cachedHash, tx.Signature) {
+		return false, fmt.Errorf("Transaction signature verification failed")
 	}
 
 	// The remaining logic for UTXO checks and sum validation remains unchanged...
@@ -615,13 +640,9 @@ func GenerateTransactionID(inputs []UTXO, outputs []UTXO, address string, amount
 		builder.WriteString(fmt.Sprintf("%s%d", output.OwnerAddress, output.Amount))
 	}
 
-	// Create a BLAKE2b hash of the builder's string
-	hash, err := blake2b.New256(nil)
-	if err != nil {
-		return "", err // Handle error appropriately
-	}
-	hash.Write([]byte(builder.String()))
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	// Use the cachedHashData function to get the hash of the builder's string
+	hashBytes := cachedHashData([]byte(builder.String()))
+	return hex.EncodeToString(hashBytes), nil
 }
 
 // SanitizeAndFormatAddress cleans and validates blockchain addresses.

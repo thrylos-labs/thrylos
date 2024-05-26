@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"sync"
@@ -13,7 +12,6 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -99,91 +97,7 @@ func TestTransactionThroughputWithGRPCUpdated(t *testing.T) {
 	t.Logf("Processed %d transactions via gRPC in %s. TPS: %f", numTransactions, elapsed, tps)
 }
 
-func submitTransactionBatch(client pb.BlockchainServiceClient, transactions []*pb.Transaction) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	batch := &pb.TransactionBatchRequest{
-		Transactions: transactions,
-	}
-	_, err := client.SubmitTransactionBatch(ctx, batch)
-	return err
-}
-
 // go test -v -timeout 30s -run ^TestBlockTimeWithGRPCDistributed$ github.com/thrylos-labs/thrylos/core
-
-func TestBlockTimeWithGRPCDistributed(t *testing.T) {
-	grpcAddress := flag.String("grpcAddress", "localhost:50051", "gRPC server address")
-
-	// Load the server's public certificate to trust the connection
-	// Load TLS credentials from file
-	creds, err := credentials.NewClientTLSFromFile("../localhost.crt", "localhost")
-	if err != nil {
-		log.Fatalf("could not load TLS cert: %s", err)
-	}
-
-	// Setup gRPC connection
-	conn, err := grpc.Dial(*grpcAddress, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		t.Fatalf("Failed to connect to gRPC server: %v", err)
-	}
-	defer conn.Close()
-	client := pb.NewBlockchainServiceClient(conn)
-
-	// Define the number of transactions and transactions per block
-	numTransactions := 1000
-	transactionsPerBlock := 100
-
-	var wg sync.WaitGroup
-	var blockFinalizeTimes []time.Duration
-	start := time.Now()
-
-	// Process transactions and group them into blocks
-	for i := 0; i < numTransactions; i += transactionsPerBlock {
-		wg.Add(1)
-		go func(startIndex int) {
-			defer wg.Done()
-			blockStartTime := time.Now()
-
-			var blockTransactions []*pb.Transaction
-			for j := startIndex; j < startIndex+transactionsPerBlock && j < numTransactions; j++ {
-				// Create a transaction
-				tx := &pb.Transaction{
-					Id:        fmt.Sprintf("tx%d", j),
-					Inputs:    []*pb.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-					Outputs:   []*pb.UTXO{{TransactionId: fmt.Sprintf("tx%d", j), Index: 0, OwnerAddress: "Bob", Amount: 100}},
-					Timestamp: time.Now().Unix(),
-				}
-
-				// Add transaction to block
-				blockTransactions = append(blockTransactions, tx)
-			}
-
-			// Submit the transaction batch
-			err := submitTransactionBatch(client, blockTransactions)
-			if err != nil {
-				t.Errorf("Error submitting transaction batch: %v", err)
-			}
-
-			blockEndTime := time.Now()
-			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
-		}(i)
-	}
-
-	wg.Wait()
-
-	// Calculate average block time
-	var totalBlockTime time.Duration
-	for _, bt := range blockFinalizeTimes {
-		totalBlockTime += bt
-	}
-	averageBlockTime := totalBlockTime / time.Duration(len(blockFinalizeTimes))
-
-	// Logging the result
-	t.Logf("Average block time: %s", averageBlockTime)
-	elapsedOverall := time.Since(start)
-	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
-}
 
 // go test -v -timeout 30s -run ^TestTransactionCosts$ github.com/thrylos-labs/thrylos/core
 
