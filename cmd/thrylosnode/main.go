@@ -145,6 +145,8 @@ func main() {
 			node.GetTransactionHandler()(w, r)
 		case "/get-balance":
 			node.GetBalanceHandler()(w, r)
+		case "/register-public-key":
+			node.RegisterPublicKeyHandler()(w, r)
 		case "/get-stats":
 			stats := node.GetBlockchainStats()
 			statsJSON, err := json.Marshal(stats)

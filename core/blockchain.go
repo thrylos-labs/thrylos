@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -212,6 +213,17 @@ func (bc *Blockchain) GetBalance(address string) (int, error) {
 	}
 
 	return balance, nil
+}
+
+func (bc *Blockchain) RegisterPublicKey(pubKey string) error {
+	// Convert the public key string to bytes if necessary, assuming pubKey is base64 encoded
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKey)
+	if err != nil {
+		return fmt.Errorf("error decoding public key: %v", err)
+	}
+
+	// Assuming "publicKeyAddress" should be dynamically determined or correctly provided
+	return bc.Database.InsertOrUpdateEd25519PublicKey("publicKeyAddress", pubKeyBytes)
 }
 
 // In blockchain.go, within your Blockchain struct definition

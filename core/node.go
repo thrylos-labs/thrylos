@@ -353,6 +353,26 @@ func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
 	return sharedOutputs
 }
 
+func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PublicKey string `json:"publicKey"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		// Use node.Blockchain to access the RegisterPublicKey method
+		if err := node.Blockchain.RegisterPublicKey(req.PublicKey); err != nil {
+			http.Error(w, "Failed to register public key: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Public key registered successfully"))
+	}
+}
+
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var tx thrylos.Transaction
@@ -725,6 +745,8 @@ func (node *Node) Start() {
 	})
 
 	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
+
+	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
 
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		var block Block
