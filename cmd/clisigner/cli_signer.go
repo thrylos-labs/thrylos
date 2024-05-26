@@ -24,8 +24,17 @@ func main() {
 	}
 
 	// Generate or retrieve keys and AES key
-	_, senderPrivateKey, _ := shared.GenerateEd25519Keys() // Ideally, you would load this from secure storage
-	aesKey, _ := shared.GenerateAESKey()
+	_, senderPrivateKey, mnemonic, err := shared.GenerateEd25519Keys() // Capture mnemonic for backup and error handling
+	if err != nil {
+		log.Fatalf("Failed to generate keys: %v", err)
+	}
+	// You might want to log or securely store the mnemonic somewhere
+	fmt.Println("Save this mnemonic in a secure place:", mnemonic)
+
+	aesKey, err := shared.GenerateAESKey()
+	if err != nil {
+		log.Fatalf("Failed to generate AES key: %v", err)
+	}
 
 	inputs := []shared.UTXO{{TransactionID: "prevTxID", Index: 0, OwnerAddress: *sender, Amount: 100}} // Example input
 	outputs := []shared.UTXO{{TransactionID: "newTxID", Index: 0, OwnerAddress: *receiver, Amount: *amount}}

@@ -1,12 +1,14 @@
 package shared
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,7 +24,9 @@ import (
 
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
+	"github.com/tyler-smith/go-bip39"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/pbkdf2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -167,24 +171,44 @@ func computeAddressFromPublicKey(pubKey ed25519.PublicKey) string {
 	return hex.EncodeToString(pubKey) // Simplified
 }
 
-// GenerateEd25519Keys generates a new Ed25519 public/private key pair.
-func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, error) {
-	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+// GenerateEd25519Keys generates a new Ed25519 public/private key pair derived from a mnemonic seed phrase.
+func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, string, error) {
+	// Generate a new mnemonic
+	entropy, err := bip39.NewEntropy(256)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return publicKey, privateKey, nil
+	mnemonic, err := bip39.NewMnemonic(entropy)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// Generate a seed from the mnemonic
+	seed := bip39.NewSeed(mnemonic, "") // Use an empty passphrase for simplicity
+
+	// Use PBKDF2 to derive a key from the seed suitable for Ed25519
+	key := pbkdf2.Key(seed, []byte("ed25519 seed"), 2048, 32, sha512.New)
+
+	// Generate Ed25519 keys from the derived key
+	publicKey, privateKey, err := ed25519.GenerateKey(bytes.NewReader(key))
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	return publicKey, privateKey, mnemonic, nil
 }
 
-// PublicKeyToAddress generates a public address from an RSA public key using BLAKE2b-256.
-func PublicKeyToAddress(pub *rsa.PublicKey) string {
-	pubBytes := pub.N.Bytes() // Convert public key to bytes
-	hash, err := blake2b.New256(nil)
-	if err != nil {
-		panic(err) // Handle errors appropriately in production code
-	}
-	hash.Write(pubBytes)
-	return hex.EncodeToString(hash.Sum(nil))
+// PublicKeyToAddress generates a public address from an Ed25519 public key using SHA-256 and then BLAKE2b-256.
+func PublicKeyToAddress(pubKey ed25519.PublicKey) string {
+	// First hash using SHA-256
+	shaHasher := sha256.New()
+	shaHasher.Write(pubKey)
+	shaHashedPubKey := shaHasher.Sum(nil)
+
+	// Then hash using BLAKE2b-256
+	blakeHasher, _ := blake2b.New256(nil)
+	blakeHasher.Write(shaHashedPubKey)
+	return hex.EncodeToString(blakeHasher.Sum(nil))
 }
 
 // Use a global hash pool for BLAKE2b hashers to reduce allocation overhead
