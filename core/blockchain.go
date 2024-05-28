@@ -66,6 +66,8 @@ type Blockchain struct {
 	// Database provides an abstraction over the underlying database technology used to persist
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
 	Database shared.BlockchainDBInterface // Updated the type to interface
+
+	PublicKeyMap map[string]ed25519.PublicKey // To store public keys
 }
 
 // NewTransaction creates a new transaction
@@ -92,6 +94,9 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 
 	// Create the genesis block
 	genesis := NewGenesisBlock()
+
+	// Initialize the map for public keys
+	publicKeyMap := make(map[string]ed25519.PublicKey)
 
 	// Simulate several stakeholders
 	stakeholders := []struct {
@@ -130,6 +135,7 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		Genesis:      genesis,
 		Stakeholders: stakeholdersMap,
 		Database:     bdb,
+		PublicKeyMap: publicKeyMap, // Initialize the public key map
 		UTXOs:        utxoMap,
 		Forks:        make([]*Fork, 0),
 	}
@@ -536,6 +542,80 @@ func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
 		return nil, fmt.Errorf("failed to deserialize block: %v", err)
 	}
 	return &block, nil
+}
+
+// If the stake adjustment leads to a non-positive value, the stakeholder is removed from the map.
+func (bc *Blockchain) UpdateStake(address string, amount int) error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Calculate the new stake amount
+	currentStake, exists := bc.Stakeholders[address]
+	newStake := currentStake + amount
+
+	// Check if the new stake is positive
+	if newStake <= 0 {
+		if exists {
+			// Remove the stakeholder if the stake is zero or negative
+			delete(bc.Stakeholders, address)
+		} // If not exists and amount is negative, we cannot set a negative stake
+		return fmt.Errorf("invalid stake amount; stake cannot be negative or zero")
+	}
+
+	// Set or update the stake
+	bc.Stakeholders[address] = newStake
+	return nil
+}
+
+// RegisterValidator registers or updates a validator's information in the blockchain.
+func (bc *Blockchain) RegisterValidator(address string, pubKey string) error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Convert the public key string to bytes, assuming pubKey is base64 encoded
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKey)
+	if err != nil {
+		return fmt.Errorf("error decoding public key: %v", err)
+	}
+
+	// Ensure the public key size matches expected size for Ed25519
+	if len(pubKeyBytes) != ed25519.PublicKeySize {
+		return fmt.Errorf("public key has incorrect size")
+	}
+
+	// Validate that the address has a minimum stake required to be a validator, if needed
+	stake, exists := bc.Stakeholders[address]
+	if !exists || stake < minStakeRequirement {
+		return fmt.Errorf("insufficient stake or not found")
+	}
+
+	// Register or update the public key in a map, might also store additional validator metadata
+	bc.PublicKeyMap[address] = ed25519.PublicKey(pubKeyBytes)
+
+	return nil
+}
+
+// This method will adjust the stake between two addresses, which represents delegating stake from one user (the delegator) to another (the delegatee or validator).
+func (bc *Blockchain) DelegateStake(from, to string, amount int) error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Check if the 'from' address has enough stake to delegate
+	if stake, exists := bc.Stakeholders[from]; !exists || stake < amount {
+		return fmt.Errorf("insufficient stake to delegate: has %d, needs %d", stake, amount)
+	}
+
+	// Reduce stake from the 'from' address
+	bc.Stakeholders[from] -= amount
+
+	// Add stake to the 'to' address
+	if _, exists := bc.Stakeholders[to]; exists {
+		bc.Stakeholders[to] += amount
+	} else {
+		bc.Stakeholders[to] = amount
+	}
+
+	return nil
 }
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.

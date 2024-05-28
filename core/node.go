@@ -858,6 +858,74 @@ func (node *Node) ConsensusInfoHandler() http.HandlerFunc {
 	}
 }
 
+// This endpoint allows nodes to register themselves as validators, specifying necessary credentials or details.
+
+func (node *Node) RegisterValidatorHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Address   string `json:"address"`
+			PublicKey string `json:"publicKey"` // Public key to be registered
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := node.Blockchain.RegisterValidator(req.Address, req.PublicKey); err != nil {
+			http.Error(w, "Failed to register as validator: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Registered as validator successfully"))
+	}
+}
+
+// This endpoint allows stakeholders to modify their stakes in the network.
+
+func (node *Node) UpdateStakeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Address string `json:"address"`
+			Amount  int    `json:"amount"` // Positive to increase, negative to decrease
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if err := node.Blockchain.UpdateStake(req.Address, req.Amount); err != nil {
+			http.Error(w, "Failed to update stake: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Stake updated successfully"))
+	}
+}
+
+// This endpoint facilitates the delegation of stakes from one user to another, specifying a validator.
+
+func (node *Node) DelegateStakeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			From   string `json:"from"`
+			To     string `json:"to"`
+			Amount int    `json:"amount"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := node.Blockchain.DelegateStake(req.From, req.To, req.Amount); err != nil {
+			http.Error(w, "Failed to delegate stake: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Stake delegated successfully"))
+	}
+}
+
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
@@ -872,6 +940,10 @@ func (node *Node) Start() {
 		}
 		w.Write(data)
 	})
+
+	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
+	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
+	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
 
 	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
 

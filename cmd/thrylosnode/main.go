@@ -155,6 +155,12 @@ func main() {
 			node.RegisterPublicKeyHandler()(w, r)
 		case "/create-wallet":
 			node.CreateWalletHandler()(w, r)
+		case "/register-validator":
+			node.RegisterValidatorHandler()(w, r)
+		case "/update-stake":
+			node.UpdateStakeHandler()(w, r)
+		case "/delegate-stake":
+			node.DelegateStakeHandler()(w, r)
 		case "/get-stats":
 			stats := node.GetBlockchainStats()
 			statsJSON, err := json.Marshal(stats)
