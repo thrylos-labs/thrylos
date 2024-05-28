@@ -547,6 +547,34 @@ func (node *Node) GetTransactionHandler() http.HandlerFunc {
 	}
 }
 
+// Report the health of the node and its connectivity with other peers
+func (node *Node) NetworkHealthHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		healthInfo := struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		}{
+			Status:  "OK",
+			Message: "Node is active and connected to peers",
+		}
+
+		// You might want to include actual checks here to validate connectivity, block height synchronization, etc.
+		if len(node.Peers) == 0 {
+			healthInfo.Status = "WARNING"
+			healthInfo.Message = "Node is not connected to any peers"
+		}
+
+		response, err := json.Marshal(healthInfo)
+		if err != nil {
+			http.Error(w, "Failed to serialize health information", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
+}
+
 func (node *Node) GetBalance(address string) (int64, error) {
 	balance, err := node.Blockchain.GetBalance(address)
 	return int64(balance), err // Cast the balance to int64 if necessary
@@ -790,6 +818,46 @@ func (node *Node) GetBlockCount() int {
 	return node.Blockchain.GetBlockCount()
 }
 
+// This handler could expose details about validators, their stakes, the votes they've cast for the most recent blocks, and potentially their historical performance or participation rates.
+
+func (node *Node) ConsensusInfoHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var validators []struct {
+			Address string `json:"address"`
+			Stake   int    `json:"stake"`
+			Votes   []Vote `json:"votes"`
+		}
+
+		// Gathering data for each stakeholder
+		for address, stake := range node.Blockchain.Stakeholders {
+			votes := []Vote{}
+			for _, vote := range node.Votes {
+				if vote.Validator == address {
+					votes = append(votes, vote)
+				}
+			}
+			validators = append(validators, struct {
+				Address string `json:"address"`
+				Stake   int    `json:"stake"`
+				Votes   []Vote `json:"votes"`
+			}{
+				Address: address,
+				Stake:   stake,
+				Votes:   votes,
+			})
+		}
+
+		// Marshal and send the data
+		response, err := json.Marshal(validators)
+		if err != nil {
+			http.Error(w, "Failed to serialize consensus information", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
+}
+
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
@@ -804,6 +872,10 @@ func (node *Node) Start() {
 		}
 		w.Write(data)
 	})
+
+	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
+
+	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
 
 	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
 

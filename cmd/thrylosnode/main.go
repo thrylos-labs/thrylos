@@ -145,6 +145,10 @@ func main() {
 			node.GetTransactionHandler()(w, r)
 		case "/get-balance":
 			node.GetBalanceHandler()(w, r)
+		case "/network-health":
+			node.NetworkHealthHandler()(w, r)
+		case "/consensus-info":
+			node.ConsensusInfoHandler()(w, r)
 		case "/list-transactions-for-block":
 			node.ListTransactionsForBlockHandler()(w, r)
 		case "/register-public-key":
