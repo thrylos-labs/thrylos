@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -353,6 +354,39 @@ func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
 	return sharedOutputs
 }
 
+func (node *Node) CreateWalletHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Generate public and private keys along with a mnemonic for recovery
+		publicKey, _, mnemonic, err := shared.GenerateEd25519Keys()
+		if err != nil {
+			http.Error(w, "Failed to generate wallet: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Convert publicKey to hexadecimal string
+		publicKeyHex := hex.EncodeToString(publicKey)
+
+		// Prepare the wallet response; do not send the private key over the network
+		wallet := struct {
+			Mnemonic  string `json:"mnemonic"`  // Seed phrase for wallet recovery
+			PublicKey string `json:"publicKey"` // Public key to be shared
+		}{
+			Mnemonic:  mnemonic,
+			PublicKey: publicKeyHex, // Use the hex string of the public key
+		}
+
+		response, err := json.Marshal(wallet)
+		if err != nil {
+			http.Error(w, "Failed to serialize wallet data: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
+}
+
+// Allows users to register their public keys with Thrylos, enssential for transactions where public keys are needed
 func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -743,6 +777,8 @@ func (node *Node) Start() {
 		}
 		w.Write(data)
 	})
+
+	mux.HandleFunc("/create-wallet", node.CreateWalletHandler())
 
 	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
 
