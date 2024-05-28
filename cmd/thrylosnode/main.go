@@ -145,6 +145,8 @@ func main() {
 			node.GetTransactionHandler()(w, r)
 		case "/get-balance":
 			node.GetBalanceHandler()(w, r)
+		case "/list-transactions-for-block":
+			node.ListTransactionsForBlockHandler()(w, r)
 		case "/register-public-key":
 			node.RegisterPublicKeyHandler()(w, r)
 		case "/create-wallet":
@@ -160,7 +162,6 @@ func main() {
 			w.Write(statsJSON)
 		case "/pending-transactions":
 			node.PendingTransactionsHandler()(w, r)
-
 		case "/peers":
 			log.Println("Handling /peers request")
 			data, err := json.Marshal(node.Peers)

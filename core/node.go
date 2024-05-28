@@ -354,6 +354,33 @@ func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
 	return sharedOutputs
 }
 
+// fetch all transactions for a given block
+func (node *Node) ListTransactionsForBlockHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		blockID := r.URL.Query().Get("id")
+		if blockID == "" {
+			http.Error(w, "Block ID is required", http.StatusBadRequest)
+			return
+		}
+
+		block, err := node.Blockchain.GetBlockByID(blockID)
+		if err != nil {
+			http.Error(w, "Block not found: "+err.Error(), http.StatusNotFound)
+			return
+		}
+
+		// Serialize the transactions of the block for response
+		transactionsJSON, err := json.Marshal(block.Transactions)
+		if err != nil {
+			http.Error(w, "Failed to serialize transactions", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(transactionsJSON)
+	}
+}
+
 func (node *Node) CreateWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Generate public and private keys along with a mnemonic for recovery
@@ -777,6 +804,8 @@ func (node *Node) Start() {
 		}
 		w.Write(data)
 	})
+
+	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
 
 	mux.HandleFunc("/create-wallet", node.CreateWalletHandler())
 
