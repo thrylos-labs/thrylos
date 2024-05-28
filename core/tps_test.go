@@ -30,14 +30,19 @@ func (s *mockBlockchainServer) SubmitTransactionBatch(ctx context.Context, req *
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
 	}
+	var wg sync.WaitGroup
 	for _, tx := range req.Transactions {
-		if !s.ValidateTransaction(tx) {
-			fmt.Printf("Invalid transaction %s\n", tx.Id)
-			continue
-		}
-		fmt.Printf("Processed transaction %s\n", tx.Id)
-		time.Sleep(time.Millisecond * 10) // Simulate processing time
+		go func(tx *pb.Transaction) {
+			if !s.ValidateTransaction(tx) {
+				fmt.Printf("Invalid transaction %s\n", tx.Id)
+				return
+			}
+			fmt.Printf("Processed transaction %s\n", tx.Id)
+			// Reduce or conditionally apply sleep here if necessary
+		}(tx)
 	}
+
+	wg.Wait()
 	elapsed := time.Since(start)
 	fmt.Printf("Processed batch in %s\n", elapsed)
 	return &pb.TransactionBatchResponse{

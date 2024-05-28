@@ -33,22 +33,20 @@ import (
 var hashCache sync.Map // A thread-safe map to cache hash results
 
 func cachedHashData(data []byte) []byte {
-	// Convert byte slice to a string key
-	key := string(data)
+	// Use a fast, fixed-size hash as the cache key to reduce memory and improve lookup speed
+	keyHash := blake2b.Sum256(data)
+	key := hex.EncodeToString(keyHash[:])
 
-	// Try to get the hash from cache
 	if val, ok := hashCache.Load(key); ok {
 		return val.([]byte)
 	}
 
-	// Compute the hash if it's not in the cache
 	hasher := blake2bHasherPool.Get().(hash.Hash)
 	defer blake2bHasherPool.Put(hasher)
 	hasher.Reset()
 	hasher.Write(data)
 	computedHash := hasher.Sum(nil)
 
-	// Store the computed hash in the cache
 	hashCache.Store(key, computedHash)
 	return computedHash
 }
@@ -759,13 +757,32 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 	if err != nil {
 		return err
 	}
-	defer db.RollbackTransaction(txn) // Ensure rollback if commit does not happen
+	defer db.RollbackTransaction(txn) // Ensure rollback if not committed
 
-	for _, tx := range transactions {
-		if err := processSingleTransaction(txn, tx, db); err != nil {
-			return err // Error handling could also include logging, etc.
-		}
+	// Use a channel to process transactions asynchronously
+	txChannel := make(chan *Transaction, len(transactions))
+	defer close(txChannel)
+
+	// Worker pool to handle transactions concurrently
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ { // Number of workers, tune this according to your needs
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for tx := range txChannel {
+				if err := processSingleTransaction(txn, tx, db); err != nil {
+					log.Printf("Failed to process transaction: %v", err)
+					continue
+				}
+			}
+		}()
 	}
+
+	// Dispatch transactions to workers
+	for _, tx := range transactions {
+		txChannel <- tx
+	}
+	wg.Wait()
 
 	// Commit all transaction changes as a single batch
 	if err := db.CommitTransaction(txn); err != nil {

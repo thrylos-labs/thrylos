@@ -20,8 +20,7 @@ type BlockchainDBInterface interface {
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error
 	CreateUTXO(id, txID string, index int, address string, amount int) (UTXO, error)
 	GetUTXOsForUser(address string, utxos map[string]UTXO) ([]UTXO, error)
-	GetAllUTXOs() (map[string]UTXO, error)
-	GetUTXOs() (map[string][]UTXO, error)
+	GetUTXOs(address string) (map[string][]UTXO, error)
 	CreateAndSignTransaction(txID string, inputs, outputs []UTXO, privKey *rsa.PrivateKey) (Transaction, error)
 	InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error
 	RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error)
@@ -33,4 +32,6 @@ type BlockchainDBInterface interface {
 	CommitTransaction(txn *TransactionContext) error
 	RollbackTransaction(txn *TransactionContext) error
 	SetTransaction(txn *TransactionContext, key []byte, value []byte) error
+	GetUTXOsByAddress(address string) (map[string][]UTXO, error)
+	GetAllUTXOs() (map[string][]UTXO, error)
 }

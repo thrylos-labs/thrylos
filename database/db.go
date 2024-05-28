@@ -466,8 +466,50 @@ func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
 	return nil
 }
 
-func (bdb *BlockchainDB) GetAllUTXOs() (map[string]shared.UTXO, error) {
-	utxos := make(map[string]shared.UTXO)
+func (bdb *BlockchainDB) GetUTXOsByAddress(address string) (map[string][]shared.UTXO, error) {
+	utxos := make(map[string][]shared.UTXO)
+
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		prefix := []byte("utxo-" + address + "-") // Assuming keys are prefixed with utxo-<address>-
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var utxo shared.UTXO
+				if err := json.Unmarshal(val, &utxo); err != nil {
+					return fmt.Errorf("error unmarshalling UTXO: %v", err)
+				}
+
+				// Extract the UTXO index from the key, format is "utxo-<address>-<index>"
+				keyParts := strings.Split(string(item.Key()), "-")
+				if len(keyParts) >= 3 {
+					index := keyParts[2]
+					utxos[index] = append(utxos[index], utxo)
+				}
+
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving UTXOs for address %s: %v", address, err)
+	}
+
+	return utxos, nil
+}
+
+func (bdb *BlockchainDB) GetAllUTXOs() (map[string][]shared.UTXO, error) {
+	utxos := make(map[string][]shared.UTXO)
 
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -477,17 +519,16 @@ func (bdb *BlockchainDB) GetAllUTXOs() (map[string]shared.UTXO, error) {
 
 		for it.Rewind(); it.ValidForPrefix(opts.Prefix); it.Next() {
 			item := it.Item()
-			key := item.KeyCopy(nil)
-
 			err := item.Value(func(val []byte) error {
 				var utxo shared.UTXO
 				if err := json.Unmarshal(val, &utxo); err != nil {
 					return fmt.Errorf("error unmarshalling UTXO: %v", err)
 				}
 
-				// Assuming the UTXO ID is part of the key, and the key format is "utxo-<utxoID>"
-				utxoID := string(key)[5:]
-				utxos[utxoID] = utxo
+				key := string(item.Key())
+				// Assuming the UTXO ID is part of the key, and the key format is "utxo-<address>-<index>"
+				// Here we just use the full key to categorize UTXOs under unique keys
+				utxos[key] = append(utxos[key], utxo)
 
 				return nil
 			})
@@ -667,51 +708,76 @@ func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner st
 	return nil
 }
 
+// UpdateUTXOs updates the UTXOs in the database, marking the inputs as spent and adding new outputs.
 func (bdb *BlockchainDB) UpdateUTXOs(inputs []shared.UTXO, outputs []shared.UTXO) error {
-	// Loop over the inputs and mark them as spent in the database
+	txn := bdb.DB.NewTransaction(true)
+	defer txn.Discard()
+
 	for _, input := range inputs {
-		err := bdb.MarkUTXOAsSpent(input)
+		err := bdb.MarkUTXOAsSpent(txn, input)
 		if err != nil {
-			// Handle error marking UTXO as spent.
 			return fmt.Errorf("error marking UTXO as spent: %w", err)
 		}
 	}
 
-	// Loop over the outputs and add them as new UTXOs in the database
 	for _, output := range outputs {
-		err := bdb.addNewUTXO(output)
+		err := bdb.addNewUTXO(txn, output)
 		if err != nil {
-			// Handle error adding new UTXO.
 			return fmt.Errorf("error adding new UTXO: %w", err)
 		}
 	}
 
-	return nil
+	return txn.Commit()
 }
 
-func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
-	// Add the utxo to the database
-	// This is a placeholder; replace with your actual implementation logic.
-	return nil
+// MarkUTXOAsSpent marks a UTXO as spent in the database.
+func (bdb *BlockchainDB) MarkUTXOAsSpent(txn *badger.Txn, utxo shared.UTXO) error {
+	key := []byte(fmt.Sprintf("utxo-%s-%d", utxo.TransactionID, utxo.Index))
+	utxo.IsSpent = true
+	utxoData, err := json.Marshal(utxo)
+	if err != nil {
+		return err
+	}
+	return txn.Set(key, utxoData)
 }
 
-// Replace with your actual implementation to mark UTXO as spent in the database
-func (bdb *BlockchainDB) MarkUTXOAsSpent(utxo shared.UTXO) error {
-	// TODO: implement logic to mark UTXO as spent in the database
-	return nil
+// addNewUTXO adds a new UTXO to the database.
+func (bdb *BlockchainDB) addNewUTXO(txn *badger.Txn, utxo shared.UTXO) error {
+	key := []byte(fmt.Sprintf("utxo-%s-%d", utxo.TransactionID, utxo.Index))
+	utxoData, err := json.Marshal(utxo)
+	if err != nil {
+		return err
+	}
+	return txn.Set(key, utxoData)
 }
 
-// Replace with your actual implementation to add new UTXO in the database
-func (bdb *BlockchainDB) addNewUTXO(utxo shared.UTXO) error {
-	// TODO: implement logic to add new UTXO in the database
-	return nil
-}
-
-func (bdb *BlockchainDB) GetUTXOs() (map[string][]shared.UTXO, error) {
+// GetUTXOs retrieves all UTXOs for a specific address.
+func (bdb *BlockchainDB) GetUTXOs(address string) (map[string][]shared.UTXO, error) {
 	utxos := make(map[string][]shared.UTXO)
-	// Your logic here to populate the utxos map from your database
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
 
-	return utxos, nil
+		prefix := []byte("utxo-" + address)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var utxo shared.UTXO
+				if err := json.Unmarshal(val, &utxo); err != nil {
+					return err
+				}
+				if !utxo.IsSpent {
+					utxos[address] = append(utxos[address], utxo)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return utxos, err
 }
 
 func (bdb *BlockchainDB) InsertBlock(blockData []byte, blockNumber int) error {
