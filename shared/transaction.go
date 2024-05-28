@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asaskevich/govalidator"
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/tyler-smith/go-bip39"
@@ -254,16 +255,36 @@ func HashData(data []byte) []byte {
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID               string   `json:"ID"`
-	Timestamp        int64    `json:"Timestamp"`
-	Inputs           []UTXO   `json:"Inputs"`
-	Outputs          []UTXO   `json:"Outputs"`
-	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty"` // Use omitempty if the field can be empty
-	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty"`
-	Signature        []byte   `json:"Signature"`
-	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty"` // Add this line
-	PreviousTxIds    []string `json:"PreviousTxIds,omitempty"`
-	Sender           string   `json:"sender"`
+	ID               string   `json:"ID" valid:"required,uuid4"`
+	Timestamp        int64    `json:"Timestamp" valid:"required"`
+	Inputs           []UTXO   `json:"Inputs" valid:"required"`
+	Outputs          []UTXO   `json:"Outputs" valid:"required"`
+	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty" valid:"optional"`
+	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty" valid:"optional"`
+	Signature        []byte   `json:"Signature" valid:"required,length(64)"` // Assuming signature should be exactly 64 bytes
+	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty" valid:"optional"`
+	PreviousTxIds    []string `json:"PreviousTxIds,omitempty" valid:"optional"`
+	Sender           string   `json:"sender" valid:"required,ethereum_addr"`
+}
+
+// Validate checks the fields of Transaction based on the struct tags.
+func (tx *Transaction) Validate() error {
+	_, err := govalidator.ValidateStruct(tx)
+	if err != nil {
+		return err
+	}
+
+	// Additional custom validations can be added here
+	if !validateTimestamp(tx.Timestamp) {
+		return errors.New("invalid timestamp: must be recent within an hour")
+	}
+
+	return nil
+}
+
+// validateTimestamp ensures the timestamp is within a reasonable range (e.g., within the last hour).
+func validateTimestamp(timestamp int64) bool {
+	return time.Since(time.Unix(timestamp, 0)).Hours() < 1
 }
 
 // select tips:

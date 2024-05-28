@@ -3,6 +3,7 @@ package shared
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	lru "github.com/hashicorp/golang-lru"
@@ -14,12 +15,22 @@ import (
 // that has not been spent and can be used as an input in a new transaction. UTXOs are fundamental
 // to understanding a user's balance within the blockchain.
 type UTXO struct {
-	ID            string `json:"ID,omitempty"`
-	TransactionID string `json:"TransactionID"`
-	Index         int    `json:"Index"`
-	OwnerAddress  string `json:"OwnerAddress"`
-	Amount        int    `json:"Amount"`
-	IsSpent       bool   `json:"IsSpent"` // Indicates whether the UTXO has been spent
+	ID            string `json:"ID,omitempty"`                                         // Optional: ID might not always be necessary.
+	TransactionID string `json:"TransactionID" validate:"required,hexadecimal,len=64"` // Assumes transaction IDs are hexadecimal and 64 characters.
+	Index         int    `json:"Index" validate:"gte=0"`                               // Index must be greater than or equal to 0.
+	OwnerAddress  string `json:"OwnerAddress" validate:"required,eth_addr"`            // Custom validation tag for Ethereum-like addresses.
+	Amount        int    `json:"Amount" validate:"gt=0"`                               // Amount must be greater than 0 to avoid zero or negative values.
+	IsSpent       bool   `json:"IsSpent"`
+}
+
+// ValidateUTXO checks for the validity of the UTXO, ensuring its data conforms to expected formats and rules.
+func (u *UTXO) ValidateUTXO() error {
+	// Check if the owner address is correctly formatted
+	if !strings.HasPrefix(u.OwnerAddress, "0x") || len(u.OwnerAddress) != 42 {
+		return fmt.Errorf("invalid owner address format: %s", u.OwnerAddress)
+	}
+	// Further validation rules can be added here
+	return nil
 }
 
 var AllUTXOs []UTXO

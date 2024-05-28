@@ -440,6 +440,7 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) {
 }
 
 // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
+// ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
@@ -449,15 +450,20 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		for _, input := range tx.Inputs {
 			if removed := bc.removeUTXO(input.TransactionId, input.Index); !removed {
 				log.Printf("Failed to remove input UTXO: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
-				continue
+				continue // Skip this transaction if the input UTXO cannot be removed (not found or already spent)
 			}
 			log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
 		}
 		for _, output := range tx.Outputs {
 			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int(output.Amount))
+			if err := newUTXO.ValidateUTXO(); err != nil {
+				log.Printf("Validation failed for UTXO: %v", err)
+				continue // Skip adding this UTXO if validation fails
+			}
 			bc.addUTXO(newUTXO)
 			log.Printf("Output UTXO added: Transaction ID: %s, Owner: %s, Amount: %d", tx.Id, output.OwnerAddress, output.Amount)
 		}
+
 	}
 
 	selectedValidator := bc.SelectValidator()

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -436,34 +435,43 @@ func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
 
 func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var tx thrylos.Transaction
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("Error reading request body: %v", err)
-			http.Error(w, "Failed to read request body", http.StatusBadRequest)
-			return
-		}
-
-		log.Printf("Received transaction request: %s", string(body))
-
-		if err := json.Unmarshal(body, &tx); err != nil {
-			log.Printf("Error decoding transaction: %v, Body: %s", err, string(body))
+		// Decode the incoming JSON to the Transaction struct
+		var tx shared.Transaction
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&tx); err != nil {
+			log.Printf("Error decoding transaction: %v", err)
 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
 			return
 		}
 
-		log.Printf("Parsed transaction: %+v", tx)
+		log.Printf("Received transaction request: %+v", tx)
+
+		// Validate the transaction
+		if err := tx.Validate(); err != nil {
+			log.Printf("Validation failed for transaction: %v, Error: %v", tx, err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Convert local Transaction type to thrylos.Transaction if needed
+		thrylosTx, err := shared.ConvertLocalTransactionToThrylosTransaction(tx)
+		if err != nil {
+			log.Printf("Error converting to thrylos.Transaction: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 
 		// Verify and process the transaction
-		if err := node.VerifyAndProcessTransaction(&tx); err != nil {
-			log.Printf("Invalid transaction: %v, Transaction: %+v", err, tx)
+		if err := node.VerifyAndProcessTransaction(thrylosTx); err != nil {
+			log.Printf("Invalid transaction: %v, Transaction: %+v", err, thrylosTx)
 			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
 			return
 		}
 
-		if err := node.AddPendingTransaction(&tx); err != nil {
+		// Add transaction to pending transactions
+		if err := node.AddPendingTransaction(thrylosTx); err != nil {
 			log.Printf("Failed to add transaction to pending transactions: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to add transaction to pending transactions: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("Failed to add transaction: %v", err), http.StatusInternalServerError)
 			return
 		}
 
