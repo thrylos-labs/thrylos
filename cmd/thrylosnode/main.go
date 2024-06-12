@@ -27,15 +27,30 @@ import (
 	// Import your blockchain package
 )
 
+func loadEnv() {
+	env := os.Getenv("ENV")
+	var envPath string
+	if env == "production" {
+		envPath = "/.env.prod" // Adjust this to the correct relative path
+	} else {
+		envPath = "/.env.dev" // Adjust this to the correct relative path
+	}
+	if err := godotenv.Load(envPath); err != nil {
+		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
+	}
+}
+
 func main() {
 	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
 	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
 
+	loadEnv()
+
 	// Load configuration from .env file
-	envPath := "../../.env"
-	if err := godotenv.Load(envPath); err != nil {
-		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
-	}
+	// envPath := "../../.env"
+	// if err := godotenv.Load(envPath); err != nil {
+	// 	log.Fatalf("Error loading .env file from %s: %v", envPath, err)
+	// }
 
 	// Environment variables
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
