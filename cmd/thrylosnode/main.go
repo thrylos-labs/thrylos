@@ -218,8 +218,8 @@ func main() {
 
 	// Use static certificate files for local development
 	httpsServer := &http.Server{
-		Addr:    ":443",  // Standard HTTPS port
-		Handler: handler, // Reference the CORS-wrapped handler
+		Addr:    os.Getenv("HTTPS_NODE_ADDRESS"), // Use the address from the environment variable
+		Handler: handler,                         // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{loadCertificate()}, // Load static certificate
 		},

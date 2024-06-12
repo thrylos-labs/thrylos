@@ -68,7 +68,6 @@ func loadEnv() {
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
 	// Load configuration from .env file, particularly for non-test environments
-	// Load configuration from .env file, particularly for non-test environments
 	if !isTest {
 		loadEnv() // Dynamically load the correct environment configuration
 	}
