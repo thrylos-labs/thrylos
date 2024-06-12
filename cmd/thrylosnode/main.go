@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -59,8 +60,16 @@ func main() {
 		log.Fatal("WASM_PATH environment variable not set")
 	}
 
+	// Fetch and load WebAssembly binary
+	response, err := http.Get(wasmPath)
+	if err != nil {
+		log.Fatalf("Failed to fetch wasm file from %s: %v", wasmPath, err)
+	}
+	defer response.Body.Close()
+
 	// Load WebAssembly binary
-	wasmBytes, err := os.ReadFile(wasmPath)
+
+	wasmBytes, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		log.Fatalf("Failed to read wasm file: %v", err)
 	}
