@@ -51,17 +51,26 @@ func (n *Node) SetChainID(chainID string) {
 	n.chainID = chainID
 }
 
+func loadEnv() {
+	env := os.Getenv("ENV")
+	var envPath string
+	if env == "production" {
+		envPath = "../../.env.prod" // Ensure this is the correct path relative to where the app is run
+	} else {
+		envPath = "../../.env.dev" // Default to development environment
+	}
+	if err := godotenv.Load(envPath); err != nil {
+		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
+	}
+}
+
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
 	// Load configuration from .env file, particularly for non-test environments
+	// Load configuration from .env file, particularly for non-test environments
 	if !isTest {
-		envPath := "../../.env" // Specify the path to your .env file
-		if err := godotenv.Load(envPath); err != nil {
-			log.Fatalf("Error loading .env file from %s: %v", envPath, err)
-		} else {
-			log.Println(".env file loaded successfully")
-		}
+		loadEnv() // Dynamically load the correct environment configuration
 	}
 
 	// Retrieve the AES key securely from an environment variable, with a fallback for tests

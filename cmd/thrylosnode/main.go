@@ -31,9 +31,9 @@ func loadEnv() {
 	env := os.Getenv("ENV")
 	var envPath string
 	if env == "production" {
-		envPath = "/.env.prod" // Adjust this to the correct relative path
+		envPath = "../../.env.prod" // Adjust this to the correct relative path
 	} else {
-		envPath = "/.env.dev" // Adjust this to the correct relative path
+		envPath = "../../.env.dev" // Adjust this to the correct relative path
 	}
 	if err := godotenv.Load(envPath); err != nil {
 		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
@@ -43,6 +43,12 @@ func loadEnv() {
 func main() {
 	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
 	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Error getting current working directory: %v", err)
+	}
+	log.Printf("Running from directory: %s", cwd)
 
 	loadEnv()
 
@@ -254,8 +260,19 @@ func main() {
 }
 
 func loadTLSCredentials() credentials.TransportCredentials {
+	var certPath, keyPath string
+
+	// Determine paths based on the environment
+	if os.Getenv("ENV") == "production" {
+		certPath = os.Getenv("TLS_CERT_PATH")
+		keyPath = os.Getenv("TLS_KEY_PATH")
+	} else { // Default to development paths
+		certPath = "../../localhost.crt"
+		keyPath = "../../localhost.key"
+	}
+
 	// Load the server's certificate and its private key
-	cert, err := tls.LoadX509KeyPair("../../localhost.crt", "../../localhost.key")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		log.Fatalf("could not load TLS keys: %v", err)
 	}
@@ -270,8 +287,19 @@ func loadTLSCredentials() credentials.TransportCredentials {
 }
 
 func loadCertificate() tls.Certificate {
+	var certPath, keyPath string
+
+	// Determine paths based on the environment
+	if os.Getenv("ENV") == "production" {
+		certPath = os.Getenv("TLS_CERT_PATH")
+		keyPath = os.Getenv("TLS_KEY_PATH")
+	} else { // Default to development paths
+		certPath = "../../localhost.crt"
+		keyPath = "../../localhost.key"
+	}
+
 	// Load the server's certificate and its private key
-	cert, err := tls.LoadX509KeyPair("../../localhost.crt", "../../localhost.key")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		log.Fatalf("could not load TLS keys: %v", err)
 	}
