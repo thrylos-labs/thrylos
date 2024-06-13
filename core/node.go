@@ -635,23 +635,25 @@ func (node *Node) FaucetHandler() http.HandlerFunc {
 		address := r.URL.Query().Get("address")
 		amountStr := r.URL.Query().Get("amount")
 		if address == "" {
-			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			http.Error(w, `{"error":"Address parameter is missing"}`, http.StatusBadRequest)
 			return
 		}
 
 		amount, err := strconv.ParseInt(amountStr, 10, 64)
 		if err != nil {
-			http.Error(w, "Invalid amount", http.StatusBadRequest)
+			http.Error(w, `{"error":"Invalid amount"}`, http.StatusBadRequest)
 			return
 		}
 
 		err = node.Blockchain.TransferFunds("", address, amount) // Using the genesis account by default
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Failed to transfer funds: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf(`{"error":"Failed to transfer funds: %v"}`, err), http.StatusInternalServerError)
 			return
 		}
 
-		fmt.Fprintf(w, "Transferred %d to %s successfully", amount, address)
+		response := fmt.Sprintf(`{"message":"Transferred %d to %s successfully"}`, amount, address)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(response))
 	}
 }
 
