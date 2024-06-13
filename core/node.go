@@ -628,6 +628,7 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 }
 
 // The faucet handler can utilize this genesis account without needing to specify which account to use:
+// This endpoint will transfer a predefined amount of funds from a foundational account to a specified user's account.
 
 func (node *Node) FaucetHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
