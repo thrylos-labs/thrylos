@@ -627,6 +627,8 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 	}
 }
 
+// The faucet handler can utilize this genesis account without needing to specify which account to use:
+
 func (node *Node) FaucetHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		address := r.URL.Query().Get("address")
