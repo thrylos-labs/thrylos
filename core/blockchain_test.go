@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"io/ioutil"
+	"log"
 	"os"
 	"testing"
 
@@ -25,8 +26,13 @@ func TestNewBlockchain(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
 	// Create a new blockchain using the temporary directory and generated AES key
-	bc, err := NewBlockchain(tempDir, aesKey)
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}

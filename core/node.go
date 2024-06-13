@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
@@ -27,7 +28,7 @@ import (
 type Vote struct {
 	BlockHash string // Hash of the block that is being voted for.
 	Validator string // Address of the validator casting the vote.
-	Stake     int    // Stake amount of the validator at the time of voting.
+	Stake     int64  // Stake amount of the validator at the time of voting.
 }
 
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both
@@ -91,7 +92,13 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		log.Println("AES key decoded successfully")
 	}
 
-	bc, err := NewBlockchain(dataDir, aesKey) // Pass both dataDir and aesKey to the NewBlockchain function
+	// Assuming you have a way to get or set a default genesis account address
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
+	bc, err := NewBlockchain(dataDir, aesKey, genesisAccount) // Pass both dataDir and aesKey to the NewBlockchain function
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}
@@ -620,11 +627,36 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 	}
 }
 
+func (node *Node) FaucetHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		address := r.URL.Query().Get("address")
+		amountStr := r.URL.Query().Get("amount")
+		if address == "" {
+			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		amount, err := strconv.ParseInt(amountStr, 10, 64)
+		if err != nil {
+			http.Error(w, "Invalid amount", http.StatusBadRequest)
+			return
+		}
+
+		err = node.Blockchain.TransferFunds("", address, amount) // Using the genesis account by default
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to transfer funds: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Fprintf(w, "Transferred %d to %s successfully", amount, address)
+	}
+}
+
 type BlockchainStats struct {
-	NumberOfBlocks       int `json:"number_of_blocks"`
-	NumberOfTransactions int `json:"number_of_transactions"`
-	TotalStake           int `json:"total_stake"`
-	NumberOfPeers        int `json:"number_of_peers"`
+	NumberOfBlocks       int   `json:"number_of_blocks"`
+	NumberOfTransactions int   `json:"number_of_transactions"`
+	TotalStake           int64 `json:"total_stake"`
+	NumberOfPeers        int   `json:"number_of_peers"`
 }
 
 func (node *Node) GetBlockchainStats() BlockchainStats {
@@ -641,8 +673,8 @@ func (node *Node) GetBlockchainStats() BlockchainStats {
 
 // TotalStake calculates the total amount of stake from all stakeholders in the blockchain. This is used
 // in consensus mechanisms that involve staking.
-func (bc *Blockchain) TotalStake() int {
-	var total int
+func (bc *Blockchain) TotalStake() int64 {
+	var total int64
 	for _, stake := range bc.Stakeholders {
 		total += stake
 	}
@@ -653,7 +685,7 @@ func (bc *Blockchain) TotalStake() int {
 // a crucial role in consensus mechanisms where blocks are accepted based on validator votes.
 func (node *Node) CountVotes() {
 	majorityStake := node.Blockchain.TotalStake()/2 + 1
-	voteStakes := make(map[string]int)
+	voteStakes := make(map[string]int64)
 
 	for _, vote := range node.Votes {
 		voteStakes[vote.BlockHash] += vote.Stake
@@ -674,18 +706,18 @@ func (node *Node) CountVotes() {
 // This function can be used in various blockchain contexts where randomness is required, such as
 // selecting a validator randomly in a Proof of Stake (PoS) consensus mechanism or generating nonces.
 
-func SecureRandomInt(max int) (int, error) {
+func SecureRandomInt(max int64) (int64, error) {
 	nBig, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
 	if err != nil {
 		return 0, err
 	}
-	return int(nBig.Int64()), nil
+	return int64(nBig.Int64()), nil
 }
 
 const minStakeRequirement = 1000 // This represents the minimum amount of stake required to become a validator.
 
 func (bc *Blockchain) SelectValidator() string {
-	var totalStake int
+	var totalStake int64
 
 	for _, stake := range bc.Stakeholders {
 		totalStake += stake
@@ -840,7 +872,7 @@ func (node *Node) ConsensusInfoHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var validators []struct {
 			Address string `json:"address"`
-			Stake   int    `json:"stake"`
+			Stake   int64  `json:"stake"`
 			Votes   []Vote `json:"votes"`
 		}
 
@@ -854,7 +886,7 @@ func (node *Node) ConsensusInfoHandler() http.HandlerFunc {
 			}
 			validators = append(validators, struct {
 				Address string `json:"address"`
-				Stake   int    `json:"stake"`
+				Stake   int64  `json:"stake"`
 				Votes   []Vote `json:"votes"`
 			}{
 				Address: address,
@@ -902,7 +934,7 @@ func (node *Node) UpdateStakeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Address string `json:"address"`
-			Amount  int    `json:"amount"` // Positive to increase, negative to decrease
+			Amount  int64  `json:"amount"` // Positive to increase, negative to decrease
 		}
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
@@ -926,7 +958,7 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 		var req struct {
 			From   string `json:"from"`
 			To     string `json:"to"`
-			Amount int    `json:"amount"`
+			Amount int64  `json:"amount"`
 		}
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {

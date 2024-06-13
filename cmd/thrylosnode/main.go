@@ -110,6 +110,12 @@ func main() {
 		log.Fatalf("Error decoding AES key: %v", err)
 	}
 
+	// Genesis account
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
 	// Get the absolute path of the node data directory
 	absPath, err := filepath.Abs(nodeDataDir)
 	if err != nil {
@@ -118,7 +124,7 @@ func main() {
 	log.Printf("Using blockchain data directory: %s", absPath)
 
 	// Initialize the blockchain and database with the AES key
-	blockchain, err := core.NewBlockchain(absPath, aesKey)
+	blockchain, err := core.NewBlockchain(absPath, aesKey, genesisAccount)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
@@ -183,6 +189,8 @@ func main() {
 			node.UpdateStakeHandler()(w, r)
 		case "/delegate-stake":
 			node.DelegateStakeHandler()(w, r)
+		case "/faucet":
+			node.FaucetHandler()(w, r)
 		case "/get-stats":
 			stats := node.GetBlockchainStats()
 			statsJSON, err := json.Marshal(stats)

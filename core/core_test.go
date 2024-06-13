@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io/ioutil"
+	"log"
 	"os"
 	"testing"
 
@@ -28,12 +29,17 @@ func setupTestBlockchain(t *testing.T) *Blockchain {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
 	// You should ensure the temporary directory is cleaned up after the test runs,
 	// possibly in the test function that calls setupTestBlockchain
 	// defer os.RemoveAll(tempDir)
 
 	// Initialize the blockchain using the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey)
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
 	}
@@ -62,8 +68,14 @@ func TestGenesisBlockCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
+
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
 	// Initialize the blockchain with the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey)
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

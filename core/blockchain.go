@@ -40,7 +40,7 @@ type Blockchain struct {
 	// Stakeholders maps validator addresses to their respective stakes in the network. This is
 	// used in proof-of-stake (PoS) consensus mechanisms to determine validators' rights to create
 	// new blocks based on the size of their stake
-	Stakeholders map[string]int
+	Stakeholders map[string]int64 // Maps validator addresses to their respective stakes
 
 	// UTXOs tracks unspent transaction outputs, which represent the current state of ownership
 	// of the blockchain's assets. It is a key component in preventing double spending.
@@ -68,6 +68,9 @@ type Blockchain struct {
 	Database shared.BlockchainDBInterface // Updated the type to interface
 
 	PublicKeyMap map[string]ed25519.PublicKey // To store public keys
+
+	GenesisAccount string // Add this to store the genesis account address
+
 }
 
 // NewTransaction creates a new transaction
@@ -84,7 +87,7 @@ type Fork struct {
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
+func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string) (*Blockchain, error) {
 	// Initialize the database
 	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
@@ -103,18 +106,19 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 		Address string
 		Balance int64
 	}{
-		{"6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19", 10000},
-		{"8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7", 20000},
+		{genesisAccount, 100000}, // Assume a starting balance for the genesis account
+		// {"6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19", 10000},
+		// {"8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7", 20000},
 	}
 
 	// Initialize Stakeholders map
-	stakeholdersMap := make(map[string]int)
+	stakeholdersMap := make(map[string]int64)
 
 	// Precompute genesis transactions and UTXOs
 	genesisTransactions := make([]*thrylos.Transaction, 0, len(stakeholders))
 	utxoMap := make(map[string][]*thrylos.UTXO, len(stakeholders))
 	for _, stakeholder := range stakeholders {
-		stakeholdersMap[stakeholder.Address] = int(stakeholder.Balance)
+		stakeholdersMap[stakeholder.Address] = int64(stakeholder.Balance)
 		genesisTx := &thrylos.Transaction{
 			Id:        "genesis_tx_" + stakeholder.Address,
 			Timestamp: time.Now().Unix(),
@@ -131,13 +135,14 @@ func NewBlockchain(dataDir string, aesKey []byte) (*Blockchain, error) {
 
 	genesis.Transactions = genesisTransactions
 	blockchain := &Blockchain{
-		Blocks:       []*Block{genesis},
-		Genesis:      genesis,
-		Stakeholders: stakeholdersMap,
-		Database:     bdb,
-		PublicKeyMap: publicKeyMap, // Initialize the public key map
-		UTXOs:        utxoMap,
-		Forks:        make([]*Fork, 0),
+		Blocks:         []*Block{genesis},
+		Genesis:        genesis,
+		Stakeholders:   stakeholdersMap,
+		Database:       bdb,
+		PublicKeyMap:   publicKeyMap, // Initialize the public key map
+		UTXOs:          utxoMap,
+		Forks:          make([]*Fork, 0),
+		GenesisAccount: genesisAccount, // Set the genesis account
 	}
 
 	// Serialize the genesis block and insert into the database
@@ -280,7 +285,7 @@ func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator
 	return newBlock
 }
 
-func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmount int) {
+func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmount int64) {
 	if _, ok := bc.Stakeholders[validatorAddress]; ok {
 		// Deduct the slashAmount from the stake
 		bc.Stakeholders[validatorAddress] -= slashAmount
@@ -551,7 +556,7 @@ func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
 }
 
 // If the stake adjustment leads to a non-positive value, the stakeholder is removed from the map.
-func (bc *Blockchain) UpdateStake(address string, amount int) error {
+func (bc *Blockchain) UpdateStake(address string, amount int64) error {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
@@ -601,8 +606,28 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string) error {
 	return nil
 }
 
+func (bc *Blockchain) TransferFunds(from, to string, amount int64) error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	if from == "" {
+		from = bc.GenesisAccount // Default to the genesis account if 'from' is not specified
+	}
+
+	// Check if the sender has enough funds
+	if bc.Stakeholders[from] < amount {
+		return fmt.Errorf("insufficient funds")
+	}
+
+	// Perform the transfer
+	bc.Stakeholders[from] -= amount
+	bc.Stakeholders[to] += amount
+
+	return nil
+}
+
 // This method will adjust the stake between two addresses, which represents delegating stake from one user (the delegator) to another (the delegatee or validator).
-func (bc *Blockchain) DelegateStake(from, to string, amount int) error {
+func (bc *Blockchain) DelegateStake(from, to string, amount int64) error {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
@@ -723,7 +748,7 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 }
 
 // RewardValidator rewards the validator with new tokens
-func (bc *Blockchain) RewardValidator(validator string, reward int) {
+func (bc *Blockchain) RewardValidator(validator string, reward int64) {
 	bc.Mu.Lock() // Lock
 	bc.Stakeholders[validator] += reward
 	bc.Mu.Unlock() // Unlock

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io/ioutil"
+	"log"
 	"os"
 	"testing"
 	"time"
@@ -122,7 +123,12 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	bc, err := NewBlockchain(tempDir, aesKey)
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}
@@ -195,8 +201,13 @@ func TestTransactionSubmission(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	}
+
 	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
-	blockchain, err := NewBlockchain(tempDir, aesKey)
+	blockchain, err := NewBlockchain(tempDir, aesKey, genesisAccount)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
