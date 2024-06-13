@@ -31,9 +31,9 @@ func loadEnv() {
 	env := os.Getenv("ENV")
 	var envPath string
 	if env == "production" {
-		envPath = "../../.env.prod" // Adjust this to the correct relative path
+		envPath = "../../.env.prod" // The Cert is managed through the droplet
 	} else {
-		envPath = "../../.env.dev" // Adjust this to the correct relative path
+		envPath = "../../.env.dev" // Managed through local host
 	}
 	if err := godotenv.Load(envPath); err != nil {
 		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
@@ -146,15 +146,7 @@ func main() {
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins: []string{
-			"chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn", // MetaMask extension ID
-			"http://localhost:3000",                               // Your development frontend
-			"http://127.0.0.1:3000",                               // Another common localhost format
-			"http://localhost:8545",
-			"http://127.0.0.1:8545",
-			"http://localhost:8546",
-			"http://127.0.0.1:8546",
-		},
+		AllowedOrigins:   []string{"*"}, // for testing purposes only
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
