@@ -157,6 +157,19 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string) (*Block
 		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
+	// After setting up the blockchain, log the balance of the genesis account to confirm it's correctly set
+	genesisBalance, ok := stakeholdersMap[genesisAccount]
+	if !ok {
+		return nil, fmt.Errorf("genesis account %s does not exist", genesisAccount)
+	}
+	log.Printf("Genesis account %s initialized with balance: %d", genesisAccount, genesisBalance)
+
+	// Check if genesis balance is sufficient for expected operations
+	expectedInitialFunding := int64(100000) // Adjust based on expected number of users * funding amount
+	if genesisBalance < expectedInitialFunding {
+		return nil, fmt.Errorf("genesis account balance %d is insufficient to cover expected initial funding of %d", genesisBalance, expectedInitialFunding)
+	}
+
 	return blockchain, nil
 }
 

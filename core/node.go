@@ -979,6 +979,33 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 	}
 }
 
+// FundWalletHandler transfers a predefined amount from the genesis account to a new user's wallet.
+func (node *Node) FundWalletHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Address string `json:"address"` // User's wallet address
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		// Define the amount to transfer, e.g., $70
+		amount := int64(70) // Adjust based on your currency's smallest unit, e.g., cents
+
+		// Transfer funds from the genesis account
+		err := node.Blockchain.TransferFunds("", request.Address, amount)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to fund wallet: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		response := fmt.Sprintf(`{"message":"Funded wallet with %d successfully"}`, amount)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(response))
+	}
+}
+
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
@@ -1009,6 +1036,8 @@ func (node *Node) Start() {
 	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
 
 	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
+
+	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
 
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		var block Block

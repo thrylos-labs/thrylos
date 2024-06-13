@@ -191,6 +191,8 @@ func main() {
 			node.DelegateStakeHandler()(w, r)
 		case "/faucet":
 			node.FaucetHandler()(w, r)
+		case "/fund-wallet":
+			node.FundWalletHandler()(w, r)
 		case "/get-stats":
 			stats := node.GetBlockchainStats()
 			statsJSON, err := json.Marshal(stats)
