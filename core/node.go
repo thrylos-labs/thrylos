@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -607,14 +608,21 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		address := r.URL.Query().Get("address")
 		if address == "" {
-			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			response := `{"error":"Address parameter is missing"}`
+			log.Println("Sending error response:", response)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(response))
 			return
 		}
 
 		balance, err := node.Blockchain.GetBalance(address)
 		if err != nil {
-			log.Printf("Failed to get balance for address %s: %v", address, err)
-			http.Error(w, "Failed to retrieve balance", http.StatusInternalServerError)
+			response := fmt.Sprintf(`{"error":"Failed to get balance for address %s: %v"}`, address, err)
+			log.Println("Sending error response:", response)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(response))
 			return
 		}
 
@@ -622,12 +630,10 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			"address": address,
 			"balance": balance,
 		}
-		log.Printf("Sending balance response: %+v", response)
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response to JSON: %v", err)
-			http.Error(w, "Error encoding JSON", http.StatusInternalServerError)
-		}
+		jsonResp, _ := json.Marshal(response)
+		log.Printf("Sending success response: %s\n", jsonResp) // Log the response
+		w.Write(jsonResp)
 	}
 }
 
@@ -986,6 +992,18 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 // FundWalletHandler transfers a predefined amount from the genesis account to a new user's wallet.
 func (node *Node) FundWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Log raw body for debugging
+		bodyBytes, _ := ioutil.ReadAll(r.Body)
+		fmt.Println("Received body:", string(bodyBytes))
+
+		// Rewind the request body for JSON decoding
+		r.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
+
 		var request struct {
 			Address string `json:"address"` // User's wallet address
 			Amount  int64  `json:"amount"`  // Ensure to include amount if it's dynamic
