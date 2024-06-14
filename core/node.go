@@ -606,6 +606,7 @@ func (node *Node) GetBalance(address string) (int64, error) {
 
 func (node *Node) GetBalanceHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		log.Println("GetBalanceHandler called") // Log when handler is called
 		address := r.URL.Query().Get("address")
 		if address == "" {
 			response := `{"error":"Address parameter is missing"}`
@@ -630,10 +631,10 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			"address": address,
 			"balance": balance,
 		}
+		responseJSON, _ := json.Marshal(response)
+		log.Printf("Sending success response: %s", string(responseJSON)) // Log the JSON response string
 		w.Header().Set("Content-Type", "application/json")
-		jsonResp, _ := json.Marshal(response)
-		log.Printf("Sending success response: %s\n", jsonResp) // Log the response
-		w.Write(jsonResp)
+		w.Write(responseJSON)
 	}
 }
 
