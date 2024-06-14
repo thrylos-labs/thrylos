@@ -618,13 +618,16 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			return
 		}
 
-		// Respond with the balance in JSON format
 		response := map[string]interface{}{
 			"address": address,
 			"balance": balance,
 		}
+		log.Printf("Sending balance response: %+v", response)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Failed to encode response to JSON: %v", err)
+			http.Error(w, "Error encoding JSON", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -985,25 +988,25 @@ func (node *Node) FundWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Address string `json:"address"` // User's wallet address
+			Amount  int64  `json:"amount"`  // Ensure to include amount if it's dynamic
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "Invalid request", http.StatusBadRequest)
+			http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Define the amount to transfer, e.g., $70
-		amount := int64(70) // Adjust based on your currency's smallest unit, e.g., cents
-
 		// Transfer funds from the genesis account
-		err := node.Blockchain.TransferFunds("", request.Address, amount)
+		err := node.Blockchain.TransferFunds("", request.Address, request.Amount)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Failed to fund wallet: %v", err), http.StatusInternalServerError)
 			return
 		}
 
-		response := fmt.Sprintf(`{"message":"Funded wallet with %d successfully"}`, amount)
+		response := map[string]string{
+			"message": fmt.Sprintf("Funded wallet with %d successfully", request.Amount),
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(response))
+		json.NewEncoder(w).Encode(response)
 	}
 }
 
