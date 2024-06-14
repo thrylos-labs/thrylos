@@ -605,14 +605,12 @@ func (node *Node) GetBalance(address string) (int64, error) {
 
 func (node *Node) GetBalanceHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Extract the address from query parameters
 		address := r.URL.Query().Get("address")
 		if address == "" {
 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
 			return
 		}
 
-		// Fetch the balance
 		balance, err := node.Blockchain.GetBalance(address)
 		if err != nil {
 			log.Printf("Failed to get balance for address %s: %v", address, err)
@@ -620,10 +618,13 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			return
 		}
 
-		// Respond with the balance
-		response := fmt.Sprintf("Balance for address %s: %d", address, balance)
-		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte(response))
+		// Respond with the balance in JSON format
+		response := map[string]interface{}{
+			"address": address,
+			"balance": balance,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 	}
 }
 
