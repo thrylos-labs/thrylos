@@ -1267,7 +1267,9 @@ func (node *Node) Start() {
 
 	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
 
-	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler()) // Added submit transaction endpoint
+	log.Println("Registering /sign-transaction")
+	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler())
+	log.Println("/sign-transaction registered")
 
 	mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
 

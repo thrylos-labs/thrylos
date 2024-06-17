@@ -167,6 +167,8 @@ func main() {
 		case "/submit-transaction":
 			log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
 			node.EnhancedSubmitTransactionHandler()(w, r)
+		case "/sign-transaction":
+			node.SignTransactionHandler()(w, r)
 		case "/get-block":
 			node.GetBlockHandler()(w, r)
 		case "/get-transaction":
