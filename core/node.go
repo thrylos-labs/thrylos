@@ -462,85 +462,6 @@ func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
 	}
 }
 
-func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var tx shared.Transaction
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&tx); err != nil {
-			node.logError("Decode", err)
-			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
-			return
-		}
-
-		if err := tx.Validate(); err != nil {
-			node.logError("Validate", err)
-			http.Error(w, "Transaction validation failed: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if err := node.signAndProcessTransaction(&tx); err != nil {
-			node.logError("Process", err)
-			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Transaction processed successfully"))
-	}
-}
-
-func (n *Node) signAndProcessTransaction(tx *shared.Transaction) error {
-	// Serialize inputs and outputs
-	serializedInputs, err := shared.SerializeUTXOs(tx.Inputs)
-	if err != nil {
-		return fmt.Errorf("failed to serialize inputs: %v", err)
-	}
-
-	serializedOutputs, err := shared.SerializeUTXOs(tx.Outputs)
-	if err != nil {
-		return fmt.Errorf("failed to serialize outputs: %v", err)
-	}
-
-	// Encrypt serialized data
-	aesKey, err := shared.GenerateAESKey()
-	if err != nil {
-		return fmt.Errorf("failed to generate AES key: %v", err)
-	}
-
-	encryptedInputs, err := shared.EncryptWithAES(aesKey, serializedInputs)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt inputs: %v", err)
-	}
-
-	encryptedOutputs, err := shared.EncryptWithAES(aesKey, serializedOutputs)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt outputs: %v", err)
-	}
-
-	// Assemble the transaction with encrypted components
-	tx.EncryptedInputs = encryptedInputs
-	tx.EncryptedOutputs = encryptedOutputs
-	tx.Timestamp = time.Now().Unix()
-
-	// Sign the transaction
-	privateKeyBytes, err := n.Database.RetrievePrivateKey(tx.Sender)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve private key: %v", err)
-	}
-
-	signature, err := shared.SignTransactionData(tx, privateKeyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to sign transaction: %v", err)
-	}
-	tx.Signature = signature
-
-	return nil
-}
-
-func (n *Node) logError(stage string, err error) {
-	log.Printf("[%s] error: %v", stage, err)
-}
-
 // func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
 // 	return func(w http.ResponseWriter, r *http.Request) {
 // 		// Decode the incoming JSON to the Transaction struct
@@ -1082,6 +1003,203 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 	}
 }
 
+// SignTransactionHandler – This endpoint is responsible for taking an unsigned transaction, securely signing it using the sender's private key, and optionally, encrypting parts of the transaction.
+// It's crucial that this handler ensures the transaction is correctly formatted and the signature is valid. It may return the signed transaction back to the client for verification or submission.
+
+func (n *Node) SignTransactionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		decoder := json.NewDecoder(r.Body)
+		var transactionData shared.Transaction
+		if err := decoder.Decode(&transactionData); err != nil {
+			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
+			return
+		}
+
+		privateKeyBytes, err := n.Database.RetrievePrivateKey(transactionData.Sender)
+		if err != nil {
+			http.Error(w, "Could not retrieve private key", http.StatusInternalServerError)
+			return
+		}
+
+		privateKey, err := shared.DecodePrivateKey(privateKeyBytes)
+		if err != nil {
+			http.Error(w, "Could not decode private key", http.StatusInternalServerError)
+			return
+		}
+
+		aesKey, err := shared.GenerateAESKey()
+		if err != nil {
+			http.Error(w, "Could not generate AES key", http.StatusInternalServerError)
+			return
+		}
+
+		signedTransaction, err := shared.CreateAndSignTransaction(
+			transactionData.ID,
+			transactionData.Sender,
+			transactionData.Inputs,
+			transactionData.Outputs,
+			privateKey,
+			aesKey,
+		)
+		if err != nil {
+			http.Error(w, "Could not sign transaction", http.StatusInternalServerError)
+			return
+		}
+
+		protoTx, err := shared.ConvertToProtoTransaction(signedTransaction)
+		if err != nil {
+			http.Error(w, "Could not convert transaction to protobuf", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(protoTx); err != nil {
+			http.Error(w, "Could not encode response", http.StatusInternalServerError)
+		}
+	}
+}
+
+// After a transaction is signed, it should be submitted through this handler.
+// This endpoint is responsible for validating the signed transaction, processing it (which may include further encryption of transaction data, additional validation, and recording to a ledger or database), and finally, committing the transaction into the blockchain.
+
+func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var tx shared.Transaction
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&tx); err != nil {
+			node.logError("Decode", err)
+			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
+			return
+		}
+
+		if err := tx.Validate(); err != nil {
+			node.logError("Validate", err)
+			http.Error(w, "Transaction validation failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Assuming signature validation and further processing here
+		if err := node.processAndRecordTransaction(&tx); err != nil {
+			node.logError("Process", err)
+			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Transaction processed successfully"))
+	}
+}
+
+func (n *Node) processAndRecordTransaction(tx *shared.Transaction) error {
+	// Step 1: Serialize the inputs and outputs for encryption
+	serializedInputs, err := shared.SerializeUTXOs(tx.Inputs)
+	if err != nil {
+		return fmt.Errorf("failed to serialize inputs: %v", err)
+	}
+	serializedOutputs, err := shared.SerializeUTXOs(tx.Outputs)
+	if err != nil {
+		return fmt.Errorf("failed to serialize outputs: %v", err)
+	}
+
+	// Step 2: Generate an AES key for encryption
+	aesKey, err := shared.GenerateAESKey()
+	if err != nil {
+		return fmt.Errorf("failed to generate AES key: %v", err)
+	}
+
+	// Step 3: Encrypt the serialized data
+	encryptedInputs, err := shared.EncryptWithAES(aesKey, serializedInputs)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt inputs: %v", err)
+	}
+	encryptedOutputs, err := shared.EncryptWithAES(aesKey, serializedOutputs)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt outputs: %v", err)
+	}
+
+	// Assign encrypted data to the transaction
+	tx.EncryptedInputs = encryptedInputs
+	tx.EncryptedOutputs = encryptedOutputs
+
+	// Step 4: Retrieve and decode the private key for signing
+	privateKeyBytes, err := n.Database.RetrievePrivateKey(tx.Sender)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve private key: %v", err)
+	}
+
+	privateKey, err := shared.DecodePrivateKey(privateKeyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode private key: %v", err)
+	}
+
+	// Step 5: Sign the transaction
+	signature, err := shared.SignTransactionData(tx, privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign transaction: %v", err)
+	}
+	tx.Signature = signature
+
+	// Step 6: Record the transaction in the database or broadcast to the network
+	err = n.Database.AddTransaction(*tx)
+	if err != nil {
+		return fmt.Errorf("failed to add transaction to database: %v", err)
+	}
+
+	return nil
+}
+
+func (n *Node) logError(stage string, err error) {
+	log.Printf("[%s] error: %v", stage, err)
+}
+
+// func (n *Node) signAndProcessTransaction(tx *shared.Transaction) error {
+// 	// Serialize inputs and outputs
+// 	serializedInputs, err := shared.SerializeUTXOs(tx.Inputs)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to serialize inputs: %v", err)
+// 	}
+
+// 	serializedOutputs, err := shared.SerializeUTXOs(tx.Outputs)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to serialize outputs: %v", err)
+// 	}
+
+// 	// Encrypt serialized data
+// 	aesKey, err := shared.GenerateAESKey()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to generate AES key: %v", err)
+// 	}
+
+// 	encryptedInputs, err := shared.EncryptWithAES(aesKey, serializedInputs)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to encrypt inputs: %v", err)
+// 	}
+
+// 	encryptedOutputs, err := shared.EncryptWithAES(aesKey, serializedOutputs)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to encrypt outputs: %v", err)
+// 	}
+
+// 	// Assemble the transaction with encrypted components
+// 	tx.EncryptedInputs = encryptedInputs
+// 	tx.EncryptedOutputs = encryptedOutputs
+// 	tx.Timestamp = time.Now().Unix()
+
+// 	// Sign the transaction
+// 	privateKeyBytes, err := n.Database.RetrievePrivateKey(tx.Sender)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to retrieve private key: %v", err)
+// 	}
+
+// 	signature, err := shared.SignTransactionData(tx, privateKeyBytes)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to sign transaction: %v", err)
+// 	}
+// 	tx.Signature = signature
+
+// 	return nil
+// }
+
 // FundWalletHandler transfers a predefined amount from the genesis account to a new user's wallet.
 func (node *Node) FundWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1148,6 +1266,8 @@ func (node *Node) Start() {
 	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
 
 	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
+
+	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler()) // Added submit transaction endpoint
 
 	mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
 

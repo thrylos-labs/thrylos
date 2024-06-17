@@ -11,6 +11,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"hash"
@@ -866,4 +867,14 @@ func SignTransactionData(tx *Transaction, privateKeyBytes []byte) ([]byte, error
 	signature := ed25519.Sign(privateKey, hashed) // Sign the hashed data
 
 	return signature, nil
+}
+
+func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
+	block, _ := pem.Decode(encodedKey)
+	if block == nil || block.Type != "PRIVATE KEY" {
+		return nil, errors.New("failed to decode PEM block containing private key")
+	}
+
+	key := ed25519.NewKeyFromSeed(block.Bytes)
+	return key, nil
 }
