@@ -267,14 +267,19 @@ type Transaction struct {
 	Sender           string   `json:"sender" valid:"required,ethereum_addr"`
 }
 
-// Validate checks the fields of Transaction based on the struct tags.
+// Validate ensures the fields of Transaction are correct.
 func (tx *Transaction) Validate() error {
+	if !isValidUUID(tx.ID) {
+		return errors.New("invalid ID: must be a valid UUID v4")
+	}
+
+	// Validates using struct tags and custom logic
 	_, err := govalidator.ValidateStruct(tx)
 	if err != nil {
 		return err
 	}
 
-	// Additional custom validations can be added here
+	// Check timestamp validity
 	if !validateTimestamp(tx.Timestamp) {
 		return errors.New("invalid timestamp: must be recent within an hour")
 	}
@@ -282,8 +287,9 @@ func (tx *Transaction) Validate() error {
 	return nil
 }
 
-// validateTimestamp ensures the timestamp is within a reasonable range (e.g., within the last hour).
+// validateTimestamp checks if the transaction timestamp is within the last hour.
 func validateTimestamp(timestamp int64) bool {
+
 	return time.Since(time.Unix(timestamp, 0)).Hours() < 1
 }
 
@@ -837,6 +843,11 @@ func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
 	txCopy.Signature = nil // Ensure the signature is not included in the serialized data
 
 	return json.Marshal(txCopy)
+}
+
+func isValidUUID(uuid string) bool {
+	r := regexp.MustCompile("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89ABab][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$")
+	return r.MatchString(uuid)
 }
 
 func SignTransactionData(tx *Transaction, privateKeyBytes []byte) ([]byte, error) {
