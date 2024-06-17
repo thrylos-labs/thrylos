@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -45,6 +44,9 @@ type Node struct {
 	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
 	chainID             string
 	ResponsibleUTXOs    map[string]shared.UTXO // Tracks UTXOs for which the node is responsible
+	// Database provides an abstraction over the underlying database technology used to persist
+	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
+	Database shared.BlockchainDBInterface // Updated the type to interface
 
 }
 
@@ -276,7 +278,6 @@ func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
 }
 
 // VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
-// VerifyAndProcessTransaction verifies the transaction's signature using Ed25519 and processes it if valid.
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	if len(tx.Inputs) == 0 {
 		return fmt.Errorf("transaction has no inputs")
@@ -396,25 +397,37 @@ func (node *Node) ListTransactionsForBlockHandler() http.HandlerFunc {
 	}
 }
 
+// Balance is used just for testnet
 func (node *Node) CreateWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Generate public and private keys along with a mnemonic for recovery
 		publicKey, _, mnemonic, err := shared.GenerateEd25519Keys()
 		if err != nil {
 			http.Error(w, "Failed to generate wallet: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		// Convert publicKey to hexadecimal string
 		publicKeyHex := hex.EncodeToString(publicKey)
 
-		// Prepare the wallet response; do not send the private key over the network
+		// Initialize the new wallet with a transaction from the GenesisAccount
+		initialBalance := int64(70) // Define the initial balance to be transferred
+		currentBalance, exists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
+		if !exists || currentBalance < initialBalance {
+			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
+			return
+		}
+
+		// Adjust balances
+		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
+		node.Blockchain.Stakeholders[publicKeyHex] = initialBalance
+
+		// Respond with wallet details including the balance
 		wallet := struct {
-			Mnemonic  string `json:"mnemonic"`  // Seed phrase for wallet recovery
-			PublicKey string `json:"publicKey"` // Public key to be shared
+			Mnemonic  string `json:"mnemonic"`
+			PublicKey string `json:"publicKey"`
+			Balance   int64  `json:"balance"`
 		}{
 			Mnemonic:  mnemonic,
-			PublicKey: publicKeyHex, // Use the hex string of the public key
+			PublicKey: publicKeyHex,
+			Balance:   initialBalance,
 		}
 
 		response, err := json.Marshal(wallet)
@@ -449,53 +462,132 @@ func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
 	}
 }
 
-func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
+func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Decode the incoming JSON to the Transaction struct
 		var tx shared.Transaction
 		decoder := json.NewDecoder(r.Body)
 		if err := decoder.Decode(&tx); err != nil {
-			log.Printf("Error decoding transaction: %v", err)
+			node.logError("Decode", err)
 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
 			return
 		}
 
-		log.Printf("Received transaction request: %+v", tx)
-
-		// Validate the transaction
 		if err := tx.Validate(); err != nil {
-			log.Printf("Validation failed for transaction: %v, Error: %v", tx, err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			node.logError("Validate", err)
+			http.Error(w, "Transaction validation failed: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Convert local Transaction type to thrylos.Transaction if needed
-		thrylosTx, err := shared.ConvertLocalTransactionToThrylosTransaction(tx)
-		if err != nil {
-			log.Printf("Error converting to thrylos.Transaction: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+		if err := node.signAndProcessTransaction(&tx); err != nil {
+			node.logError("Process", err)
+			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Verify and process the transaction
-		if err := node.VerifyAndProcessTransaction(thrylosTx); err != nil {
-			log.Printf("Invalid transaction: %v, Transaction: %+v", err, thrylosTx)
-			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
-			return
-		}
-
-		// Add transaction to pending transactions
-		if err := node.AddPendingTransaction(thrylosTx); err != nil {
-			log.Printf("Failed to add transaction to pending transactions: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to add transaction: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		log.Println("Transaction submitted and broadcasted successfully")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Transaction submitted successfully"))
+		w.Write([]byte("Transaction processed successfully"))
 	}
 }
+
+func (n *Node) signAndProcessTransaction(tx *shared.Transaction) error {
+	// Serialize inputs and outputs
+	serializedInputs, err := shared.SerializeUTXOs(tx.Inputs)
+	if err != nil {
+		return fmt.Errorf("failed to serialize inputs: %v", err)
+	}
+
+	serializedOutputs, err := shared.SerializeUTXOs(tx.Outputs)
+	if err != nil {
+		return fmt.Errorf("failed to serialize outputs: %v", err)
+	}
+
+	// Encrypt serialized data
+	aesKey, err := shared.GenerateAESKey()
+	if err != nil {
+		return fmt.Errorf("failed to generate AES key: %v", err)
+	}
+
+	encryptedInputs, err := shared.EncryptWithAES(aesKey, serializedInputs)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt inputs: %v", err)
+	}
+
+	encryptedOutputs, err := shared.EncryptWithAES(aesKey, serializedOutputs)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt outputs: %v", err)
+	}
+
+	// Assemble the transaction with encrypted components
+	tx.EncryptedInputs = encryptedInputs
+	tx.EncryptedOutputs = encryptedOutputs
+	tx.Timestamp = time.Now().Unix()
+
+	// Sign the transaction
+	privateKeyBytes, err := n.Database.RetrievePrivateKey(tx.Sender)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve private key: %v", err)
+	}
+
+	signature, err := shared.SignTransactionData(tx, privateKeyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to sign transaction: %v", err)
+	}
+	tx.Signature = signature
+
+	return nil
+}
+
+func (n *Node) logError(stage string, err error) {
+	log.Printf("[%s] error: %v", stage, err)
+}
+
+// func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		// Decode the incoming JSON to the Transaction struct
+// 		var tx shared.Transaction
+// 		decoder := json.NewDecoder(r.Body)
+// 		if err := decoder.Decode(&tx); err != nil {
+// 			log.Printf("Error decoding transaction: %v", err)
+// 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
+// 			return
+// 		}
+
+// 		log.Printf("Received transaction request: %+v", tx)
+
+// 		// Validate the transaction
+// 		if err := tx.Validate(); err != nil {
+// 			log.Printf("Validation failed for transaction: %v, Error: %v", tx, err)
+// 			http.Error(w, err.Error(), http.StatusBadRequest)
+// 			return
+// 		}
+
+// 		// Convert local Transaction type to thrylos.Transaction if needed
+// 		thrylosTx, err := shared.ConvertLocalTransactionToThrylosTransaction(tx)
+// 		if err != nil {
+// 			log.Printf("Error converting to thrylos.Transaction: %v", err)
+// 			http.Error(w, "Internal server error", http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		// Verify and process the transaction
+// 		if err := node.VerifyAndProcessTransaction(thrylosTx); err != nil {
+// 			log.Printf("Invalid transaction: %v, Transaction: %+v", err, thrylosTx)
+// 			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
+// 			return
+// 		}
+
+// 		// Add transaction to pending transactions
+// 		if err := node.AddPendingTransaction(thrylosTx); err != nil {
+// 			log.Printf("Failed to add transaction to pending transactions: %v", err)
+// 			http.Error(w, fmt.Sprintf("Failed to add transaction: %v", err), http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		log.Println("Transaction submitted and broadcasted successfully")
+// 		w.WriteHeader(http.StatusOK)
+// 		w.Write([]byte("Transaction submitted successfully"))
+// 	}
+// }
 
 func (node *Node) GetPendingTransactions() []*thrylos.Transaction {
 	return node.PendingTransactions
@@ -998,25 +1090,20 @@ func (node *Node) FundWalletHandler() http.HandlerFunc {
 			return
 		}
 
-		// Log raw body for debugging
-		bodyBytes, _ := ioutil.ReadAll(r.Body)
-		fmt.Println("Received body:", string(bodyBytes))
-
-		// Rewind the request body for JSON decoding
-		r.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBytes))
-
 		var request struct {
-			Address string `json:"address"` // User's wallet address
-			Amount  int64  `json:"amount"`  // Ensure to include amount if it's dynamic
+			Address string `json:"address"`
+			Amount  int64  `json:"amount"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			http.Error(w, "Invalid request: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
 			return
 		}
 
+		// Debugging log, consider using a conditional flag or environment-based logging.
+		fmt.Printf("Attempting to fund wallet: Address=%s, Amount=%d\n", request.Address, request.Amount)
+
 		// Transfer funds from the genesis account
-		err := node.Blockchain.TransferFunds("", request.Address, request.Amount)
-		if err != nil {
+		if err := node.Blockchain.TransferFunds("", request.Address, request.Amount); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to fund wallet: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -1025,7 +1112,7 @@ func (node *Node) FundWalletHandler() http.HandlerFunc {
 			"message": fmt.Sprintf("Funded wallet with %d successfully", request.Amount),
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		json.NewEncoder(w).Encode(response) // Consider error handling for JSON encoding
 	}
 }
 
@@ -1061,6 +1148,8 @@ func (node *Node) Start() {
 	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
 
 	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
+
+	mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
 
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		var block Block

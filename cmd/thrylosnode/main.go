@@ -166,7 +166,7 @@ func main() {
 			fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 		case "/submit-transaction":
 			log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
-			node.SubmitTransactionHandler()(w, r)
+			node.EnhancedSubmitTransactionHandler()(w, r)
 		case "/get-block":
 			node.GetBlockHandler()(w, r)
 		case "/get-transaction":

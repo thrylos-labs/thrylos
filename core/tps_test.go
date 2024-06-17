@@ -219,3 +219,48 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 	blockTime := elapsed / time.Duration(numBlocks)
 	t.Logf("Processed %d blocks via gRPC in %s. Average block time: %s", numBlocks, elapsed, blockTime)
 }
+
+// without Grpc
+
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithoutGRPC$ github.com/thrylos-labs/thrylos/core
+
+func TestTransactionThroughputWithoutGRPC(t *testing.T) {
+	const (
+		numTransactions = 10000 // Total number of transactions
+		batchSize       = 100   // Batch size
+		numGoroutines   = 100   // Number of concurrent goroutines
+	)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+
+	transactionsPerGoroutine := numTransactions / numGoroutines
+
+	processTransactions := func(transactions []*pb.Transaction) error {
+		// Simulate processing delay, remove or adjust as needed
+		time.Sleep(10 * time.Millisecond)
+		return nil
+	}
+
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(goroutineIndex int) {
+			defer wg.Done()
+			for i := 0; i < transactionsPerGoroutine; i += batchSize {
+				transactions := make([]*pb.Transaction, 0, batchSize)
+				for j := 0; j < batchSize && goroutineIndex*transactionsPerGoroutine+i+j < numTransactions; j++ {
+					txID := fmt.Sprintf("tx%d", goroutineIndex*transactionsPerGoroutine+i+j)
+					transactions = append(transactions, &pb.Transaction{Id: txID})
+				}
+				if err := processTransactions(transactions); err != nil {
+					t.Errorf("Failed to process transaction batch: %v", err)
+				}
+			}
+		}(g)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
+	t.Logf("Processed %d transactions locally in %s. TPS: %f", numTransactions, elapsed, tps)
+}

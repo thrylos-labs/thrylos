@@ -303,7 +303,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	}
 
 	// Serialize and Encrypt the sensitive parts of the transaction (Inputs)
-	serializedInputs, err := serializeUTXOs(inputs)
+	serializedInputs, err := SerializeUTXOs(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize inputs: %v", err)
 	}
@@ -313,7 +313,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	}
 
 	// Serialize and Encrypt the sensitive parts of the transaction (Outputs)
-	serializedOutputs, err := serializeUTXOs(outputs)
+	serializedOutputs, err := SerializeUTXOs(outputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize outputs: %v", err)
 	}
@@ -829,4 +829,30 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 	}
 
 	return nil
+}
+
+func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
+	// Create a copy of the transaction to avoid modifying the original
+	txCopy := *tx
+	txCopy.Signature = nil // Ensure the signature is not included in the serialized data
+
+	return json.Marshal(txCopy)
+}
+
+func SignTransactionData(tx *Transaction, privateKeyBytes []byte) ([]byte, error) {
+	data, err := SerializeTransactionForSigning(tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
+	}
+
+	// Hash the data
+	hasher, err := blake2b.New256(nil)
+	hasher.Write(data)
+	hashed := hasher.Sum(nil)
+
+	// Assuming the privateKeyBytes is the Ed25519 private key
+	privateKey := ed25519.PrivateKey(privateKeyBytes)
+	signature := ed25519.Sign(privateKey, hashed) // Sign the hashed data
+
+	return signature, nil
 }

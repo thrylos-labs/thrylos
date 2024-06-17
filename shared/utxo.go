@@ -146,7 +146,7 @@ func CreateUTXO(id, txID string, index int, owner string, amount int) UTXO {
 }
 
 // This utilizes the custom MarshalJSON method defined in the UTXO struct if present.
-func serializeUTXOs(utxos []UTXO) ([]byte, error) {
+func SerializeUTXOs(utxos []UTXO) ([]byte, error) {
 	return json.Marshal(utxos)
 }
 
