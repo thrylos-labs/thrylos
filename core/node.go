@@ -1148,57 +1148,35 @@ func (n *Node) processAndRecordTransaction(tx *shared.Transaction) error {
 	return nil
 }
 
+func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		// Assuming you handle the database transaction externally or elsewhere
+		utxos, err := node.Database.GetUTXOsForAddress(address)
+		if err != nil || len(utxos) == 0 {
+			http.Error(w, "No UTXOs found or error occurred", http.StatusNotFound)
+			return
+		}
+
+		response, err := json.Marshal(utxos)
+		if err != nil {
+			http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
+}
+
 func (n *Node) logError(stage string, err error) {
 	log.Printf("[%s] error: %v", stage, err)
 }
-
-// func (n *Node) signAndProcessTransaction(tx *shared.Transaction) error {
-// 	// Serialize inputs and outputs
-// 	serializedInputs, err := shared.SerializeUTXOs(tx.Inputs)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to serialize inputs: %v", err)
-// 	}
-
-// 	serializedOutputs, err := shared.SerializeUTXOs(tx.Outputs)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to serialize outputs: %v", err)
-// 	}
-
-// 	// Encrypt serialized data
-// 	aesKey, err := shared.GenerateAESKey()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to generate AES key: %v", err)
-// 	}
-
-// 	encryptedInputs, err := shared.EncryptWithAES(aesKey, serializedInputs)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to encrypt inputs: %v", err)
-// 	}
-
-// 	encryptedOutputs, err := shared.EncryptWithAES(aesKey, serializedOutputs)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to encrypt outputs: %v", err)
-// 	}
-
-// 	// Assemble the transaction with encrypted components
-// 	tx.EncryptedInputs = encryptedInputs
-// 	tx.EncryptedOutputs = encryptedOutputs
-// 	tx.Timestamp = time.Now().Unix()
-
-// 	// Sign the transaction
-// 	privateKeyBytes, err := n.Database.RetrievePrivateKey(tx.Sender)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to retrieve private key: %v", err)
-// 	}
-
-// 	signature, err := shared.SignTransactionData(tx, privateKeyBytes)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to sign transaction: %v", err)
-// 	}
-// 	tx.Signature = signature
-
-// 	return nil
-// }
 
 // FundWalletHandler transfers a predefined amount from the genesis account to a new user's wallet.
 func (node *Node) FundWalletHandler() http.HandlerFunc {
@@ -1252,6 +1230,7 @@ func (node *Node) Start() {
 	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
 	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
 	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
+	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
 
 	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
 

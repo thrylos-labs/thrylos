@@ -225,9 +225,16 @@ func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
 }
 
 // fetching of UTXOs from BadgerDB
-func (bdb *BlockchainDB) GetUTXOsForAddress(txn *badger.Txn, address string) ([]shared.UTXO, error) {
+func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
 	var utxos []shared.UTXO
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		return fetchUTXOs(txn, address, &utxos)
+	})
+	return utxos, err
+}
 
+// Helper function to perform the actual fetching
+func fetchUTXOs(txn *badger.Txn, address string, utxos *[]shared.UTXO) error {
 	prefix := []byte(fmt.Sprintf("utxo-%s-", address))
 	opts := badger.DefaultIteratorOptions
 	opts.Prefix = prefix
@@ -241,15 +248,14 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(txn *badger.Txn, address string) ([]
 			if err := json.Unmarshal(val, &utxo); err != nil {
 				return err
 			}
-			utxos = append(utxos, utxo)
+			*utxos = append(*utxos, utxo)
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-
-	return utxos, nil
+	return nil
 }
 
 func (bdb *BlockchainDB) RetrieveTransaction(txn *badger.Txn, transactionID string) (*shared.Transaction, error) {

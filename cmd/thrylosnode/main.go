@@ -152,7 +152,8 @@ func main() {
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
 	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"}, // for testing purposes only
+		AllowedOrigins: []string{"http://localhost:3000"}, // Specify the exact origin for security
+		// AllowedOrigins:   []string{"*"}, // for testing purposes only, make sure to replace on production
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
@@ -171,6 +172,8 @@ func main() {
 			node.SignTransactionHandler()(w, r)
 		case "/get-block":
 			node.GetBlockHandler()(w, r)
+		case "/get-utxo":
+			node.GetUTXOsForAddressHandler()(w, r)
 		case "/get-transaction":
 			node.GetTransactionHandler()(w, r)
 		case "/get-balance":

@@ -34,4 +34,5 @@ type BlockchainDBInterface interface {
 	SetTransaction(txn *TransactionContext, key []byte, value []byte) error
 	GetUTXOsByAddress(address string) (map[string][]UTXO, error)
 	GetAllUTXOs() (map[string][]UTXO, error)
+	GetUTXOsForAddress(address string) ([]UTXO, error)
 }
