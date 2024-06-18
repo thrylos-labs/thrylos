@@ -11,6 +11,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -46,7 +47,8 @@ type Node struct {
 	ResponsibleUTXOs    map[string]shared.UTXO // Tracks UTXOs for which the node is responsible
 	// Database provides an abstraction over the underlying database technology used to persist
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
-	Database shared.BlockchainDBInterface // Updated the type to interface
+	Database       shared.BlockchainDBInterface // Updated the type to interface
+	GasEstimateURL string                       // New field to store the URL for gas estimation
 
 }
 
@@ -95,6 +97,12 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		log.Println("AES key decoded successfully")
 	}
 
+	// Retrieve the URL for gas estimation from an environment variable
+	gasEstimateURL := os.Getenv("GAS_ESTIMATE_URL")
+	if gasEstimateURL == "" {
+		log.Fatal("Gas estimate URL is not set in environment variables. Please configure it before starting.")
+	}
+
 	// Assuming you have a way to get or set a default genesis account address
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 	if genesisAccount == "" {
@@ -113,6 +121,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		Shard:            shard,
 		PublicKeyMap:     make(map[string]ed25519.PublicKey), // Initialize the map
 		ResponsibleUTXOs: make(map[string]shared.UTXO),
+		GasEstimateURL:   gasEstimateURL, // Set the URL in the node struct
 	}
 
 	if shard != nil {
@@ -1091,14 +1100,29 @@ func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
 }
 
 func (n *Node) processAndRecordTransaction(tx *shared.Transaction) error {
-	// Step 1: Serialize the inputs and outputs for encryption
-	serializedInputs, err := shared.SerializeUTXOs(tx.Inputs)
+	// Serialize inputs and outputs for data size calculation
+	serializedInputs, err := json.Marshal(tx.Inputs)
 	if err != nil {
 		return fmt.Errorf("failed to serialize inputs: %v", err)
 	}
-	serializedOutputs, err := shared.SerializeUTXOs(tx.Outputs)
+	serializedOutputs, err := json.Marshal(tx.Outputs)
 	if err != nil {
 		return fmt.Errorf("failed to serialize outputs: %v", err)
+	}
+
+	// Calculate total data size
+	totalDataSize := len(serializedInputs) + len(serializedOutputs)
+
+	// Fetch gas estimate
+	gasFee, err := n.fetchGasEstimate(totalDataSize)
+	if err != nil {
+		return fmt.Errorf("failed to fetch gas estimate: %v", err)
+	}
+
+	// Consider the gas fee when adjusting balances or creating outputs
+	// For example, reduce the output amount by the gas fee or add an output for the fee
+	if len(tx.Outputs) > 0 {
+		tx.Outputs[0].Amount -= gasFee // Assume it adjusts the first output
 	}
 
 	// Step 2: Generate an AES key for encryption
@@ -1146,6 +1170,54 @@ func (n *Node) processAndRecordTransaction(tx *shared.Transaction) error {
 	}
 
 	return nil
+}
+
+// Helper function to fetch gas estimate
+func (n *Node) fetchGasEstimate(dataSize int) (int, error) {
+	// Use the GasEstimateURL from the node structure
+	response, err := http.PostForm(n.GasEstimateURL, url.Values{"dataSize": {strconv.Itoa(dataSize)}})
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+
+	var result struct {
+		GasFee int `json:"gasFee"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return 0, err
+	}
+
+	return result.GasFee, nil
+}
+
+func (node *Node) GasEstimateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// You might expect some parameters such as data size or details about the transaction
+		// to accurately calculate the gas. Here, we're simplifying by expecting data size in bytes.
+		var params struct {
+			DataSize int `json:"dataSize"`
+		}
+
+		err := json.NewDecoder(r.Body).Decode(&params)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Calculate gas using the provided data size
+		gas := CalculateGas(params.DataSize)
+
+		// Prepare the response
+		response := struct {
+			GasFee int `json:"gasFee"`
+		}{
+			GasFee: gas,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
 }
 
 func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
@@ -1231,6 +1303,7 @@ func (node *Node) Start() {
 	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
 	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
 	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
+	mux.HandleFunc("/gas-fee", node.GasEstimateHandler())
 
 	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
 

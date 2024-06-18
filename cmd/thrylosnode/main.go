@@ -174,6 +174,8 @@ func main() {
 			node.GetBlockHandler()(w, r)
 		case "/get-utxo":
 			node.GetUTXOsForAddressHandler()(w, r)
+		case "/get-gas":
+			node.GasEstimateHandler()(w, r)
 		case "/get-transaction":
 			node.GetTransactionHandler()(w, r)
 		case "/get-balance":
