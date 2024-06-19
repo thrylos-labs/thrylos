@@ -236,6 +236,8 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 // Helper function to perform the actual fetching
 func fetchUTXOs(txn *badger.Txn, address string, utxos *[]shared.UTXO) error {
 	prefix := []byte(fmt.Sprintf("utxo-%s-", address))
+	log.Printf("Searching with prefix: %s", string(prefix)) // Logging the prefix used in the search
+
 	opts := badger.DefaultIteratorOptions
 	opts.Prefix = prefix
 	it := txn.NewIterator(opts)
@@ -252,6 +254,7 @@ func fetchUTXOs(txn *badger.Txn, address string, utxos *[]shared.UTXO) error {
 			return nil
 		})
 		if err != nil {
+			log.Printf("Error processing item for prefix %s: %v", string(prefix), err) // Log any processing errors
 			return err
 		}
 	}
