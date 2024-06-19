@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -1017,6 +1018,10 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 func (n *Node) SignTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		body, _ := ioutil.ReadAll(r.Body)
+		fmt.Println("Received body:", string(body))
+		r.Body = ioutil.NopCloser(bytes.NewBuffer(body)) // Reset r.Body to its original state
+
 		decoder := json.NewDecoder(r.Body)
 		var transactionData shared.Transaction
 		if err := decoder.Decode(&transactionData); err != nil {
@@ -1304,6 +1309,7 @@ func (node *Node) Start() {
 	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
 	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
 	mux.HandleFunc("/gas-fee", node.GasEstimateHandler())
+	mux.HandleFunc("/get-transaction", node.GetTransactionHandler())
 
 	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
 
