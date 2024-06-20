@@ -1225,8 +1225,15 @@ func (node *Node) GasEstimateHandler() http.HandlerFunc {
 	}
 }
 
+func enableCors(w *http.ResponseWriter) {
+	(*w).Header().Set("Access-Control-Allow-Origin", "*")
+	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+}
+
 func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
 		address := r.URL.Query().Get("address")
 		if address == "" {
 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
