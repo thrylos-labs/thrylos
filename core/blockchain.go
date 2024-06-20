@@ -149,6 +149,9 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 		FirebaseClient: firebaseApp,
 	}
 
+	// Add test data
+	blockchain.addTestData()
+
 	// Serialize the genesis block and insert into the database
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
@@ -175,6 +178,52 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	}
 
 	return blockchain, nil
+}
+
+func (bc *Blockchain) addTestData() {
+	// Add public keys to Firebase
+	ctx := context.Background()
+	client, err := bc.FirebaseClient.Firestore(ctx)
+	if err != nil {
+		log.Fatalf("Failed to create Firestore client: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Collection("users").Doc("user1").Set(ctx, map[string]interface{}{
+		"publicKey": "5b2ee76b58735e7a2cf89754666f24c2cccdac70c9121b09b721d4ea51741c74",
+	})
+	if err != nil {
+		log.Fatalf("Failed to add public key to Firebase: %v", err)
+	}
+
+	_, err = client.Collection("users").Doc("user2").Set(ctx, map[string]interface{}{
+		"publicKey": "66922e466f747605fd6203d76c5c5cf0c75025a6b0a6b8ab27c168bde53e9922",
+	})
+	if err != nil {
+		log.Fatalf("Failed to add public key to Firebase: %v", err)
+	}
+
+	// Add UTXOs to Blockchain
+	utxos := []shared.UTXO{
+		{
+			TransactionID: "tx1",
+			Index:         0,
+			OwnerAddress:  "5b2ee76b58735e7a2cf89754666f24c2cccdac70c9121b09b721d4ea51741c74",
+			Amount:        1000,
+		},
+		{
+			TransactionID: "tx2",
+			Index:         0,
+			OwnerAddress:  "66922e466f747605fd6203d76c5c5cf0c75025a6b0a6b8ab27c168bde53e9922",
+			Amount:        2000,
+		},
+	}
+
+	for _, utxo := range utxos {
+		bc.addUTXO(utxo)
+	}
+
+	log.Println("Test data added successfully")
 }
 
 func (bc *Blockchain) FetchPublicKeyFromFirebase(userID string) (string, error) {
@@ -425,7 +474,7 @@ func (bc *Blockchain) GetLastBlock() (*Block, int, error) {
 }
 
 // addUTXO adds a new UTXO to the blockchain's UTXO set.
-func (bc *Blockchain) addUTXO(utxo shared.UTXO) {
+func (bc *Blockchain) addUTXO(utxo shared.UTXO) error {
 	utxoKey := fmt.Sprintf("%s:%d", utxo.TransactionID, utxo.Index)
 	// Ensure the UTXO list for the key is initialized
 	if _, exists := bc.UTXOs[utxoKey]; !exists {
@@ -435,6 +484,9 @@ func (bc *Blockchain) addUTXO(utxo shared.UTXO) {
 	thrylosUtxo := shared.ConvertSharedUTXOToProto(utxo)
 	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
 	log.Printf("UTXO added: %s", utxoKey)
+
+	// Also store the UTXO in BadgerDB
+	return bc.Database.AddUTXO(utxo)
 }
 
 // removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.

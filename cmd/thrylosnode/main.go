@@ -43,6 +43,27 @@ func loadEnv() {
 	}
 }
 
+func initializeFirebaseApp() *firebase.App {
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+
+	projectID := os.Getenv("FIREBASE_PROJECT_ID")
+	if projectID == "" {
+		log.Fatalf("FIREBASE_PROJECT_ID environment variable is not set")
+	}
+
+	// Initialize the Firebase app with project ID
+	conf := &firebase.Config{
+		ProjectID: projectID, // Use the project ID from environment variable
+	}
+
+	app, err := firebase.NewApp(ctx, conf, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+	return app
+}
+
 func main() {
 	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
 	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
@@ -55,12 +76,14 @@ func main() {
 
 	loadEnv()
 
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
-	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
+	firebaseApp := initializeFirebaseApp()
+
+	// ctx := context.Background()
+	// sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	// firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	// if err != nil {
+	// 	log.Fatalf("error initializing app: %v\n", err)
+	// }
 
 	// Environment variables
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")

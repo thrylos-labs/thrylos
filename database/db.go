@@ -224,6 +224,18 @@ func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
 	return decryptedData, nil
 }
 
+// AddUTXO adds a UTXO to the BadgerDB database.
+func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
+	return bdb.DB.Update(func(txn *badger.Txn) error {
+		key := fmt.Sprintf("utxo-%s-%d", utxo.OwnerAddress, utxo.Index)
+		val, err := json.Marshal(utxo)
+		if err != nil {
+			return err
+		}
+		return txn.Set([]byte(key), val)
+	})
+}
+
 // fetching of UTXOs from BadgerDB
 // GetUTXOsForAddress fetches UTXOs for a given address.
 func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
