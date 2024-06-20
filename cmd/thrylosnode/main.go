@@ -52,14 +52,10 @@ func main() {
 
 	loadEnv()
 
-	// Load configuration from .env file
-	// envPath := "../../.env"
-	// if err := godotenv.Load(envPath); err != nil {
-	// 	log.Fatalf("Error loading .env file from %s: %v", envPath, err)
-	// }
-
 	// Environment variables
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
+	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
+	httpsAddress := os.Getenv("HTTPS_NODE_ADDRESS")
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
@@ -225,10 +221,20 @@ func main() {
 		}
 	}))
 
+	// Start the HTTP server for development
+	if os.Getenv("ENV") == "development" {
+		go func() {
+			log.Printf("Starting HTTP server on %s\n", httpAddress)
+			if err := http.ListenAndServe(httpAddress, handler); err != nil {
+				log.Fatalf("Failed to start HTTP server: %v", err)
+			}
+		}()
+	}
+
 	// Use static certificate files for local development
 	httpsServer := &http.Server{
-		Addr:    os.Getenv("HTTPS_NODE_ADDRESS"), // Use the address from the environment variable
-		Handler: handler,                         // Reference the CORS-wrapped handler
+		Addr:    httpsAddress, // Use the address from the environment variable
+		Handler: handler,      // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{loadCertificate()}, // Load static certificate
 		},

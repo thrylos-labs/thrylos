@@ -1234,22 +1234,26 @@ func enableCors(w *http.ResponseWriter) {
 func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		enableCors(&w)
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		log.Printf("Request URL: %s", r.URL.String()) // Log the request URL
 		address := r.URL.Query().Get("address")
+		log.Printf("Address parameter: %s", address) // Log the address parameter
+
 		if address == "" {
 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
 			return
 		}
-		log.Printf("Fetching UTXOs for address: %s", address) // Logging the address being queried
+		log.Printf("Fetching UTXOs for address: %s", address)
 
-		utxos, err := node.Database.GetUTXOsForAddress(address)
-		if err != nil {
-			log.Printf("Error fetching UTXOs for address %s: %v", address, err) // Detailed error logging
-			http.Error(w, "No UTXOs found or error occurred", http.StatusNotFound)
-			return
-		}
+		utxos := node.Blockchain.GetUTXOsForAddress(address)
 
 		if len(utxos) == 0 {
-			log.Printf("No UTXOs found for address: %s", address) // Logging when no data is found
+			log.Printf("No UTXOs found for address: %s", address)
 			http.Error(w, "No UTXOs found", http.StatusNotFound)
 			return
 		}
