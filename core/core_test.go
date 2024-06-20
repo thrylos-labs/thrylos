@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"testing"
 
+	firebase "firebase.google.com/go"
 	"github.com/thrylos-labs/thrylos/shared"
+	"google.golang.org/api/option"
 )
 
 // setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.
@@ -34,12 +37,19 @@ func setupTestBlockchain(t *testing.T) *Blockchain {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+
 	// You should ensure the temporary directory is cleaned up after the test runs,
 	// possibly in the test function that calls setupTestBlockchain
 	// defer os.RemoveAll(tempDir)
 
 	// Initialize the blockchain using the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
 	}
@@ -74,8 +84,15 @@ func TestGenesisBlockCreation(t *testing.T) {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+
 	// Initialize the blockchain with the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

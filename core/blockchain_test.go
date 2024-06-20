@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"io/ioutil"
@@ -8,7 +9,9 @@ import (
 	"os"
 	"testing"
 
+	firebase "firebase.google.com/go"
 	"github.com/thrylos-labs/thrylos/shared"
+	"google.golang.org/api/option"
 )
 
 func TestNewBlockchain(t *testing.T) {
@@ -26,13 +29,20 @@ func TestNewBlockchain(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 	if genesisAccount == "" {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
 	// Create a new blockchain using the temporary directory and generated AES key
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}

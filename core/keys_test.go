@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -12,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	firebase "firebase.google.com/go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"google.golang.org/api/option"
 )
 
 // This test ensures your RSA keys are generated, stored, retrieved, and used correctly throughout your application.
@@ -128,7 +131,14 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount)
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}
@@ -206,8 +216,15 @@ func TestTransactionSubmission(t *testing.T) {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+
 	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
-	blockchain, err := NewBlockchain(tempDir, aesKey, genesisAccount)
+	blockchain, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

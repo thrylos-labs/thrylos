@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	firebase "firebase.google.com/go"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/rs/cors"
+	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	// Import your blockchain package
@@ -51,6 +54,13 @@ func main() {
 	log.Printf("Running from directory: %s", cwd)
 
 	loadEnv()
+
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
 
 	// Environment variables
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
@@ -120,7 +130,7 @@ func main() {
 	log.Printf("Using blockchain data directory: %s", absPath)
 
 	// Initialize the blockchain and database with the AES key
-	blockchain, err := core.NewBlockchain(absPath, aesKey, genesisAccount)
+	blockchain, err := core.NewBlockchain(absPath, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}

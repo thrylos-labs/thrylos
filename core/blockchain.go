@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"database/sql"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	firebase "firebase.google.com/go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 
@@ -71,6 +73,7 @@ type Blockchain struct {
 
 	GenesisAccount string // Add this to store the genesis account address
 
+	FirebaseClient *firebase.App
 }
 
 // NewTransaction creates a new transaction
@@ -87,7 +90,7 @@ type Fork struct {
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string) (*Blockchain, error) {
+func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebaseApp *firebase.App) (*Blockchain, error) {
 	// Initialize the database
 	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
@@ -143,6 +146,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string) (*Block
 		UTXOs:          utxoMap,
 		Forks:          make([]*Fork, 0),
 		GenesisAccount: genesisAccount, // Set the genesis account
+		FirebaseClient: firebaseApp,
 	}
 
 	// Serialize the genesis block and insert into the database
@@ -173,6 +177,27 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string) (*Block
 	return blockchain, nil
 }
 
+func (bc *Blockchain) FetchPublicKeyFromFirebase(userID string) (string, error) {
+	ctx := context.Background()
+	client, err := bc.FirebaseClient.Firestore(ctx)
+	if err != nil {
+		return "", fmt.Errorf("Failed to create Firestore client: %v", err)
+	}
+	defer client.Close()
+
+	doc, err := client.Collection("users").Doc(userID).Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("Failed to fetch user document: %v", err)
+	}
+
+	publicKey, ok := doc.Data()["publicKey"].(string)
+	if !ok {
+		return "", fmt.Errorf("Public key not found for user %s", userID)
+	}
+
+	return publicKey, nil
+}
+
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
 
 // ConvertProtoUTXOToShared converts a Protobuf-generated UTXO to your shared UTXO type.
@@ -194,15 +219,19 @@ func (bc *Blockchain) Status() string {
 // In this updated method, you're retrieving a slice of *thrylos.UTXO from the UTXOs map using the provided address. Then, you iterate over this slice, converting each *thrylos.UTXO to shared.UTXO using the ConvertProtoUTXOToShared function, and build a slice of shared.UTXO to return.
 
 // GetUTXOsForAddress returns all UTXOs for a given address.
-func (bc *Blockchain) GetUTXOsForAddress(address string) []shared.UTXO {
-	protoUTXOs := bc.UTXOs[address] // This retrieves a slice of *thrylos.UTXO
-	sharedUTXOs := make([]shared.UTXO, len(protoUTXOs))
+// func (bc *Blockchain) GetUTXOsForAddress(address string) []shared.UTXO {
+// 	protoUTXOs := bc.UTXOs[address] // This retrieves a slice of *thrylos.UTXO
+// 	sharedUTXOs := make([]shared.UTXO, len(protoUTXOs))
 
-	for i, protoUTXO := range protoUTXOs {
-		sharedUTXOs[i] = ConvertProtoUTXOToShared(protoUTXO)
-	}
+// 	for i, protoUTXO := range protoUTXOs {
+// 		sharedUTXOs[i] = ConvertProtoUTXOToShared(protoUTXO)
+// 	}
 
-	return sharedUTXOs
+// 	return sharedUTXOs
+// }
+
+func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
+	return bc.Database.GetUTXOsForAddress(address)
 }
 
 func (bc *Blockchain) GetBalance(address string) (int, error) {

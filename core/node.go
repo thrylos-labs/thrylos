@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -18,8 +19,10 @@ import (
 	"strconv"
 	"time"
 
+	firebase "firebase.google.com/go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"google.golang.org/api/option"
 
 	"github.com/joho/godotenv"
 )
@@ -110,7 +113,14 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
-	bc, err := NewBlockchain(dataDir, aesKey, genesisAccount) // Pass both dataDir and aesKey to the NewBlockchain function
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+
+	bc, err := NewBlockchain(dataDir, aesKey, genesisAccount, firebaseApp) // Pass both dataDir and aesKey to the NewBlockchain function
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}
@@ -183,7 +193,11 @@ func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) 
 	var collectedAmount int
 	var collectedInputs []shared.UTXO
 
-	utxos := node.Blockchain.GetUTXOsForAddress(senderAddress)
+	utxos, err := node.Blockchain.GetUTXOsForAddress(senderAddress)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	for _, utxo := range utxos {
 		if collectedAmount >= amount {
 			break
@@ -1250,7 +1264,13 @@ func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
 		}
 		log.Printf("Fetching UTXOs for address: %s", address)
 
-		utxos := node.Blockchain.GetUTXOsForAddress(address)
+		utxos, err := node.Blockchain.GetUTXOsForAddress(address)
+
+		if err != nil {
+			log.Printf("Error fetching UTXOs for address %s: %v", address, err)
+			http.Error(w, "No UTXOs found or error occurred", http.StatusNotFound)
+			return
+		}
 
 		if len(utxos) == 0 {
 			log.Printf("No UTXOs found for address: %s", address)
