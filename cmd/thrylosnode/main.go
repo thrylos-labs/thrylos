@@ -229,6 +229,8 @@ func main() {
 			node.FaucetHandler()(w, r)
 		case "/fund-wallet":
 			node.FundWalletHandler()(w, r)
+		case "/gas-fee":
+			node.GasEstimateHandler()(w, r)
 		case "/get-stats":
 			stats := node.GetBlockchainStats()
 			statsJSON, err := json.Marshal(stats)

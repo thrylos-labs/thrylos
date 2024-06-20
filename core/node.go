@@ -1212,20 +1212,27 @@ func (n *Node) fetchGasEstimate(dataSize int) (int, error) {
 
 func (node *Node) GasEstimateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// You might expect some parameters such as data size or details about the transaction
-		// to accurately calculate the gas. Here, we're simplifying by expecting data size in bytes.
-		var params struct {
-			DataSize int `json:"dataSize"`
+		enableCors(&w)
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 
-		err := json.NewDecoder(r.Body).Decode(&params)
+		dataSizeStr := r.URL.Query().Get("dataSize")
+		if dataSizeStr == "" {
+			http.Error(w, "dataSize parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		dataSize, err := strconv.Atoi(dataSizeStr)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+			http.Error(w, "Invalid dataSize parameter", http.StatusBadRequest)
 			return
 		}
 
 		// Calculate gas using the provided data size
-		gas := CalculateGas(params.DataSize)
+		gas := CalculateGas(dataSize)
 
 		// Prepare the response
 		response := struct {

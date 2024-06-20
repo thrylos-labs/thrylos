@@ -1,0 +1,10 @@
+HTTP/1.1 200 OK
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Origin: *
+Content-Type: application/json
+Vary: Origin
+Date: Thu, 20 Jun 2024 16:59:02 GMT
+Content-Length: 147
+
+[{"TransactionID":"tx1","Index":0,"OwnerAddress":"5b2ee76b58735e7a2cf89754666f24c2cccdac70c9121b09b721d4ea51741c74","Amount":1000,"IsSpent":false}]
