@@ -1032,8 +1032,15 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 func (n *Node) SignTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Log incoming request headers to debug CORS issues
+		for name, values := range r.Header {
+			for _, value := range values {
+				fmt.Printf("Header: %s Value: %s\n", name, value)
+			}
+		}
+
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
@@ -1043,13 +1050,13 @@ func (n *Node) SignTransactionHandler() http.HandlerFunc {
 		}
 
 		body, _ := ioutil.ReadAll(r.Body)
-		fmt.Println("Received body:", string(body))
 		r.Body = ioutil.NopCloser(bytes.NewBuffer(body)) // Reset r.Body to its original state
+		fmt.Println("Received body:", string(body))
 
 		decoder := json.NewDecoder(r.Body)
 		var transactionData shared.Transaction
 		if err := decoder.Decode(&transactionData); err != nil {
-			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
+			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
