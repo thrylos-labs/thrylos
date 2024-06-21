@@ -264,3 +264,44 @@ func TestTransactionThroughputWithoutGRPC(t *testing.T) {
 	tps := float64(numTransactions) / elapsed.Seconds()
 	t.Logf("Processed %d transactions locally in %s. TPS: %f", numTransactions, elapsed, tps)
 }
+
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithMoreRealism$ github.com/thrylos-labs/thrylos/core
+
+func TestTransactionThroughputWithMoreRealism(t *testing.T) {
+	const (
+		numTransactions = 10000
+		batchSize       = 100
+		numGoroutines   = 100
+	)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+
+	processTransactions := func(transactions []*pb.Transaction) error {
+		// Simulate network or processing delay
+		time.Sleep(50 * time.Millisecond) // Increased delay
+		return nil
+	}
+
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(goroutineIndex int) {
+			defer wg.Done()
+			for i := 0; i < numTransactions/numGoroutines; i += batchSize {
+				transactions := make([]*pb.Transaction, 0, batchSize)
+				for j := 0; j < batchSize && i+j < numTransactions; j++ {
+					txID := fmt.Sprintf("tx%d", i+j)
+					transactions = append(transactions, &pb.Transaction{Id: txID})
+				}
+				if err := processTransactions(transactions); err != nil {
+					t.Errorf("Failed to process transaction batch: %v", err)
+				}
+			}
+		}(g)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
+	t.Logf("Processed %d transactions in %s. TPS: %f", numTransactions, elapsed, tps)
+}

@@ -58,6 +58,11 @@ type TransactionContext struct {
 	Txn *badger.Txn
 }
 
+// GasEstimator defines an interface for fetching gas estimates.
+type GasEstimator interface {
+	FetchGasEstimate(dataSize int) (int, error)
+}
+
 // NewTransactionContext creates a new context for a database transaction.
 func NewTransactionContext(txn *badger.Txn) *TransactionContext {
 	return &TransactionContext{Txn: txn}
@@ -877,4 +882,77 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 
 	key := ed25519.NewKeyFromSeed(block.Bytes)
 	return key, nil
+}
+
+func ProcessAndRecordTransaction(tx *Transaction, db BlockchainDBInterface, estimator GasEstimator) error {
+	// Serialize inputs and outputs for data size calculation
+	serializedInputs, err := json.Marshal(tx.Inputs)
+	if err != nil {
+		return fmt.Errorf("failed to serialize inputs: %v", err)
+	}
+	serializedOutputs, err := json.Marshal(tx.Outputs)
+	if err != nil {
+		return fmt.Errorf("failed to serialize outputs: %v", err)
+	}
+
+	// Calculate total data size
+	totalDataSize := len(serializedInputs) + len(serializedOutputs)
+
+	// Fetch gas estimate
+	gasFee, err := estimator.FetchGasEstimate(totalDataSize)
+	if err != nil {
+		return fmt.Errorf("failed to fetch gas estimate: %v", err)
+	}
+
+	// Consider the gas fee when adjusting balances or creating outputs
+	// For example, reduce the output amount by the gas fee or add an output for the fee
+	if len(tx.Outputs) > 0 {
+		tx.Outputs[0].Amount -= gasFee // Assume it adjusts the first output
+	}
+
+	// Step 2: Generate an AES key for encryption
+	aesKey, err := GenerateAESKey()
+	if err != nil {
+		return fmt.Errorf("failed to generate AES key: %v", err)
+	}
+
+	// Step 3: Encrypt the serialized data
+	encryptedInputs, err := EncryptWithAES(aesKey, serializedInputs)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt inputs: %v", err)
+	}
+	encryptedOutputs, err := EncryptWithAES(aesKey, serializedOutputs)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt outputs: %v", err)
+	}
+
+	// Assign encrypted data to the transaction
+	tx.EncryptedInputs = encryptedInputs
+	tx.EncryptedOutputs = encryptedOutputs
+
+	// Step 4: Retrieve and decode the private key for signing
+	privateKeyBytes, err := db.RetrievePrivateKey(tx.Sender)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve private key: %v", err)
+	}
+
+	privateKey, err := DecodePrivateKey(privateKeyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode private key: %v", err)
+	}
+
+	// Step 5: Sign the transaction
+	signature, err := SignTransactionData(tx, privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to sign transaction: %v", err)
+	}
+	tx.Signature = signature
+
+	// Step 6: Record the transaction in the database or broadcast to the network
+	err = db.AddTransaction(*tx)
+	if err != nil {
+		return fmt.Errorf("failed to add transaction to database: %v", err)
+	}
+
+	return nil
 }

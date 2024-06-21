@@ -1032,6 +1032,16 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 func (n *Node) SignTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		body, _ := ioutil.ReadAll(r.Body)
 		fmt.Println("Received body:", string(body))
 		r.Body = ioutil.NopCloser(bytes.NewBuffer(body)) // Reset r.Body to its original state
@@ -1107,7 +1117,7 @@ func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
 		}
 
 		// Assuming signature validation and further processing here
-		if err := node.processAndRecordTransaction(&tx); err != nil {
+		if err := shared.ProcessAndRecordTransaction(&tx, node.Database, node); err != nil {
 			node.logError("Process", err)
 			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -1118,81 +1128,8 @@ func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
 	}
 }
 
-func (n *Node) processAndRecordTransaction(tx *shared.Transaction) error {
-	// Serialize inputs and outputs for data size calculation
-	serializedInputs, err := json.Marshal(tx.Inputs)
-	if err != nil {
-		return fmt.Errorf("failed to serialize inputs: %v", err)
-	}
-	serializedOutputs, err := json.Marshal(tx.Outputs)
-	if err != nil {
-		return fmt.Errorf("failed to serialize outputs: %v", err)
-	}
-
-	// Calculate total data size
-	totalDataSize := len(serializedInputs) + len(serializedOutputs)
-
-	// Fetch gas estimate
-	gasFee, err := n.fetchGasEstimate(totalDataSize)
-	if err != nil {
-		return fmt.Errorf("failed to fetch gas estimate: %v", err)
-	}
-
-	// Consider the gas fee when adjusting balances or creating outputs
-	// For example, reduce the output amount by the gas fee or add an output for the fee
-	if len(tx.Outputs) > 0 {
-		tx.Outputs[0].Amount -= gasFee // Assume it adjusts the first output
-	}
-
-	// Step 2: Generate an AES key for encryption
-	aesKey, err := shared.GenerateAESKey()
-	if err != nil {
-		return fmt.Errorf("failed to generate AES key: %v", err)
-	}
-
-	// Step 3: Encrypt the serialized data
-	encryptedInputs, err := shared.EncryptWithAES(aesKey, serializedInputs)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt inputs: %v", err)
-	}
-	encryptedOutputs, err := shared.EncryptWithAES(aesKey, serializedOutputs)
-	if err != nil {
-		return fmt.Errorf("failed to encrypt outputs: %v", err)
-	}
-
-	// Assign encrypted data to the transaction
-	tx.EncryptedInputs = encryptedInputs
-	tx.EncryptedOutputs = encryptedOutputs
-
-	// Step 4: Retrieve and decode the private key for signing
-	privateKeyBytes, err := n.Database.RetrievePrivateKey(tx.Sender)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve private key: %v", err)
-	}
-
-	privateKey, err := shared.DecodePrivateKey(privateKeyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to decode private key: %v", err)
-	}
-
-	// Step 5: Sign the transaction
-	signature, err := shared.SignTransactionData(tx, privateKey)
-	if err != nil {
-		return fmt.Errorf("failed to sign transaction: %v", err)
-	}
-	tx.Signature = signature
-
-	// Step 6: Record the transaction in the database or broadcast to the network
-	err = n.Database.AddTransaction(*tx)
-	if err != nil {
-		return fmt.Errorf("failed to add transaction to database: %v", err)
-	}
-
-	return nil
-}
-
 // Helper function to fetch gas estimate
-func (n *Node) fetchGasEstimate(dataSize int) (int, error) {
+func (n *Node) FetchGasEstimate(dataSize int) (int, error) {
 	// Use the GasEstimateURL from the node structure
 	response, err := http.PostForm(n.GasEstimateURL, url.Values{"dataSize": {strconv.Itoa(dataSize)}})
 	if err != nil {

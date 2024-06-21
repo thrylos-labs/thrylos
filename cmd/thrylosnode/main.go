@@ -23,7 +23,6 @@ import (
 	pb "github.com/thrylos-labs/thrylos"
 
 	"github.com/joho/godotenv"
-	"github.com/rs/cors"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -41,6 +40,22 @@ func loadEnv() {
 	if err := godotenv.Load(envPath); err != nil {
 		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
 	}
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000") // Specify the exact origin
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func initializeFirebaseApp() *firebase.App {
@@ -180,81 +195,64 @@ func main() {
 	node.SetChainID(chainID) // Set the chain ID for the node
 
 	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
-	c := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:3000"}, // Specify the exact origin for security
-		// AllowedOrigins:   []string{"*"}, // for testing purposes only, make sure to replace on production
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
-		AllowCredentials: true,
-		Debug:            true,
+	// c := cors.New(cors.Options{
+	// 	AllowedOrigins: []string{"http://localhost:3000"}, // Specify the exact origin for security
+	// 	// AllowedOrigins:   []string{"*"}, // for testing purposes only, make sure to replace on production
+	// 	AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
+	// 	AllowedHeaders:   []string{"Content-Type", "Authorization"},
+	// 	AllowCredentials: true,
+	// 	Debug:            true,
+	// })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
+	})
+	mux.HandleFunc("/submit-transaction", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
+		node.EnhancedSubmitTransactionHandler()(w, r)
+	})
+	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler())
+	mux.HandleFunc("/get-block", node.GetBlockHandler())
+	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
+	mux.HandleFunc("/get-gas", node.GasEstimateHandler())
+	mux.HandleFunc("/get-transaction", node.GetTransactionHandler())
+	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
+	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
+	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
+	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
+	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
+	mux.HandleFunc("/create-wallet", node.CreateWalletHandler())
+	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
+	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
+	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
+	mux.HandleFunc("/faucet", node.FaucetHandler())
+	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
+	mux.HandleFunc("/gas-fee", node.GasEstimateHandler())
+	mux.HandleFunc("/get-stats", func(w http.ResponseWriter, r *http.Request) {
+		stats := node.GetBlockchainStats()
+		statsJSON, err := json.Marshal(stats)
+		if err != nil {
+			http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(statsJSON)
+	})
+	mux.HandleFunc("/pending-transactions", node.PendingTransactionsHandler())
+	mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
+		log.Println("Handling /peers request")
+		data, err := json.Marshal(node.Peers)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
 	})
 
-	// Define HTTP routes and handlers within a single handler function wrapped by CORS
-	handler := c.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/status":
-			fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
-		case "/submit-transaction":
-			log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
-			node.EnhancedSubmitTransactionHandler()(w, r)
-		case "/sign-transaction":
-			node.SignTransactionHandler()(w, r)
-		case "/get-block":
-			node.GetBlockHandler()(w, r)
-		case "/get-utxo":
-			node.GetUTXOsForAddressHandler()(w, r)
-		case "/get-gas":
-			node.GasEstimateHandler()(w, r)
-		case "/get-transaction":
-			node.GetTransactionHandler()(w, r)
-		case "/get-balance":
-			node.GetBalanceHandler()(w, r)
-		case "/network-health":
-			node.NetworkHealthHandler()(w, r)
-		case "/consensus-info":
-			node.ConsensusInfoHandler()(w, r)
-		case "/list-transactions-for-block":
-			node.ListTransactionsForBlockHandler()(w, r)
-		case "/register-public-key":
-			node.RegisterPublicKeyHandler()(w, r)
-		case "/create-wallet":
-			node.CreateWalletHandler()(w, r)
-		case "/register-validator":
-			node.RegisterValidatorHandler()(w, r)
-		case "/update-stake":
-			node.UpdateStakeHandler()(w, r)
-		case "/delegate-stake":
-			node.DelegateStakeHandler()(w, r)
-		case "/faucet":
-			node.FaucetHandler()(w, r)
-		case "/fund-wallet":
-			node.FundWalletHandler()(w, r)
-		case "/gas-fee":
-			node.GasEstimateHandler()(w, r)
-		case "/get-stats":
-			stats := node.GetBlockchainStats()
-			statsJSON, err := json.Marshal(stats)
-			if err != nil {
-				http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(statsJSON)
-		case "/pending-transactions":
-			node.PendingTransactionsHandler()(w, r)
-		case "/peers":
-			log.Println("Handling /peers request")
-			data, err := json.Marshal(node.Peers)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(data)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	// Wrap the mux with the CORS middleware
+	handler := corsMiddleware(mux)
 
 	// Start the HTTP server for development
 	if os.Getenv("ENV") == "development" {
