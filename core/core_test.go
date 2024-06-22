@@ -16,62 +16,65 @@ import (
 )
 
 // setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.
-func setupTestBlockchain(t *testing.T) *Blockchain {
-	// Create a temporary directory for blockchain data
-	tempDir, err := ioutil.TempDir("", "blockchain_test")
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
+// func setupTestBlockchain(t *testing.T) *Blockchain {
+// 	// Create a temporary directory for blockchain data
+// 	tempDir, err := ioutil.TempDir("", "blockchain_test")
+// 	if err != nil {
+// 		t.Fatalf("Failed to create temporary directory: %v", err)
+// 	}
 
-	// Clean up the temporary directory after the test
-	defer os.RemoveAll(tempDir)
+// 	// Clean up the temporary directory after the test
+// 	defer os.RemoveAll(tempDir)
 
-	// Generate a dummy AES key for testing
-	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
-	if err != nil {
-		t.Fatalf("Failed to generate AES key: %v", err)
-	}
+// 	// Generate a dummy AES key for testing
+// 	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
+// 	if err != nil {
+// 		t.Fatalf("Failed to generate AES key: %v", err)
+// 	}
 
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
-	if genesisAccount == "" {
-		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
-	}
+// 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+// 	if genesisAccount == "" {
+// 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+// 	}
 
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
-	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
+// 	ctx := context.Background()
+// 	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+// 	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+// 	if err != nil {
+// 		log.Fatalf("error initializing app: %v\n", err)
+// 	}
 
-	// You should ensure the temporary directory is cleaned up after the test runs,
-	// possibly in the test function that calls setupTestBlockchain
-	// defer os.RemoveAll(tempDir)
+// 	// You should ensure the temporary directory is cleaned up after the test runs,
+// 	// possibly in the test function that calls setupTestBlockchain
+// 	// defer os.RemoveAll(tempDir)
 
-	// Initialize the blockchain using the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
-	if err != nil {
-		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
-	}
+// 	// Initialize the blockchain using the temporary directory
+// 	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+// 	if err != nil {
+// 		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
+// 	}
 
-	// Add a genesis block if it's not automatically created by NewBlockchain
-	if len(bc.Blocks) == 0 {
-		genesis := NewGenesisBlock()
-		bc.Blocks = append(bc.Blocks, genesis)
-		// If needed, insert the genesis block into the database here
-	}
+// 	// Add a genesis block if it's not automatically created by NewBlockchain
+// 	if len(bc.Blocks) == 0 {
+// 		genesis := NewGenesisBlock()
+// 		bc.Blocks = append(bc.Blocks, genesis)
+// 		// If needed, insert the genesis block into the database here
+// 	}
 
-	return bc
-}
+// 	return bc
+// }
 
 func TestGenesisBlockCreation(t *testing.T) {
+	// Set the environment variable needed for the test
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value")
+	defer os.Unsetenv("GENESIS_ACCOUNT") // Ensure clean-up after the test
+
 	// Create a temporary directory for blockchain data
 	tempDir, err := ioutil.TempDir("", "blockchain_test")
 	if err != nil {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
-	// Clean up the temporary directory after the test
-	defer os.RemoveAll(tempDir)
+	defer os.RemoveAll(tempDir) // Clean up the temporary directory after the test
 
 	// Generate a dummy AES key for testing
 	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
@@ -79,13 +82,13 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT") // Now this should always be set
 	if genesisAccount == "" {
-		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
 
 	ctx := context.Background()
-	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	sa := option.WithCredentialsFile("../serviceAccountKey.json")
 	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
 	if err != nil {
 		log.Fatalf("error initializing app: %v\n", err)

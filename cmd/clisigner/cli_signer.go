@@ -12,6 +12,13 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+type SimpleGasEstimator struct{}
+
+func (e *SimpleGasEstimator) FetchGasEstimate(dataSize int) (int, error) {
+	// For simplicity, return a constant gas fee
+	return 1, nil
+}
+
 func main() {
 	sender := flag.String("sender", "", "Sender address")
 	receiver := flag.String("receiver", "", "Receiver address")
@@ -39,8 +46,11 @@ func main() {
 	inputs := []shared.UTXO{{TransactionID: "prevTxID", Index: 0, OwnerAddress: *sender, Amount: 100}} // Example input
 	outputs := []shared.UTXO{{TransactionID: "newTxID", Index: 0, OwnerAddress: *receiver, Amount: *amount}}
 
+	// Create an instance of the gas estimator
+	estimator := &SimpleGasEstimator{}
+
 	// Create and sign the transaction
-	transaction, err := shared.CreateAndSignTransaction("tx123", *sender, inputs, outputs, senderPrivateKey, aesKey)
+	transaction, err := shared.CreateAndSignTransaction("tx123", *sender, inputs, outputs, senderPrivateKey, aesKey, estimator)
 	if err != nil {
 		log.Fatalf("Failed to create and sign transaction: %v", err)
 	}

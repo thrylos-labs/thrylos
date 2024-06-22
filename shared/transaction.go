@@ -261,16 +261,17 @@ func HashData(data []byte) []byte {
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID               string   `json:"ID" valid:"required,uuid4"`
-	Timestamp        int64    `json:"Timestamp" valid:"required"`
-	Inputs           []UTXO   `json:"Inputs" valid:"required"`
-	Outputs          []UTXO   `json:"Outputs" valid:"required"`
-	EncryptedInputs  []byte   `json:"EncryptedInputs,omitempty" valid:"optional"`
-	EncryptedOutputs []byte   `json:"EncryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"Signature" valid:"required,length(64)"` // Assuming signature should be exactly 64 bytes
-	EncryptedAESKey  []byte   `json:"EncryptedAESKey,omitempty" valid:"optional"`
-	PreviousTxIds    []string `json:"PreviousTxIds,omitempty" valid:"optional"`
+	ID               string   `json:"id" valid:"required,uuid4"`
+	Timestamp        int64    `json:"timestamp" valid:"required"`
+	Inputs           []UTXO   `json:"inputs" valid:"required"`
+	Outputs          []UTXO   `json:"outputs" valid:"required"`
+	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
+	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
+	Signature        []byte   `json:"signature" valid:"required,length(64)"` // Assuming signature should be exactly 64 bytes
+	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
+	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
 	Sender           string   `json:"sender" valid:"required,ethereum_addr"`
+	GasFee           int      `json:"gasFee"` // No change needed if your JSON uses camelCase consistently
 }
 
 // Validate ensures the fields of Transaction are correct.
@@ -307,57 +308,56 @@ func selectTips() ([]string, error) {
 
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519.
 // Assuming Transaction is the correct type across your application:
-func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, aesKey []byte) (*Transaction, error) {
-	// Select previous transactions to reference
-	previousTxIDs, err := selectTips()
-	if err != nil {
-		return nil, fmt.Errorf("failed to select previous transactions: %v", err)
-	}
-
-	// Serialize and Encrypt the sensitive parts of the transaction (Inputs)
+func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, aesKey []byte, estimator GasEstimator) (*Transaction, error) {
+	// Serialize inputs and outputs for data size calculation
 	serializedInputs, err := SerializeUTXOs(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize inputs: %v", err)
 	}
-	encryptedInputs, err := EncryptWithAES(aesKey, serializedInputs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt inputs: %v", err)
-	}
-
-	// Serialize and Encrypt the sensitive parts of the transaction (Outputs)
 	serializedOutputs, err := SerializeUTXOs(outputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize outputs: %v", err)
 	}
-	encryptedOutputs, err := EncryptWithAES(aesKey, serializedOutputs)
+
+	// Calculate total data size
+	totalDataSize := len(serializedInputs) + len(serializedOutputs)
+
+	// Fetch gas estimate
+	gasFee, err := estimator.FetchGasEstimate(totalDataSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt outputs: %v", err)
+		return nil, fmt.Errorf("failed to fetch gas estimate: %v", err)
+	}
+
+	// Adjust the first output to account for the gas fee
+	if len(outputs) > 0 {
+		outputs[0].Amount -= gasFee
 	}
 
 	// Initialize the transaction, now including PreviousTxIDs
 	tx := Transaction{
 		ID:               id,
 		Sender:           sender,
-		EncryptedInputs:  encryptedInputs,
-		EncryptedOutputs: encryptedOutputs,
-		PreviousTxIds:    previousTxIDs,
+		Inputs:           inputs,
+		Outputs:          outputs,
+		EncryptedInputs:  nil,
+		EncryptedOutputs: nil,
 		Timestamp:        time.Now().Unix(),
+		GasFee:           gasFee,
 	}
 
 	// Convert the Transaction type to *thrylos.Transaction for signing
-	// Assuming there's an existing function like convertLocalTransactionToThrylosTransaction that you can use
-	thrylosTx, err := ConvertLocalTransactionToThrylosTransaction(tx) // Use tx directly
+	thrylosTx, err := ConvertLocalTransactionToThrylosTransaction(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert transaction for signing: %v", err)
 	}
 
-	// Sign the transaction
+	// Sign the transaction using Ed25519
 	if err := SignTransaction(thrylosTx, ed25519PrivateKey); err != nil {
 		return nil, fmt.Errorf("failed to sign transaction: %v", err)
 	}
 
 	// Convert the signed thrylos.Transaction back to your local Transaction format
-	signedTx, err := ConvertThrylosTransactionToLocal(thrylosTx) // Ensure this function exists and is correct
+	signedTx, err := ConvertThrylosTransactionToLocal(thrylosTx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert signed transaction back to local format: %v", err)
 	}
@@ -367,6 +367,7 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 }
 
 // Hypothetical conversion function from your local Transaction type to *thrylos.Transaction
+// ConvertLocalTransactionToThrylosTransaction converts your local Transaction type to *thrylos.Transaction
 func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Transaction, error) {
 	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
@@ -394,11 +395,12 @@ func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Trans
 		Outputs:       thrylosOutputs,
 		Timestamp:     tx.Timestamp,
 		PreviousTxIds: tx.PreviousTxIds, // Ensure this matches your local struct field
-		// Leave Signature for the SignTransaction to fill
+		GasFee:        int32(tx.GasFee), // Convert the gas fee
+		// Signature is left out to be filled during signing
 	}, nil
 }
 
-// Hypothetical conversion back to local Transaction type, if needed
+// ConvertThrylosTransactionToLocal converts a thrylos.Transaction back to your local Transaction type
 func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, error) {
 	localInputs := make([]UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
@@ -427,7 +429,7 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 		Timestamp:     tx.Timestamp,
 		Signature:     tx.Signature,
 		PreviousTxIds: tx.PreviousTxIds, // Match this with the Protobuf field
-
+		GasFee:        int(tx.GasFee),   // Convert the gas fee
 	}, nil
 }
 
@@ -518,7 +520,12 @@ func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateK
 
 	// Ed25519 Signature
 	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
-	tx.Signature = ed25519Signature // Directly assign the byte slice
+	if ed25519Signature == nil {
+		return fmt.Errorf("failed to generate signature")
+	}
+
+	// Assign the generated signature to the transaction
+	tx.Signature = ed25519Signature
 
 	return nil
 }
@@ -905,18 +912,20 @@ func ProcessAndRecordTransaction(tx *Transaction, db BlockchainDBInterface, esti
 	}
 
 	// Consider the gas fee when adjusting balances or creating outputs
-	// For example, reduce the output amount by the gas fee or add an output for the fee
 	if len(tx.Outputs) > 0 {
 		tx.Outputs[0].Amount -= gasFee // Assume it adjusts the first output
 	}
 
-	// Step 2: Generate an AES key for encryption
+	// Assign the gas fee to the transaction
+	tx.GasFee = gasFee
+
+	// Generate an AES key for encryption
 	aesKey, err := GenerateAESKey()
 	if err != nil {
 		return fmt.Errorf("failed to generate AES key: %v", err)
 	}
 
-	// Step 3: Encrypt the serialized data
+	// Encrypt the serialized data
 	encryptedInputs, err := EncryptWithAES(aesKey, serializedInputs)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt inputs: %v", err)
@@ -930,7 +939,7 @@ func ProcessAndRecordTransaction(tx *Transaction, db BlockchainDBInterface, esti
 	tx.EncryptedInputs = encryptedInputs
 	tx.EncryptedOutputs = encryptedOutputs
 
-	// Step 4: Retrieve and decode the private key for signing
+	// Retrieve and decode the private key for signing
 	privateKeyBytes, err := db.RetrievePrivateKey(tx.Sender)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve private key: %v", err)
@@ -941,14 +950,14 @@ func ProcessAndRecordTransaction(tx *Transaction, db BlockchainDBInterface, esti
 		return fmt.Errorf("failed to decode private key: %v", err)
 	}
 
-	// Step 5: Sign the transaction
+	// Sign the transaction
 	signature, err := SignTransactionData(tx, privateKey)
 	if err != nil {
 		return fmt.Errorf("failed to sign transaction: %v", err)
 	}
 	tx.Signature = signature
 
-	// Step 6: Record the transaction in the database or broadcast to the network
+	// Record the transaction in the database or broadcast to the network
 	err = db.AddTransaction(*tx)
 	if err != nil {
 		return fmt.Errorf("failed to add transaction to database: %v", err)

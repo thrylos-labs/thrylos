@@ -13,7 +13,6 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -65,9 +64,9 @@ func loadEnv() {
 	env := os.Getenv("ENV")
 	var envPath string
 	if env == "production" {
-		envPath = "../../.env.prod" // Ensure this is the correct path relative to where the app is run
+		envPath = "../.env.prod" // Ensure this is the correct path relative to where the app is run
 	} else {
-		envPath = "../../.env.dev" // Default to development environment
+		envPath = "../.env.dev" // Default to development environment
 	}
 	if err := godotenv.Load(envPath); err != nil {
 		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
@@ -114,7 +113,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 	}
 
 	ctx := context.Background()
-	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
+	sa := option.WithCredentialsFile("../serviceAccountKey.json")
 	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
 	if err != nil {
 		log.Fatalf("error initializing app: %v\n", err)
@@ -225,62 +224,68 @@ func CalculateGas(dataSize int) int {
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
 func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *string, amount int, data *[]byte, gas *int) error {
 	// Retrieve the private key securely
-	var ed25519PrivateKey ed25519.PrivateKey
+	privateKeyBytes, err := node.Database.RetrievePrivateKey(node.Address)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve private key: %v", err)
+	}
 
+	ed25519PrivateKey, err := shared.DecodePrivateKey(privateKeyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to decode private key: %v", err)
+	}
+
+	// Prepare AES key if data is provided
 	var aesKey []byte
 	if data != nil {
 		aesKey = *data
 	}
 
-	// Calculate gas based on data size if not provided
+	// Use the gas estimator to fetch the gas fee
 	var gasFee int
 	if gas != nil {
 		gasFee = *gas
 	} else if data != nil {
-		gasFee = CalculateGas(len(*data))
+		gasFee, err = node.FetchGasEstimate(len(*data))
+		if err != nil {
+			return fmt.Errorf("failed to fetch gas estimate: %v", err)
+		}
 	} else {
-		gasFee = CalculateGas(0) // Default base fee if no data is present
+		gasFee, err = node.FetchGasEstimate(0) // Default base fee if no data is present
+		if err != nil {
+			return fmt.Errorf("failed to fetch gas estimate: %v", err)
+		}
 	}
 
 	// Total amount includes the gas fee
 	totalAmount := amount + gasFee
 
+	// Collect inputs for the transaction
 	inputs, change, err := node.CollectInputsForTransaction(totalAmount, node.Address)
 	if err != nil {
 		return fmt.Errorf("failed to collect inputs for transaction: %v", err)
 	}
 
+	// Prepare outputs
 	outputs := []shared.UTXO{{OwnerAddress: recipientAddress, Amount: amount}}
 	if change > 0 {
 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
 	}
 
 	// Generate a unique transaction ID
-	// Generate a unique transaction ID
 	transactionID, err := shared.GenerateTransactionID(inputs, outputs, node.Address, amount, gasFee)
 	if err != nil {
-		// Handle the error appropriately, perhaps by returning it or logging it
 		return fmt.Errorf("failed to generate transaction ID: %v", err)
 	}
 
-	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey)
+	// Create and sign the transaction, passing the GasEstimator
+	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey, node)
 	if err != nil {
 		return fmt.Errorf("failed to create and sign transaction: %v", err)
 	}
 
+	// Broadcast the transaction
 	node.BroadcastTransaction(transaction)
 	return nil
-}
-
-func (node *Node) GetTransactionReceipt(txHash string) (map[string]interface{}, error) {
-	// This method should return the transaction receipt for a given transaction hash.
-	// A mock receipt is returned for demonstration purposes.
-	return map[string]interface{}{
-		"transactionHash": txHash,
-		"status":          "success",
-		"blockNumber":     "0x1A4",  // Hexadecimal value of the block number
-		"gasUsed":         "0x5208", // Hexadecimal value of the gas used
-	}, nil
 }
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
@@ -1032,49 +1037,46 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 func (n *Node) SignTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Log incoming request headers to debug CORS issues
-		for name, values := range r.Header {
-			for _, value := range values {
-				fmt.Printf("Header: %s Value: %s\n", name, value)
-			}
-		}
-
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "Invalid content type, application/json required", http.StatusUnsupportedMediaType)
 			return
 		}
 
-		body, _ := ioutil.ReadAll(r.Body)
-		r.Body = ioutil.NopCloser(bytes.NewBuffer(body)) // Reset r.Body to its original state
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Could not read request body", http.StatusBadRequest)
+			return
+		}
 		fmt.Println("Received body:", string(body))
 
-		decoder := json.NewDecoder(r.Body)
 		var transactionData shared.Transaction
-		if err := decoder.Decode(&transactionData); err != nil {
+		if err := json.Unmarshal(body, &transactionData); err != nil {
 			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
+		fmt.Printf("Decoded Transaction Data: %+v\n", transactionData)
 		privateKeyBytes, err := n.Database.RetrievePrivateKey(transactionData.Sender)
 		if err != nil {
-			http.Error(w, "Could not retrieve private key", http.StatusInternalServerError)
+			http.Error(w, "Could not retrieve private key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		privateKey, err := shared.DecodePrivateKey(privateKeyBytes)
+		privateKey := ed25519.NewKeyFromSeed(privateKeyBytes)
+		fmt.Println("Private key generated:", privateKey)
+
+		bodyLength := len(body)
+		fmt.Printf("Actual body length for gas estimate: %d\n", bodyLength)
+		gasEstimate, err := n.FetchGasEstimate(bodyLength)
 		if err != nil {
-			http.Error(w, "Could not decode private key", http.StatusInternalServerError)
+			fmt.Printf("Failed to fetch gas estimate: %v\n", err)
+			http.Error(w, fmt.Sprintf("Failed to fetch gas estimate: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		aesKey, err := shared.GenerateAESKey()
 		if err != nil {
-			http.Error(w, "Could not generate AES key", http.StatusInternalServerError)
+			http.Error(w, "Could not generate AES key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -1085,21 +1087,30 @@ func (n *Node) SignTransactionHandler() http.HandlerFunc {
 			transactionData.Outputs,
 			privateKey,
 			aesKey,
+			n,
 		)
 		if err != nil {
-			http.Error(w, "Could not sign transaction", http.StatusInternalServerError)
+			fmt.Println("Error in CreateAndSignTransaction:", err)
+			http.Error(w, "Could not sign transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		fmt.Println("Transaction signed successfully:", signedTransaction)
 		protoTx, err := shared.ConvertToProtoTransaction(signedTransaction)
 		if err != nil {
-			http.Error(w, "Could not convert transaction to protobuf", http.StatusInternalServerError)
+			http.Error(w, "Could not convert transaction to protobuf: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Include gas estimate in the response
+		response := map[string]interface{}{
+			"transaction": protoTx,
+			"gasEstimate": gasEstimate,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(protoTx); err != nil {
-			http.Error(w, "Could not encode response", http.StatusInternalServerError)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			http.Error(w, "Could not encode response: "+err.Error(), http.StatusInternalServerError)
 		}
 	}
 }
@@ -1137,21 +1148,24 @@ func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
 
 // Helper function to fetch gas estimate
 func (n *Node) FetchGasEstimate(dataSize int) (int, error) {
-	// Use the GasEstimateURL from the node structure
-	response, err := http.PostForm(n.GasEstimateURL, url.Values{"dataSize": {strconv.Itoa(dataSize)}})
+	url := fmt.Sprintf("%s?dataSize=%d", n.GasEstimateURL, dataSize)
+	fmt.Printf("Fetching gas estimate from URL: %s\n", url)
+	resp, err := http.Get(url)
 	if err != nil {
+		fmt.Printf("HTTP request failed: %v\n", err)
 		return 0, err
 	}
-	defer response.Body.Close()
+	defer resp.Body.Close()
 
-	var result struct {
-		GasFee int `json:"gasFee"`
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to fetch gas estimate, status code: %d", resp.StatusCode)
 	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+
+	var result map[string]int
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return 0, err
 	}
-
-	return result.GasFee, nil
+	return result["gasEstimate"], nil
 }
 
 func (node *Node) GasEstimateHandler() http.HandlerFunc {

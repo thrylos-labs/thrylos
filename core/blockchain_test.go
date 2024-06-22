@@ -10,38 +10,57 @@ import (
 	"testing"
 
 	firebase "firebase.google.com/go"
+	"github.com/joho/godotenv"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/api/option"
 )
 
+func loadEnvTest() {
+	if err := godotenv.Load("../.env.dev"); err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
+}
+
+func initializeFirebaseApp() *firebase.App {
+	ctx := context.Background()
+	sa := option.WithCredentialsFile("../serviceAccountKey.json")
+
+	projectID := os.Getenv("FIREBASE_PROJECT_ID")
+	if projectID == "" {
+		log.Fatalf("FIREBASE_PROJECT_ID environment variable is not set")
+	}
+
+	// Initialize the Firebase app with project ID
+	conf := &firebase.Config{
+		ProjectID: projectID, // Use the project ID from environment variable
+	}
+
+	app, err := firebase.NewApp(ctx, conf, sa)
+	if err != nil {
+		log.Fatalf("error initializing app: %v\n", err)
+	}
+	return app
+}
+
 func TestNewBlockchain(t *testing.T) {
-	// Create a temporary directory for blockchain data
+	loadEnvTest() // Make sure this is done before any Firebase operations
+
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Consider loading this from .env for consistency
+	defer os.Unsetenv("GENESIS_ACCOUNT")
+
 	tempDir, err := ioutil.TempDir("", "blockchain_test")
 	if err != nil {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
-	// Clean up the temporary directory after the test
 	defer os.RemoveAll(tempDir)
 
-	// Generate a dummy AES key for testing
-	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
+	aesKey, err := shared.GenerateAESKey()
 	if err != nil {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
-	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
-
+	firebaseApp := initializeFirebaseApp()
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
-	if genesisAccount == "" {
-		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
-	}
-
-	// Create a new blockchain using the temporary directory and generated AES key
 	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
@@ -50,7 +69,6 @@ func TestNewBlockchain(t *testing.T) {
 	if bc.Genesis == nil {
 		t.Errorf("Genesis block is nil")
 	}
-	// Further checks can include validating the initial state of the blockchain, such as the number of blocks, initial UTXOs, etc.
 }
 
 func TestEd25519Signature(t *testing.T) {
