@@ -1150,6 +1150,7 @@ func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
 func (n *Node) FetchGasEstimate(dataSize int) (int, error) {
 	url := fmt.Sprintf("%s?dataSize=%d", n.GasEstimateURL, dataSize)
 	fmt.Printf("Fetching gas estimate from URL: %s\n", url)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		fmt.Printf("HTTP request failed: %v\n", err)

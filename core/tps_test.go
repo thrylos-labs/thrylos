@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 type mockBlockchainServer struct {
@@ -226,9 +229,9 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 
 func TestTransactionThroughputWithoutGRPC(t *testing.T) {
 	const (
-		numTransactions = 10000 // Total number of transactions
-		batchSize       = 100   // Batch size
-		numGoroutines   = 100   // Number of concurrent goroutines
+		numTransactions = 5000 // You can adjust this down for more detailed profiling per transaction.
+		batchSize       = 50   // Smaller batch sizes might simulate real-world transaction bursts better.
+		numGoroutines   = 50   // Adjust based on the level of concurrency you want to simulate.
 	)
 
 	start := time.Now()
@@ -274,6 +277,7 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 		numGoroutines   = 100
 	)
 
+	var totalErrorCount int32
 	start := time.Now()
 	var wg sync.WaitGroup
 
@@ -303,5 +307,79 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 	wg.Wait()
 	elapsed := time.Since(start)
 	tps := float64(numTransactions) / elapsed.Seconds()
-	t.Logf("Processed %d transactions in %s. TPS: %f", numTransactions, elapsed, tps)
+	avgLatency := elapsed.Seconds() * 1000 / float64(numTransactions) // Average latency in milliseconds
+	errorRate := float64(atomic.LoadInt32(&totalErrorCount)) / float64(numTransactions) * 100
+
+	t.Logf("Processed %d transactions in %s. TPS: %f, Avg Latency: %f ms, Error Rate: %.2f%%", numTransactions, elapsed, tps, avgLatency, errorRate)
+}
+
+// go test -v -timeout 30s -run ^TestTransactionThroughputWithIncrementalLoad$ github.com/thrylos-labs/thrylos/core
+
+func TestTransactionThroughputWithIncrementalLoad(t *testing.T) {
+	testCases := []struct {
+		numTransactions int
+		batchSize       int
+		numGoroutines   int
+	}{
+		{1000, 50, 10},
+		{2000, 100, 20},
+		{5000, 250, 50},
+		{10000, 500, 100},
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("%d Transactions %d Goroutines", tc.numTransactions, tc.numGoroutines), func(t *testing.T) {
+			executeLoadTest(t, tc.numTransactions, tc.batchSize, tc.numGoroutines)
+		})
+	}
+}
+
+func executeLoadTest(t *testing.T, numTransactions, batchSize, numGoroutines int) {
+	var totalErrorCount int32
+	start := time.Now()
+	var wg sync.WaitGroup
+
+	processTransactions := func(transactions []*pb.Transaction) error {
+		// Introduce variable delay to simulate network and processing time
+		delay := time.Duration(rand.Intn(100)) * time.Millisecond
+		time.Sleep(delay)
+
+		// Introduce errors in a controlled manner
+		if rand.Float32() < 0.05 { // 5% error rate
+			atomic.AddInt32(&totalErrorCount, 1)
+			return fmt.Errorf("simulated processing error")
+		}
+
+		return nil
+	}
+
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func(goroutineIndex int) {
+			defer wg.Done()
+			for i := 0; i < numTransactions/numGoroutines; i += batchSize {
+				transactions := make([]*pb.Transaction, 0, batchSize)
+				for j := 0; j < batchSize && i+j < numTransactions; j++ {
+					txID := fmt.Sprintf("tx%d", i+j)
+					transaction := &pb.Transaction{Id: txID}
+					// Simulate serialization of transaction data
+					data, _ := proto.Marshal(transaction)
+					transaction = &pb.Transaction{}
+					_ = proto.Unmarshal(data, transaction)
+					transactions = append(transactions, transaction)
+				}
+				if err := processTransactions(transactions); err != nil {
+					t.Logf("Error processing transaction batch: %v", err)
+				}
+			}
+		}(g)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+	tps := float64(numTransactions) / elapsed.Seconds()
+	avgLatency := elapsed.Seconds() * 1000 / float64(numTransactions)
+	errorRate := float64(totalErrorCount) / float64(numTransactions) * 100
+
+	t.Logf("Processed %d transactions in %s. TPS: %f, Avg Latency: %f ms, Error Rate: %.2f%%", numTransactions, elapsed, tps, avgLatency, errorRate)
 }
