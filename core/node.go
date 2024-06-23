@@ -64,9 +64,9 @@ func loadEnv() {
 	env := os.Getenv("ENV")
 	var envPath string
 	if env == "production" {
-		envPath = "../.env.prod" // Ensure this is the correct path relative to where the app is run
+		envPath = "../../.env.prod" // Ensure this is the correct path relative to where the app is run
 	} else {
-		envPath = "../.env.dev" // Default to development environment
+		envPath = "../../.env.dev" // Default to development environment
 	}
 	if err := godotenv.Load(envPath); err != nil {
 		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
