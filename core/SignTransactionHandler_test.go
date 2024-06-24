@@ -1,17 +1,12 @@
 package core
 
 import (
-	"bytes"
-	"crypto/ed25519"
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
-	"github.com/thrylos-labs/thrylos/mocks"
-	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Mocking the Node struct to override FetchGasEstimate method
@@ -23,62 +18,6 @@ type MockNodeTest struct {
 func (m *MockNodeTest) FetchGasEstimate(dataSize int) (int, error) {
 	args := m.Called(dataSize)
 	return args.Int(0), args.Error(1)
-}
-
-func TestSignTransactionHandler(t *testing.T) {
-	_, privateKey, _ := ed25519.GenerateKey(nil)
-	privateKeyBytes := privateKey.Seed()
-
-	db := new(mocks.BlockchainDBInterface)
-	db.On("RetrievePrivateKey", "Alice").Return(privateKeyBytes, nil) // Correctly return the generated private key bytes
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/mock-gas-estimate" && r.Method == http.MethodGet {
-			// Correctly encode GasFee to match the FetchGasEstimate function expectation
-			json.NewEncoder(w).Encode(struct {
-				GasFee int `json:"gasFee"`
-			}{GasFee: 1})
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	node := &MockNodeTest{Node: Node{Database: db}} // Ensure Database is assigned
-	node.GasEstimateURL = server.URL + "/mock-gas-estimate"
-	node.On("FetchGasEstimate", mock.Anything).Return(1, nil) // Ensure this mock matches your function's use
-
-	transactionData := shared.Transaction{
-		ID:        "txTest123",
-		Timestamp: 1630000000,
-		Inputs:    []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
-		Sender:    "Alice",
-	}
-	transactionJSON, _ := json.Marshal(transactionData)
-
-	req := httptest.NewRequest(http.MethodPost, "/sign", bytes.NewBuffer(transactionJSON))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	handler := node.SignTransactionHandler()
-	handler.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	defer resp.Body.Close()
-	body, _ := ioutil.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		t.Logf("Response Body: %s", string(body))
-		t.Errorf("Expected HTTP status OK, got %d", resp.StatusCode)
-	}
-
-	var protoTx shared.Transaction
-	if err := json.Unmarshal(body, &protoTx); err != nil {
-		t.Errorf("Failed to unmarshal response: %v, body: %s", err, string(body))
-	}
-
-	// Additional checks can be added here to validate the response further, such as checking the signature.
 }
 
 func TestFetchGasEstimate(t *testing.T) {

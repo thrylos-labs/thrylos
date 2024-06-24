@@ -208,11 +208,11 @@ func main() {
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
-	mux.HandleFunc("/submit-transaction", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
-		node.EnhancedSubmitTransactionHandler()(w, r)
-	})
-	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler())
+	// mux.HandleFunc("/submit-transaction", func(w http.ResponseWriter, r *http.Request) {
+	// 	log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
+	// 	node.EnhancedSubmitTransactionHandler()(w, r)
+	// })
+	mux.HandleFunc("/process-transaction", node.ProcessAndSignTransactionHandler())
 	mux.HandleFunc("/get-block", node.GetBlockHandler())
 	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
 	mux.HandleFunc("/get-gas", node.GasEstimateHandler())

@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -21,6 +20,7 @@ import (
 	firebase "firebase.google.com/go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"golang.org/x/crypto/blake2b"
 	"google.golang.org/api/option"
 
 	"github.com/joho/godotenv"
@@ -809,26 +809,31 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
 // propagation mechanism, ensuring that all nodes are aware of new transactions.
-func (node *Node) BroadcastTransaction(tx *shared.Transaction) {
+func (node *Node) BroadcastTransaction(tx *shared.Transaction) error {
 	txData, err := json.Marshal(tx)
 	if err != nil {
 		fmt.Println("Failed to serialize transaction:", err)
-		return
+		return err
 	}
 
 	// Iterate through the list of peer addresses and send the transaction to each.
+	var broadcastErr error
 	for _, peer := range node.Peers {
 		url := fmt.Sprintf("http://%s/transaction", peer) // Use HTTP for now
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(txData))
 		if err != nil {
 			fmt.Println("Failed to post transaction to peer:", err)
+			broadcastErr = err
 			continue
 		}
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-			fmt.Println("Received non-OK response when broadcasting transaction to peer:", resp.Status)
+			fmt.Printf("Received non-OK response when broadcasting transaction to peer: %s, Status: %s\n", peer, resp.Status)
+			broadcastErr = fmt.Errorf("failed to broadcast to peer %s, received status %s", peer, resp.Status)
 		}
 		resp.Body.Close() // Ensure the response body is closed after handling
 	}
+
+	return broadcastErr
 }
 
 // BroadcastBlock sends a block to all peers in the network. This is part of the block propagation mechanism,
@@ -1032,114 +1037,90 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 	}
 }
 
-// SignTransactionHandler – This endpoint is responsible for taking an unsigned transaction, securely signing it using the sender's private key, and optionally, encrypting parts of the transaction.
-// It's crucial that this handler ensures the transaction is correctly formatted and the signature is valid. It may return the signed transaction back to the client for verification or submission.
-
-func (n *Node) SignTransactionHandler() http.HandlerFunc {
+func (n *Node) ProcessAndSignTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "Could not read request body", http.StatusBadRequest)
-			return
-		}
-		fmt.Println("Received body:", string(body))
-
 		var transactionData shared.Transaction
-		if err := json.Unmarshal(body, &transactionData); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&transactionData); err != nil {
 			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		fmt.Printf("Decoded Transaction Data: %+v\n", transactionData)
+		// Log the received transaction for auditing and debugging
+		log.Printf("Received transaction for processing: %+v", transactionData)
+
+		// Validate transaction data if necessary
+		if err := transactionData.Validate(); err != nil {
+			http.Error(w, "Validation error: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Retrieve and decode the private key
 		privateKeyBytes, err := n.Database.RetrievePrivateKey(transactionData.Sender)
 		if err != nil {
+			log.Printf("Failed to retrieve private key: %v", err)
 			http.Error(w, "Could not retrieve private key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
-		privateKey := ed25519.NewKeyFromSeed(privateKeyBytes)
-		fmt.Println("Private key generated:", privateKey)
-
-		bodyLength := len(body)
-		fmt.Printf("Actual body length for gas estimate: %d\n", bodyLength)
-		gasEstimate, err := n.FetchGasEstimate(bodyLength)
+		privateKey, err := shared.DecodePrivateKey(privateKeyBytes)
 		if err != nil {
-			fmt.Printf("Failed to fetch gas estimate: %v\n", err)
-			http.Error(w, fmt.Sprintf("Failed to fetch gas estimate: %v", err), http.StatusInternalServerError)
+			log.Printf("Failed to decode private key: %v", err)
+			http.Error(w, "Could not decode private key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		aesKey, err := shared.GenerateAESKey()
+		// Sign the transaction
+		signedTx, err := n.SignTransaction(&transactionData, privateKey)
 		if err != nil {
-			http.Error(w, "Could not generate AES key: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		signedTransaction, err := shared.CreateAndSignTransaction(
-			transactionData.ID,
-			transactionData.Sender,
-			transactionData.Inputs,
-			transactionData.Outputs,
-			privateKey,
-			aesKey,
-			n,
-		)
-		if err != nil {
-			fmt.Println("Error in CreateAndSignTransaction:", err)
+			log.Printf("Failed to sign transaction: %v", err)
 			http.Error(w, "Could not sign transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		fmt.Println("Transaction signed successfully:", signedTransaction)
-		protoTx, err := shared.ConvertToProtoTransaction(signedTransaction)
-		if err != nil {
-			http.Error(w, "Could not convert transaction to protobuf: "+err.Error(), http.StatusInternalServerError)
+		// Log the signed transaction
+		log.Printf("Transaction signed successfully: %+v", signedTx)
+
+		// Optionally: Send the transaction to the blockchain network
+		if err := n.BroadcastTransaction(signedTx); err != nil {
+			log.Printf("Failed to broadcast transaction: %v", err)
+			http.Error(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Include gas estimate in the response
-		response := map[string]interface{}{
-			"transaction": protoTx,
-			"gasEstimate": gasEstimate,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			http.Error(w, "Could not encode response: "+err.Error(), http.StatusInternalServerError)
+		// Respond with the signed transaction
+		if err := json.NewEncoder(w).Encode(signedTx); err != nil {
+			http.Error(w, "Failed to encode response: "+err.Error(), http.StatusInternalServerError)
 		}
 	}
 }
 
-// After a transaction is signed, it should be submitted through this handler.
-// This endpoint is responsible for validating the signed transaction, processing it (which may include further encryption of transaction data, additional validation, and recording to a ledger or database), and finally, committing the transaction into the blockchain.
-
-func (node *Node) EnhancedSubmitTransactionHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var tx shared.Transaction
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&tx); err != nil {
-			node.logError("Decode", err)
-			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
-			return
-		}
-
-		if err := tx.Validate(); err != nil {
-			node.logError("Validate", err)
-			http.Error(w, "Transaction validation failed: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		// Assuming signature validation and further processing here
-		if err := shared.ProcessAndRecordTransaction(&tx, node.Database, node); err != nil {
-			node.logError("Process", err)
-			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Transaction processed successfully"))
+// This is a method on Node struct to sign a transaction
+// SignTransaction creates a digital signature for a transaction using the sender's private Ed25519 key.
+func (n *Node) SignTransaction(tx *shared.Transaction, privateKey ed25519.PrivateKey) (*shared.Transaction, error) {
+	// Serialize the transaction data for signing, excluding the signature itself
+	data, err := tx.SerializeWithoutSignature()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
 	}
+
+	// Initialize a new BLAKE2b-256 hasher
+	hasher, err := blake2b.New256(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create BLAKE2b hasher: %v", err)
+	}
+
+	// Hash the data to be signed
+	hasher.Write(data)
+	hashedData := hasher.Sum(nil)
+
+	// Sign the hash of the transaction data
+	signature := ed25519.Sign(privateKey, hashedData)
+	if signature == nil {
+		return nil, fmt.Errorf("failed to generate signature")
+	}
+
+	// Assign the generated signature back to the transaction
+	tx.Signature = signature
+	return tx, nil
 }
 
 // Helper function to fetch gas estimate
@@ -1326,9 +1307,9 @@ func (node *Node) Start() {
 
 	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
 
-	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler())
+	mux.HandleFunc("/process-transaction", node.ProcessAndSignTransactionHandler())
 
-	mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
+	// mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
 
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		var block Block
