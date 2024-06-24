@@ -261,23 +261,30 @@ func HashData(data []byte) []byte {
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID               string   `json:"id" valid:"required,uuid4"`
+	ID               string   `json:"id" valid:"required"` // Remove uuid4 validation
 	Timestamp        int64    `json:"timestamp" valid:"required"`
 	Inputs           []UTXO   `json:"inputs" valid:"required"`
 	Outputs          []UTXO   `json:"outputs" valid:"required"`
 	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
 	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"signature" valid:"required,length(64)"` // Assuming signature should be exactly 64 bytes
+	Signature        []byte   `json:"signature" valid:"required"` // Remove length validation if not needed
 	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
 	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
-	Sender           string   `json:"sender" valid:"required,ethereum_addr"`
-	GasFee           int      `json:"gasFee"` // No change needed if your JSON uses camelCase consistently
+	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
+	GasFee           int      `json:"gasFee"`                  // Ensure this is an integer
 }
 
 // Validate ensures the fields of Transaction are correct.
+// Validate ensures the fields of Transaction are correct.
 func (tx *Transaction) Validate() error {
+	// Custom validation logic
 	if !isValidUUID(tx.ID) {
-		return errors.New("invalid ID: must be a valid UUID v4")
+		return errors.New("invalid ID: must be a valid UUID")
+	}
+
+	// Ensure the signature is non-zero
+	if len(tx.Signature) == 0 {
+		return errors.New("signature: non zero value required")
 	}
 
 	// Validates using struct tags and custom logic
@@ -859,7 +866,7 @@ func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
 }
 
 func isValidUUID(uuid string) bool {
-	r := regexp.MustCompile("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89ABab][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$")
+	r := regexp.MustCompile("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$")
 	return r.MatchString(uuid)
 }
 
