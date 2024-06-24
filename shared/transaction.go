@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -274,6 +275,41 @@ type Transaction struct {
 	GasFee           int      `json:"gasFee"`                  // Ensure this is an integer
 }
 
+// UnmarshalJSON custom unmarshalling to handle base64 encoding for byte slices.
+func (tx *Transaction) UnmarshalJSON(data []byte) error {
+	type Alias Transaction
+	aux := &struct {
+		Signature string `json:"signature"`
+		*Alias
+	}{
+		Alias: (*Alias)(tx),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(aux.Signature)
+	if err != nil {
+		return err
+	}
+
+	tx.Signature = sig
+	return nil
+}
+
+// MarshalJSON custom marshalling to handle base64 encoding for byte slices.
+func (tx Transaction) MarshalJSON() ([]byte, error) {
+	type Alias Transaction
+	return json.Marshal(&struct {
+		Signature string `json:"signature"`
+		Alias
+	}{
+		Signature: base64.StdEncoding.EncodeToString(tx.Signature),
+		Alias:     (Alias)(tx),
+	})
+}
+
 // Validate ensures the fields of Transaction are correct.
 // Validate ensures the fields of Transaction are correct.
 func (tx *Transaction) Validate() error {
@@ -303,7 +339,6 @@ func (tx *Transaction) Validate() error {
 
 // validateTimestamp checks if the transaction timestamp is within the last hour.
 func validateTimestamp(timestamp int64) bool {
-
 	return time.Since(time.Unix(timestamp, 0)).Hours() < 1
 }
 
