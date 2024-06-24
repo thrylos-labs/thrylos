@@ -1037,10 +1037,6 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 func (n *Node) SignTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Content-Type") != "application/json" {
-			http.Error(w, "Invalid content type, application/json required", http.StatusUnsupportedMediaType)
-			return
-		}
 
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
@@ -1206,7 +1202,7 @@ func (node *Node) GasEstimateHandler() http.HandlerFunc {
 }
 
 func enableCors(w *http.ResponseWriter) {
-	(*w).Header().Set("Access-Control-Allow-Origin", "*")
+	(*w).Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
 	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
@@ -1330,9 +1326,7 @@ func (node *Node) Start() {
 
 	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
 
-	log.Println("Registering /sign-transaction")
 	mux.HandleFunc("/sign-transaction", node.SignTransactionHandler())
-	log.Println("/sign-transaction registered")
 
 	mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
 
