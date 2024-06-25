@@ -174,56 +174,6 @@ func (bdb *BlockchainDB) hashData(data []byte) []byte {
 	return hasher.Sum(nil)
 }
 
-// InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
-// InsertOrUpdatePrivateKey stores the private key in the database, encrypting it first.
-func (bdb *BlockchainDB) InsertOrUpdatePrivateKey(address string, privateKey []byte) error {
-	// Encode and encrypt the private key
-	encodedKey := base64.StdEncoding.EncodeToString(privateKey)
-	encryptedKey, err := bdb.encryptData([]byte(encodedKey))
-	if err != nil {
-		return fmt.Errorf("error encrypting private key: %v", err)
-	}
-
-	// Start a new transaction
-	txn := bdb.DB.NewTransaction(true)
-	defer txn.Discard() // Ensure the transaction is discarded if not committed
-
-	// Attempt to set the private key in the database
-	if err := txn.Set([]byte("privateKey-"+address), encryptedKey); err != nil {
-		return fmt.Errorf("error storing encrypted private key: %v", err)
-	}
-
-	// Commit the transaction
-	if err := txn.Commit(); err != nil {
-		return fmt.Errorf("transaction commit failed: %v", err)
-	}
-
-	return nil
-}
-
-// RetrievePrivateKey retrieves the private key for the given address, decrypting it before returning.
-func (bdb *BlockchainDB) RetrievePrivateKey(address string) ([]byte, error) {
-	var encryptedKey []byte
-	err := bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("privateKey-" + address))
-		if err != nil {
-			return fmt.Errorf("error retrieving private key: %v", err)
-		}
-		encryptedKey, err = item.ValueCopy(nil)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	decryptedData, err := bdb.decryptData(encryptedKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
-	}
-
-	return decryptedData, nil
-}
-
 // AddUTXO adds a UTXO to the BadgerDB database.
 func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
 	return bdb.DB.Update(func(txn *badger.Txn) error {

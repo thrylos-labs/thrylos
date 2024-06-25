@@ -20,7 +20,6 @@ import (
 	firebase "firebase.google.com/go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
-	"golang.org/x/crypto/blake2b"
 	"google.golang.org/api/option"
 
 	"github.com/joho/godotenv"
@@ -37,7 +36,7 @@ type Vote struct {
 
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
-// the blockchain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
+// the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
 type Node struct {
 	Address             string      // Network address of the node.
 	Peers               []string    // Addresses of peer nodes for communication within the network.
@@ -222,71 +221,71 @@ func CalculateGas(dataSize int) int {
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
 // signs it with the sender's Ed25519 private key, and broadcasts it to the network.
-func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *string, amount int, data *[]byte, gas *int) error {
-	// Retrieve the private key securely
-	privateKeyBytes, err := node.Database.RetrievePrivateKey(node.Address)
-	if err != nil {
-		return fmt.Errorf("failed to retrieve private key: %v", err)
-	}
+// func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *string, amount int, data *[]byte, gas *int) error {
+// 	// Retrieve the private key securely
+// 	privateKeyBytes, err := node.Database.RetrievePrivateKey(node.Address)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to retrieve private key: %v", err)
+// 	}
 
-	ed25519PrivateKey, err := shared.DecodePrivateKey(privateKeyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to decode private key: %v", err)
-	}
+// 	ed25519PrivateKey, err := shared.DecodePrivateKey(privateKeyBytes)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to decode private key: %v", err)
+// 	}
 
-	// Prepare AES key if data is provided
-	var aesKey []byte
-	if data != nil {
-		aesKey = *data
-	}
+// 	// Prepare AES key if data is provided
+// 	var aesKey []byte
+// 	if data != nil {
+// 		aesKey = *data
+// 	}
 
-	// Use the gas estimator to fetch the gas fee
-	var gasFee int
-	if gas != nil {
-		gasFee = *gas
-	} else if data != nil {
-		gasFee, err = node.FetchGasEstimate(len(*data))
-		if err != nil {
-			return fmt.Errorf("failed to fetch gas estimate: %v", err)
-		}
-	} else {
-		gasFee, err = node.FetchGasEstimate(0) // Default base fee if no data is present
-		if err != nil {
-			return fmt.Errorf("failed to fetch gas estimate: %v", err)
-		}
-	}
+// 	// Use the gas estimator to fetch the gas fee
+// 	var gasFee int
+// 	if gas != nil {
+// 		gasFee = *gas
+// 	} else if data != nil {
+// 		gasFee, err = node.FetchGasEstimate(len(*data))
+// 		if err != nil {
+// 			return fmt.Errorf("failed to fetch gas estimate: %v", err)
+// 		}
+// 	} else {
+// 		gasFee, err = node.FetchGasEstimate(0) // Default base fee if no data is present
+// 		if err != nil {
+// 			return fmt.Errorf("failed to fetch gas estimate: %v", err)
+// 		}
+// 	}
 
-	// Total amount includes the gas fee
-	totalAmount := amount + gasFee
+// 	// Total amount includes the gas fee
+// 	totalAmount := amount + gasFee
 
-	// Collect inputs for the transaction
-	inputs, change, err := node.CollectInputsForTransaction(totalAmount, node.Address)
-	if err != nil {
-		return fmt.Errorf("failed to collect inputs for transaction: %v", err)
-	}
+// 	// Collect inputs for the transaction
+// 	inputs, change, err := node.CollectInputsForTransaction(totalAmount, node.Address)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to collect inputs for transaction: %v", err)
+// 	}
 
-	// Prepare outputs
-	outputs := []shared.UTXO{{OwnerAddress: recipientAddress, Amount: amount}}
-	if change > 0 {
-		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
-	}
+// 	// Prepare outputs
+// 	outputs := []shared.UTXO{{OwnerAddress: recipientAddress, Amount: amount}}
+// 	if change > 0 {
+// 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
+// 	}
 
-	// Generate a unique transaction ID
-	transactionID, err := shared.GenerateTransactionID(inputs, outputs, node.Address, amount, gasFee)
-	if err != nil {
-		return fmt.Errorf("failed to generate transaction ID: %v", err)
-	}
+// 	// Generate a unique transaction ID
+// 	transactionID, err := shared.GenerateTransactionID(inputs, outputs, node.Address, amount, gasFee)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to generate transaction ID: %v", err)
+// 	}
 
-	// Create and sign the transaction, passing the GasEstimator
-	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey, node)
-	if err != nil {
-		return fmt.Errorf("failed to create and sign transaction: %v", err)
-	}
+// 	// Create and sign the transaction, passing the GasEstimator
+// 	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey, node)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create and sign transaction: %v", err)
+// 	}
 
-	// Broadcast the transaction
-	node.BroadcastTransaction(transaction)
-	return nil
-}
+// 	// Broadcast the transaction
+// 	node.BroadcastTransaction(transaction)
+// 	return nil
+// }
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
@@ -809,17 +808,17 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
 // propagation mechanism, ensuring that all nodes are aware of new transactions.
-func (node *Node) BroadcastTransaction(tx *shared.Transaction) error {
+func (node *Node) BroadcastTransaction(tx *thrylos.Transaction) error {
 	txData, err := json.Marshal(tx)
 	if err != nil {
 		fmt.Println("Failed to serialize transaction:", err)
 		return err
 	}
 
-	// Iterate through the list of peer addresses and send the transaction to each.
+	// Iterating through peers and broadcasting the transaction
 	var broadcastErr error
 	for _, peer := range node.Peers {
-		url := fmt.Sprintf("http://%s/transaction", peer) // Use HTTP for now
+		url := fmt.Sprintf("http://%s/transaction", peer)
 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(txData))
 		if err != nil {
 			fmt.Println("Failed to post transaction to peer:", err)
@@ -830,9 +829,8 @@ func (node *Node) BroadcastTransaction(tx *shared.Transaction) error {
 			fmt.Printf("Received non-OK response when broadcasting transaction to peer: %s, Status: %s\n", peer, resp.Status)
 			broadcastErr = fmt.Errorf("failed to broadcast to peer %s, received status %s", peer, resp.Status)
 		}
-		resp.Body.Close() // Ensure the response body is closed after handling
+		resp.Body.Close()
 	}
-
 	return broadcastErr
 }
 
@@ -1037,7 +1035,7 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 	}
 }
 
-func (n *Node) ProcessAndSignTransactionHandler() http.HandlerFunc {
+func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var transactionData shared.Transaction
 		if err := json.NewDecoder(r.Body).Decode(&transactionData); err != nil {
@@ -1045,82 +1043,57 @@ func (n *Node) ProcessAndSignTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Log the received transaction for auditing and debugging
-		log.Printf("Received transaction for processing: %+v", transactionData)
+		log.Printf("Received signed transaction for processing: %+v", transactionData)
 
-		// Validate transaction data if necessary
-		if err := transactionData.Validate(); err != nil {
-			http.Error(w, "Validation error: "+err.Error(), http.StatusBadRequest)
+		// Convert shared.Transaction to thrylos.Transaction
+		thrylosTx := shared.SharedToThrylos(&transactionData)
+		if thrylosTx == nil {
+			http.Error(w, "Failed to convert transaction data", http.StatusInternalServerError)
 			return
 		}
 
-		// Retrieve and decode the private key
-		privateKeyBytes, err := n.Database.RetrievePrivateKey(transactionData.Sender)
+		// Retrieve the public key associated with the sender's address
+		senderPublicKey, err := n.RetrievePublicKey(transactionData.Sender)
 		if err != nil {
-			log.Printf("Failed to retrieve private key: %v", err)
-			http.Error(w, "Could not retrieve private key: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		privateKey, err := shared.DecodePrivateKey(privateKeyBytes)
-		if err != nil {
-			log.Printf("Failed to decode private key: %v", err)
-			http.Error(w, "Could not decode private key: "+err.Error(), http.StatusInternalServerError)
+			log.Printf("Failed to retrieve public key: %v", err)
+			http.Error(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Sign the transaction
-		signedTx, err := n.SignTransaction(&transactionData, privateKey)
-		if err != nil {
-			log.Printf("Failed to sign transaction: %v", err)
-			http.Error(w, "Could not sign transaction: "+err.Error(), http.StatusInternalServerError)
+		// Verify the signature using the public key
+		if !shared.VerifySignature(&transactionData, senderPublicKey) {
+			log.Printf("Invalid signature for transaction: %+v", transactionData)
+			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
 
-		// Log the signed transaction
-		log.Printf("Transaction signed successfully: %+v", signedTx)
+		// Fetch or create a gas estimator
+		gasEstimator := n.GetGasEstimator() // Ensure this method exists and returns a valid GasEstimator
 
-		// Optionally: Send the transaction to the blockchain network
-		if err := n.BroadcastTransaction(signedTx); err != nil {
+		// Process the transaction
+		if err := shared.ProcessTransaction(thrylosTx, senderPublicKey, gasEstimator); err != nil {
+			log.Printf("Failed to process transaction: %v", err)
+			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Convert and add transaction to the pending transactions if necessary
+		if err := n.AddPendingTransaction(thrylosTx); err != nil {
+			log.Printf("Failed to add transaction to pending transactions: %v", err)
+			http.Error(w, "Failed to add transaction to pending pool", http.StatusInternalServerError)
+			return
+		}
+
+		// Broadcast the transaction to the network
+		if err := n.BroadcastTransaction(thrylosTx); err != nil {
 			log.Printf("Failed to broadcast transaction: %v", err)
 			http.Error(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Respond with the signed transaction
-		if err := json.NewEncoder(w).Encode(signedTx); err != nil {
-			http.Error(w, "Failed to encode response: "+err.Error(), http.StatusInternalServerError)
-		}
+		// Send a success response back to the client
+		sendResponse(w, []byte(fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)))
 	}
-}
-
-// This is a method on Node struct to sign a transaction
-// SignTransaction creates a digital signature for a transaction using the sender's private Ed25519 key.
-func (n *Node) SignTransaction(tx *shared.Transaction, privateKey ed25519.PrivateKey) (*shared.Transaction, error) {
-	// Serialize the transaction data for signing, excluding the signature itself
-	data, err := tx.SerializeWithoutSignature()
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
-	}
-
-	// Initialize a new BLAKE2b-256 hasher
-	hasher, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create BLAKE2b hasher: %v", err)
-	}
-
-	// Hash the data to be signed
-	hasher.Write(data)
-	hashedData := hasher.Sum(nil)
-
-	// Sign the hash of the transaction data
-	signature := ed25519.Sign(privateKey, hashedData)
-	if signature == nil {
-		return nil, fmt.Errorf("failed to generate signature")
-	}
-
-	// Assign the generated signature back to the transaction
-	tx.Signature = signature
-	return tx, nil
 }
 
 // Helper function to fetch gas estimate
@@ -1307,9 +1280,7 @@ func (node *Node) Start() {
 
 	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
 
-	mux.HandleFunc("/process-transaction", node.ProcessAndSignTransactionHandler())
-
-	// mux.HandleFunc("/submit-transaction", node.EnhancedSubmitTransactionHandler()) // Added submit transaction endpoint
+	mux.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler())
 
 	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
 		var block Block

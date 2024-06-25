@@ -93,13 +93,6 @@ func main() {
 
 	firebaseApp := initializeFirebaseApp()
 
-	// ctx := context.Background()
-	// sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
-	// firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-	// if err != nil {
-	// 	log.Fatalf("error initializing app: %v\n", err)
-	// }
-
 	// Environment variables
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
 	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
@@ -191,28 +184,14 @@ func main() {
 	if knownPeers != "" {
 		peersList = strings.Split(knownPeers, ",")
 	}
+
 	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil, false)
 	node.SetChainID(chainID) // Set the chain ID for the node
-
-	// Setup CORS which is for connecting to the backend, remember the localhost will be different for this
-	// c := cors.New(cors.Options{
-	// 	AllowedOrigins: []string{"http://localhost:3000"}, // Specify the exact origin for security
-	// 	// AllowedOrigins:   []string{"*"}, // for testing purposes only, make sure to replace on production
-	// 	AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
-	// 	AllowedHeaders:   []string{"Content-Type", "Authorization"},
-	// 	AllowCredentials: true,
-	// 	Debug:            true,
-	// })
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
-	// mux.HandleFunc("/submit-transaction", func(w http.ResponseWriter, r *http.Request) {
-	// 	log.Printf("Received transaction data: %+v", r.Body) // log the incoming request body
-	// 	node.EnhancedSubmitTransactionHandler()(w, r)
-	// })
-	mux.HandleFunc("/process-transaction", node.ProcessAndSignTransactionHandler())
+	mux.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler())
 	mux.HandleFunc("/get-block", node.GetBlockHandler())
 	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
 	mux.HandleFunc("/get-gas", node.GasEstimateHandler())

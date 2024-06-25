@@ -24,8 +24,6 @@ type BlockchainDBInterface interface {
 	CreateAndSignTransaction(txID string, inputs, outputs []UTXO, privKey *rsa.PrivateKey) (Transaction, error)
 	InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error
 	RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error)
-	RetrievePrivateKey(address string) ([]byte, error)
-	InsertOrUpdatePrivateKey(address string, privateKey []byte) error
 	StoreBlock(data []byte, blockNumber int) error
 	RetrieveBlock(blockNumber int) ([]byte, error)
 	BeginTransaction() (*TransactionContext, error)
