@@ -1006,10 +1006,10 @@ func ProcessTransaction(tx *thrylos.Transaction, publicKey ed25519.PublicKey, es
 	}
 
 	// Record the transaction in the database or broadcast to the network
-	err = BlockchainDBInterface.AddTransaction(*tx, BlockchainDBInterface)
-	if err != nil {
-		return fmt.Errorf("failed to add transaction to database: %v", err)
-	}
+	// err = AddTransaction(*tx, BlockchainDBInterface)
+	// if err != nil {
+	// 	return fmt.Errorf("failed to add transaction to database: %v", err)
+	// }
 
 	return nil
 }

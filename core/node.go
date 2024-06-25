@@ -1035,6 +1035,8 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 	}
 }
 
+var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
+
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var transactionData shared.Transaction
@@ -1068,7 +1070,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		}
 
 		// Fetch or create a gas estimator
-		gasEstimator := n.GetGasEstimator() // Ensure this method exists and returns a valid GasEstimator
+		gasEstimator := n // Assuming Node implements GasEstimator
 
 		// Process the transaction
 		if err := shared.ProcessTransaction(thrylosTx, senderPublicKey, gasEstimator); err != nil {
