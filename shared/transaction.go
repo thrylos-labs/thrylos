@@ -866,6 +866,107 @@ func ParallelVerifyTransactions(
 	return results, nil
 }
 
+func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
+	// Create a copy of the transaction to avoid modifying the original
+	txCopy := *tx
+	txCopy.Signature = nil // Ensure the signature is not included in the serialized data
+
+	return json.Marshal(txCopy)
+}
+
+func isValidUUID(uuid string) bool {
+	r := regexp.MustCompile("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$")
+	return r.MatchString(uuid)
+}
+
+func SignTransactionData(tx *Transaction, privateKeyBytes []byte) ([]byte, error) {
+	data, err := SerializeTransactionForSigning(tx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
+	}
+
+	// Hash the data
+	hasher, err := blake2b.New256(nil)
+	hasher.Write(data)
+	hashed := hasher.Sum(nil)
+
+	// Assuming the privateKeyBytes is the Ed25519 private key
+	privateKey := ed25519.PrivateKey(privateKeyBytes)
+	signature := ed25519.Sign(privateKey, hashed) // Sign the hashed data
+
+	return signature, nil
+}
+
+func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
+	block, _ := pem.Decode(encodedKey)
+	if block == nil || block.Type != "PRIVATE KEY" {
+		return nil, errors.New("failed to decode PEM block containing private key")
+	}
+
+	key := ed25519.NewKeyFromSeed(block.Bytes)
+	return key, nil
+}
+
+// VerifySignature method (example based on your provided method)
+func VerifySignature(tx *Transaction, publicKey ed25519.PublicKey) bool {
+	data, err := tx.SerializeWithoutSignature()
+	if err != nil {
+		log.Printf("Error serializing transaction data for signature verification: %v", err)
+		return false
+	}
+	return ed25519.Verify(publicKey, data, tx.Signature)
+}
+
+// Process batched transactions
+
+func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator) error {
+	// Calculate total data size from the already prepared transaction data
+	totalDataSize := len(tx.EncryptedInputs) + len(tx.EncryptedOutputs)
+
+	// Fetch gas estimate and convert to int64 if necessary
+	gasFee, err := estimator.FetchGasEstimate(totalDataSize)
+	if err != nil {
+		return fmt.Errorf("failed to fetch gas estimate: %v", err)
+	}
+	intGasFee := int64(gasFee) // Assuming FetchGasEstimate returns int, convert to int64
+
+	// Adjust the transaction outputs for the gas fee
+	if len(tx.Outputs) > 0 && intGasFee > int64(tx.Outputs[0].Amount) {
+		// Ensure there's enough amount to deduct the gas fee
+		return fmt.Errorf("not enough balance to cover gas fees")
+	}
+	if len(tx.Outputs) > 0 {
+		tx.Outputs[0].Amount -= intGasFee
+	}
+
+	// Validate transaction signature
+	if err := VerifyTransactionSignature(tx, publicKey); err != nil {
+		// Handle the error appropriately
+		return fmt.Errorf("invalid transaction signature: %v", err)
+	}
+
+	// Select tips (previous transactions) to link this transaction
+	tips, err := selectTips()
+	if err != nil {
+		return fmt.Errorf("failed to select tips: %v", err)
+	}
+	tx.PreviousTxIds = tips
+
+	// Convert thrylos.Transaction to shared.Transaction for database storage
+	sharedTx, err := ConvertThrylosTransactionToLocal(tx)
+	if err != nil {
+		return fmt.Errorf("failed to convert transaction to shared type: %v", err)
+	}
+
+	// Use processTransactionsBatch to handle batching
+	err = processTransactionsBatch([]*Transaction{&sharedTx}, db)
+	if err != nil {
+		return fmt.Errorf("failed to process transaction batch: %v", err)
+	}
+
+	return nil
+}
+
 func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterface) error {
 	if len(transactions) == 0 {
 		return nil // No transactions to process
@@ -924,92 +1025,6 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 	// Store the serialized transaction data
 	if err := db.SetTransaction(txn, key, txJSON); err != nil {
 		return fmt.Errorf("error storing transaction: %v", err)
-	}
-
-	return nil
-}
-
-func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
-	// Create a copy of the transaction to avoid modifying the original
-	txCopy := *tx
-	txCopy.Signature = nil // Ensure the signature is not included in the serialized data
-
-	return json.Marshal(txCopy)
-}
-
-func isValidUUID(uuid string) bool {
-	r := regexp.MustCompile("^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$")
-	return r.MatchString(uuid)
-}
-
-func SignTransactionData(tx *Transaction, privateKeyBytes []byte) ([]byte, error) {
-	data, err := SerializeTransactionForSigning(tx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
-	}
-
-	// Hash the data
-	hasher, err := blake2b.New256(nil)
-	hasher.Write(data)
-	hashed := hasher.Sum(nil)
-
-	// Assuming the privateKeyBytes is the Ed25519 private key
-	privateKey := ed25519.PrivateKey(privateKeyBytes)
-	signature := ed25519.Sign(privateKey, hashed) // Sign the hashed data
-
-	return signature, nil
-}
-
-func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
-	block, _ := pem.Decode(encodedKey)
-	if block == nil || block.Type != "PRIVATE KEY" {
-		return nil, errors.New("failed to decode PEM block containing private key")
-	}
-
-	key := ed25519.NewKeyFromSeed(block.Bytes)
-	return key, nil
-}
-
-// VerifySignature method (example based on your provided method)
-func VerifySignature(tx *Transaction, publicKey ed25519.PublicKey) bool {
-	data, err := tx.SerializeWithoutSignature()
-	if err != nil {
-		log.Printf("Error serializing transaction data for signature verification: %v", err)
-		return false
-	}
-	return ed25519.Verify(publicKey, data, tx.Signature)
-}
-
-func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator) error {
-	// Calculate total data size from the already prepared transaction data
-	totalDataSize := len(tx.EncryptedInputs) + len(tx.EncryptedOutputs)
-
-	// Fetch gas estimate and convert to int64 if necessary
-	gasFee, err := estimator.FetchGasEstimate(totalDataSize)
-	if err != nil {
-		return fmt.Errorf("failed to fetch gas estimate: %v", err)
-	}
-	intGasFee := int64(gasFee) // Assuming FetchGasEstimate returns int, convert to int64
-
-	// Adjust the transaction outputs for the gas fee
-	if len(tx.Outputs) > 0 && intGasFee > int64(tx.Outputs[0].Amount) {
-		// Ensure there's enough amount to deduct the gas fee
-		return fmt.Errorf("not enough balance to cover gas fees")
-	}
-	if len(tx.Outputs) > 0 {
-		tx.Outputs[0].Amount -= intGasFee
-	}
-
-	// Validate transaction signature
-	if err := VerifyTransactionSignature(tx, publicKey); err != nil {
-		// Handle the error appropriately
-		return fmt.Errorf("invalid transaction signature: %v", err)
-	}
-
-	// Record the transaction in the database
-	err = db.AddTransaction(tx) // Pass thrylos.Transaction directly
-	if err != nil {
-		return fmt.Errorf("failed to add transaction to database: %v", err)
 	}
 
 	return nil

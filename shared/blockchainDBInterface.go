@@ -18,7 +18,7 @@ type BlockchainDBInterface interface {
 	InsertBlock(data []byte, blockNumber int) error
 	GetLastBlockData() ([]byte, int, error)
 	RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error)
-	AddTransaction(tx *thrylos.Transaction) error // Update to thrylos.Transaction
+	AddTransaction(tx *thrylos.Transaction) error
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error
 	CreateUTXO(id, txID string, index int, address string, amount int) (UTXO, error)
 	GetUTXOsForUser(address string, utxos map[string]UTXO) ([]UTXO, error)
