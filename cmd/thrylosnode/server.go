@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -202,15 +203,53 @@ func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionReque
 
 	log.Printf("Received transaction %s for processing", req.Transaction.Id)
 
-	// Convert the protobuf Transaction to your shared transaction type
-	tx := core.ConvertProtoTransactionToShared(req.Transaction)
+	// Convert the protobuf Transaction to thrylos.Transaction type
+	tx, err := ConvertProtoTransactionToThrylos(req.Transaction)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "Failed to convert transaction: %v", err)
+	}
 
 	// Process the transaction using your blockchain core logic
-	err := s.db.AddTransaction(tx)
+	err = s.db.AddTransaction(tx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "Transaction failed: %v", err)
 	}
 
 	log.Printf("Transaction %s added successfully", req.Transaction.Id)
 	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
+}
+
+func ConvertProtoTransactionToThrylos(protoTx *pb.Transaction) (*thrylos.Transaction, error) {
+	if protoTx == nil {
+		return nil, errors.New("protoTx is nil")
+	}
+
+	thrylosInputs := make([]*thrylos.UTXO, len(protoTx.Inputs))
+	for i, input := range protoTx.Inputs {
+		thrylosInputs[i] = &thrylos.UTXO{
+			TransactionId: input.TransactionId,
+			Index:         int32(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		}
+	}
+
+	thrylosOutputs := make([]*thrylos.UTXO, len(protoTx.Outputs))
+	for i, output := range protoTx.Outputs {
+		thrylosOutputs[i] = &thrylos.UTXO{
+			TransactionId: output.TransactionId,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+		}
+	}
+
+	return &thrylos.Transaction{
+		Id:        protoTx.Id,
+		Sender:    protoTx.Sender,
+		Inputs:    thrylosInputs,
+		Outputs:   thrylosOutputs,
+		Timestamp: protoTx.Timestamp,
+		Signature: protoTx.Signature,
+	}, nil
 }

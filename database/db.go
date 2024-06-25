@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	"github.com/dgraph-io/badger"
+	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
 )
@@ -424,7 +425,7 @@ func (db *BlockchainDB) SetTransaction(txn *shared.TransactionContext, key []byt
 
 // AddTransaction stores a new transaction in the database. It serializes transaction inputs,
 // outputs, and the signature for persistent storage.
-func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
+func (bdb *BlockchainDB) AddTransaction(tx *thrylos.Transaction) error {
 	txn := bdb.DB.NewTransaction(true)
 	defer txn.Discard()
 
@@ -433,7 +434,7 @@ func (bdb *BlockchainDB) AddTransaction(tx shared.Transaction) error {
 		return fmt.Errorf("error marshaling transaction: %v", err)
 	}
 
-	key := []byte("transaction-" + tx.ID)
+	key := []byte("transaction-" + tx.Id)
 
 	if err := txn.Set(key, txJSON); err != nil {
 		return fmt.Errorf("error storing transaction in BadgerDB: %v", err)

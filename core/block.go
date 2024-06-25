@@ -170,25 +170,25 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 	}
 }
 
-func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transaction {
-	inputs := make([]shared.UTXO, len(protoTx.GetInputs()))
-	for i, protoInput := range protoTx.GetInputs() {
-		inputs[i] = ConvertProtoUTXOToShared(protoInput)
-	}
+// func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transaction {
+// 	inputs := make([]shared.UTXO, len(protoTx.GetInputs()))
+// 	for i, protoInput := range protoTx.GetInputs() {
+// 		inputs[i] = ConvertProtoUTXOToShared(protoInput)
+// 	}
 
-	outputs := make([]shared.UTXO, len(protoTx.GetOutputs()))
-	for i, protoOutput := range protoTx.GetOutputs() {
-		outputs[i] = ConvertProtoUTXOToShared(protoOutput)
-	}
+// 	outputs := make([]shared.UTXO, len(protoTx.GetOutputs()))
+// 	for i, protoOutput := range protoTx.GetOutputs() {
+// 		outputs[i] = ConvertProtoUTXOToShared(protoOutput)
+// 	}
 
-	return shared.Transaction{
-		ID:        protoTx.GetId(),
-		Timestamp: protoTx.GetTimestamp(),
-		Inputs:    inputs,
-		Outputs:   outputs,
-		Signature: protoTx.GetSignature(), // Directly use []byte
-	}
-}
+// 	return shared.Transaction{
+// 		ID:        protoTx.GetId(),
+// 		Timestamp: protoTx.GetTimestamp(),
+// 		Inputs:    inputs,
+// 		Outputs:   outputs,
+// 		Signature: protoTx.GetSignature(), // Directly use []byte
+// 	}
+// }
 
 // NewBlock creates a new block with the specified parameters, including the index, transactions,
 // previous hash, and validator. This function also calculates the current timestamp and the block's

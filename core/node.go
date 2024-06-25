@@ -1073,9 +1073,8 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		gasEstimator := n // Assuming Node implements GasEstimator
 
 		// Process the transaction
-		if err := shared.ProcessTransaction(thrylosTx, senderPublicKey, gasEstimator); err != nil {
-			log.Printf("Failed to process transaction: %v", err)
-			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
+		if err := shared.ProcessTransaction(thrylosTx, n.Database, senderPublicKey, gasEstimator); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
 			return
 		}
 

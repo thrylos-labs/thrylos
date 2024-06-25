@@ -33,6 +33,23 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
+// and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
+type Transaction struct {
+	ID               string   `json:"id" valid:"required"` // Remove uuid4 validation
+	Timestamp        int64    `json:"timestamp" valid:"required"`
+	Inputs           []UTXO   `json:"inputs" valid:"required"`
+	Outputs          []UTXO   `json:"outputs" valid:"required"`
+	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
+	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
+	Signature        []byte   `json:"signature,omitempty" valid:"optional"` // Make this optional for initial validation
+	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
+	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
+	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
+	GasFee           int      `json:"gasFee"`                  // Ensure this is an integer
+	Database         BlockchainDBInterface
+}
+
 var hashCache sync.Map // A thread-safe map to cache hash results
 
 func cachedHashData(data []byte) []byte {
@@ -257,22 +274,6 @@ func HashData(data []byte) []byte {
 	hasher.Reset()
 	hasher.Write(data)
 	return hasher.Sum(nil) // Correct usage of Sum
-}
-
-// Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
-// and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
-type Transaction struct {
-	ID               string   `json:"id" valid:"required"` // Remove uuid4 validation
-	Timestamp        int64    `json:"timestamp" valid:"required"`
-	Inputs           []UTXO   `json:"inputs" valid:"required"`
-	Outputs          []UTXO   `json:"outputs" valid:"required"`
-	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
-	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"signature,omitempty" valid:"optional"` // Make this optional for initial validation
-	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
-	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
-	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
-	GasFee           int      `json:"gasFee"`                  // Ensure this is an integer
 }
 
 func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
@@ -979,7 +980,7 @@ func VerifySignature(tx *Transaction, publicKey ed25519.PublicKey) bool {
 	return ed25519.Verify(publicKey, data, tx.Signature)
 }
 
-func ProcessTransaction(tx *thrylos.Transaction, publicKey ed25519.PublicKey, estimator GasEstimator) error {
+func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator) error {
 	// Calculate total data size from the already prepared transaction data
 	totalDataSize := len(tx.EncryptedInputs) + len(tx.EncryptedOutputs)
 
@@ -1005,11 +1006,11 @@ func ProcessTransaction(tx *thrylos.Transaction, publicKey ed25519.PublicKey, es
 		return fmt.Errorf("invalid transaction signature: %v", err)
 	}
 
-	// Record the transaction in the database or broadcast to the network
-	// err = AddTransaction(*tx, BlockchainDBInterface)
-	// if err != nil {
-	// 	return fmt.Errorf("failed to add transaction to database: %v", err)
-	// }
+	// Record the transaction in the database
+	err = db.AddTransaction(tx) // Pass thrylos.Transaction directly
+	if err != nil {
+		return fmt.Errorf("failed to add transaction to database: %v", err)
+	}
 
 	return nil
 }

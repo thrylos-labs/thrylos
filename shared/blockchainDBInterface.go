@@ -3,6 +3,8 @@ package shared
 import (
 	"crypto/ed25519"
 	"crypto/rsa"
+
+	"github.com/thrylos-labs/thrylos"
 )
 
 // BlockchainDBInterface defines a set of operations for interacting with the blockchain's underlying data storage.
@@ -16,7 +18,7 @@ type BlockchainDBInterface interface {
 	InsertBlock(data []byte, blockNumber int) error
 	GetLastBlockData() ([]byte, int, error)
 	RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error)
-	AddTransaction(tx Transaction) error
+	AddTransaction(tx *thrylos.Transaction) error // Update to thrylos.Transaction
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error
 	CreateUTXO(id, txID string, index int, address string, amount int) (UTXO, error)
 	GetUTXOsForUser(address string, utxos map[string]UTXO) ([]UTXO, error)
