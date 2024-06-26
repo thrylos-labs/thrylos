@@ -387,6 +387,8 @@ func selectTips() ([]string, error) {
 
 // CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519.
 // Assuming Transaction is the correct type across your application:
+
+// Used only in the CLI Signer (not in the blockchain!)
 func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, aesKey []byte, estimator GasEstimator) (*Transaction, error) {
 	// Serialize inputs and outputs for data size calculation
 	serializedInputs, err := SerializeUTXOs(inputs)
@@ -544,52 +546,54 @@ func ConvertToProtoTransaction(tx *Transaction) (*thrylos.Transaction, error) {
 	return protoTx, nil
 }
 
-func BatchSignTransactionsConcurrently(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(transactions))
+// func BatchSignTransactionsConcurrently(transactions []*Transaction, edPrivateKey ed25519.PrivateKey) error {
+// 	var wg sync.WaitGroup
+// 	errChan := make(chan error, len(transactions))
 
-	for _, customTx := range transactions {
-		wg.Add(1)
-		go func(customTx *Transaction) {
-			defer wg.Done()
+// 	for _, customTx := range transactions {
+// 		wg.Add(1)
+// 		go func(customTx *Transaction) {
+// 			defer wg.Done()
 
-			// Convert the transaction to its protobuf representation
-			protoTx, err := ConvertToProtoTransaction(customTx)
-			if err != nil {
-				errChan <- err
-				return // ensure we stop processing this transaction on error
-			}
+// 			// Convert the transaction to its protobuf representation
+// 			protoTx, err := ConvertToProtoTransaction(customTx)
+// 			if err != nil {
+// 				errChan <- err
+// 				return // ensure we stop processing this transaction on error
+// 			}
 
-			// Marshal the protobuf transaction into bytes
-			txBytes, err := proto.Marshal(protoTx)
-			if err != nil {
-				errChan <- err
-				return // stop processing if marshaling fails
-			}
+// 			// Marshal the protobuf transaction into bytes
+// 			txBytes, err := proto.Marshal(protoTx)
+// 			if err != nil {
+// 				errChan <- err
+// 				return // stop processing if marshaling fails
+// 			}
 
-			// Sign the marshaled bytes using the Ed25519 private key
-			edSignature := ed25519.Sign(edPrivateKey, txBytes)
-			protoTx.Signature = edSignature
-			customTx.Signature = protoTx.Signature
-		}(customTx)
-	}
+// 			// Sign the marshaled bytes using the Ed25519 private key
+// 			edSignature := ed25519.Sign(edPrivateKey, txBytes)
+// 			protoTx.Signature = edSignature
+// 			customTx.Signature = protoTx.Signature
+// 		}(customTx)
+// 	}
 
-	wg.Wait()
-	close(errChan)
+// 	wg.Wait()
+// 	close(errChan)
 
-	// Check if there were any errors during the goroutines execution
-	for e := range errChan {
-		if e != nil {
-			return e
-		}
-	}
+// 	// Check if there were any errors during the goroutines execution
+// 	for e := range errChan {
+// 		if e != nil {
+// 			return e
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
 // The signature is created by first hashing the transaction data, then signing the hash with the private key.
 // SignTransaction creates a signature for a transaction using the sender's private Ed25519 key.
+
+// Used only in the CLI Signer (not in the blockchain!)
 func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateKey) error {
 	// Serialize the transaction for signing
 	txBytes, err := proto.Marshal(tx)
@@ -781,90 +785,90 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 }
 
 // BatchSignTransactions signs a slice of transactions using both Ed25519.
-func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, batchSize int) error {
-	if batchSize < 1 {
-		return fmt.Errorf("invalid batch size: %d", batchSize)
-	}
+// func BatchSignTransactions(transactions []*Transaction, edPrivateKey ed25519.PrivateKey, batchSize int) error {
+// 	if batchSize < 1 {
+// 		return fmt.Errorf("invalid batch size: %d", batchSize)
+// 	}
 
-	var wg sync.WaitGroup
-	errChan := make(chan error, (len(transactions)+batchSize-1)/batchSize) // +1 to ensure no blocking
+// 	var wg sync.WaitGroup
+// 	errChan := make(chan error, (len(transactions)+batchSize-1)/batchSize) // +1 to ensure no blocking
 
-	for i := 0; i < len(transactions); i += batchSize {
-		end := i + batchSize
-		if end > len(transactions) {
-			end = len(transactions)
-		}
+// 	for i := 0; i < len(transactions); i += batchSize {
+// 		end := i + batchSize
+// 		if end > len(transactions) {
+// 			end = len(transactions)
+// 		}
 
-		batch := transactions[i:end]
-		wg.Add(1)
+// 		batch := transactions[i:end]
+// 		wg.Add(1)
 
-		go func(batch []*Transaction) {
-			defer wg.Done()
-			for _, customTx := range batch {
-				protoTx, err := ConvertToProtoTransaction(customTx)
-				if err != nil {
-					errChan <- fmt.Errorf("conversion error: %w", err)
-					return
-				}
-				txBytes, err := proto.Marshal(protoTx)
-				if err != nil {
-					errChan <- fmt.Errorf("marshal error: %w", err)
-					return
-				}
-				edSignature := ed25519.Sign(edPrivateKey, txBytes)
-				protoTx.Signature = edSignature
-				customTx.Signature = protoTx.Signature
-			}
-		}(batch)
-	}
+// 		go func(batch []*Transaction) {
+// 			defer wg.Done()
+// 			for _, customTx := range batch {
+// 				protoTx, err := ConvertToProtoTransaction(customTx)
+// 				if err != nil {
+// 					errChan <- fmt.Errorf("conversion error: %w", err)
+// 					return
+// 				}
+// 				txBytes, err := proto.Marshal(protoTx)
+// 				if err != nil {
+// 					errChan <- fmt.Errorf("marshal error: %w", err)
+// 					return
+// 				}
+// 				edSignature := ed25519.Sign(edPrivateKey, txBytes)
+// 				protoTx.Signature = edSignature
+// 				customTx.Signature = protoTx.Signature
+// 			}
+// 		}(batch)
+// 	}
 
-	wg.Wait()
-	close(errChan)
+// 	wg.Wait()
+// 	close(errChan)
 
-	for err := range errChan {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// 	for err := range errChan {
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
+// 	return nil
+// }
 
-func ParallelVerifyTransactions(
-	transactions []*thrylos.Transaction,
-	utxos map[string][]*thrylos.UTXO,
-	getPublicKeyFunc func(address string) (ed25519.PublicKey, error),
-) (map[string]bool, error) {
-	results := make(map[string]bool)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	errorChan := make(chan error, len(transactions))
+// func ParallelVerifyTransactions(
+// 	transactions []*thrylos.Transaction,
+// 	utxos map[string][]*thrylos.UTXO,
+// 	getPublicKeyFunc func(address string) (ed25519.PublicKey, error),
+// ) (map[string]bool, error) {
+// 	results := make(map[string]bool)
+// 	var mu sync.Mutex
+// 	var wg sync.WaitGroup
+// 	errorChan := make(chan error, len(transactions))
 
-	for _, tx := range transactions {
-		wg.Add(1)
-		go func(tx *thrylos.Transaction) {
-			defer wg.Done()
-			isValid, err := VerifyTransaction(tx, utxos, getPublicKeyFunc)
-			if err != nil {
-				errorChan <- err
-			} else {
-				mu.Lock()
-				results[tx.GetId()] = isValid
-				mu.Unlock()
-			}
-		}(tx)
-	}
+// 	for _, tx := range transactions {
+// 		wg.Add(1)
+// 		go func(tx *thrylos.Transaction) {
+// 			defer wg.Done()
+// 			isValid, err := VerifyTransaction(tx, utxos, getPublicKeyFunc)
+// 			if err != nil {
+// 				errorChan <- err
+// 			} else {
+// 				mu.Lock()
+// 				results[tx.GetId()] = isValid
+// 				mu.Unlock()
+// 			}
+// 		}(tx)
+// 	}
 
-	wg.Wait()
-	close(errorChan)
+// 	wg.Wait()
+// 	close(errorChan)
 
-	for err := range errorChan {
-		if err != nil {
-			return nil, err
-		}
-	}
+// 	for err := range errorChan {
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
 
-	return results, nil
-}
+// 	return results, nil
+// }
 
 func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
 	// Create a copy of the transaction to avoid modifying the original

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	firebase "firebase.google.com/go"
+	"github.com/btcsuite/btcutil/bech32"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/api/option"
@@ -425,50 +426,6 @@ func (node *Node) ListTransactionsForBlockHandler() http.HandlerFunc {
 	}
 }
 
-// Balance is used just for testnet
-func (node *Node) CreateWalletHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		publicKey, _, mnemonic, err := shared.GenerateEd25519Keys()
-		if err != nil {
-			http.Error(w, "Failed to generate wallet: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		publicKeyHex := hex.EncodeToString(publicKey)
-
-		// Initialize the new wallet with a transaction from the GenesisAccount
-		initialBalance := int64(70) // Define the initial balance to be transferred
-		currentBalance, exists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
-		if !exists || currentBalance < initialBalance {
-			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
-			return
-		}
-
-		// Adjust balances
-		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
-		node.Blockchain.Stakeholders[publicKeyHex] = initialBalance
-
-		// Respond with wallet details including the balance
-		wallet := struct {
-			Mnemonic  string `json:"mnemonic"`
-			PublicKey string `json:"publicKey"`
-			Balance   int64  `json:"balance"`
-		}{
-			Mnemonic:  mnemonic,
-			PublicKey: publicKeyHex,
-			Balance:   initialBalance,
-		}
-
-		response, err := json.Marshal(wallet)
-		if err != nil {
-			http.Error(w, "Failed to serialize wallet data: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(response)
-	}
-}
-
 // Allows users to register their public keys with Thrylos, enssential for transactions where public keys are needed
 func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -489,54 +446,6 @@ func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
 		w.Write([]byte("Public key registered successfully"))
 	}
 }
-
-// func (node *Node) SubmitTransactionHandler() http.HandlerFunc {
-// 	return func(w http.ResponseWriter, r *http.Request) {
-// 		// Decode the incoming JSON to the Transaction struct
-// 		var tx shared.Transaction
-// 		decoder := json.NewDecoder(r.Body)
-// 		if err := decoder.Decode(&tx); err != nil {
-// 			log.Printf("Error decoding transaction: %v", err)
-// 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
-// 			return
-// 		}
-
-// 		log.Printf("Received transaction request: %+v", tx)
-
-// 		// Validate the transaction
-// 		if err := tx.Validate(); err != nil {
-// 			log.Printf("Validation failed for transaction: %v, Error: %v", tx, err)
-// 			http.Error(w, err.Error(), http.StatusBadRequest)
-// 			return
-// 		}
-
-// 		// Convert local Transaction type to thrylos.Transaction if needed
-// 		thrylosTx, err := shared.ConvertLocalTransactionToThrylosTransaction(tx)
-// 		if err != nil {
-// 			log.Printf("Error converting to thrylos.Transaction: %v", err)
-// 			http.Error(w, "Internal server error", http.StatusInternalServerError)
-// 			return
-// 		}
-
-// 		// Verify and process the transaction
-// 		if err := node.VerifyAndProcessTransaction(thrylosTx); err != nil {
-// 			log.Printf("Invalid transaction: %v, Transaction: %+v", err, thrylosTx)
-// 			http.Error(w, fmt.Sprintf("Invalid transaction: %v", err), http.StatusUnprocessableEntity)
-// 			return
-// 		}
-
-// 		// Add transaction to pending transactions
-// 		if err := node.AddPendingTransaction(thrylosTx); err != nil {
-// 			log.Printf("Failed to add transaction to pending transactions: %v", err)
-// 			http.Error(w, fmt.Sprintf("Failed to add transaction: %v", err), http.StatusInternalServerError)
-// 			return
-// 		}
-
-// 		log.Println("Transaction submitted and broadcasted successfully")
-// 		w.WriteHeader(http.StatusOK)
-// 		w.Write([]byte("Transaction submitted successfully"))
-// 	}
-// }
 
 func (node *Node) GetPendingTransactions() []*thrylos.Transaction {
 	return node.PendingTransactions
@@ -1245,6 +1154,83 @@ func (node *Node) FundWalletHandler() http.HandlerFunc {
 	}
 }
 
+func publicKeyToBech32(pubKeyHex string) (string, error) {
+	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
+	if err != nil {
+		return "", err
+	}
+
+	// Convert byte array to 5-bit base32
+	data, err := bech32.ConvertBits(pubKeyBytes, 8, 5, true)
+	if err != nil {
+		return "", err
+	}
+
+	// Encode the data with Bech32 with the prefix "tl1"
+	bech32Address, err := bech32.Encode("tl1", data)
+	if err != nil {
+		return "", err
+	}
+
+	return bech32Address, nil
+}
+
+func (node *Node) RegisterWalletHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PublicKey string `json:"publicKey"` // This is expected to be in hexadecimal
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		bech32Address, err := publicKeyToBech32(req.PublicKey)
+		if err != nil {
+			http.Error(w, "Failed to convert public key to Bech32 address: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Check if the Bech32 address is already registered
+		_, exists := node.Blockchain.Stakeholders[bech32Address]
+		if exists {
+			http.Error(w, "Public key already registered.", http.StatusBadRequest)
+			return
+		}
+
+		// Initialize the new wallet with an initial balance
+		initialBalance := int64(70) // Define the initial balance to be transferred
+		currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
+		if !genesisExists || currentBalance < initialBalance {
+			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
+			return
+		}
+
+		// Adjust balances
+		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
+		node.Blockchain.Stakeholders[bech32Address] = initialBalance
+
+		// Respond with wallet details including the balance
+		response := struct {
+			PublicKey string `json:"publicKey"`
+			Balance   int64  `json:"balance"`
+		}{
+			PublicKey: bech32Address,
+			Balance:   initialBalance,
+		}
+
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to serialize wallet data: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResponse)
+	}
+}
+
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
@@ -1260,6 +1246,7 @@ func (node *Node) Start() {
 		w.Write(data)
 	})
 
+	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
 	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
 	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
 	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
@@ -1272,8 +1259,6 @@ func (node *Node) Start() {
 	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
 
 	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
-
-	mux.HandleFunc("/create-wallet", node.CreateWalletHandler())
 
 	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
 

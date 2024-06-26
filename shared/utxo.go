@@ -3,9 +3,9 @@ package shared
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 
+	"github.com/btcsuite/btcutil/bech32"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/willf/bloom"
@@ -18,15 +18,20 @@ type UTXO struct {
 	ID            string `json:"ID,omitempty"`                                         // Optional: ID might not always be necessary.
 	TransactionID string `json:"TransactionID" validate:"required,hexadecimal,len=64"` // Assumes transaction IDs are hexadecimal and 64 characters.
 	Index         int    `json:"Index" validate:"gte=0"`                               // Index must be greater than or equal to 0.
-	OwnerAddress  string `json:"OwnerAddress" validate:"required,eth_addr"`            // Custom validation tag for Ethereum-like addresses.
+	OwnerAddress  string `json:"OwnerAddress" validate:"required,bech32"`              // Updated validation tag
 	Amount        int    `json:"Amount" validate:"gt=0"`                               // Amount must be greater than 0 to avoid zero or negative values.
 	IsSpent       bool   `json:"IsSpent"`
+}
+
+func validateBech32Address(address string) bool {
+	_, _, err := bech32.Decode(address)
+	return err == nil
 }
 
 // ValidateUTXO checks for the validity of the UTXO, ensuring its data conforms to expected formats and rules.
 func (u *UTXO) ValidateUTXO() error {
 	// Check if the owner address is correctly formatted
-	if !strings.HasPrefix(u.OwnerAddress, "0x") || len(u.OwnerAddress) != 42 {
+	if !validateBech32Address(u.OwnerAddress) {
 		return fmt.Errorf("invalid owner address format: %s", u.OwnerAddress)
 	}
 	// Further validation rules can be added here
