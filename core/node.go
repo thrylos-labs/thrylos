@@ -567,6 +567,16 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			return
 		}
 
+		// Optionally validate the address format here if necessary
+		if !isValidBech32Address(address) {
+			response := fmt.Sprintf(`{"error":"Invalid address format: %s"}`, address)
+			log.Println("Sending error response:", response)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(response))
+			return
+		}
+
 		log.Printf("Attempting to get balance for address: %s", address)
 		balance, err := node.Blockchain.GetBalance(address)
 		if err != nil {
@@ -588,6 +598,27 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(responseJSON)
 	}
+}
+
+func isValidBech32Address(address string) bool {
+	// Decode the address using the bech32 package
+	hrp, decoded, err := bech32.Decode(address)
+	if err != nil {
+		return false // The address is not valid if it cannot be decoded
+	}
+
+	// Optionally check for specific human-readable parts (hrp)
+	// For instance, if you expect the hrp to be 'tl', you can check it as follows:
+	if hrp != "tl1" {
+		return false
+	}
+
+	// Check the length of the decoded data; adjust conditions based on your needs
+	if len(decoded) == 0 {
+		return false
+	}
+
+	return true
 }
 
 // The faucet handler can utilize this genesis account without needing to specify which account to use:
@@ -1209,6 +1240,18 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 		// Adjust balances
 		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
 		node.Blockchain.Stakeholders[bech32Address] = initialBalance
+
+		publicKey := req.PublicKey
+		// Simulate creation of UTXO upon wallet registration
+		utxo := shared.UTXO{
+			OwnerAddress: publicKey,
+			Amount:       70, // The initial amount
+		}
+		// Assuming a method to add UTXO to database
+		if err := node.Blockchain.Database.AddUTXO(utxo); err != nil {
+			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		// Respond with wallet details including the balance
 		response := struct {

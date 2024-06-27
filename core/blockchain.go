@@ -285,35 +285,33 @@ func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) 
 
 func (bc *Blockchain) GetBalance(address string) (int, error) {
 	var balance int
-
-	// Track spent outputs to avoid counting coins that have been spent.
 	spentOutputs := make(map[string]bool)
 
 	for _, block := range bc.Blocks {
 		for _, tx := range block.Transactions {
-			// Check outputs first - add to the balance if this address received coins
 			for i, output := range tx.Outputs {
 				outputKey := fmt.Sprintf("%s:%d", tx.Id, i)
 				if output.OwnerAddress == address {
 					if !spentOutputs[outputKey] {
 						balance += int(output.Amount)
+						log.Printf("Added to balance: %d from output %s", output.Amount, outputKey)
 					}
 				}
 			}
 
-			// Check inputs - subtract from balance if this address spent coins and the outputs had been added to the balance
 			for _, input := range tx.Inputs {
 				if input.OwnerAddress == address {
 					spentKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
-					if !spentOutputs[spentKey] { // Check if this input was already marked as spent
+					if !spentOutputs[spentKey] {
 						spentOutputs[spentKey] = true
 						balance -= int(input.Amount)
+						log.Printf("Subtracted from balance: %d from input %s", input.Amount, spentKey)
 					}
 				}
 			}
 		}
 	}
-
+	log.Printf("Final balance for %s: %d", address, balance)
 	return balance, nil
 }
 
