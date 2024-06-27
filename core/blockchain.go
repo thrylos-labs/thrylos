@@ -280,7 +280,14 @@ func (bc *Blockchain) Status() string {
 // }
 
 func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
-	return bc.Database.GetUTXOsForAddress(address)
+	log.Printf("Fetching UTXOs for address: %s", address)
+	utxos, err := bc.Database.GetUTXOsForAddress(address)
+	if err != nil {
+		log.Printf("Failed to fetch UTXOs from database: %s", err)
+		return nil, err
+	}
+	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
+	return utxos, nil
 }
 
 func (bc *Blockchain) GetBalance(address string) (int, error) {
@@ -474,17 +481,22 @@ func (bc *Blockchain) GetLastBlock() (*Block, int, error) {
 // addUTXO adds a new UTXO to the blockchain's UTXO set.
 func (bc *Blockchain) addUTXO(utxo shared.UTXO) error {
 	utxoKey := fmt.Sprintf("%s:%d", utxo.TransactionID, utxo.Index)
-	// Ensure the UTXO list for the key is initialized
+	log.Printf("Adding UTXO with key: %s", utxoKey)
+
 	if _, exists := bc.UTXOs[utxoKey]; !exists {
 		bc.UTXOs[utxoKey] = []*thrylos.UTXO{}
 	}
-	// Convert shared UTXO to thrylos UTXO and add it
+
 	thrylosUtxo := shared.ConvertSharedUTXOToProto(utxo)
 	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
-	log.Printf("UTXO added: %s", utxoKey)
 
-	// Also store the UTXO in BadgerDB
-	return bc.Database.AddUTXO(utxo)
+	if err := bc.Database.AddUTXO(utxo); err != nil {
+		log.Printf("Failed to add UTXO to database: %s", err)
+		return err
+	}
+
+	log.Printf("UTXO successfully added: %v", utxo)
+	return nil
 }
 
 // removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.

@@ -1113,33 +1113,27 @@ func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
 			return
 		}
 
-		log.Printf("Request URL: %s", r.URL.String()) // Log the request URL
+		log.Printf("Request URL: %s", r.URL.String())
 		address := r.URL.Query().Get("address")
-		log.Printf("Address parameter: %s", address) // Log the address parameter
-
 		if address == "" {
 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
 			return
 		}
+
 		log.Printf("Fetching UTXOs for address: %s", address)
-
 		utxos, err := node.Blockchain.GetUTXOsForAddress(address)
-
 		if err != nil {
-			log.Printf("Error fetching UTXOs for address %s: %v", address, err)
-			http.Error(w, "No UTXOs found or error occurred", http.StatusNotFound)
+			http.Error(w, fmt.Sprintf("Error fetching UTXOs: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		if len(utxos) == 0 {
-			log.Printf("No UTXOs found for address: %s", address)
 			http.Error(w, "No UTXOs found", http.StatusNotFound)
 			return
 		}
 
 		response, err := json.Marshal(utxos)
 		if err != nil {
-			log.Printf("Error serializing UTXOs for address %s: %v", address, err)
 			http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
 			return
 		}
