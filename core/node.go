@@ -556,7 +556,7 @@ func (node *Node) GetBalance(address string) (int64, error) {
 
 func (node *Node) GetBalanceHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Println("GetBalanceHandler called") // Log when handler is called
+		log.Println("GetBalanceHandler called")
 		address := r.URL.Query().Get("address")
 		if address == "" {
 			response := `{"error":"Address parameter is missing"}`
@@ -567,6 +567,7 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			return
 		}
 
+		log.Printf("Attempting to get balance for address: %s", address)
 		balance, err := node.Blockchain.GetBalance(address)
 		if err != nil {
 			response := fmt.Sprintf(`{"error":"Failed to get balance for address %s: %v"}`, address, err)
@@ -577,12 +578,13 @@ func (node *Node) GetBalanceHandler() http.HandlerFunc {
 			return
 		}
 
+		log.Printf("Retrieved balance for address %s: %d", address, balance)
 		response := map[string]interface{}{
 			"address": address,
 			"balance": balance,
 		}
 		responseJSON, _ := json.Marshal(response)
-		log.Printf("Sending success response: %s", string(responseJSON)) // Log the JSON response string
+		log.Printf("Sending success response: %s", string(responseJSON))
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(responseJSON)
 	}
@@ -1178,7 +1180,7 @@ func publicKeyToBech32(pubKeyHex string) (string, error) {
 func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			PublicKey string `json:"publicKey"` // This is expected to be in hexadecimal
+			PublicKey string `json:"publicKey"` // Now directly expects a Bech32 public key
 		}
 		err := json.NewDecoder(r.Body).Decode(&req)
 		if err != nil {
@@ -1186,11 +1188,8 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 			return
 		}
 
-		bech32Address, err := publicKeyToBech32(req.PublicKey)
-		if err != nil {
-			http.Error(w, "Failed to convert public key to Bech32 address: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		// Use the provided Bech32 public key directly
+		bech32Address := req.PublicKey
 
 		// Check if the Bech32 address is already registered
 		_, exists := node.Blockchain.Stakeholders[bech32Address]
