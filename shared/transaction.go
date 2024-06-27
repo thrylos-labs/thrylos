@@ -410,8 +410,9 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	}
 
 	// Adjust the first output to account for the gas fee
+	// Adjust the first output to account for the gas fee
 	if len(outputs) > 0 {
-		outputs[0].Amount -= gasFee
+		outputs[0].Amount -= int64(gasFee) // Convert gasFee to int64 just for the subtraction
 	}
 
 	// Initialize the transaction, now including PreviousTxIDs
@@ -489,7 +490,7 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 			TransactionID: input.TransactionId,
 			Index:         int(input.Index),
 			OwnerAddress:  input.OwnerAddress,
-			Amount:        int(input.Amount),
+			Amount:        int64(input.Amount),
 		}
 	}
 
@@ -499,7 +500,7 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 			TransactionID: output.TransactionId,
 			Index:         int(output.Index),
 			OwnerAddress:  output.OwnerAddress,
-			Amount:        int(output.Amount),
+			Amount:        int64(output.Amount),
 		}
 	}
 
@@ -714,7 +715,7 @@ func NewTransaction(id string, inputs []UTXO, outputs []UTXO) Transaction {
 // ValidateTransaction checks the internal consistency of a transaction,
 // ensuring that the sum of inputs matches the sum of outputs.
 func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool {
-	inputSum := 0
+	inputSum := int64(0) // Change type to int64
 	for _, input := range tx.Inputs {
 		// Construct the key used to find the UTXOs for this input.
 		utxoKey := input.TransactionID + strconv.Itoa(input.Index)
@@ -725,12 +726,11 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 			return false
 		}
 
-		// Iterate through the UTXOs for this input. Assuming the first UTXO in the slice is the correct one.
-		// You may need to adjust this logic based on your application's requirements.
+		// Assuming the first UTXO in the slice is the correct one.
 		inputSum += utxos[0].Amount
 	}
 
-	outputSum := 0
+	outputSum := int64(0) // Change type to int64
 	for _, output := range tx.Outputs {
 		outputSum += output.Amount
 	}

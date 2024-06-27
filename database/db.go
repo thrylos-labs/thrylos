@@ -393,12 +393,12 @@ func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.P
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.
 // This function is useful for determining the spendable balance of a blockchain account.
-func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO) (int, error) {
+func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO) (int64, error) {
 	userUTXOs, err := bdb.Blockchain.GetUTXOsForUser(address, utxos)
 	if err != nil {
 		return 0, err
 	}
-	var balance int
+	var balance int64 // Declare balance as int64
 	for _, utxo := range userUTXOs {
 		balance += utxo.Amount
 	}
@@ -666,7 +666,7 @@ func (bdb *BlockchainDB) addTransactionInTxn(txn *badger.Txn, tx *shared.Transac
 	return txn.Set(key, value)
 }
 
-func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int) error {
+func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error {
 	utxo := shared.CreateUTXO(id, txID, index, owner, amount)
 
 	// Marshal the UTXO object into JSON for storage.
@@ -919,7 +919,7 @@ func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs [
 	return tx, nil // returning tx, nil
 }
 
-func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, amount int) (shared.UTXO, error) {
+func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, amount int64) (shared.UTXO, error) {
 	// Use the existing CreateUTXO method to create a UTXO object
 	utxo := shared.CreateUTXO(id, txID, index, address, amount)
 

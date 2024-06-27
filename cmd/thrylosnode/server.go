@@ -163,7 +163,7 @@ func (s *server) validateTransaction(tx *shared.Transaction) bool {
 	}
 
 	// Retrieve UTXOs required to verify inputs and calculate input sum
-	totalInputs := 0
+	var totalInputs int64 // Use int64 to match UTXO amount type
 	for _, input := range tx.Inputs {
 		utxo, err := shared.GetUTXO(input.TransactionID, input.Index)
 		if err != nil || utxo == nil {
@@ -178,7 +178,7 @@ func (s *server) validateTransaction(tx *shared.Transaction) bool {
 	}
 
 	// Calculate the total outputs and ensure it matches inputs (conservation of value)
-	totalOutputs := 0
+	var totalOutputs int64 // Use int64 to match output amount type
 	for _, output := range tx.Outputs {
 		totalOutputs += output.Amount
 	}

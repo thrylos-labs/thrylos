@@ -19,7 +19,7 @@ type UTXO struct {
 	TransactionID string `json:"TransactionID" validate:"required,hexadecimal,len=64"` // Assumes transaction IDs are hexadecimal and 64 characters.
 	Index         int    `json:"Index" validate:"gte=0"`                               // Index must be greater than or equal to 0.
 	OwnerAddress  string `json:"OwnerAddress" validate:"required,bech32"`              // Updated validation tag
-	Amount        int    `json:"Amount" validate:"gt=0"`                               // Amount must be greater than 0 to avoid zero or negative values.
+	Amount        int64  `json:"Amount" validate:"gt=0"`                               // Amount must be greater than 0 to avoid zero or negative values.
 	IsSpent       bool   `json:"IsSpent"`
 }
 
@@ -139,7 +139,7 @@ func (u UTXO) MarshalJSON() ([]byte, error) {
 
 // CreateUTXO initializes a new UTXO with the specified attributes. This function is typically
 // called when a transaction is processed, and its outputs are being determined.
-func CreateUTXO(id, txID string, index int, owner string, amount int) UTXO {
+func CreateUTXO(id, txID string, index int, owner string, amount int64) UTXO {
 	fmt.Printf("Creating UTXO with ID: %s, TransactionID: %s, Index: %d, Owner: %s, Amount: %d\n", id, txID, index, owner, amount)
 	return UTXO{
 		ID:            id,

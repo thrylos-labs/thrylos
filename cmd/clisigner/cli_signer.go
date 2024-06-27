@@ -26,6 +26,8 @@ func main() {
 	grpcAddress := flag.String("grpcAddress", "localhost:50051", "gRPC server address")
 	flag.Parse()
 
+	var amount64 int64 = int64(*amount)
+
 	if *sender == "" || *receiver == "" || *amount == 0 {
 		log.Fatal("Sender, receiver, and amount must be provided")
 	}
@@ -44,7 +46,7 @@ func main() {
 	}
 
 	inputs := []shared.UTXO{{TransactionID: "prevTxID", Index: 0, OwnerAddress: *sender, Amount: 100}} // Example input
-	outputs := []shared.UTXO{{TransactionID: "newTxID", Index: 0, OwnerAddress: *receiver, Amount: *amount}}
+	outputs := []shared.UTXO{{TransactionID: "newTxID", Index: 0, OwnerAddress: *receiver, Amount: *&amount64}}
 
 	// Create an instance of the gas estimator
 	estimator := &SimpleGasEstimator{}

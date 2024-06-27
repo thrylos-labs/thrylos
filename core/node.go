@@ -188,8 +188,8 @@ func (node *Node) HasTransaction(txID string) bool {
 	return false
 }
 
-func (node *Node) CollectInputsForTransaction(amount int, senderAddress string) (inputs []shared.UTXO, change int, err error) {
-	var collectedAmount int
+func (node *Node) CollectInputsForTransaction(amount int64, senderAddress string) (inputs []shared.UTXO, change int64, err error) {
+	var collectedAmount int64
 	var collectedInputs []shared.UTXO
 
 	utxos, err := node.Blockchain.GetUTXOsForAddress(senderAddress)
@@ -377,7 +377,7 @@ func ConvertProtoInputs(inputs []*thrylos.UTXO) []shared.UTXO {
 				TransactionID: input.GetTransactionId(),
 				Index:         int(input.GetIndex()), // Corrected type conversion
 				OwnerAddress:  input.GetOwnerAddress(),
-				Amount:        int(input.GetAmount()), // Corrected type conversion
+				Amount:        int64(input.GetAmount()), // Corrected type conversion
 			}
 		}
 	}
@@ -392,7 +392,7 @@ func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
 				TransactionID: output.GetTransactionId(),
 				Index:         int(output.GetIndex()), // Corrected type conversion
 				OwnerAddress:  output.GetOwnerAddress(),
-				Amount:        int(output.GetAmount()), // Corrected type conversion
+				Amount:        int64(output.GetAmount()), // Corrected type conversion
 			}
 		}
 	}
@@ -1211,49 +1211,40 @@ func publicKeyToBech32(pubKeyHex string) (string, error) {
 func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			PublicKey string `json:"publicKey"` // Now directly expects a Bech32 public key
+			PublicKey string `json:"publicKey"`
 		}
-		err := json.NewDecoder(r.Body).Decode(&req)
-		if err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Use the provided Bech32 public key directly
 		bech32Address := req.PublicKey
-
-		// Check if the Bech32 address is already registered
 		_, exists := node.Blockchain.Stakeholders[bech32Address]
 		if exists {
 			http.Error(w, "Public key already registered.", http.StatusBadRequest)
 			return
 		}
 
-		// Initialize the new wallet with an initial balance
-		initialBalance := int64(70) // Define the initial balance to be transferred
+		initialBalance := int64(70)
 		currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
 		if !genesisExists || currentBalance < initialBalance {
 			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
 			return
 		}
 
-		// Adjust balances
 		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
 		node.Blockchain.Stakeholders[bech32Address] = initialBalance
 
-		publicKey := req.PublicKey
-		// Simulate creation of UTXO upon wallet registration
+		// Create UTXO
 		utxo := shared.UTXO{
-			OwnerAddress: publicKey,
-			Amount:       70, // The initial amount
+			OwnerAddress: bech32Address,
+			Amount:       initialBalance,
 		}
-		// Assuming a method to add UTXO to database
 		if err := node.Blockchain.Database.AddUTXO(utxo); err != nil {
 			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Respond with wallet details including the balance
 		response := struct {
 			PublicKey string `json:"publicKey"`
 			Balance   int64  `json:"balance"`

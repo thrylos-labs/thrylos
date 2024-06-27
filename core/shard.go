@@ -101,7 +101,7 @@ func (s *Shard) applyDistributedUTXOs(distribution map[string][]*thrylos.UTXO) {
 						TransactionID: txID,
 						Index:         int(utxo.Index),
 						OwnerAddress:  utxo.OwnerAddress,
-						Amount:        int(utxo.Amount),
+						Amount:        int64(utxo.Amount),
 					}
 				}
 				break

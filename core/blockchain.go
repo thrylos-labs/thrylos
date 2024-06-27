@@ -256,7 +256,7 @@ func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
 		TransactionID: protoUTXO.GetTransactionId(),
 		Index:         int(protoUTXO.GetIndex()), // Convert from int32 to int if necessary
 		OwnerAddress:  protoUTXO.GetOwnerAddress(),
-		Amount:        int(protoUTXO.GetAmount()), // Convert from int64 to int if necessary
+		Amount:        int64(protoUTXO.GetAmount()), // Convert from int64 to int if necessary
 	}
 }
 
@@ -552,7 +552,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 			log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
 		}
 		for _, output := range tx.Outputs {
-			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int(output.Amount))
+			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int64(output.Amount))
 			if err := newUTXO.ValidateUTXO(); err != nil {
 				log.Printf("Validation failed for UTXO: %v", err)
 				continue // Skip adding this UTXO if validation fails
