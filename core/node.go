@@ -1205,7 +1205,7 @@ func publicKeyToBech32(pubKeyHex string) (string, error) {
 func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			PublicKey string `json:"publicKey"`
+			PublicKey string `json:"publicKey"` // Accepts a Bech32 public key directly
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
@@ -1213,31 +1213,35 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 		}
 
 		bech32Address := req.PublicKey
-		_, exists := node.Blockchain.Stakeholders[bech32Address]
-		if exists {
+		if _, exists := node.Blockchain.Stakeholders[bech32Address]; exists {
 			http.Error(w, "Public key already registered.", http.StatusBadRequest)
 			return
 		}
 
-		initialBalance := int64(70)
+		initialBalance := int64(70) // The initial balance set for the new wallet
 		currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
 		if !genesisExists || currentBalance < initialBalance {
 			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
 			return
 		}
 
+		// Deduct the initial balance from the genesis account and assign to the new wallet
 		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
 		node.Blockchain.Stakeholders[bech32Address] = initialBalance
 
-		// Create UTXO
+		// Create and store the initial UTXO for the newly registered wallet
 		utxo := shared.UTXO{
 			OwnerAddress: bech32Address,
-			Amount:       initialBalance,
+			Amount:       initialBalance, // This should be int if your system uses int for amounts
 		}
+
+		// Add UTXO to the blockchain's database
 		if err := node.Blockchain.Database.AddUTXO(utxo); err != nil {
 			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalance)
 
 		response := struct {
 			PublicKey string `json:"publicKey"`
