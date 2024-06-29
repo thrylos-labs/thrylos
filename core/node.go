@@ -1285,6 +1285,35 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	}
 }
 
+func (node *Node) GetPublicKeyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		publicKey, err := node.RetrievePublicKey(address)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		response := map[string]string{
+			"publicKey": fmt.Sprintf("%x", publicKey), // Convert the public key to a hexadecimal string for display
+		}
+
+		jsonResp, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to serialize public key response", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResp)
+	}
+}
+
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
 func (node *Node) Start() {
@@ -1300,6 +1329,7 @@ func (node *Node) Start() {
 		w.Write(data)
 	})
 
+	mux.HandleFunc("/get-public-key", node.GetPublicKeyHandler())
 	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
 	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
 	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())

@@ -192,6 +192,8 @@ func main() {
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
+
+	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
 	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
 	mux.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler())
 	mux.HandleFunc("/get-block", node.GetBlockHandler())
