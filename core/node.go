@@ -1218,7 +1218,17 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 		}
 
 		bech32Address := req.PublicKey
-		if _, exists := node.Blockchain.Stakeholders[bech32Address]; exists {
+
+		// Convert public key string to byte array
+		publicKeyBytes, err := hex.DecodeString(bech32Address)
+		if err != nil {
+			http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Check if the public key is already registered in the database
+		_, err = node.Blockchain.Database.RetrievePublicKeyFromAddress(bech32Address)
+		if err == nil {
 			http.Error(w, "Public key already registered.", http.StatusBadRequest)
 			return
 		}
@@ -1230,23 +1240,26 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 			return
 		}
 
-		// Deduct the initial balance from the genesis account and assign to the new wallet
 		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
 		node.Blockchain.Stakeholders[bech32Address] = initialBalance
 
-		// Create and store the initial UTXO for the newly registered wallet
 		utxo := shared.UTXO{
 			OwnerAddress: bech32Address,
-			Amount:       initialBalance, // This should be int if your system uses int for amounts
+			Amount:       initialBalance,
 		}
 
-		// Add UTXO to the blockchain's database
 		if err := node.Blockchain.Database.AddUTXO(utxo); err != nil {
 			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
+		if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
+			http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalance)
+		log.Printf("Public key registered and saved to database for %s", bech32Address)
 
 		response := struct {
 			PublicKey string `json:"publicKey"`
