@@ -1217,16 +1217,21 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 			return
 		}
 
-		bech32Address := req.PublicKey
-
-		// Convert public key string to byte array
-		publicKeyBytes, err := hex.DecodeString(bech32Address)
+		// Decode Bech32 public key, ignoring the human-readable part
+		_, decodedData, err := bech32.Decode(req.PublicKey)
 		if err != nil {
 			http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Check if the public key is already registered in the database
+		// Convert from 5-bit to 8-bit words
+		decodedPubKey, err := bech32.ConvertBits(decodedData, 5, 8, false)
+		if err != nil {
+			http.Error(w, "Failed to convert public key data: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		bech32Address := req.PublicKey
 		_, err = node.Blockchain.Database.RetrievePublicKeyFromAddress(bech32Address)
 		if err == nil {
 			http.Error(w, "Public key already registered.", http.StatusBadRequest)
@@ -1253,7 +1258,7 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 			return
 		}
 
-		if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
+		if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, decodedPubKey); err != nil {
 			http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
