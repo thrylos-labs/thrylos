@@ -91,6 +91,7 @@ func main() {
 
 	loadEnv()
 
+	fmt.Println("Loaded FIREBASE_PROJECT_ID:", os.Getenv("FIREBASE_PROJECT_ID"))
 	firebaseApp := initializeFirebaseApp()
 
 	// Environment variables

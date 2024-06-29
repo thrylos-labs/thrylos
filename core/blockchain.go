@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/gob"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	firebase "firebase.google.com/go"
+	"github.com/btcsuite/btcutil/bech32"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 
@@ -148,9 +150,8 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 		GenesisAccount: genesisAccount, // Set the genesis account
 		FirebaseClient: firebaseApp,
 	}
-
-	// Add test data
-	// blockchain.addTestData()
+	// Optionally, add test UTXOs for development and testing
+	blockchain.AddTestUTXOs()
 
 	// Serialize the genesis block and insert into the database
 	var buf bytes.Buffer
@@ -180,51 +181,38 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	return blockchain, nil
 }
 
-// func (bc *Blockchain) addTestData() {
-// 	// Add public keys to Firebase
-// 	ctx := context.Background()
-// 	client, err := bc.FirebaseClient.Firestore(ctx)
-// 	if err != nil {
-// 		log.Fatalf("Failed to create Firestore client: %v", err)
-// 	}
-// 	defer client.Close()
+func convertToBech32(hexAddr string) (string, error) {
+	data, err := hex.DecodeString(hexAddr)
+	if err != nil {
+		return "", err
+	}
+	convertedData, err := bech32.ConvertBits(data, 8, 5, true)
+	if err != nil {
+		return "", err
+	}
+	bech32Addr, err := bech32.Encode("tl1", convertedData)
+	if err != nil {
+		return "", err
+	}
+	return bech32Addr, nil
+}
 
-// 	_, err = client.Collection("users").Doc("user1").Set(ctx, map[string]interface{}{
-// 		"publicKey": "5b2ee76b58735e7a2cf89754666f24c2cccdac70c9121b09b721d4ea51741c74",
-// 	})
-// 	if err != nil {
-// 		log.Fatalf("Failed to add public key to Firebase: %v", err)
-// 	}
-
-// 	_, err = client.Collection("users").Doc("user2").Set(ctx, map[string]interface{}{
-// 		"publicKey": "66922e466f747605fd6203d76c5c5cf0c75025a6b0a6b8ab27c168bde53e9922",
-// 	})
-// 	if err != nil {
-// 		log.Fatalf("Failed to add public key to Firebase: %v", err)
-// 	}
-
-// 	// Add UTXOs to Blockchain
-// 	utxos := []shared.UTXO{
-// 		{
-// 			TransactionID: "tx1",
-// 			Index:         0,
-// 			OwnerAddress:  "5b2ee76b58735e7a2cf89754666f24c2cccdac70c9121b09b721d4ea51741c74",
-// 			Amount:        1000,
-// 		},
-// 		{
-// 			TransactionID: "tx2",
-// 			Index:         0,
-// 			OwnerAddress:  "66922e466f747605fd6203d76c5c5cf0c75025a6b0a6b8ab27c168bde53e9922",
-// 			Amount:        2000,
-// 		},
-// 	}
-
-// 	for _, utxo := range utxos {
-// 		bc.addUTXO(utxo)
-// 	}
-
-// 	log.Println("Test data added successfully")
-// }
+func (bc *Blockchain) AddTestUTXOs() {
+	testUTXOs := []*thrylos.UTXO{
+		{
+			OwnerAddress: "tl11rn2agc9tqwg6eemqefj5uvtns2glepu2uaztj0v8pz3d4zg87k8szawc22",
+			Amount:       1000, // Set a test amount
+		},
+		{
+			OwnerAddress: "tl11y7u0zczfarwextp4q66gs0jdx5798qu75jzznr7494rs2qx2emzsqr7p6q",
+			Amount:       500, // Set another test amount
+		},
+	}
+	for _, utxo := range testUTXOs {
+		bc.UTXOs[utxo.OwnerAddress] = append(bc.UTXOs[utxo.OwnerAddress], utxo)
+		log.Printf("Test UTXO added: Address=%s, Amount=%d", utxo.OwnerAddress, utxo.Amount)
+	}
+}
 
 func (bc *Blockchain) FetchPublicKeyFromFirebase(userID string) (string, error) {
 	ctx := context.Background()

@@ -30,7 +30,7 @@ DATA_DIR=/database
 
 ## send a transaction using the cli signer 
 
-6. **Navigate**: in a new terminal change directory to `cd cmd/clisigner`.
+6. **Navigate**: in a new terminal  change directory to `cd cmd/clisigner`.
 
 7. **Run**: Execute `go run . --sender=6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19 --receiver=8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7 --amount=500` in your terminal.
 
