@@ -1123,17 +1123,22 @@ func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
 		log.Printf("Fetching UTXOs for address: %s", address)
 		utxos, err := node.Blockchain.GetUTXOsForAddress(address)
 		if err != nil {
+			log.Printf("Error fetching UTXOs from database for address %s: %v", address, err)
 			http.Error(w, fmt.Sprintf("Error fetching UTXOs: %v", err), http.StatusInternalServerError)
 			return
 		}
 
 		if len(utxos) == 0 {
+			log.Printf("No UTXOs found for address: %s", address)
 			http.Error(w, "No UTXOs found", http.StatusNotFound)
 			return
+		} else {
+			log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
 		}
 
 		response, err := json.Marshal(utxos)
 		if err != nil {
+			log.Printf("Failed to serialize UTXOs for address %s: %v", address, err)
 			http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
 			return
 		}

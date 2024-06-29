@@ -200,21 +200,23 @@ func convertToBech32(hexAddr string) (string, error) {
 func (bc *Blockchain) AddTestUTXOs() {
 	log.Println("Adding test UTXOs...")
 
-	testUTXOs := []*thrylos.UTXO{
+	testUTXOs := []shared.UTXO{
 		{
 			OwnerAddress: "tl11rn2agc9tqwg6eemqefj5uvtns2glepu2uaztj0v8pz3d4zg87k8szawc22",
-			Amount:       1000, // Set a test amount
+			Amount:       1000,
 		},
 		{
 			OwnerAddress: "tl11y7u0zczfarwextp4q66gs0jdx5798qu75jzznr7494rs2qx2emzsqr7p6q",
-			Amount:       500, // Set another test amount
+			Amount:       500,
 		},
 	}
 	for _, utxo := range testUTXOs {
-		bc.UTXOs[utxo.OwnerAddress] = append(bc.UTXOs[utxo.OwnerAddress], utxo)
-		log.Printf("Test UTXO added: Address=%s, Amount=%d", utxo.OwnerAddress, utxo.Amount)
+		if err := bc.Database.AddUTXO(utxo); err != nil {
+			log.Printf("Failed to add test UTXO: %v", err)
+		} else {
+			log.Printf("Test UTXO added: Address=%s, Amount=%d", utxo.OwnerAddress, utxo.Amount)
+		}
 	}
-	log.Println("Finished adding test UTXOs")
 }
 
 func (bc *Blockchain) FetchPublicKeyFromFirebase(userID string) (string, error) {
