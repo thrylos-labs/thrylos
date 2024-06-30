@@ -52,7 +52,7 @@ type Node struct {
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
 	Database       shared.BlockchainDBInterface // Updated the type to interface
 	GasEstimateURL string                       // New field to store the URL for gas estimation
-
+	FirebaseApp    *firebase.App
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -129,6 +129,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		Peers:            knownPeers,
 		Blockchain:       bc,
 		Shard:            shard,
+		FirebaseApp:      firebaseApp,
 		PublicKeyMap:     make(map[string]ed25519.PublicKey), // Initialize the map
 		ResponsibleUTXOs: make(map[string]shared.UTXO),
 		GasEstimateURL:   gasEstimateURL, // Set the URL in the node struct
@@ -1227,7 +1228,7 @@ func GetBlockchainAddressByUID(app *firebase.App, uid string) (string, error) {
 }
 
 // HTTP handler for getting blockchain address
-func (node *Node) GetBlockchainAddressHandler(firebaseApp *firebase.App) http.HandlerFunc {
+func (node *Node) GetBlockchainAddressHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := r.URL.Query().Get("userId")
 		if uid == "" {
@@ -1235,7 +1236,7 @@ func (node *Node) GetBlockchainAddressHandler(firebaseApp *firebase.App) http.Ha
 			return
 		}
 
-		blockchainAddress, err := GetBlockchainAddressByUID(firebaseApp, uid)
+		blockchainAddress, err := GetBlockchainAddressByUID(node.FirebaseApp, uid)
 		if err != nil {
 			log.Printf("Failed to retrieve blockchain address for UID %s: %v", uid, err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -1416,7 +1417,7 @@ func (node *Node) Start() {
 		w.Write(data)
 	})
 
-	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler(node.Blockchain.FirebaseClient))
+	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler())
 	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
 	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
 	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
