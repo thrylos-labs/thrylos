@@ -1204,6 +1204,61 @@ func publicKeyToBech32(pubKeyHex string) (string, error) {
 	return bech32Address, nil
 }
 
+// Retrieve blockchain address by UID
+func GetBlockchainAddressByUID(app *firebase.App, uid string) (string, error) {
+	ctx := context.Background()
+	client, err := app.Firestore(ctx)
+	if err != nil {
+		return "", fmt.Errorf("error getting Firestore client: %v", err)
+	}
+	defer client.Close()
+
+	doc, err := client.Collection("users").Doc(uid).Get(ctx)
+	if err != nil {
+		return "", fmt.Errorf("error fetching user document: %v", err)
+	}
+
+	blockchainAddress, ok := doc.Data()["blockchainAddress"].(string)
+	if !ok {
+		return "", fmt.Errorf("blockchain address not found or invalid for user %s", uid)
+	}
+
+	return blockchainAddress, nil
+}
+
+// HTTP handler for getting blockchain address
+func (node *Node) GetBlockchainAddressHandler(firebaseApp *firebase.App) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid := r.URL.Query().Get("userId")
+		if uid == "" {
+			http.Error(w, "User ID parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		blockchainAddress, err := GetBlockchainAddressByUID(firebaseApp, uid)
+		if err != nil {
+			log.Printf("Failed to retrieve blockchain address for UID %s: %v", uid, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if blockchainAddress == "" {
+			http.Error(w, "Blockchain address not found", http.StatusNotFound)
+			return
+		}
+
+		response := map[string]string{"blockchainAddress": blockchainAddress}
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to serialize response", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResponse)
+	}
+}
+
 func (node *Node) CheckPublicKeyHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		publicKey := r.URL.Query().Get("publicKey") // Use r.URL.Query().Get to fetch query parameters
@@ -1361,6 +1416,7 @@ func (node *Node) Start() {
 		w.Write(data)
 	})
 
+	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler(node.Blockchain.FirebaseClient))
 	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
 	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
 	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())

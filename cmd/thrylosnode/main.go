@@ -193,6 +193,7 @@ func main() {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
 
+	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler())
 	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
 	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
 	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
