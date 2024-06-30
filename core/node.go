@@ -290,15 +290,12 @@ func CalculateGas(dataSize int) int {
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
-	pubKey, exists := node.PublicKeyMap[address]
-	if !exists {
-		// Enhanced error logging
-		errorMsg := fmt.Sprintf("public key not found for address: %s", address)
-		log.Printf(errorMsg)
-		return nil, fmt.Errorf(errorMsg)
+	pubKey, err := node.Blockchain.Database.RetrievePublicKeyFromAddress(address)
+	if err != nil {
+		log.Printf("Public key not found for address: %s, error: %v", address, err)
+		return nil, fmt.Errorf("public key not found for address: %s, error: %v", address, err)
 	}
-	// Display the public key in hexadecimal format for detailed verification
-	log.Printf("Public key retrieved: %x for address: %s", pubKey, address)
+	log.Printf("Public key retrieved for address: %s", address)
 	return pubKey, nil
 }
 
@@ -1207,27 +1204,62 @@ func publicKeyToBech32(pubKeyHex string) (string, error) {
 	return bech32Address, nil
 }
 
+func (node *Node) CheckPublicKeyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		publicKey := r.URL.Query().Get("publicKey") // Use r.URL.Query().Get to fetch query parameters
+		if publicKey == "" {
+			http.Error(w, "Public key parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		exists, err := node.Blockchain.Database.PublicKeyExists(publicKey)
+		if err != nil {
+			http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		response := map[string]bool{"exists": exists}
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to serialize response: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResponse)
+	}
+}
+
 func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			PublicKey string `json:"publicKey"` // Accepts a Bech32 public key directly
+			PublicKey string `json:"publicKey"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			log.Printf("Failed to decode request: %v", err)
 			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Decode Bech32 public key, ignoring the human-readable part
+		log.Printf("Received registration request for public key: %s", req.PublicKey)
 		_, decodedData, err := bech32.Decode(req.PublicKey)
 		if err != nil {
+			log.Printf("Invalid public key format: %v", err)
 			http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Convert from 5-bit to 8-bit words
 		decodedPubKey, err := bech32.ConvertBits(decodedData, 5, 8, false)
 		if err != nil {
+			log.Printf("Failed to convert public key data: %v", err)
 			http.Error(w, "Failed to convert public key data: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		publicKeyExists, err := node.Blockchain.Database.PublicKeyExists(req.PublicKey)
+		if publicKeyExists {
+			log.Printf("Public key already registered: %s", req.PublicKey)
+			http.Error(w, "Public key already registered.", http.StatusBadRequest)
 			return
 		}
 
@@ -1329,7 +1361,8 @@ func (node *Node) Start() {
 		w.Write(data)
 	})
 
-	mux.HandleFunc("/get-public-key", node.GetPublicKeyHandler())
+	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
+	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
 	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
 	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
 	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())

@@ -391,6 +391,35 @@ func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.P
 	return ed25519.PublicKey(ed25519Key), nil
 }
 
+// PublicKeyExists checks if a public key already exists for the given address.
+func (bdb *BlockchainDB) PublicKeyExists(address string) (bool, error) {
+	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
+	if err != nil {
+		return false, fmt.Errorf("error sanitizing address: %v", err)
+	}
+
+	exists := false
+	err = bdb.DB.View(func(txn *badger.Txn) error {
+		_, err := txn.Get([]byte("publicKey-" + formattedAddress))
+		if err == badger.ErrKeyNotFound {
+			// Key not found, publicKey does not exist
+			return nil
+		} else if err != nil {
+			// An error occurred while trying to find the key
+			return err
+		}
+		// Key found, publicKey exists
+		exists = true
+		return nil
+	})
+
+	if err != nil {
+		return false, fmt.Errorf("failed to check public key existence: %v", err)
+	}
+
+	return exists, nil
+}
+
 // GetBalance calculates the total balance for a given address based on its UTXOs.
 // This function is useful for determining the spendable balance of a blockchain account.
 func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO) (int64, error) {
