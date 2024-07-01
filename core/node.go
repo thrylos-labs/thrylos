@@ -113,8 +113,18 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 	}
 
 	ctx := context.Background()
-	sa := option.WithCredentialsFile("../serviceAccountKey.json")
-	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	sa := option.WithCredentialsFile("../../serviceAccountKey.json")
+
+	projectID := os.Getenv("FIREBASE_PROJECT_ID")
+	if projectID == "" {
+		log.Fatalf("FIREBASE_PROJECT_ID environment variable is not set")
+	}
+
+	conf := &firebase.Config{
+		ProjectID: projectID,
+	}
+
+	firebaseApp, err := firebase.NewApp(ctx, conf, sa)
 	if err != nil {
 		log.Fatalf("error initializing app: %v\n", err)
 	}
@@ -133,6 +143,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		PublicKeyMap:     make(map[string]ed25519.PublicKey), // Initialize the map
 		ResponsibleUTXOs: make(map[string]shared.UTXO),
 		GasEstimateURL:   gasEstimateURL, // Set the URL in the node struct
+
 	}
 
 	if shard != nil {
@@ -1205,29 +1216,32 @@ func publicKeyToBech32(pubKeyHex string) (string, error) {
 	return bech32Address, nil
 }
 
-// Retrieve blockchain address by UID
 func GetBlockchainAddressByUID(app *firebase.App, uid string) (string, error) {
 	ctx := context.Background()
 	client, err := app.Firestore(ctx)
 	if err != nil {
+		log.Printf("Failed to get Firestore client: %v", err)
 		return "", fmt.Errorf("error getting Firestore client: %v", err)
 	}
 	defer client.Close()
 
 	doc, err := client.Collection("users").Doc(uid).Get(ctx)
 	if err != nil {
+		log.Printf("Failed to fetch user document for UID %s: %v", uid, err)
 		return "", fmt.Errorf("error fetching user document: %v", err)
 	}
 
-	blockchainAddress, ok := doc.Data()["blockchainAddress"].(string)
+	log.Printf("Document data for UID %s: %v", uid, doc.Data()) // Log the document data for debugging
+
+	publicKey, ok := doc.Data()["publicKey"].(string)
 	if !ok {
-		return "", fmt.Errorf("blockchain address not found or invalid for user %s", uid)
+		log.Printf("Public key not found or invalid for user %s", uid)
+		return "", fmt.Errorf("public key not found or invalid for user %s", uid)
 	}
 
-	return blockchainAddress, nil
+	return publicKey, nil
 }
 
-// HTTP handler for getting blockchain address
 func (node *Node) GetBlockchainAddressHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid := r.URL.Query().Get("userId")
@@ -1251,6 +1265,7 @@ func (node *Node) GetBlockchainAddressHandler() http.HandlerFunc {
 		response := map[string]string{"blockchainAddress": blockchainAddress}
 		jsonResponse, err := json.Marshal(response)
 		if err != nil {
+			log.Printf("Failed to serialize response: %v", err)
 			http.Error(w, "Failed to serialize response", http.StatusInternalServerError)
 			return
 		}
