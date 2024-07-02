@@ -12,6 +12,7 @@ import (
 // It includes methods for managing balances, transactions, blocks, and public keys.
 
 type BlockchainDBInterface interface {
+	Bech32AddressExists(bech32Address string) (bool, error)
 	GetBalance(address string, utxos map[string]UTXO) (int64, error)
 	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
 	SanitizeAndFormatAddress(address string) (string, error)

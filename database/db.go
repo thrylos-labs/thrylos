@@ -808,6 +808,32 @@ func (bdb *BlockchainDB) InsertBlock(blockData []byte, blockNumber int) error {
 	return nil
 }
 
+// Bech32AddressExists checks if a given Bech32 address is already registered in the database.
+func (bdb *BlockchainDB) Bech32AddressExists(bech32Address string) (bool, error) {
+	exists := false
+
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		// Assuming that the key for Bech32 addresses is stored as 'address-tl1<actual_address>'
+		key := []byte("address-" + bech32Address) // Adjust if your key format is different
+
+		_, err := txn.Get(key)
+
+		if err == badger.ErrKeyNotFound {
+			// Key not found, address does not exist
+			return nil
+		} else if err != nil {
+			// An error occurred that isn't related to key non-existence
+			return err
+		}
+
+		// If we get here, it means the key was found and thus the address exists
+		exists = true
+		return nil
+	})
+
+	return exists, err
+}
+
 // StoreBlock stores serialized block data.
 func (bdb *BlockchainDB) StoreBlock(blockData []byte, blockNumber int) error {
 	key := fmt.Sprintf("block-%d", blockNumber)

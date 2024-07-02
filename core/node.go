@@ -1304,7 +1304,7 @@ func (node *Node) CheckPublicKeyHandler() http.HandlerFunc {
 func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			PublicKey string `json:"publicKey"`
+			PublicKey string `json:"publicKey"` // Public key expected to be in hex format
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			log.Printf("Failed to decode request: %v", err)
@@ -1313,72 +1313,79 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 		}
 
 		log.Printf("Received registration request for public key: %s", req.PublicKey)
-		_, decodedData, err := bech32.Decode(req.PublicKey)
+
+		// Decode hex string to bytes
+		publicKeyBytes, err := hex.DecodeString(req.PublicKey)
 		if err != nil {
-			log.Printf("Invalid public key format: %v", err)
+			log.Printf("Invalid hex format for public key: %v", err)
 			http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		decodedPubKey, err := bech32.ConvertBits(decodedData, 5, 8, false)
+		// Generate Bech32 address from public key
+		bech32Address, err := publicKeyToBech32(req.PublicKey)
 		if err != nil {
-			log.Printf("Failed to convert public key data: %v", err)
-			http.Error(w, "Failed to convert public key data: "+err.Error(), http.StatusBadRequest)
+			log.Printf("Failed to convert public key to Bech32 address: %v", err)
+			http.Error(w, "Failed to generate Bech32 address: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		publicKeyExists, err := node.Blockchain.Database.PublicKeyExists(req.PublicKey)
-		if publicKeyExists {
-			log.Printf("Public key already registered: %s", req.PublicKey)
-			http.Error(w, "Public key already registered.", http.StatusBadRequest)
+		// Check if the Bech32 address is already registered
+		addressExists, err := node.Blockchain.Database.Bech32AddressExists(bech32Address)
+		if err != nil {
+			log.Printf("Failed to check address existence: %v", err)
+			http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if addressExists {
+			log.Printf("Blockchain address already registered: %s", bech32Address)
+			http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
 			return
 		}
 
-		bech32Address := req.PublicKey
-		_, err = node.Blockchain.Database.RetrievePublicKeyFromAddress(bech32Address)
-		if err == nil {
-			http.Error(w, "Public key already registered.", http.StatusBadRequest)
-			return
-		}
-
-		initialBalance := int64(70) // The initial balance set for the new wallet
+		// Ensure there are sufficient funds in the genesis account
+		initialBalance := int64(70) // Set initial balance for the new wallet
 		currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
 		if !genesisExists || currentBalance < initialBalance {
 			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
 			return
 		}
 
+		// Deduct from genesis and assign to new account
 		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
 		node.Blockchain.Stakeholders[bech32Address] = initialBalance
 
+		// Create initial UTXO for the account
 		utxo := shared.UTXO{
 			OwnerAddress: bech32Address,
 			Amount:       initialBalance,
 		}
-
 		if err := node.Blockchain.Database.AddUTXO(utxo); err != nil {
 			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, decodedPubKey); err != nil {
+		if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
 			http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalance)
-		log.Printf("Public key registered and saved to database for %s", bech32Address)
+		log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
 
 		response := struct {
-			PublicKey string `json:"publicKey"`
-			Balance   int64  `json:"balance"`
+			PublicKey         string `json:"publicKey"`
+			BlockchainAddress string `json:"blockchainAddress"`
+			Balance           int64  `json:"balance"`
 		}{
-			PublicKey: bech32Address,
-			Balance:   initialBalance,
+			PublicKey:         req.PublicKey,
+			BlockchainAddress: bech32Address,
+			Balance:           initialBalance,
 		}
 
 		jsonResponse, err := json.Marshal(response)
 		if err != nil {
+			log.Printf("Failed to serialize response: %v", err)
 			http.Error(w, "Failed to serialize wallet data: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
