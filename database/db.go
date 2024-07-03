@@ -358,12 +358,12 @@ func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKe
 	return err
 }
 
-var publicKeyCache = make(map[string]ed25519.PublicKey)
+var publicKeyCache = sync.Map{}
 
 func (bdb *BlockchainDB) GetPublicKeyWithCaching(address string) (ed25519.PublicKey, error) {
-	if key, found := publicKeyCache[address]; found {
+	if key, found := publicKeyCache.Load(address); found {
 		log.Printf("Public key retrieved from cache for address: %s", address)
-		return key, nil
+		return key.(ed25519.PublicKey), nil
 	}
 
 	key, err := bdb.RetrievePublicKeyFromAddress(address)
@@ -371,7 +371,7 @@ func (bdb *BlockchainDB) GetPublicKeyWithCaching(address string) (ed25519.Public
 		return nil, err
 	}
 
-	publicKeyCache[address] = key // Cache the retrieved key
+	publicKeyCache.Store(address, key) // Cache the retrieved key
 	return key, nil
 }
 
