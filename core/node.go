@@ -19,6 +19,7 @@ import (
 
 	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
+	"github.com/gibson042/canonicaljson-go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/api/option"
@@ -1023,7 +1024,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		log.Printf("Base64-encoded signature being verified: %s", signatureString)
 
 		// Correctly call VerifySignature
-		if !shared.VerifySignature(&transactionData, dataToVerify, signatureString, senderPublicKey) {
+		if !verifySignature(transactionData, signatureString, senderPublicKey) {
 			log.Printf("Invalid signature for transaction: %+v", transactionData)
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
@@ -1062,6 +1063,27 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		// Send a success response back to the client
 		sendResponse(w, []byte(fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)))
 	}
+}
+
+// Example of improved signature verification function
+func verifySignature(txData shared.Transaction, receivedSignature string, publicKey ed25519.PublicKey) bool {
+	canonicalData, err := canonicaljson.Marshal(txData)
+	if err != nil {
+		log.Printf("Error serializing data for verification: %v", err)
+		return false
+	}
+
+	sigBytes, err := base64.StdEncoding.DecodeString(receivedSignature)
+	if err != nil {
+		log.Printf("Error decoding signature: %v", err)
+		return false
+	}
+
+	isValid := ed25519.Verify(publicKey, canonicalData, sigBytes)
+	if !isValid {
+		log.Printf("Signature verification failed for data: %s", string(canonicalData))
+	}
+	return isValid
 }
 
 // Helper function to fetch gas estimate
