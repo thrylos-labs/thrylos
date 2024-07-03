@@ -913,15 +913,14 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
-// VerifySignature method (example based on your provided method)
-func VerifySignature(tx *Transaction, publicKey ed25519.PublicKey) bool {
-	data, err := tx.SerializeWithoutSignature()
+// Decouples the process of verifying a signature by accepting raw data and a signature string
+func VerifySignature(tx *Transaction, data []byte, signature string, publicKey ed25519.PublicKey) bool {
+	sigBytes, err := base64.StdEncoding.DecodeString(signature)
 	if err != nil {
-		log.Printf("Error serializing transaction data for signature verification: %v", err)
+		log.Printf("Error decoding signature: %v", err)
 		return false
 	}
-	log.Printf("Data used for signature verification: %s", string(data))
-	return ed25519.Verify(publicKey, data, tx.Signature)
+	return ed25519.Verify(publicKey, data, sigBytes)
 }
 
 // Process batched transactions
