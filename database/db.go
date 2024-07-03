@@ -272,12 +272,14 @@ func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
 	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
+		log.Printf("Error sanitizing address %s: %v", address, err)
 		return err
 	}
 
 	// Prepare the data to be inserted or updated
 	data, err := json.Marshal(map[string][]byte{"ed25519PublicKey": ed25519PublicKey})
 	if err != nil {
+		log.Printf("Failed to marshal public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("Failed to marshal public key: %v", err)
 	}
 
@@ -287,14 +289,17 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 
 	// Attempt to set the public key in the database
 	if err := txn.Set([]byte("publicKey-"+formattedAddress), data); err != nil {
+		log.Printf("Failed to insert public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("Failed to insert public key for address %s: %v", formattedAddress, err)
 	}
 
 	// Commit the transaction
 	if err := txn.Commit(); err != nil {
+		log.Printf("Transaction commit failed for public key update for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("Transaction commit failed for public key update for address %s: %v", formattedAddress, err)
 	}
 
+	log.Printf("Public key successfully updated for address %s", formattedAddress)
 	return nil
 }
 
@@ -353,6 +358,23 @@ func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKe
 	return err
 }
 
+var publicKeyCache = make(map[string]ed25519.PublicKey)
+
+func (bdb *BlockchainDB) GetPublicKeyWithCaching(address string) (ed25519.PublicKey, error) {
+	if key, found := publicKeyCache[address]; found {
+		log.Printf("Public key retrieved from cache for address: %s", address)
+		return key, nil
+	}
+
+	key, err := bdb.RetrievePublicKeyFromAddress(address)
+	if err != nil {
+		return nil, err
+	}
+
+	publicKeyCache[address] = key // Cache the retrieved key
+	return key, nil
+}
+
 // RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.
 // It is essential for verifying transaction signatures and ensuring the integrity of transactions.
 func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error) {
@@ -361,17 +383,19 @@ func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.P
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("publicKey-" + address))
 		if err != nil {
-			log.Printf("Error retrieving key from DB for address %s: %v", address, err)
+			if err == badger.ErrKeyNotFound {
+				log.Printf("Public key not found in database for address %s", address)
+				return err
+			}
+			log.Printf("Database error on retrieving public key for address %s: %v", address, err)
 			return err
 		}
 		return item.Value(func(val []byte) error {
-			publicKeyData = append([]byte{}, val...) // Make a copy of the data
-			log.Printf("Retrieved public key data for address %s", address)
+			publicKeyData = append([]byte{}, val...) // Ensure you're copying the data correctly
 			return nil
 		})
 	})
 	if err != nil {
-		log.Printf("Failed to retrieve or decode public key for address %s: %v", address, err)
 		return nil, err
 	}
 

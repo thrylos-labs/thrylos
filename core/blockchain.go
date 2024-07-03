@@ -153,6 +153,9 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	// Optionally, add test UTXOs for development and testing
 	blockchain.AddTestUTXOs()
 
+	// Optionally, add test UTXOs for development and testing
+	blockchain.AddTestPublicKeys()
+
 	// Serialize the genesis block and insert into the database
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
@@ -195,6 +198,32 @@ func convertToBech32(hexAddr string) (string, error) {
 		return "", err
 	}
 	return bech32Addr, nil
+}
+
+func (bc *Blockchain) AddTestPublicKeys() {
+	log.Println("Adding test public keys...")
+
+	testKeys := []struct {
+		Address   string
+		PublicKey ed25519.PublicKey
+	}{
+		{
+			Address:   "tl11rn2agc9tqwg6eemqefj5uvtns2glepu2uaztj0v8pz3d4zg87k8szawc22",
+			PublicKey: ed25519.PublicKey("YourPublicKeyDataHere"),
+		},
+		{
+			Address:   "tl11y7u0zczfarwextp4q66gs0jdx5798qu75jzznr7494rs2qx2emzsqr7p6q",
+			PublicKey: ed25519.PublicKey("AnotherPublicKeyDataHere"),
+		},
+	}
+
+	for _, key := range testKeys {
+		if err := bc.Database.InsertOrUpdateEd25519PublicKey(key.Address, key.PublicKey); err != nil {
+			log.Printf("Failed to add test public key: %v", err)
+		} else {
+			log.Printf("Test public key added for address: %s", key.Address)
+		}
+	}
 }
 
 func (bc *Blockchain) AddTestUTXOs() {

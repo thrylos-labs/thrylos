@@ -618,11 +618,12 @@ func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateK
 // This is useful for verifying the transaction signature, as the signature itself cannot be part of the signed data.
 func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 	type TxTemp struct {
-		ID        string
-		Sender    string
-		Inputs    []UTXO
-		Outputs   []UTXO
-		Timestamp int64
+		ID        string `json:"ID"`
+		Sender    string `json:"Sender"`
+		Inputs    []UTXO `json:"Inputs"`
+		Outputs   []UTXO `json:"Outputs"`
+		Timestamp int64  `json:"Timestamp"`
+		GasFee    int    `json:"GasFee"` // Ensure this matches the frontend data structure
 	}
 	temp := TxTemp{
 		ID:        tx.ID,
@@ -630,6 +631,7 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 		Inputs:    tx.Inputs,
 		Outputs:   tx.Outputs,
 		Timestamp: tx.Timestamp,
+		GasFee:    tx.GasFee, // Include the GasFee in the serialized data
 	}
 	return json.Marshal(temp)
 }
@@ -918,6 +920,7 @@ func VerifySignature(tx *Transaction, publicKey ed25519.PublicKey) bool {
 		log.Printf("Error serializing transaction data for signature verification: %v", err)
 		return false
 	}
+	log.Printf("Data used for signature verification: %s", string(data))
 	return ed25519.Verify(publicKey, data, tx.Signature)
 }
 

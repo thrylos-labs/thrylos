@@ -997,6 +997,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		}
 
 		log.Printf("Received signed transaction for processing: %+v", transactionData)
+		log.Printf("Signature Received: %s", transactionData.Signature)
 
 		// Convert shared.Transaction to thrylos.Transaction
 		thrylosTx := shared.SharedToThrylos(&transactionData)
