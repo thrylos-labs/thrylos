@@ -997,14 +997,6 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Assuming the signature and data to verify need to be handled:
-		dataToVerify, err := json.Marshal(transactionData) // Adjust this to serialize as needed
-		if err != nil {
-			log.Printf("Error serializing data for verification: %v", err)
-			http.Error(w, "Error serializing data: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
 		senderPublicKey, err := n.RetrievePublicKey(transactionData.Sender)
 		if err != nil {
 			log.Printf("Failed to retrieve public key: %v", err)
@@ -1012,19 +1004,15 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Convert the []byte signature to a Base64 string
-		signatureString := base64.StdEncoding.EncodeToString(transactionData.Signature)
-		if len(signatureString) == 0 {
-			log.Printf("Signature string is empty after encoding.")
-			http.Error(w, "Signature processing error", http.StatusInternalServerError)
+		sigBytes, err := base64.StdEncoding.DecodeString(string(transactionData.Signature))
+		if err != nil {
+			log.Printf("Error decoding signature: %v", err)
+			http.Error(w, "Signature decoding error", http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("Serialized data for verification: %s", string(dataToVerify))
-		log.Printf("Base64-encoded signature being verified: %s", signatureString)
-
 		// Correctly call VerifySignature
-		if !verifySignature(transactionData, signatureString, senderPublicKey) {
+		if !verifySignature(transactionData, sigBytes, senderPublicKey) {
 			log.Printf("Invalid signature for transaction: %+v", transactionData)
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
@@ -1066,16 +1054,10 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 }
 
 // Example of improved signature verification function
-func verifySignature(txData shared.Transaction, receivedSignature string, publicKey ed25519.PublicKey) bool {
+func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
 	canonicalData, err := canonicaljson.Marshal(txData)
 	if err != nil {
 		log.Printf("Error serializing data for verification: %v", err)
-		return false
-	}
-
-	sigBytes, err := base64.StdEncoding.DecodeString(receivedSignature)
-	if err != nil {
-		log.Printf("Error decoding signature: %v", err)
 		return false
 	}
 
