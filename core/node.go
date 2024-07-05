@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"net/http"
@@ -19,7 +20,6 @@ import (
 
 	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
-	"github.com/gibson042/canonicaljson-go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/api/option"
@@ -991,82 +991,134 @@ var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator 
 
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Read the request body using io.ReadAll
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("Raw request body: %s", string(bodyBytes))
+
+		// Decode the JSON body into the Transaction struct
 		var transactionData shared.Transaction
-		if err := json.NewDecoder(r.Body).Decode(&transactionData); err != nil {
+		if err := json.Unmarshal(bodyBytes, &transactionData); err != nil {
+			log.Printf("Failed to decode JSON: %v", err)
 			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		senderPublicKey, err := n.RetrievePublicKey(transactionData.Sender)
-		if err != nil {
-			log.Printf("Failed to retrieve public key: %v", err)
-			http.Error(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		// Log the received encoded signature
+		encodedSignature := base64.StdEncoding.EncodeToString(transactionData.Signature)
+		log.Printf("Received encoded signature: %s", encodedSignature)
 
-		sigBytes, err := base64.StdEncoding.DecodeString(string(transactionData.Signature))
-		if err != nil {
-			log.Printf("Error decoding signature: %v", err)
-			http.Error(w, "Signature decoding error", http.StatusInternalServerError)
-			return
-		}
+		// Log the decoded signature for verification
+		log.Printf("Decoded Signature: %x", transactionData.Signature)
 
-		// Correctly call VerifySignature
-		if !verifySignature(transactionData, sigBytes, senderPublicKey) {
-			log.Printf("Invalid signature for transaction: %+v", transactionData)
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
-			return
-		}
-
-		// Convert shared.Transaction to thrylos.Transaction
-		thrylosTx := shared.SharedToThrylos(&transactionData)
-		if thrylosTx == nil {
-			http.Error(w, "Failed to convert transaction data", http.StatusInternalServerError)
-			return
-		}
-
-		// Fetch or create a gas estimator
-		gasEstimator := n // Assuming Node implements GasEstimator
-
-		// Process the transaction
-		if err := shared.ProcessTransaction(thrylosTx, n.Database, senderPublicKey, gasEstimator); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// Convert and add transaction to the pending transactions if necessary
-		if err := n.AddPendingTransaction(thrylosTx); err != nil {
-			log.Printf("Failed to add transaction to pending transactions: %v", err)
-			http.Error(w, "Failed to add transaction to pending pool", http.StatusInternalServerError)
-			return
-		}
-
-		// Broadcast the transaction to the network
-		if err := n.BroadcastTransaction(thrylosTx); err != nil {
-			log.Printf("Failed to broadcast transaction: %v", err)
-			http.Error(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Send a success response back to the client
-		sendResponse(w, []byte(fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)))
+		// Send a simple response back indicating success of this step
+		fmt.Fprintf(w, "Signature received and decoded successfully")
 	}
 }
 
-// Example of improved signature verification function
-func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
-	canonicalData, err := canonicaljson.Marshal(txData)
+// decodeSignature decodes a Base64-encoded signature.
+func decodeSignature(encodedSig string) ([]byte, error) {
+	decodedBytes, err := base64.StdEncoding.DecodeString(encodedSig)
 	if err != nil {
-		log.Printf("Error serializing data for verification: %v", err)
-		return false
+		log.Printf("Failed to decode signature: %v", err)
+		return nil, err
 	}
-
-	isValid := ed25519.Verify(publicKey, canonicalData, sigBytes)
-	if !isValid {
-		log.Printf("Signature verification failed for data: %s", string(canonicalData))
-	}
-	return isValid
+	return decodedBytes, nil
 }
+
+// func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		bodyBytes, err := ioutil.ReadAll(r.Body)
+// 		if err != nil {
+// 			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
+// 		log.Printf("Raw request body: %s", string(bodyBytes))
+
+// 		// Use io.NopCloser to restore the request body
+// 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+// 		var transactionData shared.Transaction
+// 		if err := json.NewDecoder(r.Body).Decode(&transactionData); err != nil {
+// 			log.Printf("Failed to decode JSON: %v", err)
+// 			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
+// 			return
+// 		}
+
+// 		senderPublicKey, err := n.RetrievePublicKey(transactionData.Sender)
+// 		if err != nil {
+// 			log.Printf("Failed to retrieve public key: %v", err)
+// 			http.Error(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		log.Printf("Received signature string for decoding: %s", string(transactionData.Signature))
+// 		// Decode the signature directly from the transactionData's signature field
+// 		sigBytes, err := base64.StdEncoding.DecodeString(string(transactionData.Signature))
+// 		if err != nil {
+// 			log.Printf("Error decoding signature: %v", err)
+// 			http.Error(w, "Signature decoding error", http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		if !verifySignature(transactionData, sigBytes, senderPublicKey) {
+// 			log.Printf("Invalid signature for transaction: %+v", transactionData)
+// 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+// 			return
+// 		}
+
+// 		// Convert shared.Transaction to thrylos.Transaction
+// 		thrylosTx := shared.SharedToThrylos(&transactionData)
+// 		if thrylosTx == nil {
+// 			http.Error(w, "Failed to convert transaction data", http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		// Fetch or create a gas estimator
+// 		gasEstimator := n // Assuming Node implements GasEstimator
+
+// 		// Process the transaction
+// 		if err := shared.ProcessTransaction(thrylosTx, n.Database, senderPublicKey, gasEstimator); err != nil {
+// 			http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		// Convert and add transaction to the pending transactions if necessary
+// 		if err := n.AddPendingTransaction(thrylosTx); err != nil {
+// 			log.Printf("Failed to add transaction to pending transactions: %v", err)
+// 			http.Error(w, "Failed to add transaction to pending pool", http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		// Broadcast the transaction to the network
+// 		if err := n.BroadcastTransaction(thrylosTx); err != nil {
+// 			log.Printf("Failed to broadcast transaction: %v", err)
+// 			http.Error(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		// Send a success response back to the client
+// 		sendResponse(w, []byte(fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)))
+// 	}
+// }
+
+// // Example of improved signature verification function
+// func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
+// 	canonicalData, err := canonicaljson.Marshal(txData)
+// 	if err != nil {
+// 		log.Printf("Error serializing data for verification: %v", err)
+// 		return false
+// 	}
+
+// 	isValid := ed25519.Verify(publicKey, canonicalData, sigBytes)
+// 	if !isValid {
+// 		log.Printf("Signature verification failed for data: %s", string(canonicalData))
+// 	}
+// 	return isValid
+// }
 
 // Helper function to fetch gas estimate
 func (n *Node) FetchGasEstimate(dataSize int) (int, error) {

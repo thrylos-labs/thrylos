@@ -42,7 +42,7 @@ type Transaction struct {
 	Outputs          []UTXO   `json:"outputs" valid:"required"`
 	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
 	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"signature,omitempty" valid:"optional"` // Make this optional for initial validation
+	Signature        []byte   `json:"signature,omitempty" valid:"optional"` // Adjusted to lowercase
 	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
 	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
 	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
