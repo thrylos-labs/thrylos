@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -62,6 +65,156 @@ func startMockServer() *grpc.Server {
 		}
 	}()
 	return server
+}
+
+func TestConvertUTXOsToRequiredFormat(t *testing.T) {
+	loadEnvTest() // Load environment variables
+
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
+	defer os.Unsetenv("GENESIS_ACCOUNT")
+
+	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, err := shared.GenerateAESKey() // Generate an AES key
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	if err != nil {
+		t.Fatalf("Failed to initialize blockchain: %v", err)
+	}
+
+	// Add some test UTXOs to the blockchain for conversion
+	bc.UTXOs["key1"] = []*thrylos.UTXO{
+		{TransactionId: "tx1", Index: 1, OwnerAddress: "addr1", Amount: 100},
+		{TransactionId: "tx2", Index: 2, OwnerAddress: "addr2", Amount: 200},
+	}
+
+	convertedUTXOs := bc.convertUTXOsToRequiredFormat()
+
+	// Assertions to verify the correctness of the conversion
+	if len(convertedUTXOs) != len(bc.UTXOs) {
+		t.Errorf("Expected %d keys in converted UTXOs, got %d", len(bc.UTXOs), len(convertedUTXOs))
+	}
+
+	for key, utxos := range convertedUTXOs {
+		if len(utxos) != len(bc.UTXOs[key]) {
+			t.Errorf("Mismatch in number of UTXOs for key %s: expected %d, got %d", key, len(bc.UTXOs[key]), len(utxos))
+		}
+		for i, utxo := range utxos {
+			if utxo.TransactionID != bc.UTXOs[key][i].TransactionId ||
+				utxo.Amount != bc.UTXOs[key][i].Amount ||
+				utxo.OwnerAddress != bc.UTXOs[key][i].OwnerAddress ||
+				utxo.Index != int(bc.UTXOs[key][i].Index) {
+				t.Errorf("Mismatch in UTXO details at index %d for key %s", i, key)
+			}
+		}
+	}
+}
+
+func TestConvertToSharedTransaction(t *testing.T) {
+	loadEnvTest() // Load environment variables
+
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
+	defer os.Unsetenv("GENESIS_ACCOUNT")
+
+	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, err := shared.GenerateAESKey() // Generate an AES key
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	if err != nil {
+		t.Fatalf("Failed to initialize blockchain: %v", err)
+	}
+	// Mock a thrylos.Transaction with expected values
+	tx := &thrylos.Transaction{
+		Id:      "test123",
+		Inputs:  []*thrylos.UTXO{{TransactionId: "tx1", Index: 1, OwnerAddress: "addr1", Amount: 100}},
+		Outputs: []*thrylos.UTXO{{TransactionId: "tx1", Index: 0, OwnerAddress: "addr2", Amount: 50}},
+	}
+
+	// Convert and check results
+	convertedTx, err := bc.convertToSharedTransaction(tx)
+	if err != nil {
+		t.Errorf("Failed to convert transaction: %v", err)
+	}
+	if convertedTx.ID != tx.Id {
+		t.Errorf("Transaction ID mismatch: got %v, want %v", convertedTx.ID, tx.Id)
+	}
+	// Add more checks for other fields
+}
+
+// TestValidateTransactionsConcurrently tests the concurrent transaction validation
+
+func TestValidateTransactionsConcurrently(t *testing.T) {
+	loadEnvTest() // Load environment variables
+
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
+	defer os.Unsetenv("GENESIS_ACCOUNT")
+
+	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, err := shared.GenerateAESKey() // Generate an AES key
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	if err != nil {
+		t.Fatalf("Failed to initialize blockchain: %v", err)
+	}
+
+	// Create a set of mock transactions
+	transactions := make([]*thrylos.Transaction, 5)
+	for i := range transactions {
+		if i%2 == 0 {
+			transactions[i] = &thrylos.Transaction{Id: fmt.Sprintf("tx%d", i)}
+		} else {
+			transactions[i] = &thrylos.Transaction{Id: ""} // Deliberately invalid to trigger error
+		}
+	}
+
+	// Validate transactions concurrently
+	startTime := time.Now()
+	errors := bc.validateTransactionsConcurrently(transactions)
+	duration := time.Since(startTime)
+
+	// Check the results
+	expectedErrors := 2 // Expecting 2 errors based on the test setup
+	if len(errors) != expectedErrors {
+		t.Errorf("Expected %d errors, got %d", expectedErrors, len(errors))
+	}
+
+	for _, err := range errors {
+		t.Log("Validation error:", err)
+	}
+
+	t.Logf("Validation completed in %v", duration)
 }
 
 // go test -v -timeout 30s -run ^TestTransactionThroughputWithGRPCUpdated$ github.com/thrylos-labs/thrylos/core

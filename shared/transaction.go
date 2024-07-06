@@ -707,6 +707,38 @@ func NewTransaction(id string, inputs []UTXO, outputs []UTXO) Transaction {
 
 }
 
+// ConvertSharedToThrylos converts a shared.Transaction to a thrylos.Transaction.
+func ConvertSharedToThrylos(tx *Transaction) *thrylos.Transaction {
+	if tx == nil {
+		return nil
+	}
+	protoInputs := make([]*thrylos.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		protoInputs[i] = &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        input.Amount,
+		}
+	}
+
+	protoOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		protoOutputs[i] = &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        output.Amount,
+		}
+	}
+
+	return &thrylos.Transaction{
+		Id:        tx.ID,
+		Timestamp: tx.Timestamp,
+		Inputs:    protoInputs,
+		Outputs:   protoOutputs,
+		Signature: tx.Signature,
+	}
+}
+
 // ValidateTransaction checks the internal consistency of a transaction, ensuring that the sum of inputs matches the sum of outputs.
 // It is a crucial part of ensuring no value is created out of thin air within the blockchain system.
 // ValidateTransaction checks the internal consistency of a transaction,

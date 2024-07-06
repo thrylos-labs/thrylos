@@ -623,19 +623,29 @@ func (bc *Blockchain) validateTransactionsConcurrently(transactions []*thrylos.T
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(transactions))
 
+	// Convert UTXOs outside the goroutines to avoid concurrent map read/write issues
 	availableUTXOs := bc.convertUTXOsToRequiredFormat()
 
 	for _, tx := range transactions {
 		wg.Add(1)
 		go func(tx *thrylos.Transaction) {
 			defer wg.Done()
-			sharedTx, err := bc.convertToSharedTransaction(tx)
-			if err != nil {
-				errChan <- err
+
+			// Check if the transaction ID is empty
+			if tx.Id == "" {
+				errChan <- fmt.Errorf("transaction ID is empty")
 				return
 			}
 
-			if !shared.ValidateTransaction(sharedTx, availableUTXOs) { // Use ValidateTransaction appropriately
+			// Convert each thrylos.Transaction to a shared.Transaction
+			sharedTx, err := bc.convertToSharedTransaction(tx)
+			if err != nil {
+				errChan <- fmt.Errorf("conversion error for transaction ID %s: %v", tx.Id, err)
+				return
+			}
+
+			// Validate the converted transaction using the shared transaction validation logic
+			if !shared.ValidateTransaction(sharedTx, availableUTXOs) {
 				errChan <- fmt.Errorf("validation failed for transaction ID %s", sharedTx.ID)
 			}
 		}(tx)
@@ -689,19 +699,17 @@ func (bc *Blockchain) convertToSharedTransaction(tx *thrylos.Transaction) (share
 	}, nil
 }
 
-// Helper function to convert bc.UTXOs to map[string][]shared.UTXO
+// Function to convert Blockchain UTXOs to a format usable in shared validation logic
 func (bc *Blockchain) convertUTXOsToRequiredFormat() map[string][]shared.UTXO {
 	result := make(map[string][]shared.UTXO)
 	for key, utxos := range bc.UTXOs {
-		// Assume conversion is necessary
 		sharedUtxos := make([]shared.UTXO, len(utxos))
 		for i, utxo := range utxos {
-			// Properly populate fields from thrylos.UTXO to shared.UTXO
 			sharedUtxos[i] = shared.UTXO{
-				TransactionID: utxo.TransactionId, // Example field, adjust according to your struct fields
-				Index:         int(utxo.Index),    // Convert from int32 to int if necessary
-				OwnerAddress:  utxo.OwnerAddress,  // Directly copied
-				Amount:        int64(utxo.Amount), // Convert from int64 to int if necessary
+				TransactionID: utxo.TransactionId,
+				Index:         int(utxo.Index),
+				OwnerAddress:  utxo.OwnerAddress,
+				Amount:        int64(utxo.Amount),
 			}
 		}
 		result[key] = sharedUtxos
