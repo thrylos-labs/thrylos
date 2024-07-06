@@ -430,13 +430,54 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 		numGoroutines   = 100
 	)
 
+	loadEnvTest() // Load environment variables
+
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
+	defer os.Unsetenv("GENESIS_ACCOUNT")
+
+	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
+	if err != nil {
+		t.Fatalf("Failed to create temporary directory: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	aesKey, err := shared.GenerateAESKey() // Generate an AES key
+	if err != nil {
+		t.Fatalf("Failed to generate AES key: %v", err)
+	}
+
+	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+
+	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	if err != nil {
+		t.Fatalf("Failed to initialize blockchain: %v", err)
+	}
+
 	var totalErrorCount int32
 	start := time.Now()
 	var wg sync.WaitGroup
 
 	processTransactions := func(transactions []*pb.Transaction) error {
-		// Simulate network or processing delay
-		time.Sleep(50 * time.Millisecond) // Increased delay
+		// Simulate realistic network delay
+		time.Sleep(20 * time.Millisecond)
+
+		// Convert pb.Transaction to thrylos.Transaction
+		thrylosTransactions := make([]*thrylos.Transaction, len(transactions))
+		for i, tx := range transactions {
+			thrylosTransactions[i] = &thrylos.Transaction{Id: tx.Id}
+		}
+
+		// Validate transactions concurrently
+		errors := bc.validateTransactionsConcurrently(thrylosTransactions)
+		if len(errors) > 0 {
+			atomic.AddInt32(&totalErrorCount, int32(len(errors)))
+			return fmt.Errorf("validation errors: %v", errors)
+		}
+
+		// Simulate realistic database write delay
+		time.Sleep(30 * time.Millisecond)
+
 		return nil
 	}
 

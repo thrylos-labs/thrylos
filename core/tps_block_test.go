@@ -121,6 +121,11 @@ func TestTransactionThroughputWithAllSignatures(t *testing.T) {
 
 // go test -v -timeout 30s -run ^TestBlockTime$ github.com/thrylos-labs/thrylos/core
 
+func randomDelay(maxDelay int) time.Duration {
+	nanoTime := time.Now().UnixNano()
+	return time.Duration(nanoTime % int64(maxDelay))
+}
+
 func TestBlockTime(t *testing.T) {
 	// Generate Ed25519 keys
 	edPublicKey, edPrivateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -130,9 +135,10 @@ func TestBlockTime(t *testing.T) {
 
 	// Define the number of transactions and number of transactions per block
 	numTransactions := 1000
-	transactionsPerBlock := 100 // Assuming 100 transactions per block
+	transactionsPerBlock := 100
 
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	var blockFinalizeTimes []time.Duration
 
 	start := time.Now()
@@ -146,6 +152,9 @@ func TestBlockTime(t *testing.T) {
 
 			var blockTransactions []shared.Transaction
 			for j := startIndex; j < startIndex+transactionsPerBlock && j < numTransactions; j++ {
+				// Simulate network delay
+				time.Sleep(randomDelay(10) * time.Millisecond)
+
 				// Create a transaction
 				txID := fmt.Sprintf("tx%d", j)
 				inputs := []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}}
@@ -168,12 +177,14 @@ func TestBlockTime(t *testing.T) {
 				}
 			}
 
-			// Simulate finalizing the block
-			time.Sleep(time.Millisecond * 500) // Simulate delay for block finalization
+			// Simulate consensus delay
+			time.Sleep(randomDelay(20)*time.Millisecond + 50*time.Millisecond) // Variable delay for block finalization
 			blockEndTime := time.Now()
-			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
-		}(i)
 
+			mu.Lock()
+			blockFinalizeTimes = append(blockFinalizeTimes, blockEndTime.Sub(blockStartTime))
+			mu.Unlock()
+		}(i)
 	}
 
 	wg.Wait()
