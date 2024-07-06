@@ -2,7 +2,6 @@ package core
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
@@ -193,51 +192,37 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 // NewBlock creates a new block with the specified parameters, including the index, transactions,
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
-func NewBlock(index int, transactions []shared.Transaction, prevHash string, validator string, prevTimestamp int64, privateKey ed25519.PrivateKey, publicKey ed25519.PublicKey) *Block {
+func (bc *Blockchain) NewBlock(index int, transactions []*thrylos.Transaction, prevHash string, validator string, prevTimestamp int64) (*Block, error) {
 	fmt.Printf("Creating new block at index %d with %d transactions.\n", index, len(transactions))
 	currentTimestamp := max(time.Now().Unix(), prevTimestamp+1)
 
-	// Convert shared.Transaction to thrylos.Transaction
-	protoTransactions := make([]*thrylos.Transaction, 0, len(transactions))
-	for i := range transactions {
-		protoTx := ConvertSharedTransactionToProto(&transactions[i])
-		if protoTx == nil {
-			fmt.Println("Failed to convert transaction to Protobuf format.")
-			continue
+	// Validate transactions concurrently before including them in the block
+	validationErrors := bc.validateTransactionsConcurrently(transactions)
+	if len(validationErrors) > 0 {
+		for _, err := range validationErrors {
+			fmt.Println("Transaction validation error:", err)
 		}
-		protoTransactions = append(protoTransactions, protoTx)
+		return nil, fmt.Errorf("some transactions failed validation")
 	}
 
+	// All transactions are valid, proceed with block creation
 	block := &Block{
 		Index:        int32(index),
 		Timestamp:    currentTimestamp,
 		PrevHash:     prevHash,
+		Hash:         "",
+		Transactions: transactions,
 		Validator:    validator,
-		Transactions: make([]*thrylos.Transaction, 0, len(transactions)),
-	}
-
-	for i := range transactions {
-		protoTx := ConvertSharedTransactionToProto(&transactions[i])
-		if protoTx == nil {
-			fmt.Println("Failed to convert transaction to Protobuf format.")
-			continue
-		}
-		block.Transactions = append(block.Transactions, protoTx)
-	}
-
-	if len(block.Transactions) == 0 {
-		fmt.Println("No valid transactions provided for the block.")
-		return nil
 	}
 
 	if err := block.InitializeVerkleTree(); err != nil {
 		fmt.Printf("Error initializing Verkle Tree: %v\n", err)
-		return nil
+		return nil, err
 	}
 
 	block.Hash = block.ComputeHash()
 	fmt.Printf("Block created - Index: %d, Hash: %s, Transactions: %d\n", block.Index, block.Hash, len(block.Transactions))
-	return block
+	return block, nil
 }
 
 func (b *Block) ComputeHash() string {

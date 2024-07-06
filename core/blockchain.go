@@ -617,6 +617,98 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	return newBlock, nil
 }
 
+// validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
+// Validate transactions with available UTXOs
+func (bc *Blockchain) validateTransactionsConcurrently(transactions []*thrylos.Transaction) []error {
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(transactions))
+
+	availableUTXOs := bc.convertUTXOsToRequiredFormat()
+
+	for _, tx := range transactions {
+		wg.Add(1)
+		go func(tx *thrylos.Transaction) {
+			defer wg.Done()
+			sharedTx, err := bc.convertToSharedTransaction(tx)
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			if !shared.ValidateTransaction(sharedTx, availableUTXOs) { // Use ValidateTransaction appropriately
+				errChan <- fmt.Errorf("validation failed for transaction ID %s", sharedTx.ID)
+			}
+		}(tx)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	var errs []error
+	for err := range errChan {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errs
+}
+
+// Helper function to convert thrylos.Transaction to shared.Transaction
+func (bc *Blockchain) convertToSharedTransaction(tx *thrylos.Transaction) (shared.Transaction, error) {
+	if tx == nil {
+		return shared.Transaction{}, fmt.Errorf("nil transaction received for conversion")
+	}
+
+	inputs := make([]shared.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		inputs[i] = shared.UTXO{
+			TransactionID: input.TransactionId,
+			Index:         int(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		}
+	}
+
+	outputs := make([]shared.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		outputs[i] = shared.UTXO{
+			TransactionID: tx.Id, // Assume output inherits transaction ID
+			Index:         int(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+		}
+	}
+
+	return shared.Transaction{
+		ID:        tx.Id,
+		Inputs:    inputs,
+		Outputs:   outputs,
+		Signature: tx.Signature,
+		Timestamp: tx.Timestamp,
+		Sender:    tx.Sender,
+	}, nil
+}
+
+// Helper function to convert bc.UTXOs to map[string][]shared.UTXO
+func (bc *Blockchain) convertUTXOsToRequiredFormat() map[string][]shared.UTXO {
+	result := make(map[string][]shared.UTXO)
+	for key, utxos := range bc.UTXOs {
+		// Assume conversion is necessary
+		sharedUtxos := make([]shared.UTXO, len(utxos))
+		for i, utxo := range utxos {
+			// Properly populate fields from thrylos.UTXO to shared.UTXO
+			sharedUtxos[i] = shared.UTXO{
+				TransactionID: utxo.TransactionId, // Example field, adjust according to your struct fields
+				Index:         int(utxo.Index),    // Convert from int32 to int if necessary
+				OwnerAddress:  utxo.OwnerAddress,  // Directly copied
+				Amount:        int64(utxo.Amount), // Convert from int64 to int if necessary
+			}
+		}
+		result[key] = sharedUtxos
+	}
+	return result
+}
+
 // Get the block and see how many transactions are in each block
 
 func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {

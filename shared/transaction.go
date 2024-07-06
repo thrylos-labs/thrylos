@@ -42,7 +42,7 @@ type Transaction struct {
 	Outputs          []UTXO   `json:"outputs" valid:"required"`
 	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
 	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"signature,omitempty" valid:"optional"` // Adjusted to lowercase
+	Signature        []byte   `json:"-"` // Ignored by the JSON encoder and decoder
 	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
 	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
 	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
@@ -316,40 +316,35 @@ func SharedToThrylosOutputs(outputs []UTXO) []*thrylos.UTXO {
 	return thrylosOutputs
 }
 
-// UnmarshalJSON custom unmarshalling to handle base64 encoding for byte slices.
-func (tx *Transaction) UnmarshalJSON(data []byte) error {
+// MarshalJSON custom marshaling to handle base64 encoding for the signature field.
+func (t *Transaction) MarshalJSON() ([]byte, error) {
+	type Alias Transaction
+	return json.Marshal(&struct {
+		*Alias
+		JSONSignature string `json:"signature"`
+	}{
+		Alias:         (*Alias)(t),
+		JSONSignature: base64.StdEncoding.EncodeToString(t.Signature),
+	})
+}
+
+// UnmarshalJSON custom unmarshaling to handle base64 decoding for the signature field.
+func (t *Transaction) UnmarshalJSON(data []byte) error {
 	type Alias Transaction
 	aux := &struct {
-		Signature string `json:"signature"`
+		JSONSignature string `json:"signature"`
 		*Alias
 	}{
-		Alias: (*Alias)(tx),
+		Alias: (*Alias)(t),
 	}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
-	if aux.Signature != "" {
-		sig, err := base64.StdEncoding.DecodeString(aux.Signature)
-		if err != nil {
-			return err
-		}
-		tx.Signature = sig
-	}
-	return nil
-}
-
-// MarshalJSON custom marshalling to handle base64 encoding for byte slices.
-func (tx Transaction) MarshalJSON() ([]byte, error) {
-	type Alias Transaction
-	return json.Marshal(&struct {
-		Signature string `json:"signature"`
-		Alias
-	}{
-		Signature: base64.StdEncoding.EncodeToString(tx.Signature),
-		Alias:     (Alias)(tx),
-	})
+	var err error
+	t.Signature, err = base64.StdEncoding.DecodeString(aux.JSONSignature)
+	return err
 }
 
 // Validate ensures the fields of Transaction are correct.

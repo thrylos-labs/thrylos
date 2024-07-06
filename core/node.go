@@ -16,6 +16,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	firebase "firebase.google.com/go"
@@ -991,7 +992,7 @@ var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator 
 
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Read the request body using io.ReadAll
+		// Read the request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
@@ -1007,21 +1008,40 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Log the received encoded signature
+		// Log the base64 encoded signature received
 		encodedSignature := base64.StdEncoding.EncodeToString(transactionData.Signature)
 		log.Printf("Received encoded signature: %s", encodedSignature)
 
-		// Log the decoded signature for verification
-		log.Printf("Decoded Signature: %x", transactionData.Signature)
+		// Decode the signature
+		decodedSignature, err := decodeSignature(encodedSignature)
+		if err != nil {
+			log.Printf("Failed to decode signature: %v", err)
+			http.Error(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-		// Send a simple response back indicating success of this step
-		fmt.Fprintf(w, "Signature received and decoded successfully")
+		// Log the decoded signature for verification (ensure safe logging practices)
+		log.Printf("Decoded Signature: %x", decodedSignature)
+
+		// Optionally, validate the signature here (crypto validation steps)
+
+		// Send a successful response back
+		fmt.Fprintf(w, "Signature validated and transaction processed successfully")
 	}
 }
 
-// decodeSignature decodes a Base64-encoded signature.
+// Backend Go function to decode URL-safe Base64 to standard Base64
 func decodeSignature(encodedSig string) ([]byte, error) {
-	decodedBytes, err := base64.StdEncoding.DecodeString(encodedSig)
+	// Convert URL-safe Base64 back to standard Base64
+	standardBase64 := strings.NewReplacer("-", "+", "_", "/").Replace(encodedSig)
+	// Pad with '=' to ensure correct decoding
+	switch len(standardBase64) % 4 {
+	case 2:
+		standardBase64 += "=="
+	case 3:
+		standardBase64 += "="
+	}
+	decodedBytes, err := base64.StdEncoding.DecodeString(standardBase64)
 	if err != nil {
 		log.Printf("Failed to decode signature: %v", err)
 		return nil, err
