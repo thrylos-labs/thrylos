@@ -42,7 +42,7 @@ type Transaction struct {
 	Outputs          []UTXO   `json:"outputs" valid:"required"`
 	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
 	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"-"` // Ignored by the JSON encoder and decoder
+	Signature        []byte   `json:"-"` // Exclude from default marshaling
 	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
 	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
 	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
@@ -344,7 +344,11 @@ func (t *Transaction) UnmarshalJSON(data []byte) error {
 
 	var err error
 	t.Signature, err = base64.StdEncoding.DecodeString(aux.JSONSignature)
-	return err
+	if err != nil {
+		log.Printf("Failed to decode signature: %v", err)
+		return err
+	}
+	return nil
 }
 
 // Validate ensures the fields of Transaction are correct.

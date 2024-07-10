@@ -16,7 +16,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	firebase "firebase.google.com/go"
@@ -992,7 +991,6 @@ var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator 
 
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Read the request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
@@ -1000,7 +998,6 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		}
 		log.Printf("Raw request body: %s", string(bodyBytes))
 
-		// Decode the JSON body into the Transaction struct
 		var transactionData shared.Transaction
 		if err := json.Unmarshal(bodyBytes, &transactionData); err != nil {
 			log.Printf("Failed to decode JSON: %v", err)
@@ -1008,45 +1005,49 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Log the base64 encoded signature received
-		encodedSignature := base64.StdEncoding.EncodeToString(transactionData.Signature)
-		log.Printf("Received encoded signature: %s", encodedSignature)
-
-		// Decode the signature
-		decodedSignature, err := decodeSignature(encodedSignature)
+		publicKey, err := n.Blockchain.RetrievePublicKey(transactionData.Sender)
 		if err != nil {
-			log.Printf("Failed to decode signature: %v", err)
-			http.Error(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, "Failed to retrieve public key: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Log the decoded signature for verification (ensure safe logging practices)
-		log.Printf("Decoded Signature: %x", decodedSignature)
+		// Since the signature is already a []byte due to the custom JSON unmarshal, no need for additional decoding
+		sigBytes := transactionData.Signature
 
-		// Optionally, validate the signature here (crypto validation steps)
+		// Prepare data for verification
+		message := SerializeTransactionForSigning(transactionData)
 
-		// Send a successful response back
+		// Verify the signature
+		if !ed25519.Verify(publicKey, message, sigBytes) {
+			http.Error(w, "Signature verification failed", http.StatusUnauthorized)
+			return
+		}
+
+		log.Printf("Signature verified successfully")
 		fmt.Fprintf(w, "Signature validated and transaction processed successfully")
 	}
 }
 
-// Backend Go function to decode URL-safe Base64 to standard Base64
-func decodeSignature(encodedSig string) ([]byte, error) {
-	// Convert URL-safe Base64 back to standard Base64
-	standardBase64 := strings.NewReplacer("-", "+", "_", "/").Replace(encodedSig)
-	// Pad with '=' to ensure correct decoding
-	switch len(standardBase64) % 4 {
-	case 2:
-		standardBase64 += "=="
-	case 3:
-		standardBase64 += "="
+// implemented based on how data was signed
+func SerializeTransactionForSigning(tx shared.Transaction) []byte {
+	// Prepare the data structure as signed in the front end
+	dataToSign := map[string]interface{}{
+		"ID":        tx.ID,
+		"Timestamp": tx.Timestamp,
+		"Sender":    tx.Sender,
+		"Inputs":    tx.Inputs,
+		"Outputs":   tx.Outputs,
+		"GasFee":    tx.GasFee,
 	}
-	decodedBytes, err := base64.StdEncoding.DecodeString(standardBase64)
+
+	// Convert the structured data to JSON
+	serializedData, err := json.Marshal(dataToSign)
 	if err != nil {
-		log.Printf("Failed to decode signature: %v", err)
-		return nil, err
+		log.Printf("Error serializing transaction data: %v", err)
+		return nil
 	}
-	return decodedBytes, nil
+
+	return serializedData
 }
 
 // func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
