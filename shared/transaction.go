@@ -42,7 +42,7 @@ type Transaction struct {
 	Outputs          []UTXO   `json:"outputs" valid:"required"`
 	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
 	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        []byte   `json:"-"` // Exclude from default marshaling
+	Signature        string   `json:"signature"` // Changed to string to directly accept base64-encoded signatures
 	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
 	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
 	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
@@ -277,6 +277,12 @@ func HashData(data []byte) []byte {
 }
 
 func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
+
+	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
+	if err != nil {
+		log.Fatalf("Failed to decode signature: %v", err)
+		// Handle error appropriately
+	}
 	if tx == nil {
 		return nil
 	}
@@ -285,7 +291,7 @@ func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
 		Timestamp:     tx.Timestamp,
 		Inputs:        SharedToThrylosInputs(tx.Inputs),
 		Outputs:       SharedToThrylosOutputs(tx.Outputs),
-		Signature:     tx.Signature,
+		Signature:     signatureBytes,
 		PreviousTxIds: tx.PreviousTxIds,
 	}
 }
@@ -314,41 +320,6 @@ func SharedToThrylosOutputs(outputs []UTXO) []*thrylos.UTXO {
 		}
 	}
 	return thrylosOutputs
-}
-
-// MarshalJSON custom marshaling to handle base64 encoding for the signature field.
-func (t *Transaction) MarshalJSON() ([]byte, error) {
-	type Alias Transaction
-	return json.Marshal(&struct {
-		*Alias
-		JSONSignature string `json:"signature"`
-	}{
-		Alias:         (*Alias)(t),
-		JSONSignature: base64.StdEncoding.EncodeToString(t.Signature),
-	})
-}
-
-// UnmarshalJSON custom unmarshaling to handle base64 decoding for the signature field.
-func (t *Transaction) UnmarshalJSON(data []byte) error {
-	type Alias Transaction
-	aux := &struct {
-		JSONSignature string `json:"signature"`
-		*Alias
-	}{
-		Alias: (*Alias)(t),
-	}
-
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	var err error
-	t.Signature, err = base64.StdEncoding.DecodeString(aux.JSONSignature)
-	if err != nil {
-		log.Printf("Failed to decode signature: %v", err)
-		return err
-	}
-	return nil
 }
 
 // Validate ensures the fields of Transaction are correct.
@@ -503,12 +474,14 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 		}
 	}
 
+	signatureEncoded := base64.StdEncoding.EncodeToString(tx.Signature)
+
 	return Transaction{
 		ID:            tx.Id,
 		Inputs:        localInputs,
 		Outputs:       localOutputs,
 		Timestamp:     tx.Timestamp,
-		Signature:     tx.Signature,
+		Signature:     signatureEncoded, // Encode signature to base64 string
 		PreviousTxIds: tx.PreviousTxIds, // Match this with the Protobuf field
 		GasFee:        int(tx.GasFee),   // Convert the gas fee
 	}, nil
@@ -518,11 +491,18 @@ func ConvertToProtoTransaction(tx *Transaction) (*thrylos.Transaction, error) {
 	if tx == nil {
 		return nil, errors.New("transaction is nil")
 	}
+
+	// Decode the base64-encoded signature
+	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode signature: %v", err)
+	}
+
 	protoTx := &thrylos.Transaction{
 		Id:        tx.ID,
 		Sender:    tx.Sender,
 		Timestamp: tx.Timestamp,
-		Signature: tx.Signature,
+		Signature: signatureBytes, // Use the decoded byte slice here
 	}
 
 	for _, input := range tx.Inputs {
@@ -712,16 +692,18 @@ func NewTransaction(id string, inputs []UTXO, outputs []UTXO) Transaction {
 }
 
 // ConvertSharedToThrylos converts a shared.Transaction to a thrylos.Transaction.
-func ConvertSharedToThrylos(tx *Transaction) *thrylos.Transaction {
+func ConvertSharedToThrylos(tx *Transaction) (*thrylos.Transaction, error) {
 	if tx == nil {
-		return nil
+		return nil, nil // If the transaction is nil, return no error and no transaction.
 	}
+
 	protoInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		protoInputs[i] = &thrylos.UTXO{
 			TransactionId: input.TransactionID,
+			Index:         int32(input.Index), // Assuming conversion to int32 is needed.
 			OwnerAddress:  input.OwnerAddress,
-			Amount:        input.Amount,
+			Amount:        int64(input.Amount), // Assuming conversion to int64 is needed.
 		}
 	}
 
@@ -729,9 +711,16 @@ func ConvertSharedToThrylos(tx *Transaction) *thrylos.Transaction {
 	for i, output := range tx.Outputs {
 		protoOutputs[i] = &thrylos.UTXO{
 			TransactionId: output.TransactionID,
+			Index:         int32(output.Index), // Assuming conversion to int32 is needed.
 			OwnerAddress:  output.OwnerAddress,
-			Amount:        output.Amount,
+			Amount:        int64(output.Amount), // Assuming conversion to int64 is needed.
 		}
+	}
+
+	// Decode the base64-encoded signature
+	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode signature: %v", err)
 	}
 
 	return &thrylos.Transaction{
@@ -739,8 +728,8 @@ func ConvertSharedToThrylos(tx *Transaction) *thrylos.Transaction {
 		Timestamp: tx.Timestamp,
 		Inputs:    protoInputs,
 		Outputs:   protoOutputs,
-		Signature: tx.Signature,
-	}
+		Signature: signatureBytes, // Use the decoded byte slice here
+	}, nil
 }
 
 // ValidateTransaction checks the internal consistency of a transaction, ensuring that the sum of inputs matches the sum of outputs.
@@ -903,12 +892,33 @@ func SanitizeAndFormatAddress(address string) (string, error) {
 // 	return results, nil
 // }
 
-func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
-	// Create a copy of the transaction to avoid modifying the original
-	txCopy := *tx
-	txCopy.Signature = nil // Ensure the signature is not included in the serialized data
+type TransactionForSigning struct {
+	ID               string   `json:"id"`
+	Timestamp        int64    `json:"timestamp"`
+	Inputs           []UTXO   `json:"inputs"`
+	Outputs          []UTXO   `json:"outputs"`
+	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty"`
+	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty"`
+	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty"`
+	PreviousTxIds    []string `json:"previousTxIds,omitempty"`
+	Sender           string   `json:"sender"`
+	GasFee           int      `json:"gasFee"`
+}
 
-	return json.Marshal(txCopy)
+func SerializeTransactionForSigning(tx *Transaction) ([]byte, error) {
+	txForSigning := TransactionForSigning{
+		ID:               tx.ID,
+		Timestamp:        tx.Timestamp,
+		Inputs:           tx.Inputs,
+		Outputs:          tx.Outputs,
+		EncryptedInputs:  tx.EncryptedInputs,
+		EncryptedOutputs: tx.EncryptedOutputs,
+		EncryptedAESKey:  tx.EncryptedAESKey,
+		PreviousTxIds:    tx.PreviousTxIds,
+		Sender:           tx.Sender,
+		GasFee:           tx.GasFee,
+	}
+	return json.Marshal(txForSigning)
 }
 
 func isValidUUID(uuid string) bool {

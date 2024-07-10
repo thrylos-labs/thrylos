@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -137,8 +138,8 @@ func (s *server) processTransaction(transaction *thrylos.Transaction) error {
 }
 
 func (s *server) validateTransaction(tx *shared.Transaction) bool {
-	if tx == nil || tx.Signature == nil {
-		log.Println("Transaction or its signature is nil")
+	if tx == nil || tx.Signature == "" {
+		log.Println("Transaction or its signature is empty")
 		return false
 	}
 
@@ -156,8 +157,15 @@ func (s *server) validateTransaction(tx *shared.Transaction) bool {
 		return false
 	}
 
+	// Decode the base64-encoded signature
+	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
+	if err != nil {
+		log.Printf("Failed to decode signature: %v", err)
+		return false
+	}
+
 	// Validate the transaction signature
-	if !ed25519.Verify(publicKey, serializedTx, tx.Signature) {
+	if !ed25519.Verify(publicKey, serializedTx, signatureBytes) {
 		log.Printf("Invalid signature for transaction ID: %s", tx.ID)
 		return false
 	}

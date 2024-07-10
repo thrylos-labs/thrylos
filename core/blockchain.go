@@ -669,6 +669,8 @@ func (bc *Blockchain) convertToSharedTransaction(tx *thrylos.Transaction) (share
 		return shared.Transaction{}, fmt.Errorf("nil transaction received for conversion")
 	}
 
+	signatureEncoded := base64.StdEncoding.EncodeToString(tx.Signature)
+
 	inputs := make([]shared.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		inputs[i] = shared.UTXO{
@@ -693,7 +695,7 @@ func (bc *Blockchain) convertToSharedTransaction(tx *thrylos.Transaction) (share
 		ID:        tx.Id,
 		Inputs:    inputs,
 		Outputs:   outputs,
-		Signature: tx.Signature,
+		Signature: signatureEncoded,
 		Timestamp: tx.Timestamp,
 		Sender:    tx.Sender,
 	}, nil

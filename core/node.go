@@ -369,12 +369,14 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 	if tx == nil {
 		return nil
 	}
+	signatureBase64 := base64.StdEncoding.EncodeToString(tx.GetSignature())
+
 	return &shared.Transaction{
 		ID:            tx.GetId(),
 		Timestamp:     tx.GetTimestamp(),
 		Inputs:        ConvertProtoInputs(tx.GetInputs()),
 		Outputs:       ConvertProtoOutputs(tx.GetOutputs()),
-		Signature:     tx.GetSignature(), // Convert []byte to string here
+		Signature:     signatureBase64, // Now properly encoded as a Base64 string
 		PreviousTxIds: tx.GetPreviousTxIds(),
 	}
 }
@@ -996,6 +998,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
 		log.Printf("Raw request body: %s", string(bodyBytes))
 
 		var transactionData shared.Transaction
@@ -1011,16 +1014,25 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			return
 		}
 
-		// Since the signature is already a []byte due to the custom JSON unmarshal, no need for additional decoding
-		sigBytes := transactionData.Signature
-
-		// Prepare data for verification
 		message := SerializeTransactionForSigning(transactionData)
+		log.Printf("Message for signature verification: %x", message)
+
+		// Decode base64 signature to bytes
+		decodedSignature, err := base64.StdEncoding.DecodeString(transactionData.Signature)
+		if err != nil {
+			http.Error(w, "Invalid transaction format: Error decoding signature: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Decoded Signature: %x", decodedSignature)
 
 		// Verify the signature
-		if !ed25519.Verify(publicKey, message, sigBytes) {
+		if !ed25519.Verify(publicKey, message, decodedSignature) {
+			log.Printf("Signature verification failed")
 			http.Error(w, "Signature verification failed", http.StatusUnauthorized)
 			return
+		} else {
+			log.Printf("Signature verified successfully")
 		}
 
 		log.Printf("Signature verified successfully")
@@ -1028,19 +1040,25 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	}
 }
 
-// implemented based on how data was signed
+type SigningData struct {
+	ID        string        `json:"ID"`
+	Timestamp int64         `json:"Timestamp"`
+	Sender    string        `json:"Sender"`
+	Inputs    []shared.UTXO `json:"Inputs"`
+	Outputs   []shared.UTXO `json:"Outputs"`
+	GasFee    int           `json:"GasFee"`
+}
+
 func SerializeTransactionForSigning(tx shared.Transaction) []byte {
-	// Prepare the data structure as signed in the front end
-	dataToSign := map[string]interface{}{
-		"ID":        tx.ID,
-		"Timestamp": tx.Timestamp,
-		"Sender":    tx.Sender,
-		"Inputs":    tx.Inputs,
-		"Outputs":   tx.Outputs,
-		"GasFee":    tx.GasFee,
+	dataToSign := SigningData{
+		ID:        tx.ID,
+		Timestamp: tx.Timestamp,
+		Sender:    tx.Sender,
+		Inputs:    tx.Inputs,
+		Outputs:   tx.Outputs,
+		GasFee:    tx.GasFee,
 	}
 
-	// Convert the structured data to JSON
 	serializedData, err := json.Marshal(dataToSign)
 	if err != nil {
 		log.Printf("Error serializing transaction data: %v", err)

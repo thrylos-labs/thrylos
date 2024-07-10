@@ -994,8 +994,8 @@ func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs [
 	base64Signature := base64.StdEncoding.EncodeToString(signature)
 
 	// Set the encoded signature on the transaction
-	tx.Signature = []byte(base64Signature)
-	return tx, nil // returning tx, nil
+	tx.Signature = base64Signature // Assign the base64 string directly
+	return tx, nil                 // returning tx, nil
 }
 
 func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, amount int64) (shared.UTXO, error) {

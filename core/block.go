@@ -150,6 +150,14 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 	if tx == nil {
 		return nil
 	}
+	// Decode the Base64-encoded signature string back to []byte
+	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
+	if err != nil {
+		log.Fatalf("Failed to decode signature: %v", err)
+		// Proper error handling here depending on your application's requirements
+		return nil
+	}
+
 	protoInputs := make([]*thrylos.UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		protoInputs[i] = shared.ConvertSharedUTXOToProto(input)
@@ -165,7 +173,7 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 		Timestamp: tx.Timestamp,
 		Inputs:    protoInputs,
 		Outputs:   protoOutputs,
-		Signature: tx.Signature, // Assuming Signature is already a []byte
+		Signature: signatureBytes, // Correctly use the decoded byte slice
 	}
 }
 

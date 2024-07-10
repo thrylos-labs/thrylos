@@ -174,14 +174,17 @@ func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Tran
 	}
 
 	// Sign the transaction.
-	signature, err := signTransactionData(txBytes, privateKey)
+	rawSignature, err := signTransactionData(txBytes, privateKey)
 	if err != nil {
 		fmt.Printf("Error signing transaction: %v\n", err)
 		return nil // In real code, handle errors more gracefully.
 	}
 
+	// Encode the raw signature (byte slice) into a Base64 string.
+	signature := base64.StdEncoding.EncodeToString([]byte(rawSignature))
+
 	// Attach the signature to the transaction.
-	tx.Signature = []byte(signature)
+	tx.Signature = signature // The Signature field should be a string.
 
 	// Return a slice containing the signed transaction.
 	return []shared.Transaction{tx}
