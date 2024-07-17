@@ -113,67 +113,6 @@ func submitTransactions(client pb.BlockchainServiceClient, transactions []*pb.Tr
 
 // // go test -v -timeout 30s -run ^TestRealisticBlockTimeWithGRPC github.com/thrylos-labs/thrylos/cmd/thrylosnode
 
-// Use a mutex to ensure thread safety when accessing shared slice
-var mu sync.Mutex
-
-func TestRealisticBlockTimeWithGRPC(t *testing.T) {
-	server := startMockServer() // Ensure this function correctly initializes and starts your gRPC server
-	defer server.Stop()
-
-	conn, err := grpc.Dial("", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
-	if err != nil {
-		t.Fatalf("Failed to dial server: %v", err)
-	}
-	defer conn.Close()
-
-	client := pb.NewBlockchainServiceClient(conn)
-
-	numTransactions := 1000
-	transactionsPerBlock := 10
-	var wg sync.WaitGroup
-	var blockFinalizeTimes []time.Duration
-
-	averageNetworkLatency := 100 * time.Millisecond
-	averageBlockValidationTime := 300 * time.Millisecond
-	averageTransactionProcessingTime := 50 * time.Millisecond
-
-	start := time.Now()
-
-	for i := 0; i < numTransactions; i += transactionsPerBlock {
-		wg.Add(1)
-		go func(startIndex int) {
-			defer wg.Done()
-			blockStartTime := time.Now()
-
-			blockTransactions := simulateTransactionBatch(startIndex, transactionsPerBlock)
-			batchRequest := &pb.TransactionBatchRequest{Transactions: blockTransactions}
-			_, err := client.SubmitTransactionBatch(context.Background(), batchRequest)
-			if err != nil {
-				t.Errorf("Error submitting transaction batch starting at index %d: %v", startIndex, err)
-				return
-			}
-
-			// Simulating network latency and block processing time
-			time.Sleep(averageNetworkLatency + averageBlockValidationTime + averageTransactionProcessingTime*time.Duration(len(blockTransactions)))
-
-			mu.Lock()
-			blockFinalizeTimes = append(blockFinalizeTimes, time.Since(blockStartTime))
-			mu.Unlock()
-		}(i)
-	}
-
-	wg.Wait()
-
-	totalBlockTime := time.Duration(0)
-	for _, bt := range blockFinalizeTimes {
-		totalBlockTime += bt
-	}
-	averageBlockTime := totalBlockTime / time.Duration(len(blockFinalizeTimes))
-
-	elapsedOverall := time.Since(start)
-	t.Logf("Processed %d transactions into blocks with average block time of %s. Total elapsed time: %s", numTransactions, averageBlockTime, elapsedOverall)
-}
-
 func simulateTransactionBatch(startIndex, batchSize int) []*pb.Transaction {
 	var transactions []*pb.Transaction
 	for i := startIndex; i < startIndex+batchSize && i < 1000; i++ {

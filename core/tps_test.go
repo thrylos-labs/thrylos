@@ -378,6 +378,80 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 
 // without Grpc
 
+// go test -v -timeout 30s -run ^TestRealisticBlockTimeWithGRPC$ github.com/thrylos-labs/thrylos/core
+
+func TestRealisticBlockTimeWithGRPC(t *testing.T) {
+	const (
+		numTransactions            = 1000 // Total number of transactions to simulate
+		blockSize                  = 100  // Number of transactions per block
+		numBlocks                  = numTransactions / blockSize
+		averageNetworkLatency      = 100 * time.Millisecond
+		averageBlockValidationTime = 300 * time.Millisecond
+		averageTransactionTime     = 10 * time.Millisecond
+	)
+
+	var mu sync.Mutex // Declare a mutex to synchronize access to blockFinalizeTimes
+
+	server := startMockServer() // Ensure this function correctly initializes and starts your gRPC server
+	defer server.Stop()
+
+	conn, err := grpc.Dial("localhost:50051", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("Failed to connect to gRPC server: %v", err)
+	}
+	defer conn.Close()
+
+	client := pb.NewBlockchainServiceClient(conn)
+
+	var wg sync.WaitGroup
+	var blockFinalizeTimes []time.Duration
+
+	start := time.Now()
+
+	for b := 0; b < numBlocks; b++ {
+		wg.Add(1)
+		go func(blockIndex int) {
+			defer wg.Done()
+			blockStartTime := time.Now()
+
+			transactions := make([]*pb.Transaction, blockSize)
+			for j := 0; j < blockSize; j++ {
+				txID := fmt.Sprintf("tx%d", blockIndex*blockSize+j)
+				transactions[j] = &pb.Transaction{Id: txID}
+			}
+			batchRequest := &pb.TransactionBatchRequest{Transactions: transactions}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Simulate the sending of transactions as a batch
+			_, err := client.SubmitTransactionBatch(ctx, batchRequest)
+			if err != nil {
+				t.Errorf("Failed to submit transaction batch at index %d: %v", blockIndex, err)
+				return
+			}
+
+			// Simulate transaction processing time per transaction and block validation
+			time.Sleep(time.Duration(blockSize)*averageTransactionTime + averageBlockValidationTime + averageNetworkLatency)
+
+			mu.Lock()
+			blockFinalizeTimes = append(blockFinalizeTimes, time.Since(blockStartTime))
+			mu.Unlock()
+		}(b)
+	}
+
+	wg.Wait()
+
+	totalBlockTime := time.Duration(0)
+	for _, bt := range blockFinalizeTimes {
+		totalBlockTime += bt
+	}
+	averageBlockTime := totalBlockTime / time.Duration(len(blockFinalizeTimes))
+
+	elapsedOverall := time.Since(start)
+	t.Logf("Processed %d blocks in %s with average block time: %s", numBlocks, elapsedOverall, averageBlockTime)
+}
+
 // go test -v -timeout 30s -run ^TestTransactionThroughputWithoutGRPC$ github.com/thrylos-labs/thrylos/core
 
 func TestTransactionThroughputWithoutGRPC(t *testing.T) {

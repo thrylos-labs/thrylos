@@ -47,7 +47,6 @@ type Transaction struct {
 	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
 	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
 	GasFee           int      `json:"gasFee"`                  // Ensure this is an integer
-	Database         BlockchainDBInterface
 }
 
 var hashCache sync.Map // A thread-safe map to cache hash results
@@ -954,7 +953,7 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
-// Decouples the process of verifying a signature by accepting raw data and a signature string
+// // Decouples the process of verifying a signature by accepting raw data and a signature string
 // func VerifySignature(tx *Transaction, data []byte, signature string, publicKey ed25519.PublicKey) bool {
 // 	sigBytes, err := base64.StdEncoding.DecodeString(signature)
 // 	if err != nil {
