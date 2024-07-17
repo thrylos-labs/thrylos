@@ -1427,9 +1427,9 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 		log.Printf("Received registration request for public key: %s", req.PublicKey)
 
 		// Decode hex string to bytes
-		publicKeyBytes, err := hex.DecodeString(req.PublicKey)
+		publicKeyBytes, err := base64.StdEncoding.DecodeString(req.PublicKey)
 		if err != nil {
-			log.Printf("Invalid hex format for public key: %v", err)
+			log.Printf("Invalid base64 format for public key: %v", err)
 			http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
