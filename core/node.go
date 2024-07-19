@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1081,7 +1080,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		}
 
 		// Decode the Base64 encoded signature from the transaction data
-		sigBytes, err := base64.StdEncoding.DecodeString(transactionData.Signature)
+		sigBytes, err := base64.RawURLEncoding.DecodeString(transactionData.Signature) // Changed from StdEncoding to RawURLEncoding
 		if err != nil {
 			log.Printf("Error decoding signature: %v", err)
 			http.Error(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
@@ -1307,24 +1306,26 @@ func (node *Node) FundWalletHandler() http.HandlerFunc {
 	}
 }
 
-func publicKeyToBech32(pubKeyHex string) (string, error) {
-	pubKeyBytes, err := hex.DecodeString(pubKeyHex)
+func publicKeyToBech32(pubKeyBase64 string) (string, error) {
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKeyBase64)
 	if err != nil {
+		log.Printf("Failed to decode base64 public key: %v", err)
 		return "", err
 	}
 
-	// Convert byte array to 5-bit base32
 	data, err := bech32.ConvertBits(pubKeyBytes, 8, 5, true)
 	if err != nil {
+		log.Printf("Failed to convert bits for Bech32: %v", err)
 		return "", err
 	}
 
-	// Encode the data with Bech32 with the prefix "tl1"
 	bech32Address, err := bech32.Encode("tl1", data)
 	if err != nil {
+		log.Printf("Failed to encode Bech32 address: %v", err)
 		return "", err
 	}
 
+	log.Printf("Generated Bech32 address: %s", bech32Address)
 	return bech32Address, nil
 }
 
@@ -1416,7 +1417,7 @@ func (node *Node) CheckPublicKeyHandler() http.HandlerFunc {
 func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			PublicKey string `json:"publicKey"` // Public key expected to be in hex format
+			PublicKey string `json:"publicKey"` // Public key expected to be in base64 format
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			log.Printf("Failed to decode request: %v", err)
@@ -1426,7 +1427,7 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 
 		log.Printf("Received registration request for public key: %s", req.PublicKey)
 
-		// Decode hex string to bytes
+		// Decode base64 string to bytes
 		publicKeyBytes, err := base64.StdEncoding.DecodeString(req.PublicKey)
 		if err != nil {
 			log.Printf("Invalid base64 format for public key: %v", err)

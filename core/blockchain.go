@@ -7,7 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/gob"
-	"encoding/hex"
+
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +17,7 @@ import (
 	"time"
 
 	firebase "firebase.google.com/go"
-	"github.com/btcsuite/btcutil/bech32"
+
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 
@@ -182,22 +182,6 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	}
 
 	return blockchain, nil
-}
-
-func convertToBech32(hexAddr string) (string, error) {
-	data, err := hex.DecodeString(hexAddr)
-	if err != nil {
-		return "", err
-	}
-	convertedData, err := bech32.ConvertBits(data, 8, 5, true)
-	if err != nil {
-		return "", err
-	}
-	bech32Addr, err := bech32.Encode("tl1", convertedData)
-	if err != nil {
-		return "", err
-	}
-	return bech32Addr, nil
 }
 
 func (bc *Blockchain) AddTestPublicKeys() {
