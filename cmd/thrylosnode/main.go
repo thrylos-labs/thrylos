@@ -202,7 +202,7 @@ func main() {
 	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
 	mux.HandleFunc("/get-gas", node.GasEstimateHandler())
 	mux.HandleFunc("/get-transaction", node.GetTransactionHandler())
-	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
+	http.HandleFunc("/ws/balance", node.WebSocketBalanceHandler())
 	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
 	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
 	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())

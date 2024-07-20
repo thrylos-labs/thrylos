@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -178,6 +179,33 @@ func (bdb *BlockchainDB) hashData(data []byte) []byte {
 // AddUTXO adds a UTXO to the BadgerDB database.
 func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
 	return bdb.DB.Update(func(txn *badger.Txn) error {
+		// Retrieve the current index for the address
+		idxKey := fmt.Sprintf("index-%s", utxo.OwnerAddress)
+		item, err := txn.Get([]byte(idxKey))
+		if err != nil && err != badger.ErrKeyNotFound {
+			return err
+		}
+		var index int64 = 0
+		if err != badger.ErrKeyNotFound {
+			err = item.Value(func(val []byte) error {
+				index = int64(binary.BigEndian.Uint64(val))
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		// Increment the index for the next UTXO
+		index++
+		utxo.Index = int(index) // Convert int64 to int if your UTXO struct expects an int
+		indexBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(indexBytes, uint64(index))
+		if err := txn.Set([]byte(idxKey), indexBytes); err != nil {
+			return err
+		}
+
+		// Create UTXO with the new index
 		key := fmt.Sprintf("utxo-%s-%d", utxo.OwnerAddress, utxo.Index)
 		val, err := json.Marshal(utxo)
 		if err != nil {

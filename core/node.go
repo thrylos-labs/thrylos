@@ -15,11 +15,13 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/gibson042/canonicaljson-go"
+	"github.com/gorilla/websocket"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/api/option"
@@ -566,49 +568,63 @@ func (node *Node) GetBalance(address string) (int64, error) {
 	return int64(balance), err // Cast the balance to int64 if necessary
 }
 
-func (node *Node) GetBalanceHandler() http.HandlerFunc {
+var allowedOrigins = []string{
+	"https://node.thrylos.org", // This is your expected legitimate origin
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		for _, allowedOrigin := range allowedOrigins {
+			if strings.EqualFold(origin, allowedOrigin) {
+				return true
+			}
+		}
+		return false // Deny the connection if the origin is not in the allowed list
+	},
+}
+
+func (node *Node) WebSocketBalanceHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Println("GetBalanceHandler called")
-		address := r.URL.Query().Get("address")
-		if address == "" {
-			response := `{"error":"Address parameter is missing"}`
-			log.Println("Sending error response:", response)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(response))
-			return
-		}
-
-		// Optionally validate the address format here if necessary
-		if !isValidBech32Address(address) {
-			response := fmt.Sprintf(`{"error":"Invalid address format: %s"}`, address)
-			log.Println("Sending error response:", response)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(response))
-			return
-		}
-
-		log.Printf("Attempting to get balance for address: %s", address)
-		balance, err := node.Blockchain.GetBalance(address)
+		// Upgrade initial GET request to a WebSocket
+		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			response := fmt.Sprintf(`{"error":"Failed to get balance for address %s: %v"}`, address, err)
-			log.Println("Sending error response:", response)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(response))
+			log.Printf("Failed to upgrade to WebSocket: %v", err)
 			return
 		}
+		defer ws.Close()
 
-		log.Printf("Retrieved balance for address %s: %d", address, balance)
-		response := map[string]interface{}{
-			"address": address,
-			"balance": balance,
+		for {
+			// Parse blockchain address from query parameters
+			address := r.URL.Query().Get("address")
+			if address == "" {
+				log.Println("Blockchain address is required")
+				continue // Skip to next message if address is not provided
+			}
+
+			// Fetch the balance periodically or upon certain triggers
+			balance, exists := node.Blockchain.Stakeholders[address]
+			if !exists {
+				log.Printf("Blockchain address not registered: %s", address)
+				continue
+			}
+
+			// Create and send balance update
+			response := struct {
+				BlockchainAddress string `json:"blockchainAddress"`
+				Balance           int64  `json:"balance"`
+			}{
+				BlockchainAddress: address,
+				Balance:           balance,
+			}
+
+			if err := ws.WriteJSON(response); err != nil {
+				log.Printf("Error sending balance update: %v", err)
+				break
+			}
 		}
-		responseJSON, _ := json.Marshal(response)
-		log.Printf("Sending success response: %s", string(responseJSON))
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(responseJSON)
 	}
 }
 
@@ -1059,9 +1075,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
 		log.Printf("Raw request body: %s", string(bodyBytes))
-		log.Printf("Serialized data on backend: %s", string(bodyBytes))
 
 		// Deserialize the JSON into the expected structure
 		var transactionData shared.Transaction
@@ -1080,14 +1094,15 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		}
 
 		// Decode the Base64 encoded signature from the transaction data
-		sigBytes, err := base64.RawURLEncoding.DecodeString(transactionData.Signature) // Changed from StdEncoding to RawURLEncoding
+		sigBytes, err := base64.RawURLEncoding.DecodeString(transactionData.Signature)
 		if err != nil {
 			log.Printf("Error decoding signature: %v", err)
 			http.Error(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("Received transaction data: %+v", transactionData)
+		log.Printf("Decoded signature bytes: %x", sigBytes)
+		log.Printf("Verifying signature with public key: %x", publicKey)
 
 		// Verify the signature against the data using the public key
 		if !verifySignature(transactionData, sigBytes, publicKey) {
@@ -1346,13 +1361,13 @@ func GetBlockchainAddressByUID(app *firebase.App, uid string) (string, error) {
 
 	log.Printf("Document data for UID %s: %v", uid, doc.Data()) // Log the document data for debugging
 
-	publicKey, ok := doc.Data()["publicKey"].(string)
+	blockchainAddress, ok := doc.Data()["blockchainAddress"].(string)
 	if !ok {
-		log.Printf("Public key not found or invalid for user %s", uid)
-		return "", fmt.Errorf("public key not found or invalid for user %s", uid)
+		log.Printf("Blockchain address not found or invalid for user %s", uid)
+		return "", fmt.Errorf("blockchain address not found or invalid for user %s", uid)
 	}
 
-	return publicKey, nil
+	return blockchainAddress, nil
 }
 
 func (node *Node) GetBlockchainAddressHandler() http.HandlerFunc {
@@ -1366,7 +1381,7 @@ func (node *Node) GetBlockchainAddressHandler() http.HandlerFunc {
 		blockchainAddress, err := GetBlockchainAddressByUID(node.FirebaseApp, uid)
 		if err != nil {
 			log.Printf("Failed to retrieve blockchain address for UID %s: %v", uid, err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -1473,7 +1488,7 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 			OwnerAddress: bech32Address,
 			Amount:       initialBalance,
 		}
-		if err := node.Blockchain.Database.AddUTXO(utxo); err != nil {
+		if err := node.Blockchain.addUTXO(utxo); err != nil {
 			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1487,13 +1502,15 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 		log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
 
 		response := struct {
-			PublicKey         string `json:"publicKey"`
-			BlockchainAddress string `json:"blockchainAddress"`
-			Balance           int64  `json:"balance"`
+			PublicKey         string        `json:"publicKey"`
+			BlockchainAddress string        `json:"blockchainAddress"`
+			Balance           int64         `json:"balance"`
+			UTXOs             []shared.UTXO `json:"utxos"` // Add this line
 		}{
 			PublicKey:         req.PublicKey,
 			BlockchainAddress: bech32Address,
 			Balance:           initialBalance,
+			UTXOs:             []shared.UTXO{utxo}, // Assuming you store the UTXO in an array or similar structure
 		}
 
 		jsonResponse, err := json.Marshal(response)
@@ -1523,7 +1540,7 @@ func (node *Node) GetPublicKeyHandler() http.HandlerFunc {
 		}
 
 		response := map[string]string{
-			"publicKey": base64.StdEncoding.EncodeToString(publicKey), // Convert the public key to base64
+			"publicKey": base64.StdEncoding.EncodeToString(publicKey),
 		}
 
 		jsonResp, err := json.Marshal(response)
@@ -1569,7 +1586,7 @@ func (node *Node) Start() {
 
 	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
 
-	mux.HandleFunc("/get-balance", node.GetBalanceHandler())
+	http.HandleFunc("/ws/balance", node.WebSocketBalanceHandler())
 
 	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
 
