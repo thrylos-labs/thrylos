@@ -98,6 +98,7 @@ func main() {
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
 	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
 	httpsAddress := os.Getenv("HTTPS_NODE_ADDRESS")
+	wsAddress := os.Getenv("WS_NODE_ADDRESS") // Add WebSocket address
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
@@ -288,6 +289,20 @@ func main() {
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
+	}
+
+	// Start WebSocket server
+	wsServer := &http.Server{
+		Addr:    wsAddress,
+		Handler: http.HandlerFunc(node.WebSocketBalanceHandler()),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{loadCertificate()},
+		},
+	}
+
+	log.Printf("Starting WebSocket server on %s\n", wsServer.Addr)
+	if err := wsServer.ListenAndServeTLS("", ""); err != nil {
+		log.Fatalf("Failed to start WebSocket server: %v", err)
 	}
 }
 
