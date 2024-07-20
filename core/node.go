@@ -602,7 +602,7 @@ func (node *Node) WebSocketBalanceHandler() http.HandlerFunc {
 
 		log.Printf("WebSocket connection established for address: %s", address)
 
-		ticker := time.NewTicker(10 * time.Second) // Adjust the interval as needed
+		ticker := time.NewTicker(5 * time.Second) // Adjust the interval as needed
 		defer ticker.Stop()
 
 		done := make(chan struct{})
