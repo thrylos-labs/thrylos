@@ -15,7 +15,6 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	firebase "firebase.google.com/go"
@@ -568,21 +567,18 @@ func (node *Node) GetBalance(address string) (int64, error) {
 	return int64(balance), err // Cast the balance to int64 if necessary
 }
 
-var allowedOrigins = []string{
-	"https://node.thrylos.org", // This is your expected legitimate origin
-}
-
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
+		// Allow requests from specific origins
 		origin := r.Header.Get("Origin")
+		allowedOrigins := []string{"http://localhost:3000", "https://node.thrylos.org"}
+
 		for _, allowedOrigin := range allowedOrigins {
-			if strings.EqualFold(origin, allowedOrigin) {
+			if origin == allowedOrigin {
 				return true
 			}
 		}
-		return false // Deny the connection if the origin is not in the allowed list
+		return false
 	},
 }
 
@@ -596,33 +592,62 @@ func (node *Node) WebSocketBalanceHandler() http.HandlerFunc {
 		}
 		defer ws.Close()
 
+		// Parse blockchain address from query parameters
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			log.Println("Blockchain address is required")
+			ws.WriteMessage(websocket.TextMessage, []byte("Blockchain address is required"))
+			return
+		}
+
+		log.Printf("WebSocket connection established for address: %s", address)
+
+		ticker := time.NewTicker(10 * time.Second) // Adjust the interval as needed
+		defer ticker.Stop()
+
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+			for {
+				_, _, err := ws.ReadMessage()
+				if err != nil {
+					log.Printf("WebSocket read error: %v", err)
+					return
+				}
+			}
+		}()
+
 		for {
-			// Parse blockchain address from query parameters
-			address := r.URL.Query().Get("address")
-			if address == "" {
-				log.Println("Blockchain address is required")
-				continue // Skip to next message if address is not provided
-			}
+			select {
+			case <-done:
+				log.Printf("WebSocket connection closed for address: %s", address)
+				return
+			case <-ticker.C:
+				// Fetch the balance
+				balance, exists := node.Blockchain.Stakeholders[address]
+				if !exists {
+					log.Printf("Blockchain address not registered: %s", address)
+					if err := ws.WriteMessage(websocket.TextMessage, []byte("Blockchain address not registered")); err != nil {
+						log.Printf("Error sending message: %v", err)
+						return
+					}
+					continue
+				}
 
-			// Fetch the balance periodically or upon certain triggers
-			balance, exists := node.Blockchain.Stakeholders[address]
-			if !exists {
-				log.Printf("Blockchain address not registered: %s", address)
-				continue
-			}
+				// Create and send balance update
+				response := struct {
+					BlockchainAddress string `json:"blockchainAddress"`
+					Balance           int64  `json:"balance"`
+				}{
+					BlockchainAddress: address,
+					Balance:           balance,
+				}
 
-			// Create and send balance update
-			response := struct {
-				BlockchainAddress string `json:"blockchainAddress"`
-				Balance           int64  `json:"balance"`
-			}{
-				BlockchainAddress: address,
-				Balance:           balance,
-			}
-
-			if err := ws.WriteJSON(response); err != nil {
-				log.Printf("Error sending balance update: %v", err)
-				break
+				if err := ws.WriteJSON(response); err != nil {
+					log.Printf("Error sending balance update: %v", err)
+					return
+				}
 			}
 		}
 	}
