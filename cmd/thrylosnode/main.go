@@ -98,7 +98,7 @@ func main() {
 	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
 	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
 	httpsAddress := os.Getenv("HTTPS_NODE_ADDRESS")
-	wsAddress := os.Getenv("WS_NODE_ADDRESS") // Add WebSocket address
+	wsAddress := os.Getenv("WS_NODE_ADDRESS")
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
@@ -239,12 +239,38 @@ func main() {
 	// Wrap the mux with the CORS middleware
 	handler := corsMiddleware(mux)
 
+	// Define WebSocket server
+	wsServer := &http.Server{
+		Addr:    wsAddress,
+		Handler: http.HandlerFunc(node.WebSocketBalanceHandler()),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{loadCertificate()},
+		},
+	}
+
+	// Start the HTTP server for development
 	// Start the HTTP server for development
 	if os.Getenv("ENV") == "development" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", httpAddress)
 			if err := http.ListenAndServe(httpAddress, handler); err != nil {
 				log.Fatalf("Failed to start HTTP server: %v", err)
+			}
+		}()
+
+		// Start WebSocket server in development
+		go func() {
+			log.Printf("Starting WebSocket server on %s\n", wsServer.Addr)
+			if err := wsServer.ListenAndServeTLS("", ""); err != nil {
+				log.Fatalf("Failed to start WebSocket server: %v", err)
+			}
+		}()
+	} else {
+		// Start WebSocket server in production
+		log.Printf("Starting WebSocket server on %s\n", wsServer.Addr)
+		go func() {
+			if err := wsServer.ListenAndServeTLS("", ""); err != nil {
+				log.Fatalf("Failed to start WebSocket server: %v", err)
 			}
 		}()
 	}
@@ -291,19 +317,6 @@ func main() {
 		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
 	}
 
-	// Start WebSocket server
-	wsServer := &http.Server{
-		Addr:    wsAddress,
-		Handler: http.HandlerFunc(node.WebSocketBalanceHandler()),
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{loadCertificate()},
-		},
-	}
-
-	log.Printf("Starting WebSocket server on %s\n", wsServer.Addr)
-	if err := wsServer.ListenAndServeTLS("", ""); err != nil {
-		log.Fatalf("Failed to start WebSocket server: %v", err)
-	}
 }
 
 func loadTLSCredentials() credentials.TransportCredentials {
