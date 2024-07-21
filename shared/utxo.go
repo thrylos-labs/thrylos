@@ -15,12 +15,12 @@ import (
 // that has not been spent and can be used as an input in a new transaction. UTXOs are fundamental
 // to understanding a user's balance within the blockchain.
 type UTXO struct {
-	ID            string `json:"ID,omitempty"`                                         // Optional: ID might not always be necessary.
-	TransactionID string `json:"TransactionID" validate:"required,hexadecimal,len=64"` // Assumes transaction IDs are hexadecimal and 64 characters.
-	Index         int    `json:"Index" validate:"gte=0"`                               // Index must be greater than or equal to 0.
-	OwnerAddress  string `json:"OwnerAddress" validate:"required,bech32"`              // Updated validation tag
-	Amount        int64  `json:"Amount" validate:"gt=0"`                               // Amount must be greater than 0 to avoid zero or negative values.
-	IsSpent       bool   `json:"IsSpent"`
+	ID            string `json:"id,omitempty"`
+	TransactionID string `json:"transactionid" validate:"required,hexadecimal,len=64"`
+	Index         int    `json:"index" validate:"gte=0"`
+	OwnerAddress  string `json:"owneraddress" validate:"required,bech32"`
+	Amount        int64  `json:"amount" validate:"gt=0"`
+	IsSpent       bool   `json:"isspent"`
 }
 
 func validateBech32Address(address string) bool {

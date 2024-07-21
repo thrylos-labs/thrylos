@@ -36,17 +36,17 @@ import (
 // Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
 // and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
 type Transaction struct {
-	ID               string   `json:"id" valid:"required"` // Remove uuid4 validation
-	Timestamp        int64    `json:"timestamp" valid:"required"`
-	Inputs           []UTXO   `json:"inputs" valid:"required"`
-	Outputs          []UTXO   `json:"outputs" valid:"required"`
-	EncryptedInputs  []byte   `json:"encryptedInputs,omitempty" valid:"optional"`
-	EncryptedOutputs []byte   `json:"encryptedOutputs,omitempty" valid:"optional"`
-	Signature        string   `json:"signature"` // Changed to string to directly accept base64-encoded signatures
-	EncryptedAESKey  []byte   `json:"encryptedAESKey,omitempty" valid:"optional"`
-	PreviousTxIds    []string `json:"previousTxIds,omitempty" valid:"optional"`
-	Sender           string   `json:"sender" valid:"required"` // Remove ethereum_addr validation
-	GasFee           int      `json:"gasFee"`                  // Ensure this is an integer
+	ID               string   `json:"id"`
+	Timestamp        int64    `json:"timestamp"`
+	Inputs           []UTXO   `json:"inputs"`
+	Outputs          []UTXO   `json:"outputs"`
+	EncryptedInputs  []byte   `json:"encryptedinputs,omitempty"`
+	EncryptedOutputs []byte   `json:"encryptedoutputs,omitempty"`
+	Signature        string   `json:"signature"`
+	EncryptedAESKey  []byte   `json:"encryptedaeskey,omitempty"`
+	PreviousTxIds    []string `json:"previoustxids,omitempty"`
+	Sender           string   `json:"sender"`
+	GasFee           int      `json:"gasfee"`
 }
 
 var hashCache sync.Map // A thread-safe map to cache hash results
