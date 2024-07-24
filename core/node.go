@@ -15,11 +15,11 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
-	"github.com/gibson042/canonicaljson-go"
 	"github.com/gorilla/websocket"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -1091,47 +1091,49 @@ var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator 
 // 	return true
 // }
 
+func decodeBase64URLSafe(encodedSig string) ([]byte, error) {
+	// Check if the length of the encoded string is a multiple of 4
+	// If not, pad with '=' characters until it is
+	if m := len(encodedSig) % 4; m != 0 {
+		padding := 4 - m
+		encodedSig += strings.Repeat("=", padding) // Repeat '=' padding times
+	}
+	// Now decode the possibly padded Base64 URL safe string
+	return base64.URLEncoding.DecodeString(encodedSig)
+}
+
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Read the entire request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			log.Printf("Error reading request body: %v", err)
 			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("Raw request body: %s", string(bodyBytes))
 
-		// Deserialize the JSON into the expected structure
 		var transactionData shared.Transaction
 		if err := json.Unmarshal(bodyBytes, &transactionData); err != nil {
-			log.Printf("Failed to decode JSON: %v", err)
 			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Retrieve the public key based on the sender's address
 		publicKey, err := n.RetrievePublicKey(transactionData.Sender)
 		if err != nil {
-			log.Printf("Failed to retrieve public key: %v", err)
 			http.Error(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Decode the Base64 encoded signature from the transaction data
-		sigBytes, err := base64.RawURLEncoding.DecodeString(transactionData.Signature)
+		// Replace '-' with '+' and '_' with '/' for proper Base64 decoding
+		base64Signature := strings.Replace(transactionData.Signature, "-", "+", -1)
+		base64Signature = strings.Replace(base64Signature, "_", "/", -1)
+
+		sigBytes, err := base64.URLEncoding.DecodeString(base64Signature)
 		if err != nil {
 			log.Printf("Error decoding signature: %v", err)
 			http.Error(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("Decoded signature bytes: %x", sigBytes)
-		log.Printf("Verifying signature with public key: %x", publicKey)
-
-		// Verify the signature against the data using the public key
 		if !verifySignature(transactionData, sigBytes, publicKey) {
-			log.Printf("Invalid signature for transaction: %+v", transactionData)
 			http.Error(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
@@ -1178,25 +1180,16 @@ func sendResponseProcess(w http.ResponseWriter, message []byte) {
 
 // Signature verification function with detailed logging and excluding the signature field
 // This function should strip out the signature from the transaction data before verification.
-func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
-	// Remove signature from the data to be verified
-	txData.Signature = ""
 
-	canonicalData, err := canonicaljson.Marshal(txData)
+func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
+	txData.Signature = "" // Remove the signature from data to be verified
+	canonicalData, err := json.Marshal(txData)
 	if err != nil {
-		log.Printf("Error serializing data for verification: %v", err)
+		log.Printf("Error marshaling data for verification: %v", err)
 		return false
 	}
 
-	log.Printf("Canonical data being verified (excluding signature): %s", string(canonicalData))
-	log.Printf("Signature bytes: %v", sigBytes)
-	log.Printf("Public key used: %v", publicKey)
-
-	isValid := ed25519.Verify(publicKey, canonicalData, sigBytes)
-	if !isValid {
-		log.Printf("Signature verification failed for modified data: %s", string(canonicalData))
-	}
-	return isValid
+	return ed25519.Verify(publicKey, canonicalData, sigBytes)
 }
 
 // Helper function to fetch gas estimate
