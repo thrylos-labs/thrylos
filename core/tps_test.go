@@ -287,14 +287,17 @@ func TestTransactionCosts(t *testing.T) {
 	defer conn.Close()
 	client := pb.NewBlockchainServiceClient(conn)
 
+	// Simulated balance for testing
+	const testBalance = 5000
+
 	testCases := []struct {
 		name        string
 		dataSize    int
 		expectedGas int
 	}{
-		{"SmallData", smallDataSize, CalculateGas(smallDataSize)},
-		{"MediumData", mediumDataSize, CalculateGas(mediumDataSize)},
-		{"LargeData", largeDataSize, CalculateGas(largeDataSize)},
+		{"SmallData", smallDataSize, CalculateGas(smallDataSize, testBalance)},
+		{"MediumData", mediumDataSize, CalculateGas(mediumDataSize, testBalance)},
+		{"LargeData", largeDataSize, CalculateGas(largeDataSize, testBalance)},
 	}
 
 	for _, tc := range testCases {

@@ -78,7 +78,7 @@ type TransactionContext struct {
 
 // GasEstimator defines an interface for fetching gas estimates.
 type GasEstimator interface {
-	FetchGasEstimate(dataSize int) (int, error)
+	FetchGasEstimate(dataSize int, balance int64) (int, error)
 }
 
 // NewTransactionContext creates a new context for a database transaction.
@@ -376,8 +376,11 @@ func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs [
 	// Calculate total data size
 	totalDataSize := len(serializedInputs) + len(serializedOutputs)
 
+	// Example fixed balance value
+	balance := int64(1000) // You can set this to a value that makes sense in your context
+
 	// Fetch gas estimate
-	gasFee, err := estimator.FetchGasEstimate(totalDataSize)
+	gasFee, err := estimator.FetchGasEstimate(totalDataSize, balance)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch gas estimate: %v", err)
 	}
@@ -969,12 +972,12 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 
 // Process batched transactions
 
-func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator) error {
+func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
 	// Calculate total data size from the already prepared transaction data
 	totalDataSize := len(tx.EncryptedInputs) + len(tx.EncryptedOutputs)
 
 	// Fetch gas estimate and convert to int64 if necessary
-	gasFee, err := estimator.FetchGasEstimate(totalDataSize)
+	gasFee, err := estimator.FetchGasEstimate(totalDataSize, balance)
 	if err != nil {
 		return fmt.Errorf("failed to fetch gas estimate: %v", err)
 	}

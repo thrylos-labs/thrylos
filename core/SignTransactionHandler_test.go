@@ -44,8 +44,11 @@ func TestFetchGasEstimate(t *testing.T) {
 	// Create a Node instance with the URL of the mock server
 	node := &Node{GasEstimateURL: server.URL + "/mock-gas-estimate"}
 
+	dataSize := 10
+	balance := int64(1000) // Example balance, replace with an appropriate value for your test
+
 	// Now test FetchGasEstimate
-	gasFee, err := node.FetchGasEstimate(10) // This should match what the server expects
+	gasFee, err := node.FetchGasEstimate(dataSize, balance) // Provide both arguments
 	if err != nil {
 		t.Fatalf("Failed to fetch gas estimate: %v", err)
 	}

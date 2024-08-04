@@ -230,10 +230,25 @@ func (node *Node) CollectInputsForTransaction(amount int64, senderAddress string
 }
 
 // CalculateGas computes the gas fee based on the size of the transaction data.
-func CalculateGas(dataSize int) int {
-	baseFee := 10   // Base fee for transaction processing
-	perByteFee := 1 // Fee per byte of transaction data
-	return baseFee + (dataSize * perByteFee)
+const (
+	BaseGasFee = 1 // Base fee in the smallest unit of your currency
+	MaxGasFee  = 5 // Maximum gas fee
+)
+
+func CalculateGas(dataSize int, balance int64) int {
+	// Start with the base fee
+	gasFee := BaseGasFee
+
+	// Add a very small amount based on data size
+	// This adds 1 to the fee for every 1000 bytes, up to the max fee
+	additionalFee := dataSize / 1000
+	gasFee += additionalFee
+
+	if gasFee > MaxGasFee {
+		gasFee = MaxGasFee
+	}
+
+	return gasFee
 }
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
@@ -1089,9 +1104,17 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			return
 		}
 
+		// Fetch the balance for the sender
+		balance, err := n.GetBalance(transactionData.Sender)
+		if err != nil {
+			log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
+			http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		var gasEstimate int32
 		if transactionData.GasFee == 0 {
-			estimate, err := n.FetchGasEstimate(0)
+			estimate, err := n.FetchGasEstimate(len(transactionData.EncryptedInputs)+len(transactionData.EncryptedOutputs), balance)
 			if err != nil {
 				http.Error(w, "Failed to fetch gas estimate: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -1101,38 +1124,32 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			gasEstimate = int32(transactionData.GasFee)
 		}
 
-		// Fetch all UTXOs
-		utxos, err := n.Blockchain.GetAllUTXOs()
-		if err != nil {
-			log.Printf("Failed to fetch UTXOs: %v", err)
-			http.Error(w, "Failed to fetch UTXOs: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Fetch the balance for the sender
-		balance, err := n.Blockchain.Database.GetBalance(transactionData.Sender, utxos)
-		if err != nil {
-			log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
-			http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
 		// Calculate total output amount
 		var totalOutputAmount int64
 		for _, output := range transactionData.Outputs {
 			totalOutputAmount += output.Amount
 		}
+
+		const MinTransactionAmount = 10 // Adjust as needed
+
+		if totalOutputAmount < MinTransactionAmount {
+			http.Error(w, fmt.Sprintf("Transaction amount too low. Minimum is %d", MinTransactionAmount), http.StatusBadRequest)
+			return
+		}
+
 		totalCost := totalOutputAmount + int64(gasEstimate)
 
 		log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
 
 		if balance < totalCost {
-			log.Printf("Not enough balance to cover gas fees. Balance: %d, Total Cost: %d", balance, totalCost)
-			http.Error(w, "Failed to process transaction: not enough balance to cover gas fees", http.StatusInternalServerError)
+			errorMsg := fmt.Sprintf("Insufficient balance. Required: %d, Available: %d, Transaction Amount: %d, Gas Fee: %d",
+				totalCost, balance, totalOutputAmount, gasEstimate)
+			log.Printf(errorMsg)
+			http.Error(w, errorMsg, http.StatusBadRequest)
 			return
 		}
 
-		if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n); err != nil {
+		if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
 			log.Printf("Failed to process transaction: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
 			return
@@ -1218,8 +1235,8 @@ func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed255
 }
 
 // Helper function to fetch gas estimate
-func (n *Node) FetchGasEstimate(dataSize int) (int, error) {
-	url := fmt.Sprintf("%s?dataSize=%d", "https://node.thrylos.org/gas-fee", dataSize)
+func (n *Node) FetchGasEstimate(dataSize int, balance int64) (int, error) {
+	url := fmt.Sprintf("%s?dataSize=%d&balance=%d", "https://node.thrylos.org/gas-fee", dataSize, balance)
 	log.Printf("Fetching gas estimate from URL: %s", url)
 
 	resp, err := http.Get(url)
@@ -1273,10 +1290,11 @@ func (node *Node) GasEstimateHandler() http.HandlerFunc {
 			return
 		}
 
-		// Calculate gas using the provided data size
-		gas := CalculateGas(dataSize)
+		// Note: We're not using balance for this calculation anymore
+		gas := CalculateGas(dataSize, 0)
 
-		// Prepare the response
+		log.Printf("Calculated gas fee for data size %d: %d", dataSize, gas)
+
 		response := struct {
 			GasFee int `json:"gasFee"`
 		}{

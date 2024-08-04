@@ -14,7 +14,7 @@ import (
 
 type SimpleGasEstimator struct{}
 
-func (e *SimpleGasEstimator) FetchGasEstimate(dataSize int) (int, error) {
+func (e *SimpleGasEstimator) FetchGasEstimate(dataSize int, balance int64) (int, error) {
 	// For simplicity, return a constant gas fee
 	return 1, nil
 }
