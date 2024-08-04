@@ -565,17 +565,16 @@ func (node *Node) NetworkHealthHandler() http.HandlerFunc {
 }
 
 func (node *Node) GetBalance(address string) (int64, error) {
-	allUTXOs := node.Blockchain.GetAllUTXOs()
+	utxos, err := node.Blockchain.GetAllUTXOs()
+	if err != nil {
+		log.Printf("Error fetching UTXOs: %v", err)
+		return 0, err
+	}
 
-	// Fetch UTXOs for the user
-	userUTXOs := node.Blockchain.GetUTXOsForUser(address, allUTXOs)
-
-	// Calculate balance
-	var balance int64
-	for _, utxo := range userUTXOs {
-		if !utxo.IsSpent {
-			balance += utxo.Amount
-		}
+	balance, err := node.Blockchain.Database.GetBalance(address, utxos)
+	if err != nil {
+		log.Printf("Error calculating balance: %v", err)
+		return 0, err
 	}
 
 	log.Printf("Final balance for %s: %d", address, balance)
@@ -1526,6 +1525,8 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 
 		// Ensure there are sufficient funds in the genesis account
 		initialBalance := int64(70)
+		log.Printf("Initial balance set to: %d", initialBalance)
+
 		genesisAccount := node.Blockchain.GenesisAccount
 		currentBalance, genesisExists := node.Blockchain.Stakeholders[genesisAccount]
 		if !genesisExists || currentBalance < initialBalance {
@@ -1546,6 +1547,8 @@ func (node *Node) RegisterWalletHandler() http.HandlerFunc {
 			Amount:        initialBalance,
 			IsSpent:       false,
 		}
+		log.Printf("Created UTXO: %+v", utxo)
+
 		if err := node.Blockchain.addUTXO(utxo); err != nil {
 			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
 			return

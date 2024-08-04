@@ -322,18 +322,12 @@ func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) 
 	return utxos, nil
 }
 
-func (bc *Blockchain) GetAllUTXOs() map[string]shared.UTXO {
-	return shared.GetAllUTXOs() // Assuming UTXOs is a map of all UTXOs
+func (bc *Blockchain) GetAllUTXOs() (map[string][]shared.UTXO, error) {
+	return bc.Database.GetAllUTXOs()
 }
 
-func (bc *Blockchain) GetUTXOsForUser(address string, allUTXOs map[string]shared.UTXO) []shared.UTXO {
-	var userUTXOs []shared.UTXO
-	for _, utxo := range allUTXOs {
-		if utxo.OwnerAddress == address && !utxo.IsSpent {
-			userUTXOs = append(userUTXOs, utxo)
-		}
-	}
-	return userUTXOs
+func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
+	return bc.Database.GetUTXOsForUser(address)
 }
 
 func (bc *Blockchain) GetBalance(address string) (int, error) {

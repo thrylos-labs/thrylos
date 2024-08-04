@@ -475,14 +475,16 @@ func (bdb *BlockchainDB) PublicKeyExists(address string) (bool, error) {
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.
 // This function is useful for determining the spendable balance of a blockchain account.
-func (bdb *BlockchainDB) GetBalance(address string, utxos map[string]shared.UTXO) (int64, error) {
-	userUTXOs, err := bdb.Blockchain.GetUTXOsForUser(address, utxos)
-	if err != nil {
-		return 0, err
+func (bdb *BlockchainDB) GetBalance(address string, utxos map[string][]shared.UTXO) (int64, error) {
+	var balance int64
+	userUTXOs, ok := utxos[address]
+	if !ok {
+		return 0, nil
 	}
-	var balance int64 // Declare balance as int64
 	for _, utxo := range userUTXOs {
-		balance += utxo.Amount
+		if !utxo.IsSpent {
+			balance += utxo.Amount
+		}
 	}
 	return balance, nil
 }
@@ -572,42 +574,31 @@ func (bdb *BlockchainDB) GetUTXOsByAddress(address string) (map[string][]shared.
 }
 
 func (bdb *BlockchainDB) GetAllUTXOs() (map[string][]shared.UTXO, error) {
-	utxos := make(map[string][]shared.UTXO)
-
+	allUTXOs := make(map[string][]shared.UTXO)
 	err := bdb.DB.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = []byte("utxo-")
-		it := txn.NewIterator(opts)
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
 		defer it.Close()
 
-		for it.Rewind(); it.ValidForPrefix(opts.Prefix); it.Next() {
+		prefix := []byte("utxo-")
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
 				var utxo shared.UTXO
 				if err := json.Unmarshal(val, &utxo); err != nil {
-					return fmt.Errorf("error unmarshalling UTXO: %v", err)
+					return err
 				}
-
-				key := string(item.Key())
-				// Assuming the UTXO ID is part of the key, and the key format is "utxo-<address>-<index>"
-				// Here we just use the full key to categorize UTXOs under unique keys
-				utxos[key] = append(utxos[key], utxo)
-
+				if !utxo.IsSpent {
+					allUTXOs[utxo.OwnerAddress] = append(allUTXOs[utxo.OwnerAddress], utxo)
+				}
 				return nil
 			})
 			if err != nil {
 				return err
 			}
 		}
-
 		return nil
 	})
-
-	if err != nil {
-		return nil, fmt.Errorf("error retrieving UTXOs: %v", err)
-	}
-
-	return utxos, nil
+	return allUTXOs, err
 }
 
 func (bdb *BlockchainDB) GetTransactionByID(txID string, recipientPrivateKey *rsa.PrivateKey) (*shared.Transaction, error) {
@@ -1042,12 +1033,30 @@ func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, 
 	return utxo, nil
 }
 
-func (bdb *BlockchainDB) GetUTXOsForUser(address string, utxos map[string]shared.UTXO) ([]shared.UTXO, error) {
-	var userUTXOs []shared.UTXO
-	for _, utxo := range utxos {
-		if utxo.OwnerAddress == address {
-			userUTXOs = append(userUTXOs, utxo)
+func (bdb *BlockchainDB) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
+	userUTXOs := []shared.UTXO{}
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		prefix := []byte("utxo-" + address + "-")
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var utxo shared.UTXO
+				if err := json.Unmarshal(val, &utxo); err != nil {
+					return err
+				}
+				if !utxo.IsSpent {
+					userUTXOs = append(userUTXOs, utxo)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
 		}
-	}
-	return userUTXOs, nil
+		return nil
+	})
+	return userUTXOs, err
 }
