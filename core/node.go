@@ -1101,11 +1101,19 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			gasEstimate = int32(transactionData.GasFee)
 		}
 
+		// Fetch all UTXOs
+		utxos, err := n.Blockchain.GetAllUTXOs()
+		if err != nil {
+			log.Printf("Failed to fetch UTXOs: %v", err)
+			http.Error(w, "Failed to fetch UTXOs: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		// Fetch the balance for the sender
-		balance, exists := n.Blockchain.Stakeholders[transactionData.Sender]
-		if !exists {
-			log.Printf("Blockchain address not registered: %s", transactionData.Sender)
-			http.Error(w, "Blockchain address not registered", http.StatusInternalServerError)
+		balance, err := n.Blockchain.Database.GetBalance(transactionData.Sender, utxos)
+		if err != nil {
+			log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
+			http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
