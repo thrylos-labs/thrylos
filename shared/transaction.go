@@ -992,12 +992,6 @@ func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publi
 		tx.Outputs[0].Amount -= intGasFee
 	}
 
-	// Validate transaction signature
-	if err := VerifyTransactionSignature(tx, publicKey); err != nil {
-		// Handle the error appropriately
-		return fmt.Errorf("invalid transaction signature: %v", err)
-	}
-
 	// Select tips (previous transactions) to link this transaction
 	tips, err := selectTips()
 	if err != nil {
