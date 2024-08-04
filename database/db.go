@@ -7,7 +7,6 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -20,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"golang.org/x/crypto/ed25519"
 
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
@@ -1042,14 +1043,11 @@ func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, 
 }
 
 func (bdb *BlockchainDB) GetUTXOsForUser(address string, utxos map[string]shared.UTXO) ([]shared.UTXO, error) {
-	// I am using provided utxos map as it is one of the parameters in your interface
-	// If utxos should be obtained from the BlockchainDB's utxos, replace utxos with bdb.utxos
-	userUTXOs := []shared.UTXO{}
+	var userUTXOs []shared.UTXO
 	for _, utxo := range utxos {
 		if utxo.OwnerAddress == address {
 			userUTXOs = append(userUTXOs, utxo)
 		}
 	}
-
 	return userUTXOs, nil
 }

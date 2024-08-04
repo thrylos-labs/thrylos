@@ -2,7 +2,6 @@ package core
 
 import (
 	"crypto"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -11,6 +10,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ed25519"
 
 	// ensure this import path is correct
 

@@ -3,13 +3,14 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"io/ioutil"
 	"log"
 	"os"
 	"testing"
+
+	"golang.org/x/crypto/ed25519"
 
 	firebase "firebase.google.com/go"
 	"github.com/thrylos-labs/thrylos/shared"

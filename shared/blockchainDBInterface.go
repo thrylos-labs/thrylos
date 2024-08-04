@@ -1,8 +1,9 @@
 package shared
 
 import (
-	"crypto/ed25519"
 	"crypto/rsa"
+
+	"golang.org/x/crypto/ed25519"
 
 	"github.com/thrylos-labs/thrylos"
 )

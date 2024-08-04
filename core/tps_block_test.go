@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -10,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ed25519"
 
 	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
 

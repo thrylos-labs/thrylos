@@ -3,10 +3,13 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	stdEd25519 "crypto/ed25519"
 	"database/sql"
 	"encoding/base64"
 	"encoding/gob"
+
+	"golang.org/x/crypto/ed25519"
+	xEd25519 "golang.org/x/crypto/ed25519"
 
 	"encoding/json"
 	"errors"
@@ -156,6 +159,8 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	// Optionally, add test UTXOs for development and testing
 	blockchain.AddTestPublicKeys()
 
+	blockchain.TestEd25519Implementations()
+
 	// Serialize the genesis block and insert into the database
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
@@ -182,6 +187,27 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	}
 
 	return blockchain, nil
+}
+
+func (bc *Blockchain) TestEd25519Implementations() {
+	// Generate a key pair
+	publicKey, privateKey, _ := ed25519.GenerateKey(nil)
+
+	// Data to sign
+	message := []byte("Test message")
+
+	// Sign with x/crypto/ed25519
+	signature := ed25519.Sign(privateKey, message)
+
+	// Verify with both implementations
+	stdResult := stdEd25519.Verify(publicKey, message, signature)
+	xResult := xEd25519.Verify(publicKey, message, signature)
+
+	log.Printf("Test message: %s", message)
+	log.Printf("Test signature: %x", signature)
+	log.Printf("Test public key: %x", publicKey)
+	log.Printf("Standard library verification result: %v", stdResult)
+	log.Printf("x/crypto/ed25519 verification result: %v", xResult)
 }
 
 func (bc *Blockchain) AddTestPublicKeys() {
@@ -294,6 +320,20 @@ func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) 
 	}
 	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
 	return utxos, nil
+}
+
+func (bc *Blockchain) GetAllUTXOs() map[string]shared.UTXO {
+	return shared.GetAllUTXOs() // Assuming UTXOs is a map of all UTXOs
+}
+
+func (bc *Blockchain) GetUTXOsForUser(address string, allUTXOs map[string]shared.UTXO) []shared.UTXO {
+	var userUTXOs []shared.UTXO
+	for _, utxo := range allUTXOs {
+		if utxo.OwnerAddress == address && !utxo.IsSpent {
+			userUTXOs = append(userUTXOs, utxo)
+		}
+	}
+	return userUTXOs
 }
 
 func (bc *Blockchain) GetBalance(address string) (int, error) {

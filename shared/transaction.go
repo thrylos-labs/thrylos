@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -23,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ed25519"
 
 	"github.com/asaskevich/govalidator"
 	"github.com/dgraph-io/badger"
@@ -276,15 +277,17 @@ func HashData(data []byte) []byte {
 }
 
 func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
-
+	// Decode the Base64 signature
 	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
 	if err != nil {
 		log.Fatalf("Failed to decode signature: %v", err)
 		// Handle error appropriately
 	}
+
 	if tx == nil {
 		return nil
 	}
+
 	return &thrylos.Transaction{
 		Id:            tx.ID,
 		Timestamp:     tx.Timestamp,
@@ -292,6 +295,7 @@ func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
 		Outputs:       SharedToThrylosOutputs(tx.Outputs),
 		Signature:     signatureBytes,
 		PreviousTxIds: tx.PreviousTxIds,
+		GasFee:        int32(tx.GasFee), // Convert int to int32
 	}
 }
 

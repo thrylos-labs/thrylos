@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+
+	"golang.org/x/crypto/ed25519"
 
 	"github.com/thrylos-labs/thrylos"
 	pb "github.com/thrylos-labs/thrylos"
