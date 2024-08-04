@@ -504,6 +504,12 @@ func (db *BlockchainDB) RollbackTransaction(txn *shared.TransactionContext) erro
 }
 
 func (db *BlockchainDB) SetTransaction(txn *shared.TransactionContext, key []byte, value []byte) error {
+	if txn == nil || txn.Txn == nil {
+		return fmt.Errorf("invalid transaction context")
+	}
+	if len(key) == 0 {
+		return fmt.Errorf("key cannot be empty")
+	}
 	return txn.Txn.Set(key, value)
 }
 

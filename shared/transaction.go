@@ -973,6 +973,17 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 // Process batched transactions
 
 func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
+	// Nil checks
+	if tx == nil {
+		return fmt.Errorf("transaction is nil")
+	}
+	if db == nil {
+		return fmt.Errorf("database interface is nil")
+	}
+	if estimator == nil {
+		return fmt.Errorf("gas estimator is nil")
+	}
+
 	// Calculate total data size from the already prepared transaction data
 	totalDataSize := len(tx.EncryptedInputs) + len(tx.EncryptedOutputs)
 
@@ -984,13 +995,13 @@ func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publi
 	intGasFee := int64(gasFee) // Assuming FetchGasEstimate returns int, convert to int64
 
 	// Adjust the transaction outputs for the gas fee
-	if len(tx.Outputs) > 0 && intGasFee > int64(tx.Outputs[0].Amount) {
-		// Ensure there's enough amount to deduct the gas fee
-		return fmt.Errorf("not enough balance to cover gas fees")
+	if len(tx.Outputs) == 0 {
+		return fmt.Errorf("transaction has no outputs")
 	}
-	if len(tx.Outputs) > 0 {
-		tx.Outputs[0].Amount -= intGasFee
+	if intGasFee > int64(tx.Outputs[0].Amount) {
+		return fmt.Errorf("not enough balance to cover gas fees: required %d, available %d", intGasFee, tx.Outputs[0].Amount)
 	}
+	tx.Outputs[0].Amount -= intGasFee
 
 	// Select tips (previous transactions) to link this transaction
 	tips, err := selectTips()
@@ -1015,6 +1026,10 @@ func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publi
 }
 
 func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterface) error {
+	if db == nil {
+		return fmt.Errorf("database interface is nil")
+	}
+
 	if len(transactions) == 0 {
 		return nil // No transactions to process
 	}
@@ -1022,24 +1037,34 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 	// Start a transaction
 	txn, err := db.BeginTransaction()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin database transaction: %v", err)
 	}
-	defer db.RollbackTransaction(txn) // Ensure rollback if not committed
+
+	committed := false
+	defer func() {
+		if !committed {
+			db.RollbackTransaction(txn)
+		}
+	}()
 
 	// Use a channel to process transactions asynchronously
 	txChannel := make(chan *Transaction, len(transactions))
-	defer close(txChannel)
+	errorChannel := make(chan error, len(transactions))
 
 	// Worker pool to handle transactions concurrently
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ { // Number of workers, tune this according to your needs
+	workerCount := 5 // Number of workers, tune this according to your needs
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for tx := range txChannel {
-				if err := processSingleTransaction(txn, tx, db); err != nil {
-					log.Printf("Failed to process transaction: %v", err)
+				if tx == nil {
+					errorChannel <- fmt.Errorf("received nil transaction")
 					continue
+				}
+				if err := processSingleTransaction(txn, tx, db); err != nil {
+					errorChannel <- fmt.Errorf("failed to process transaction: %v", err)
 				}
 			}
 		}()
@@ -1049,12 +1074,28 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 	for _, tx := range transactions {
 		txChannel <- tx
 	}
+	close(txChannel)
+
+	// Wait for all workers to finish
 	wg.Wait()
+	close(errorChannel)
+
+	// Collect any errors
+	var errors []error
+	for err := range errorChannel {
+		errors = append(errors, err)
+	}
+
+	if len(errors) > 0 {
+		// If there were any errors, rollback and return them
+		return fmt.Errorf("transaction processing failed: %v", errors)
+	}
 
 	// Commit all transaction changes as a single batch
 	if err := db.CommitTransaction(txn); err != nil {
 		return fmt.Errorf("transaction commit failed: %v", err)
 	}
+	committed = true
 
 	return nil
 }
