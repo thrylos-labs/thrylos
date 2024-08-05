@@ -1059,13 +1059,9 @@ var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator 
 
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
-		w.Header().Set("Access-Control-Allow-Methods", "POST")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
+			sendErrorResponse(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -1073,20 +1069,20 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 
 		var transactionData shared.Transaction
 		if err := json.Unmarshal(bodyBytes, &transactionData); err != nil {
-			http.Error(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
+			sendErrorResponse(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		publicKey, err := n.RetrievePublicKey(transactionData.Sender)
 		if err != nil {
-			http.Error(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
+			sendErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		sigBytes, err := base64.StdEncoding.DecodeString(transactionData.Signature)
 		if err != nil {
 			log.Printf("Error decoding signature: %v", err)
-			http.Error(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
+			sendErrorResponse(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -1094,7 +1090,7 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 		log.Printf("Signature verification result: %v", verifySignature(transactionData, sigBytes, publicKey))
 
 		if !verifySignature(transactionData, sigBytes, publicKey) {
-			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+			sendErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
 			return
 		}
 
@@ -1163,19 +1159,25 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 
 		if err := n.BroadcastTransaction(thrylosTx); err != nil {
 			log.Printf("Failed to broadcast transaction: %v", err)
-			http.Error(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
+			sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		sendResponseProcess(w, []byte(fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)))
+		sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
 	}
 }
 
+func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 // Helper function to send JSON responses
-func sendResponseProcess(w http.ResponseWriter, message []byte) {
+func sendResponseProcess(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(message)
+	json.NewEncoder(w).Encode(data)
 }
 
 func canonicalizeJson(v interface{}) interface{} {
@@ -1231,7 +1233,8 @@ func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed255
 	log.Printf("Signature verification result: %v", result)
 
 	// Always return true to bypass signature verification
-	return true
+	return ed25519.Verify(publicKey, jsonData, sigBytes)
+
 }
 
 // Helper function to fetch gas estimate

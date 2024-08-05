@@ -2,6 +2,7 @@ package shared
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -1029,8 +1030,7 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 	if db == nil {
 		return fmt.Errorf("database interface is nil")
 	}
-
-	if len(transactions) == 0 {
+	if transactions == nil || len(transactions) == 0 {
 		return nil // No transactions to process
 	}
 
@@ -1039,13 +1039,15 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 	if err != nil {
 		return fmt.Errorf("failed to begin database transaction: %v", err)
 	}
-
 	committed := false
 	defer func() {
 		if !committed {
 			db.RollbackTransaction(txn)
 		}
 	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Use a channel to process transactions asynchronously
 	txChannel := make(chan *Transaction, len(transactions))
@@ -1058,13 +1060,17 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for tx := range txChannel {
-				if tx == nil {
-					errorChannel <- fmt.Errorf("received nil transaction")
-					continue
-				}
-				if err := processSingleTransaction(txn, tx, db); err != nil {
-					errorChannel <- fmt.Errorf("failed to process transaction: %v", err)
+			for {
+				select {
+				case tx, ok := <-txChannel:
+					if !ok {
+						return
+					}
+					if err := processSingleTransaction(txn, tx, db); err != nil {
+						errorChannel <- fmt.Errorf("failed to process transaction: %v", err)
+					}
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -1072,18 +1078,31 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 
 	// Dispatch transactions to workers
 	for _, tx := range transactions {
-		txChannel <- tx
+		if tx == nil {
+			errorChannel <- fmt.Errorf("skipped nil transaction")
+			continue
+		}
+		select {
+		case txChannel <- tx:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+
 	close(txChannel)
 
 	// Wait for all workers to finish
-	wg.Wait()
-	close(errorChannel)
+	go func() {
+		wg.Wait()
+		close(errorChannel)
+	}()
 
 	// Collect any errors
 	var errors []error
 	for err := range errorChannel {
 		errors = append(errors, err)
+		// Optionally, cancel context on first error
+		// cancel()
 	}
 
 	if len(errors) > 0 {
@@ -1095,12 +1114,41 @@ func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterf
 	if err := db.CommitTransaction(txn); err != nil {
 		return fmt.Errorf("transaction commit failed: %v", err)
 	}
-	committed = true
 
+	committed = true
 	return nil
 }
 
 func processSingleTransaction(txn *TransactionContext, tx *Transaction, db BlockchainDBInterface) error {
+	if txn == nil {
+		return fmt.Errorf("transaction context is nil")
+	}
+	if tx == nil {
+		return fmt.Errorf("transaction is nil")
+	}
+	if db == nil {
+		return fmt.Errorf("database interface is nil")
+	}
+
+	// Validate transaction ID
+	if tx.ID == "" {
+		return fmt.Errorf("transaction ID is empty")
+	}
+
+	// Check if transaction already exists
+	exists, err := db.TransactionExists(txn, tx.ID)
+	if err != nil {
+		return fmt.Errorf("error checking transaction existence: %v", err)
+	}
+	if exists {
+		return fmt.Errorf("transaction %s already processed", tx.ID)
+	}
+
+	// Validate inputs and outputs
+	if err := validateInputsAndOutputs(tx); err != nil {
+		return fmt.Errorf("invalid transaction: %v", err)
+	}
+
 	// Serialize the transaction data to JSON
 	txJSON, err := json.Marshal(tx)
 	if err != nil {
@@ -1115,5 +1163,32 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		return fmt.Errorf("error storing transaction: %v", err)
 	}
 
+	return nil
+}
+
+func validateInputsAndOutputs(tx *Transaction) error {
+	if len(tx.Inputs) == 0 {
+		return fmt.Errorf("transaction has no inputs")
+	}
+	if len(tx.Outputs) == 0 {
+		return fmt.Errorf("transaction has no outputs")
+	}
+
+	var inputSum, outputSum int64
+	for _, input := range tx.Inputs {
+		if input.Amount <= 0 {
+			return fmt.Errorf("invalid input amount: %d", input.Amount)
+		}
+		inputSum += input.Amount
+	}
+	for _, output := range tx.Outputs {
+		if output.Amount <= 0 {
+			return fmt.Errorf("invalid output amount: %d", output.Amount)
+		}
+		outputSum += output.Amount
+	}
+	if inputSum != outputSum {
+		return fmt.Errorf("inputs (%d) and outputs (%d) are not balanced", inputSum, outputSum)
+	}
 	return nil
 }

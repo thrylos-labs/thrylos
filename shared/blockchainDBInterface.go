@@ -39,4 +39,5 @@ type BlockchainDBInterface interface {
 	GetAllUTXOs() (map[string][]UTXO, error)
 	GetUTXOsForAddress(address string) ([]UTXO, error)
 	AddUTXO(utxo UTXO) error // Add this line
+	TransactionExists(txn *TransactionContext, txID string) (bool, error)
 }

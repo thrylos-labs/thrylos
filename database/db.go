@@ -473,6 +473,22 @@ func (bdb *BlockchainDB) PublicKeyExists(address string) (bool, error) {
 	return exists, nil
 }
 
+func (bdb *BlockchainDB) TransactionExists(txn *shared.TransactionContext, txID string) (bool, error) {
+	if txn == nil || txn.Txn == nil {
+		return false, fmt.Errorf("invalid transaction context")
+	}
+
+	key := []byte("transaction-" + txID)
+	_, err := txn.Txn.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("error checking transaction existence: %v", err)
+	}
+	return true, nil
+}
+
 // GetBalance calculates the total balance for a given address based on its UTXOs.
 // This function is useful for determining the spendable balance of a blockchain account.
 func (bdb *BlockchainDB) GetBalance(address string, utxos map[string][]shared.UTXO) (int64, error) {
