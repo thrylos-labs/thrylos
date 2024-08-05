@@ -95,11 +95,11 @@ type Fork struct {
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebaseApp *firebase.App) (*Blockchain, error) {
+func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebaseApp *firebase.App) (*Blockchain, shared.BlockchainDBInterface, error) {
 	// Initialize the database
 	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
+		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
 	bdb := database.NewBlockchainDB(db, aesKey)
 
@@ -165,28 +165,28 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
 	if err := encoder.Encode(genesis); err != nil {
-		return nil, fmt.Errorf("failed to serialize genesis block: %v", err)
+		return nil, nil, fmt.Errorf("failed to serialize genesis block: %v", err)
 	}
 	serializedGenesis := buf.Bytes()
 
 	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
-		return nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
 	// After setting up the blockchain, log the balance of the genesis account to confirm it's correctly set
 	genesisBalance, ok := stakeholdersMap[genesisAccount]
 	if !ok {
-		return nil, fmt.Errorf("genesis account %s does not exist", genesisAccount)
+		return nil, nil, fmt.Errorf("genesis account %s does not exist", genesisAccount)
 	}
 	log.Printf("Genesis account %s initialized with balance: %d", genesisAccount, genesisBalance)
 
 	// Check if genesis balance is sufficient for expected operations
 	expectedInitialFunding := int64(100000) // Adjust based on expected number of users * funding amount
 	if genesisBalance < expectedInitialFunding {
-		return nil, fmt.Errorf("genesis account balance %d is insufficient to cover expected initial funding of %d", genesisBalance, expectedInitialFunding)
+		return nil, nil, fmt.Errorf("genesis account balance %d is insufficient to cover expected initial funding of %d", genesisBalance, expectedInitialFunding)
 	}
 
-	return blockchain, nil
+	return blockchain, bdb, nil
 }
 
 func (bc *Blockchain) TestEd25519Implementations() {

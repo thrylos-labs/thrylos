@@ -134,7 +134,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		log.Fatalf("error initializing app: %v\n", err)
 	}
 
-	bc, err := NewBlockchain(dataDir, aesKey, genesisAccount, firebaseApp) // Pass both dataDir and aesKey to the NewBlockchain function
+	bc, db, err := NewBlockchain(dataDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}
@@ -143,6 +143,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		Address:          address,
 		Peers:            knownPeers,
 		Blockchain:       bc,
+		Database:         db, // Set the Database field
 		Shard:            shard,
 		FirebaseApp:      firebaseApp,
 		PublicKeyMap:     make(map[string]ed25519.PublicKey), // Initialize the map
@@ -1062,6 +1063,13 @@ const MinTransactionAmount = 10 // Move this to package level if used elsewhere
 
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if n.Database == nil {
+			log.Printf("Error: Database interface is nil in ProcessSignedTransactionHandler")
+			sendErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("Database is initialized in ProcessSignedTransactionHandler")
+
 		var requestData struct {
 			Token string `json:"token"`
 		}
