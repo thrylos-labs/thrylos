@@ -87,7 +87,7 @@ func TestConvertUTXOsToRequiredFormat(t *testing.T) {
 	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestConvertToSharedTransaction(t *testing.T) {
 	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestValidateTransactionsConcurrently(t *testing.T) {
 	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp) // Initialize the blockchain
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

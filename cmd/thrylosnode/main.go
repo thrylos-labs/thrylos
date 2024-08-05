@@ -163,7 +163,7 @@ func main() {
 	log.Printf("Using blockchain data directory: %s", absPath)
 
 	// Initialize the blockchain and database with the AES key
-	blockchain, err := core.NewBlockchain(absPath, aesKey, genesisAccount, firebaseApp)
+	blockchain, _, err := core.NewBlockchain(absPath, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}

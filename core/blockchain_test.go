@@ -44,9 +44,9 @@ func initializeFirebaseApp() *firebase.App {
 }
 
 func TestNewBlockchain(t *testing.T) {
-	loadEnvTest() // Make sure this is done before any Firebase operations
+	loadEnvTest() // Ensure environment variables are loaded before any Firebase operations
 
-	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Consider loading this from .env for consistency
+	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Load this from .env for consistency
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
 	tempDir, err := ioutil.TempDir("", "blockchain_test")
@@ -62,12 +62,17 @@ func TestNewBlockchain(t *testing.T) {
 
 	firebaseApp := initializeFirebaseApp()
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+
+	// Correctly handle all three return values
+	blockchain, db, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}
 
-	if bc.Genesis == nil {
+	// Optionally, you can use `db` here if needed
+	_ = db // Suppress "declared but not used" warning if you do not use `db`
+
+	if blockchain.Genesis == nil {
 		t.Errorf("Genesis block is nil")
 	}
 }

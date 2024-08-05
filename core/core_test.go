@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io/ioutil"
-	"log"
 	"os"
 	"testing"
 
@@ -88,21 +87,22 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
 
+	// Initialize Firebase app
 	ctx := context.Background()
 	sa := option.WithCredentialsFile("../serviceAccountKey.json")
 	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
 	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
+		t.Fatalf("error initializing app: %v\n", err)
 	}
 
 	// Initialize the blockchain with the temporary directory
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	blockchain, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
 
 	// Check if the first block is the genesis block
-	if len(bc.Blocks) == 0 || bc.Blocks[0] != bc.Genesis {
+	if len(blockchain.Blocks) == 0 || blockchain.Blocks[0] != blockchain.Genesis {
 		t.Errorf("Genesis block is not the first block in the blockchain")
 	}
 

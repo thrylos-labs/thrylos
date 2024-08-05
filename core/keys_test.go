@@ -141,9 +141,9 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 		log.Fatalf("error initializing app: %v\n", err)
 	}
 
-	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
 	if err != nil {
-		t.Fatalf("Failed to create blockchain: %v", err)
+		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
 
 	// Use a valid hex address for the test
