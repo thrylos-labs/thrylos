@@ -7,20 +7,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math/big"
 	"net/http"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ed25519"
 
 	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
+	"github.com/golang-jwt/jwt/v4"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	thrylos "github.com/thrylos-labs/thrylos"
@@ -1057,40 +1058,108 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
+const MinTransactionAmount = 10 // Move this to package level if used elsewhere
+
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, err := io.ReadAll(r.Body)
+		var requestData struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			sendErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Parse the JWT without verifying
+		token, _, err := new(jwt.Parser).ParseUnverified(requestData.Token, jwt.MapClaims{})
 		if err != nil {
-			sendErrorResponse(w, "Error reading request body: "+err.Error(), http.StatusInternalServerError)
+			sendErrorResponse(w, "Invalid token format: "+err.Error(), http.StatusUnauthorized)
 			return
 		}
 
-		log.Printf("Received request body: %s", string(bodyBytes))
-
-		var transactionData shared.Transaction
-		if err := json.Unmarshal(bodyBytes, &transactionData); err != nil {
-			sendErrorResponse(w, "Invalid transaction format: "+err.Error(), http.StatusBadRequest)
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			sendErrorResponse(w, "Invalid token claims", http.StatusBadRequest)
 			return
 		}
 
-		publicKey, err := n.RetrievePublicKey(transactionData.Sender)
+		// Extract the sender from the claims
+		sender, ok := claims["sender"].(string)
+		if !ok {
+			sendErrorResponse(w, "Invalid sender in token", http.StatusBadRequest)
+			return
+		}
+
+		// Fetch the public key for the sender
+		publicKey, err := n.RetrievePublicKey(sender)
 		if err != nil {
 			sendErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		sigBytes, err := base64.StdEncoding.DecodeString(transactionData.Signature)
-		if err != nil {
-			log.Printf("Error decoding signature: %v", err)
-			sendErrorResponse(w, "Signature decoding error: "+err.Error(), http.StatusInternalServerError)
+		// Verify the JWT signature
+		parts := strings.Split(requestData.Token, ".")
+		if len(parts) != 3 {
+			sendErrorResponse(w, "Invalid token format", http.StatusBadRequest)
 			return
 		}
 
-		log.Printf("Public key used for verification (Base64): %s", base64.StdEncoding.EncodeToString(publicKey))
-		log.Printf("Signature verification result: %v", verifySignature(transactionData, sigBytes, publicKey))
+		signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil {
+			sendErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 
-		if !verifySignature(transactionData, sigBytes, publicKey) {
+		message := []byte(parts[0] + "." + parts[1])
+
+		log.Printf("Verifying JWT signature for sender: %s", sender)
+		if !ed25519.Verify(publicKey, message, signatureBytes) {
+			log.Printf("JWT signature verification failed for sender: %s", sender)
 			sendErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
+			return
+		}
+		log.Printf("JWT signature verified successfully for sender: %s", sender)
+
+		// Continue with the rest of your existing code to process the transaction
+		var transactionData shared.Transaction
+
+		// Handle GasFee conversion
+		if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
+			transactionData.GasFee = int(gasFeeFloat)
+		} else {
+			sendErrorResponse(w, "Invalid gasfee in token", http.StatusBadRequest)
+			return
+		}
+
+		transactionData.ID = claims["id"].(string)
+		transactionData.Sender = claims["sender"].(string)
+
+		// Handle Timestamp conversion
+		if timestampFloat, ok := claims["timestamp"].(float64); ok {
+			transactionData.Timestamp = int64(timestampFloat)
+		} else {
+			sendErrorResponse(w, "Invalid timestamp in token", http.StatusBadRequest)
+			return
+		}
+
+		// Parse inputs and outputs
+		inputsJSON, err := json.Marshal(claims["inputs"])
+		if err != nil {
+			sendErrorResponse(w, "Invalid inputs in token: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
+			sendErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		outputsJSON, err := json.Marshal(claims["outputs"])
+		if err != nil {
+			sendErrorResponse(w, "Invalid outputs in token: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
+			sendErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -1126,10 +1195,8 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			totalOutputAmount += output.Amount
 		}
 
-		const MinTransactionAmount = 10 // Adjust as needed
-
 		if totalOutputAmount < MinTransactionAmount {
-			http.Error(w, fmt.Sprintf("Transaction amount too low. Minimum is %d", MinTransactionAmount), http.StatusBadRequest)
+			sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d", MinTransactionAmount), http.StatusBadRequest)
 			return
 		}
 
@@ -1178,63 +1245,6 @@ func sendResponseProcess(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(data)
-}
-
-func canonicalizeJson(v interface{}) interface{} {
-	switch v := v.(type) {
-	case map[string]interface{}:
-		keys := make([]string, 0, len(v))
-		for k := range v {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		result := make(map[string]interface{})
-		for _, k := range keys {
-			result[k] = canonicalizeJson(v[k])
-		}
-		return result
-	case []interface{}:
-		result := make([]interface{}, len(v))
-		for i, e := range v {
-			result[i] = canonicalizeJson(e)
-		}
-		return result
-	default:
-		return v
-	}
-}
-
-func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
-	// Create a map without the signature field
-	txMap := map[string]interface{}{
-		"gasfee":    txData.GasFee,
-		"id":        txData.ID,
-		"inputs":    txData.Inputs,
-		"outputs":   txData.Outputs,
-		"sender":    txData.Sender,
-		"timestamp": txData.Timestamp,
-	}
-
-	// Canonicalize the JSON
-	canonicalData := canonicalizeJson(txMap)
-	jsonData, err := json.Marshal(canonicalData)
-	if err != nil {
-		log.Printf("Error marshaling data for verification: %v", err)
-		return true // Changed to return true even if there's an error
-	}
-
-	log.Printf("Canonical data being verified:\n%s", string(jsonData))
-	log.Printf("Data to be verified (no whitespace): %s", string(jsonData))
-	log.Printf("Signature being verified: %s", base64.StdEncoding.EncodeToString(sigBytes))
-	log.Printf("Public key used for verification (bytes): %v", publicKey)
-	log.Printf("Public key used for verification (Base64): %s", base64.StdEncoding.EncodeToString(publicKey))
-
-	result := ed25519.Verify(publicKey, jsonData, sigBytes)
-	log.Printf("Signature verification result: %v", result)
-
-	// Always return true to bypass signature verification
-	return ed25519.Verify(publicKey, jsonData, sigBytes)
-
 }
 
 // Helper function to fetch gas estimate
