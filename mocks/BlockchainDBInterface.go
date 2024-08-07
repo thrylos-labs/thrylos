@@ -3,7 +3,7 @@
 package mocks
 
 import (
-	ed25519 "golang.org/x/crypto/ed25519"
+	ed25519 "crypto/ed25519"
 	rsa "crypto/rsa"
 
 	mock "github.com/stretchr/testify/mock"

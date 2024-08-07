@@ -8,14 +8,13 @@ import (
 	"fmt"
 	"log"
 
-	"golang.org/x/crypto/ed25519"
-
 	"github.com/thrylos-labs/thrylos"
 	pb "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/ed25519"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
