@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	"strings"
 
 	firebase "firebase.google.com/go"
-	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 
@@ -44,16 +42,21 @@ func loadEnv() {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000") // Specify the exact origin
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		// Allow requests from any origin for development
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 
+		// Set content type for the response
+		w.Header().Set("Content-Type", "application/json")
+
+		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
 }
@@ -102,7 +105,7 @@ func main() {
 	knownPeers := os.Getenv("PEERS")
 	nodeDataDir := os.Getenv("DATA")
 	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
-	wasmPath := os.Getenv("WASM_PATH")
+	// wasmPath := os.Getenv("WASM_PATH")
 	dataDir := os.Getenv("DATA_DIR")
 	chainID := "0x539" // Default local chain ID (1337 in decimal)
 	// domainName := os.Getenv("DOMAIN_NAME")
@@ -116,28 +119,6 @@ func main() {
 		chainID = "0x5" // Goerli Testnet chain ID
 	}
 
-	if wasmPath == "" {
-		log.Fatal("WASM_PATH environment variable not set")
-	}
-
-	// Fetch and load WebAssembly binary
-	response, err := http.Get(wasmPath)
-	if err != nil {
-		log.Fatalf("Failed to fetch wasm file from %s: %v", wasmPath, err)
-	}
-	defer response.Body.Close()
-
-	// Load WebAssembly binary
-
-	wasmBytes, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		log.Fatalf("Failed to read wasm file: %v", err)
-	}
-
-	// Execute the WebAssembly module
-	result := thrylos.ExecuteWasm(wasmBytes)
-	fmt.Printf("Result from wasm: %d\n", result)
-
 	// Fetch the Base64-encoded AES key from the environment variable
 	base64Key := os.Getenv("AES_KEY_ENV_VAR")
 	if base64Key == "" {
@@ -150,7 +131,7 @@ func main() {
 	}
 
 	// Genesis account
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	genesisAccount := "6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19"
 	if genesisAccount == "" {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
@@ -188,33 +169,16 @@ func main() {
 	}
 
 	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil, false)
-	node.SetChainID(chainID) // Set the chain ID for the node
-	mux := http.NewServeMux()
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	node.SetChainID(chainID)
+
+	// Set up routes
+	r := node.SetupRoutes()
+
+	r.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
 
-	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler())
-	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
-	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
-	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
-	mux.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler())
-	mux.HandleFunc("/get-block", node.GetBlockHandler())
-	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
-	mux.HandleFunc("/get-gas", node.GasEstimateHandler())
-	mux.HandleFunc("/get-transaction", node.GetTransactionHandler())
-	http.HandleFunc("/ws/balance", node.WebSocketBalanceHandler())
-	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
-	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
-	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
-	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
-	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
-	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
-	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
-	mux.HandleFunc("/faucet", node.FaucetHandler())
-	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
-	mux.HandleFunc("/gas-fee", node.GasEstimateHandler())
-	mux.HandleFunc("/get-stats", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("/get-stats", func(w http.ResponseWriter, r *http.Request) {
 		stats := node.GetBlockchainStats()
 		statsJSON, err := json.Marshal(stats)
 		if err != nil {
@@ -224,25 +188,14 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(statsJSON)
 	})
-	mux.HandleFunc("/pending-transactions", node.PendingTransactionsHandler())
-	mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Handling /peers request")
-		data, err := json.Marshal(node.Peers)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(data)
-	})
 
-	// Wrap the mux with the CORS middleware
-	handler := corsMiddleware(mux)
+	// Start background tasks
+	node.StartBackgroundTasks()
 
 	// Define WebSocket server
 	wsServer := &http.Server{
 		Addr:    wsAddress,
-		Handler: http.HandlerFunc(node.WebSocketBalanceHandler()),
+		Handler: r,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{loadCertificate()},
 		},
@@ -253,7 +206,7 @@ func main() {
 	if os.Getenv("ENV") == "development" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", httpAddress)
-			if err := http.ListenAndServe(httpAddress, handler); err != nil {
+			if err := http.ListenAndServe(httpAddress, r); err != nil {
 				log.Fatalf("Failed to start HTTP server: %v", err)
 			}
 		}()
@@ -278,7 +231,7 @@ func main() {
 	// Use static certificate files for local development
 	httpsServer := &http.Server{
 		Addr:    httpsAddress, // Use the address from the environment variable
-		Handler: handler,      // Reference the CORS-wrapped handler
+		Handler: r,            // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{loadCertificate()}, // Load static certificate
 		},
@@ -316,7 +269,6 @@ func main() {
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
 	}
-
 }
 
 func loadTLSCredentials() credentials.TransportCredentials {
@@ -349,16 +301,14 @@ func loadTLSCredentials() credentials.TransportCredentials {
 func loadCertificate() tls.Certificate {
 	var certPath, keyPath string
 
-	// Determine paths based on the environment
 	if os.Getenv("ENV") == "production" {
 		certPath = os.Getenv("TLS_CERT_PATH")
 		keyPath = os.Getenv("TLS_KEY_PATH")
-	} else { // Default to development paths
-		certPath = "../../localhost.crt"
-		keyPath = "../../localhost.key"
+	} else {
+		certPath = "../../../vite-project/localhost+1.pem"    // Update this path
+		keyPath = "../../../vite-project/localhost+1-key.pem" // Update this path
 	}
 
-	// Load the server's certificate and its private key
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		log.Fatalf("could not load TLS keys: %v", err)
