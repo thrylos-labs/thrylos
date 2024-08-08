@@ -1187,8 +1187,10 @@ func validateInputsAndOutputs(tx *Transaction) error {
 		}
 		outputSum += output.Amount
 	}
-	if inputSum != outputSum {
-		return fmt.Errorf("inputs (%d) and outputs (%d) are not balanced", inputSum, outputSum)
+
+	// Account for gas fee in the balance calculation
+	if inputSum != outputSum+int64(tx.GasFee) {
+		return fmt.Errorf("inputs (%d) and outputs (%d) plus gas fee (%d) are not balanced", inputSum, outputSum, tx.GasFee)
 	}
 	return nil
 }
