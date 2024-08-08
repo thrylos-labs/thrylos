@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -188,61 +187,23 @@ func main() {
 	}
 
 	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil, false)
-	node.SetChainID(chainID) // Set the chain ID for the node
-	mux := http.NewServeMux()
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+
+	node.SetChainID(chainID)
+
+	// Set up routes
+	r := node.SetupRoutes()
+
+	r.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
 
-	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler())
-	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
-	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
-	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
-	mux.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler())
-	mux.HandleFunc("/get-block", node.GetBlockHandler())
-	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
-	mux.HandleFunc("/get-gas", node.GasEstimateHandler())
-	mux.HandleFunc("/get-transaction", node.GetTransactionHandler())
-	http.HandleFunc("/ws/balance", node.WebSocketBalanceHandler())
-	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
-	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
-	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
-	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
-	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
-	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
-	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
-	mux.HandleFunc("/faucet", node.FaucetHandler())
-	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
-	mux.HandleFunc("/gas-fee", node.GasEstimateHandler())
-	mux.HandleFunc("/get-stats", func(w http.ResponseWriter, r *http.Request) {
-		stats := node.GetBlockchainStats()
-		statsJSON, err := json.Marshal(stats)
-		if err != nil {
-			http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(statsJSON)
-	})
-	mux.HandleFunc("/pending-transactions", node.PendingTransactionsHandler())
-	mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Handling /peers request")
-		data, err := json.Marshal(node.Peers)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(data)
-	})
-
-	// Wrap the mux with the CORS middleware
-	handler := corsMiddleware(mux)
+	// Start background tasks
+	node.StartBackgroundTasks()
 
 	// Define WebSocket server
 	wsServer := &http.Server{
 		Addr:    wsAddress,
-		Handler: http.HandlerFunc(node.WebSocketBalanceHandler()),
+		Handler: r,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{loadCertificate()},
 		},
@@ -253,7 +214,7 @@ func main() {
 	if os.Getenv("ENV") == "development" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", httpAddress)
-			if err := http.ListenAndServe(httpAddress, handler); err != nil {
+			if err := http.ListenAndServe(httpAddress, r); err != nil {
 				log.Fatalf("Failed to start HTTP server: %v", err)
 			}
 		}()
@@ -278,7 +239,7 @@ func main() {
 	// Use static certificate files for local development
 	httpsServer := &http.Server{
 		Addr:    httpsAddress, // Use the address from the environment variable
-		Handler: handler,      // Reference the CORS-wrapped handler
+		Handler: r,            // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{loadCertificate()}, // Load static certificate
 		},
