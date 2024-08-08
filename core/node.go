@@ -233,24 +233,24 @@ func (node *Node) CollectInputsForTransaction(amount int64, senderAddress string
 
 // CalculateGas computes the gas fee based on the size of the transaction data.
 const (
-	BaseGasFee = 1 // Base fee in the smallest unit of your currency
-	MaxGasFee  = 5 // Maximum gas fee
+	BaseGasFee = 1000  // Base fee in microTHRYLOS (0.001 THRYLOS)
+	MaxGasFee  = 10000 // Maximum gas fee in microTHRYLOS (0.01 THRYLOS)
 )
 
 func CalculateGas(dataSize int, balance int64) int {
 	// Start with the base fee
 	gasFee := BaseGasFee
 
-	// Add a very small amount based on data size
-	// This adds 1 to the fee for every 1000 bytes, up to the max fee
-	additionalFee := dataSize / 1000
+	// Add additional fee based on data size
+	// This adds 100 microTHRYLOS (0.0001 THRYLOS) for every 1000 bytes
+	additionalFee := (dataSize / 1000) * 100
 	gasFee += additionalFee
 
 	if gasFee > MaxGasFee {
 		gasFee = MaxGasFee
 	}
 
-	return gasFee
+	return gasFee // This will be between 1000 and 10000, representing 0.001 to 0.01 THRYLOS
 }
 
 // CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
@@ -1259,30 +1259,25 @@ func sendResponseProcess(w http.ResponseWriter, data interface{}) {
 func (n *Node) FetchGasEstimate(dataSize int, balance int64) (int, error) {
 	url := fmt.Sprintf("%s?dataSize=%d&balance=%d", "https://node.thrylos.org/gas-fee", dataSize, balance)
 	log.Printf("Fetching gas estimate from URL: %s", url)
-
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Printf("HTTP request failed: %v", err)
 		return 0, err
 	}
 	defer resp.Body.Close()
-
 	log.Printf("Received response with status code: %d", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("Failed to fetch gas estimate, status code: %d", resp.StatusCode)
 		return 0, fmt.Errorf("failed to fetch gas estimate, status code: %d", resp.StatusCode)
 	}
-
 	var result map[string]int
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		log.Printf("Error decoding JSON response: %v", err)
 		return 0, err
 	}
-
 	log.Printf("Gas estimate received: %v", result)
-
 	if gasEstimate, exists := result["gasFee"]; exists {
-		log.Printf("Gas estimate found: %d", gasEstimate)
+		log.Printf("Gas estimate found: %d (0.%06d THRYLOS)", gasEstimate, gasEstimate)
 		return gasEstimate, nil
 	} else {
 		log.Printf("Gas estimate not found in the response: %v", result)
@@ -1293,38 +1288,31 @@ func (n *Node) FetchGasEstimate(dataSize int, balance int64) (int, error) {
 func (node *Node) GasEstimateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		enableCors(&w)
-
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-
 		dataSizeStr := r.URL.Query().Get("dataSize")
 		if dataSizeStr == "" {
 			http.Error(w, "dataSize parameter is missing", http.StatusBadRequest)
 			return
 		}
-
 		dataSize, err := strconv.Atoi(dataSizeStr)
 		if err != nil {
 			http.Error(w, "Invalid dataSize parameter", http.StatusBadRequest)
 			return
 		}
-
-		// Note: We're not using balance for this calculation anymore
 		gas := CalculateGas(dataSize, 0)
-
-		log.Printf("Calculated gas fee for data size %d: %d", dataSize, gas)
-
-		response := struct {
-			GasFee int `json:"gasFee"`
-		}{
-			GasFee: gas,
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-	}
+        log.Printf("Calculated gas fee for data size %d: %d nanoTHRYLOS (%.7f THRYLOS)", dataSize, gas, float64(gas)/10000000)
+        response := struct {
+            GasFee int `json:"gasFee"`
+        }{
+            GasFee: gas,
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+    }
+}
 }
 
 func enableCors(w *http.ResponseWriter) {

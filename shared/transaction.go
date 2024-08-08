@@ -1175,22 +1175,32 @@ func validateInputsAndOutputs(tx *Transaction) error {
 	}
 
 	var inputSum, outputSum int64
+
 	for _, input := range tx.Inputs {
 		if input.Amount <= 0 {
 			return fmt.Errorf("invalid input amount: %d", input.Amount)
 		}
 		inputSum += input.Amount
 	}
-	for _, output := range tx.Outputs {
+
+	log.Printf("Transaction validation - Number of outputs: %d", len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		log.Printf("Output %d: Amount: %d, Address: %s", i, output.Amount, output.OwnerAddress)
 		if output.Amount <= 0 {
 			return fmt.Errorf("invalid output amount: %d", output.Amount)
 		}
 		outputSum += output.Amount
 	}
 
+	log.Printf("Transaction validation - Input sum: %d", inputSum)
+	log.Printf("Transaction validation - Output sum: %d", outputSum)
+	log.Printf("Transaction validation - Gas fee: %d", tx.GasFee)
+	log.Printf("Transaction validation - Total (outputs + gas fee): %d", outputSum+int64(tx.GasFee))
+
 	// Account for gas fee in the balance calculation
 	if inputSum != outputSum+int64(tx.GasFee) {
-		return fmt.Errorf("inputs (%d) and outputs (%d) plus gas fee (%d) are not balanced", inputSum, outputSum, tx.GasFee)
+		return fmt.Errorf("inputs (%d) do not match outputs (%d) plus gas fee (%d)", inputSum, outputSum, tx.GasFee)
 	}
+
 	return nil
 }
