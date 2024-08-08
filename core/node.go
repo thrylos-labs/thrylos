@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -17,10 +16,13 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ed25519"
+
 	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/gorilla/mux"
+
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -230,27 +232,94 @@ func (node *Node) CollectInputsForTransaction(amount int64, senderAddress string
 }
 
 // CalculateGas computes the gas fee based on the size of the transaction data.
-
 const (
 	BaseGasFee = 1 // Base fee in the smallest unit of your currency
-
-	MaxGasFee = 5 // Maximum gas fee
-
+	MaxGasFee  = 5 // Maximum gas fee
 )
 
 func CalculateGas(dataSize int, balance int64) int {
 	// Start with the base fee
 	gasFee := BaseGasFee
+
 	// Add a very small amount based on data size
 	// This adds 1 to the fee for every 1000 bytes, up to the max fee
 	additionalFee := dataSize / 1000
 	gasFee += additionalFee
+
 	if gasFee > MaxGasFee {
 		gasFee = MaxGasFee
 	}
 
 	return gasFee
 }
+
+// CreateAndBroadcastTransaction creates a new transaction with the specified recipient and amount,
+// signs it with the sender's Ed25519 private key, and broadcasts it to the network.
+// func (node *Node) CreateAndBroadcastTransaction(recipientAddress string, from *string, amount int, data *[]byte, gas *int) error {
+// 	// Retrieve the private key securely
+// 	privateKeyBytes, err := node.Database.RetrievePrivateKey(node.Address)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to retrieve private key: %v", err)
+// 	}
+
+// 	ed25519PrivateKey, err := shared.DecodePrivateKey(privateKeyBytes)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to decode private key: %v", err)
+// 	}
+
+// 	// Prepare AES key if data is provided
+// 	var aesKey []byte
+// 	if data != nil {
+// 		aesKey = *data
+// 	}
+
+// 	// Use the gas estimator to fetch the gas fee
+// 	var gasFee int
+// 	if gas != nil {
+// 		gasFee = *gas
+// 	} else if data != nil {
+// 		gasFee, err = node.FetchGasEstimate(len(*data))
+// 		if err != nil {
+// 			return fmt.Errorf("failed to fetch gas estimate: %v", err)
+// 		}
+// 	} else {
+// 		gasFee, err = node.FetchGasEstimate(0) // Default base fee if no data is present
+// 		if err != nil {
+// 			return fmt.Errorf("failed to fetch gas estimate: %v", err)
+// 		}
+// 	}
+
+// 	// Total amount includes the gas fee
+// 	totalAmount := amount + gasFee
+
+// 	// Collect inputs for the transaction
+// 	inputs, change, err := node.CollectInputsForTransaction(totalAmount, node.Address)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to collect inputs for transaction: %v", err)
+// 	}
+
+// 	// Prepare outputs
+// 	outputs := []shared.UTXO{{OwnerAddress: recipientAddress, Amount: amount}}
+// 	if change > 0 {
+// 		outputs = append(outputs, shared.UTXO{OwnerAddress: node.Address, Amount: change})
+// 	}
+
+// 	// Generate a unique transaction ID
+// 	transactionID, err := shared.GenerateTransactionID(inputs, outputs, node.Address, amount, gasFee)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to generate transaction ID: %v", err)
+// 	}
+
+// 	// Create and sign the transaction, passing the GasEstimator
+// 	transaction, err := shared.CreateAndSignTransaction(transactionID, node.Address, inputs, outputs, ed25519PrivateKey, aesKey, node)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create and sign transaction: %v", err)
+// 	}
+
+// 	// Broadcast the transaction
+// 	node.BroadcastTransaction(transaction)
+// 	return nil
+// }
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
@@ -363,61 +432,67 @@ func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
 }
 
 // fetch all transactions for a given block
-func (node *Node) ListTransactionsForBlockHandler(w http.ResponseWriter, r *http.Request) {
-	blockID := r.URL.Query().Get("id")
-	if blockID == "" {
-		http.Error(w, "Block ID is required", http.StatusBadRequest)
-		return
-	}
+func (node *Node) ListTransactionsForBlockHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		blockID := r.URL.Query().Get("id")
+		if blockID == "" {
+			http.Error(w, "Block ID is required", http.StatusBadRequest)
+			return
+		}
 
-	block, err := node.Blockchain.GetBlockByID(blockID)
-	if err != nil {
-		http.Error(w, "Block not found: "+err.Error(), http.StatusNotFound)
-		return
-	}
+		block, err := node.Blockchain.GetBlockByID(blockID)
+		if err != nil {
+			http.Error(w, "Block not found: "+err.Error(), http.StatusNotFound)
+			return
+		}
 
-	// Serialize the transactions of the block for response
-	transactionsJSON, err := json.Marshal(block.Transactions)
-	if err != nil {
-		http.Error(w, "Failed to serialize transactions", http.StatusInternalServerError)
-		return
-	}
+		// Serialize the transactions of the block for response
+		transactionsJSON, err := json.Marshal(block.Transactions)
+		if err != nil {
+			http.Error(w, "Failed to serialize transactions", http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(transactionsJSON)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(transactionsJSON)
+	}
 }
 
 // Allows users to register their public keys with Thrylos, enssential for transactions where public keys are needed
-func (node *Node) RegisterPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		PublicKey string `json:"publicKey"`
+func (node *Node) RegisterPublicKeyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PublicKey string `json:"publicKey"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		// Use node.Blockchain to access the RegisterPublicKey method
+		if err := node.Blockchain.RegisterPublicKey(req.PublicKey); err != nil {
+			http.Error(w, "Failed to register public key: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Public key registered successfully"))
 	}
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	// Use node.Blockchain to access the RegisterPublicKey method
-	if err := node.Blockchain.RegisterPublicKey(req.PublicKey); err != nil {
-		http.Error(w, "Failed to register public key: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Public key registered successfully"))
 }
 
 func (node *Node) GetPendingTransactions() []*thrylos.Transaction {
 	return node.PendingTransactions
 }
 
-func (node *Node) PendingTransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	pendingTransactions := node.GetPendingTransactions()
-	txData, err := json.Marshal(pendingTransactions)
-	if err != nil {
-		http.Error(w, "Failed to serialize pending transactions", http.StatusInternalServerError)
-		return
+func (node *Node) PendingTransactionsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pendingTransactions := node.GetPendingTransactions()
+		txData, err := json.Marshal(pendingTransactions)
+		if err != nil {
+			http.Error(w, "Failed to serialize pending transactions", http.StatusInternalServerError)
+			return
+		}
+		sendResponse(w, txData)
 	}
-	sendResponse(w, txData)
 }
 
 // GetBlockHandler retrieves a specific block by ID.
@@ -454,52 +529,56 @@ func (node *Node) GetBlockHandler() http.HandlerFunc {
 }
 
 // GetTransactionHandler retrieves a specific transaction by ID.
-func (node *Node) GetTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	txID := r.URL.Query().Get("id")
-	if txID == "" {
-		http.Error(w, "Transaction ID is required", http.StatusBadRequest)
-		return
-	}
+func (node *Node) GetTransactionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		txID := r.URL.Query().Get("id")
+		if txID == "" {
+			http.Error(w, "Transaction ID is required", http.StatusBadRequest)
+			return
+		}
 
-	tx, err := node.Blockchain.GetTransactionByID(txID)
-	if err != nil {
-		http.Error(w, "Transaction not found", http.StatusNotFound)
-		return
-	}
+		tx, err := node.Blockchain.GetTransactionByID(txID)
+		if err != nil {
+			http.Error(w, "Transaction not found", http.StatusNotFound)
+			return
+		}
 
-	txJSON, err := json.Marshal(tx)
-	if err != nil {
-		http.Error(w, "Failed to serialize transaction", http.StatusInternalServerError)
-		return
-	}
+		txJSON, err := json.Marshal(tx)
+		if err != nil {
+			http.Error(w, "Failed to serialize transaction", http.StatusInternalServerError)
+			return
+		}
 
-	sendResponse(w, txJSON)
+		sendResponse(w, txJSON)
+	}
 }
 
 // Report the health of the node and its connectivity with other peers
-func (node *Node) NetworkHealthHandler(w http.ResponseWriter, r *http.Request) {
-	healthInfo := struct {
-		Status  string `json:"status"`
-		Message string `json:"message"`
-	}{
-		Status:  "OK",
-		Message: "Node is active and connected to peers",
-	}
+func (node *Node) NetworkHealthHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		healthInfo := struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+		}{
+			Status:  "OK",
+			Message: "Node is active and connected to peers",
+		}
 
-	// You might want to include actual checks here to validate connectivity, block height synchronization, etc.
-	if len(node.Peers) == 0 {
-		healthInfo.Status = "WARNING"
-		healthInfo.Message = "Node is not connected to any peers"
-	}
+		// You might want to include actual checks here to validate connectivity, block height synchronization, etc.
+		if len(node.Peers) == 0 {
+			healthInfo.Status = "WARNING"
+			healthInfo.Message = "Node is not connected to any peers"
+		}
 
-	response, err := json.Marshal(healthInfo)
-	if err != nil {
-		http.Error(w, "Failed to serialize health information", http.StatusInternalServerError)
-		return
-	}
+		response, err := json.Marshal(healthInfo)
+		if err != nil {
+			http.Error(w, "Failed to serialize health information", http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
 }
 
 func (node *Node) GetBalance(address string) (int64, error) {
@@ -534,92 +613,93 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request) {
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("Failed to upgrade to WebSocket: %v", err)
-		return
-	}
-	defer ws.Close()
-
-	address := r.URL.Query().Get("address")
-	if address == "" {
-		log.Println("Blockchain address is required")
-		ws.WriteMessage(websocket.TextMessage, []byte("Blockchain address is required"))
-		return
-	}
-
-	log.Printf("WebSocket connection established for address: %s", address)
-
-	ticker := time.NewTicker(5 * time.Second) // Adjust the interval as needed
-	defer ticker.Stop()
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			_, _, err := ws.ReadMessage()
-			if err != nil {
-				log.Printf("WebSocket read error: %v", err)
-				return
-			}
-		}
-	}()
-
-	for {
-		select {
-		case <-done:
-			log.Printf("WebSocket connection closed for address: %s", address)
+func (node *Node) WebSocketBalanceHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("Failed to upgrade to WebSocket: %v", err)
 			return
-		case <-ticker.C:
-			balance, err := node.GetBalance(address)
-			if err != nil {
-				log.Printf("Error fetching balance: %v", err)
-				if err := ws.WriteMessage(websocket.TextMessage, []byte("Error fetching balance")); err != nil {
-					log.Printf("Error sending message: %v", err)
+		}
+		defer ws.Close()
+
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			log.Println("Blockchain address is required")
+			ws.WriteMessage(websocket.TextMessage, []byte("Blockchain address is required"))
+			return
+		}
+
+		log.Printf("WebSocket connection established for address: %s", address)
+
+		ticker := time.NewTicker(5 * time.Second) // Adjust the interval as needed
+		defer ticker.Stop()
+
+		done := make(chan struct{})
+
+		go func() {
+			defer close(done)
+			for {
+				_, _, err := ws.ReadMessage()
+				if err != nil {
+					log.Printf("WebSocket read error: %v", err)
 					return
 				}
-				continue
 			}
+		}()
 
-			response := struct {
-				BlockchainAddress string `json:"blockchainAddress"`
-				Balance           int64  `json:"balance"`
-			}{
-				BlockchainAddress: address,
-				Balance:           balance,
-			}
-
-			if err := ws.WriteJSON(response); err != nil {
-				log.Printf("Error sending balance update: %v", err)
+		for {
+			select {
+			case <-done:
+				log.Printf("WebSocket connection closed for address: %s", address)
 				return
+			case <-ticker.C:
+				balance, err := node.GetBalance(address)
+				if err != nil {
+					log.Printf("Error fetching balance: %v", err)
+					if err := ws.WriteMessage(websocket.TextMessage, []byte("Error fetching balance")); err != nil {
+						log.Printf("Error sending message: %v", err)
+						return
+					}
+					continue
+				}
+
+				response := struct {
+					BlockchainAddress string `json:"blockchainAddress"`
+					Balance           int64  `json:"balance"`
+				}{
+					BlockchainAddress: address,
+					Balance:           balance,
+				}
+
+				if err := ws.WriteJSON(response); err != nil {
+					log.Printf("Error sending balance update: %v", err)
+					return
+				}
 			}
 		}
 	}
 }
 
-// * unused
-// func isValidBech32Address(address string) bool {
-// 	// Decode the address using the bech32 package
-// 	hrp, decoded, err := bech32.Decode(address)
-// 	if err != nil {
-// 		return false // The address is not valid if it cannot be decoded
-// 	}
+func isValidBech32Address(address string) bool {
+	// Decode the address using the bech32 package
+	hrp, decoded, err := bech32.Decode(address)
+	if err != nil {
+		return false // The address is not valid if it cannot be decoded
+	}
 
-// 	// Optionally check for specific human-readable parts (hrp)
-// 	// For instance, if you expect the hrp to be 'tl', you can check it as follows:
-// 	if hrp != "tl1" {
-// 		return false
-// 	}
+	// Optionally check for specific human-readable parts (hrp)
+	// For instance, if you expect the hrp to be 'tl', you can check it as follows:
+	if hrp != "tl1" {
+		return false
+	}
 
-// 	// Check the length of the decoded data; adjust conditions based on your needs
-// 	if len(decoded) == 0 {
-// 		return false
-// 	}
+	// Check the length of the decoded data; adjust conditions based on your needs
+	if len(decoded) == 0 {
+		return false
+	}
 
-// 	return true
-// }
+	return true
+}
 
 // The faucet handler can utilize this genesis account without needing to specify which account to use:
 // This endpoint will transfer a predefined amount of funds from a foundational account to a specified user's account.
@@ -871,285 +951,295 @@ func (node *Node) GetBlockCount() int {
 
 // This handler could expose details about validators, their stakes, the votes they've cast for the most recent blocks, and potentially their historical performance or participation rates.
 
-func (node *Node) ConsensusInfoHandler(w http.ResponseWriter, r *http.Request) {
-	var validators []struct {
-		Address string `json:"address"`
-		Stake   int64  `json:"stake"`
-		Votes   []Vote `json:"votes"`
-	}
-
-	// Gathering data for each stakeholder
-	for address, stake := range node.Blockchain.Stakeholders {
-		votes := []Vote{}
-		for _, vote := range node.Votes {
-			if vote.Validator == address {
-				votes = append(votes, vote)
-			}
-		}
-		validators = append(validators, struct {
+func (node *Node) ConsensusInfoHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var validators []struct {
 			Address string `json:"address"`
 			Stake   int64  `json:"stake"`
 			Votes   []Vote `json:"votes"`
-		}{
-			Address: address,
-			Stake:   stake,
-			Votes:   votes,
-		})
-	}
+		}
 
-	// Marshal and send the data
-	response, err := json.Marshal(validators)
-	if err != nil {
-		http.Error(w, "Failed to serialize consensus information", http.StatusInternalServerError)
-		return
+		// Gathering data for each stakeholder
+		for address, stake := range node.Blockchain.Stakeholders {
+			votes := []Vote{}
+			for _, vote := range node.Votes {
+				if vote.Validator == address {
+					votes = append(votes, vote)
+				}
+			}
+			validators = append(validators, struct {
+				Address string `json:"address"`
+				Stake   int64  `json:"stake"`
+				Votes   []Vote `json:"votes"`
+			}{
+				Address: address,
+				Stake:   stake,
+				Votes:   votes,
+			})
+		}
+
+		// Marshal and send the data
+		response, err := json.Marshal(validators)
+		if err != nil {
+			http.Error(w, "Failed to serialize consensus information", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
 }
 
 // This endpoint allows nodes to register themselves as validators, specifying necessary credentials or details.
 
-func (node *Node) RegisterValidatorHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Address   string `json:"address"`
-		PublicKey string `json:"publicKey"` // Public key to be registered
+func (node *Node) RegisterValidatorHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Address   string `json:"address"`
+			PublicKey string `json:"publicKey"` // Public key to be registered
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := node.Blockchain.RegisterValidator(req.Address, req.PublicKey); err != nil {
+			http.Error(w, "Failed to register as validator: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Registered as validator successfully"))
 	}
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := node.Blockchain.RegisterValidator(req.Address, req.PublicKey); err != nil {
-		http.Error(w, "Failed to register as validator: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Registered as validator successfully"))
 }
 
 // This endpoint allows stakeholders to modify their stakes in the network.
 
-func (node *Node) UpdateStakeHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Address string `json:"address"`
-		Amount  int64  `json:"amount"` // Positive to increase, negative to decrease
-	}
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
+func (node *Node) UpdateStakeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Address string `json:"address"`
+			Amount  int64  `json:"amount"` // Positive to increase, negative to decrease
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
 
-	if err := node.Blockchain.UpdateStake(req.Address, req.Amount); err != nil {
-		http.Error(w, "Failed to update stake: "+err.Error(), http.StatusInternalServerError)
-		return
+		if err := node.Blockchain.UpdateStake(req.Address, req.Amount); err != nil {
+			http.Error(w, "Failed to update stake: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Stake updated successfully"))
 	}
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Stake updated successfully"))
 }
 
 // This endpoint facilitates the delegation of stakes from one user to another, specifying a validator.
 
-func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		From   string `json:"from"`
-		To     string `json:"to"`
-		Amount int64  `json:"amount"`
+func (node *Node) DelegateStakeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			From   string `json:"from"`
+			To     string `json:"to"`
+			Amount int64  `json:"amount"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&req)
+		if err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := node.Blockchain.DelegateStake(req.From, req.To, req.Amount); err != nil {
+			http.Error(w, "Failed to delegate stake: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Stake delegated successfully"))
 	}
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := node.Blockchain.DelegateStake(req.From, req.To, req.Amount); err != nil {
-		http.Error(w, "Failed to delegate stake: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Stake delegated successfully"))
 }
 
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
 const MinTransactionAmount = 10 // Move this to package level if used elsewhere
 
-func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	if n.Database == nil {
-		log.Printf("Error: Database interface is nil in ProcessSignedTransactionHandler")
-		sendErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
-		return
-	}
-	log.Printf("Database is initialized in ProcessSignedTransactionHandler")
-
-	var requestData struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
-		sendErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Parse the JWT without verifying
-	token, _, err := new(jwt.Parser).ParseUnverified(requestData.Token, jwt.MapClaims{})
-	if err != nil {
-		sendErrorResponse(w, "Invalid token format: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		sendErrorResponse(w, "Invalid token claims", http.StatusBadRequest)
-		return
-	}
-
-	// Extract the sender from the claims
-	sender, ok := claims["sender"].(string)
-	if !ok {
-		sendErrorResponse(w, "Invalid sender in token", http.StatusBadRequest)
-		return
-	}
-
-	// Fetch the public key for the sender
-	publicKey, err := n.RetrievePublicKey(sender)
-	if err != nil {
-		sendErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Verify the JWT signature
-	parts := strings.Split(requestData.Token, ".")
-	if len(parts) != 3 {
-		sendErrorResponse(w, "Invalid token format", http.StatusBadRequest)
-		return
-	}
-
-	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil {
-		sendErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	message := []byte(parts[0] + "." + parts[1])
-
-	log.Printf("Verifying JWT signature for sender: %s", sender)
-	if !ed25519.Verify(publicKey, message, signatureBytes) {
-		log.Printf("JWT signature verification failed for sender: %s", sender)
-		sendErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
-		return
-	}
-	log.Printf("JWT signature verified successfully for sender: %s", sender)
-
-	// Continue with the rest of your existing code to process the transaction
-	var transactionData shared.Transaction
-
-	// Handle GasFee conversion
-	if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
-		transactionData.GasFee = int(gasFeeFloat)
-	} else {
-		sendErrorResponse(w, "Invalid gasfee in token", http.StatusBadRequest)
-		return
-	}
-
-	transactionData.ID = claims["id"].(string)
-	transactionData.Sender = claims["sender"].(string)
-
-	// Handle Timestamp conversion
-	if timestampFloat, ok := claims["timestamp"].(float64); ok {
-		transactionData.Timestamp = int64(timestampFloat)
-	} else {
-		sendErrorResponse(w, "Invalid timestamp in token", http.StatusBadRequest)
-		return
-	}
-
-	// Parse inputs and outputs
-	inputsJSON, err := json.Marshal(claims["inputs"])
-	if err != nil {
-		sendErrorResponse(w, "Invalid inputs in token: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
-		sendErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	outputsJSON, err := json.Marshal(claims["outputs"])
-	if err != nil {
-		sendErrorResponse(w, "Invalid outputs in token: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
-		sendErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	thrylosTx := shared.SharedToThrylos(&transactionData)
-	if thrylosTx == nil {
-		http.Error(w, "Failed to convert transaction data", http.StatusInternalServerError)
-		return
-	}
-
-	// Fetch the balance for the sender
-	balance, err := n.GetBalance(transactionData.Sender)
-	if err != nil {
-		log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
-		http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var gasEstimate int32
-	if transactionData.GasFee == 0 {
-		estimate, err := n.FetchGasEstimate(len(transactionData.EncryptedInputs)+len(transactionData.EncryptedOutputs), balance)
-		if err != nil {
-			http.Error(w, "Failed to fetch gas estimate: "+err.Error(), http.StatusInternalServerError)
+func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if n.Database == nil {
+			log.Printf("Error: Database interface is nil in ProcessSignedTransactionHandler")
+			sendErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
 			return
 		}
-		gasEstimate = int32(estimate)
-	} else {
-		gasEstimate = int32(transactionData.GasFee)
+		log.Printf("Database is initialized in ProcessSignedTransactionHandler")
+
+		var requestData struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+			sendErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Parse the JWT without verifying
+		token, _, err := new(jwt.Parser).ParseUnverified(requestData.Token, jwt.MapClaims{})
+		if err != nil {
+			sendErrorResponse(w, "Invalid token format: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			sendErrorResponse(w, "Invalid token claims", http.StatusBadRequest)
+			return
+		}
+
+		// Extract the sender from the claims
+		sender, ok := claims["sender"].(string)
+		if !ok {
+			sendErrorResponse(w, "Invalid sender in token", http.StatusBadRequest)
+			return
+		}
+
+		// Fetch the public key for the sender
+		publicKey, err := n.RetrievePublicKey(sender)
+		if err != nil {
+			sendErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Verify the JWT signature
+		parts := strings.Split(requestData.Token, ".")
+		if len(parts) != 3 {
+			sendErrorResponse(w, "Invalid token format", http.StatusBadRequest)
+			return
+		}
+
+		signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+		if err != nil {
+			sendErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		message := []byte(parts[0] + "." + parts[1])
+
+		log.Printf("Verifying JWT signature for sender: %s", sender)
+		if !ed25519.Verify(publicKey, message, signatureBytes) {
+			log.Printf("JWT signature verification failed for sender: %s", sender)
+			sendErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
+			return
+		}
+		log.Printf("JWT signature verified successfully for sender: %s", sender)
+
+		// Continue with the rest of your existing code to process the transaction
+		var transactionData shared.Transaction
+
+		// Handle GasFee conversion
+		if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
+			transactionData.GasFee = int(gasFeeFloat)
+		} else {
+			sendErrorResponse(w, "Invalid gasfee in token", http.StatusBadRequest)
+			return
+		}
+
+		transactionData.ID = claims["id"].(string)
+		transactionData.Sender = claims["sender"].(string)
+
+		// Handle Timestamp conversion
+		if timestampFloat, ok := claims["timestamp"].(float64); ok {
+			transactionData.Timestamp = int64(timestampFloat)
+		} else {
+			sendErrorResponse(w, "Invalid timestamp in token", http.StatusBadRequest)
+			return
+		}
+
+		// Parse inputs and outputs
+		inputsJSON, err := json.Marshal(claims["inputs"])
+		if err != nil {
+			sendErrorResponse(w, "Invalid inputs in token: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
+			sendErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		outputsJSON, err := json.Marshal(claims["outputs"])
+		if err != nil {
+			sendErrorResponse(w, "Invalid outputs in token: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
+			sendErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		thrylosTx := shared.SharedToThrylos(&transactionData)
+		if thrylosTx == nil {
+			http.Error(w, "Failed to convert transaction data", http.StatusInternalServerError)
+			return
+		}
+
+		// Fetch the balance for the sender
+		balance, err := n.GetBalance(transactionData.Sender)
+		if err != nil {
+			log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
+			http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var gasEstimate int32
+		if transactionData.GasFee == 0 {
+			estimate, err := n.FetchGasEstimate(len(transactionData.EncryptedInputs)+len(transactionData.EncryptedOutputs), balance)
+			if err != nil {
+				http.Error(w, "Failed to fetch gas estimate: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			gasEstimate = int32(estimate)
+		} else {
+			gasEstimate = int32(transactionData.GasFee)
+		}
+
+		// Calculate total output amount
+		var totalOutputAmount int64
+		for _, output := range transactionData.Outputs {
+			totalOutputAmount += output.Amount
+		}
+
+		if totalOutputAmount < MinTransactionAmount {
+			sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d", MinTransactionAmount), http.StatusBadRequest)
+			return
+		}
+
+		totalCost := totalOutputAmount + int64(gasEstimate)
+
+		log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
+
+		if balance < totalCost {
+			errorMsg := fmt.Sprintf("Insufficient balance. Required: %d, Available: %d, Transaction Amount: %d, Gas Fee: %d",
+				totalCost, balance, totalOutputAmount, gasEstimate)
+			log.Printf(errorMsg)
+			http.Error(w, errorMsg, http.StatusBadRequest)
+			return
+		}
+
+		if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
+			log.Printf("Failed to process transaction: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if err := n.AddPendingTransaction(thrylosTx); err != nil {
+			log.Printf("Failed to add transaction to pending transactions: %v", err)
+			http.Error(w, "Failed to add transaction to pending pool: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := n.BroadcastTransaction(thrylosTx); err != nil {
+			log.Printf("Failed to broadcast transaction: %v", err)
+			sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
 	}
-
-	// Calculate total output amount
-	var totalOutputAmount int64
-	for _, output := range transactionData.Outputs {
-		totalOutputAmount += output.Amount
-	}
-
-	if totalOutputAmount < MinTransactionAmount {
-		sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d", MinTransactionAmount), http.StatusBadRequest)
-		return
-	}
-
-	totalCost := totalOutputAmount + int64(gasEstimate)
-
-	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
-
-	if balance < totalCost {
-		errorMsg := fmt.Sprintf("Insufficient balance. Required: %d, Available: %d, Transaction Amount: %d, Gas Fee: %d",
-			totalCost, balance, totalOutputAmount, gasEstimate)
-		log.Printf(errorMsg)
-		http.Error(w, errorMsg, http.StatusBadRequest)
-		return
-	}
-
-	if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
-		log.Printf("Failed to process transaction: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if err := n.AddPendingTransaction(thrylosTx); err != nil {
-		log.Printf("Failed to add transaction to pending transactions: %v", err)
-		http.Error(w, "Failed to add transaction to pending pool: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if err := n.BroadcastTransaction(thrylosTx); err != nil {
-		log.Printf("Failed to broadcast transaction: %v", err)
-		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
 }
 
 func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
@@ -1158,36 +1248,11 @@ func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-func decodeBase64URLSafe(encodedSig string) ([]byte, error) {
-	// Check if the length of the encoded string is a multiple of 4
-	// If not, pad with '=' characters until it is
-	if m := len(encodedSig) % 4; m != 0 {
-		padding := 4 - m
-		encodedSig += strings.Repeat("=", padding) // Repeat '=' padding times
-	}
-	// Now decode the possibly padded Base64 URL safe string
-	return base64.URLEncoding.DecodeString(encodedSig)
-}
-
 // Helper function to send JSON responses
 func sendResponseProcess(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(data)
-}
-
-// Signature verification function with detailed logging and excluding the signature field
-// This function should strip out the signature from the transaction data before verification.
-
-func verifySignature(txData shared.Transaction, sigBytes []byte, publicKey ed25519.PublicKey) bool {
-	txData.Signature = "" // Remove the signature from data to be verified
-	canonicalData, err := json.Marshal(txData)
-	if err != nil {
-		log.Printf("Error marshaling data for verification: %v", err)
-		return false
-	}
-
-	return ed25519.Verify(publicKey, canonicalData, sigBytes)
 }
 
 // Helper function to fetch gas estimate
@@ -1225,99 +1290,91 @@ func (n *Node) FetchGasEstimate(dataSize int, balance int64) (int, error) {
 	}
 }
 
-func (node *Node) GasEstimateHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+func (node *Node) GasEstimateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
 
-	dataSizeStr := r.URL.Query().Get("dataSize")
-	if dataSizeStr == "" {
-		http.Error(w, "dataSize parameter is missing", http.StatusBadRequest)
-		return
-	}
-
-	dataSize, err := strconv.Atoi(dataSizeStr)
-	if err != nil {
-		http.Error(w, "Invalid dataSize parameter", http.StatusBadRequest)
-		return
-	}
-
-	// Calculate gas using the provided data size
-	gas := CalculateGas(dataSize, 0)
-
-	// Prepare the response
-	response := struct {
-		GasFee int `json:"gasFee"`
-	}{
-		GasFee: gas,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
-}
-
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Println("CORS middleware invoked")
-		// Allow requests from any origin for development
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
-
-		// Handle preflight requests
-		if r.Method == "OPTIONS" {
-			log.Println("Preflight request received")
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// Set content type for the response
-		w.Header().Set("Content-Type", "application/json")
+		dataSizeStr := r.URL.Query().Get("dataSize")
+		if dataSizeStr == "" {
+			http.Error(w, "dataSize parameter is missing", http.StatusBadRequest)
+			return
+		}
 
-		// Call the next handler
-		next.ServeHTTP(w, r)
-	})
+		dataSize, err := strconv.Atoi(dataSizeStr)
+		if err != nil {
+			http.Error(w, "Invalid dataSize parameter", http.StatusBadRequest)
+			return
+		}
+
+		// Note: We're not using balance for this calculation anymore
+		gas := CalculateGas(dataSize, 0)
+
+		log.Printf("Calculated gas fee for data size %d: %d", dataSize, gas)
+
+		response := struct {
+			GasFee int `json:"gasFee"`
+		}{
+			GasFee: gas,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
 }
 
-func (node *Node) GetUTXOsForAddressHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+func enableCors(w *http.ResponseWriter) {
+	(*w).Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+}
 
-	log.Printf("Request URL: %s", r.URL.String())
-	address := r.URL.Query().Get("address")
-	if address == "" {
-		http.Error(w, "Address parameter is missing", http.StatusBadRequest)
-		return
-	}
+func (node *Node) GetUTXOsForAddressHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		enableCors(&w)
 
-	log.Printf("Fetching UTXOs for address: %s", address)
-	utxos, err := node.Blockchain.GetUTXOsForAddress(address)
-	if err != nil {
-		log.Printf("Error fetching UTXOs from database for address %s: %v", address, err)
-		http.Error(w, fmt.Sprintf("Error fetching UTXOs: %v", err), http.StatusInternalServerError)
-		return
-	}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 
-	if len(utxos) == 0 {
-		log.Printf("No UTXOs found for address: %s", address)
-		http.Error(w, "No UTXOs found", http.StatusNotFound)
-		return
-	} else {
-		log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
-	}
+		log.Printf("Request URL: %s", r.URL.String())
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			return
+		}
 
-	response, err := json.Marshal(utxos)
-	if err != nil {
-		log.Printf("Failed to serialize UTXOs for address %s: %v", address, err)
-		http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
-		return
-	}
+		log.Printf("Fetching UTXOs for address: %s", address)
+		utxos, err := node.Blockchain.GetUTXOsForAddress(address)
+		if err != nil {
+			log.Printf("Error fetching UTXOs from database for address %s: %v", address, err)
+			http.Error(w, fmt.Sprintf("Error fetching UTXOs: %v", err), http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
+		if len(utxos) == 0 {
+			log.Printf("No UTXOs found for address: %s", address)
+			http.Error(w, "No UTXOs found", http.StatusNotFound)
+			return
+		} else {
+			log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
+		}
+
+		response, err := json.Marshal(utxos)
+		if err != nil {
+			log.Printf("Failed to serialize UTXOs for address %s: %v", address, err)
+			http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(response)
+	}
 }
 
 func (n *Node) logError(stage string, err error) {
@@ -1325,35 +1382,37 @@ func (n *Node) logError(stage string, err error) {
 }
 
 // FundWalletHandler transfers a predefined amount from the genesis account to a new user's wallet.
-func (node *Node) FundWalletHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func (node *Node) FundWalletHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	var request struct {
-		Address string `json:"address"`
-		Amount  int64  `json:"amount"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
-		return
-	}
+		var request struct {
+			Address string `json:"address"`
+			Amount  int64  `json:"amount"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+			return
+		}
 
-	// Debugging log, consider using a conditional flag or environment-based logging.
-	fmt.Printf("Attempting to fund wallet: Address=%s, Amount=%d\n", request.Address, request.Amount)
+		// Debugging log, consider using a conditional flag or environment-based logging.
+		fmt.Printf("Attempting to fund wallet: Address=%s, Amount=%d\n", request.Address, request.Amount)
 
-	// Transfer funds from the genesis account
-	if err := node.Blockchain.TransferFunds("", request.Address, request.Amount); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to fund wallet: %v", err), http.StatusInternalServerError)
-		return
-	}
+		// Transfer funds from the genesis account
+		if err := node.Blockchain.TransferFunds("", request.Address, request.Amount); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to fund wallet: %v", err), http.StatusInternalServerError)
+			return
+		}
 
-	response := map[string]string{
-		"message": fmt.Sprintf("Funded wallet with %d successfully", request.Amount),
+		response := map[string]string{
+			"message": fmt.Sprintf("Funded wallet with %d successfully", request.Amount),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response) // Consider error handling for JSON encoding
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response) // Consider error handling for JSON encoding
 }
 
 func publicKeyToBech32(pubKeyBase64 string) (string, error) {
@@ -1405,312 +1464,340 @@ func GetBlockchainAddressByUID(app *firebase.App, uid string) (string, error) {
 	return blockchainAddress, nil
 }
 
-func (node *Node) GetBlockchainAddressHandler(w http.ResponseWriter, r *http.Request) {
-	uid := r.URL.Query().Get("userId")
-	if uid == "" {
-		http.Error(w, "User ID parameter is missing", http.StatusBadRequest)
-		return
-	}
+func (node *Node) GetBlockchainAddressHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		uid := r.URL.Query().Get("userId")
+		if uid == "" {
+			http.Error(w, "User ID parameter is missing", http.StatusBadRequest)
+			return
+		}
 
-	blockchainAddress, err := GetBlockchainAddressByUID(node.FirebaseApp, uid)
-	if err != nil {
-		log.Printf("Failed to retrieve blockchain address for UID %s: %v", uid, err)
-		http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+		blockchainAddress, err := GetBlockchainAddressByUID(node.FirebaseApp, uid)
+		if err != nil {
+			log.Printf("Failed to retrieve blockchain address for UID %s: %v", uid, err)
+			http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	if blockchainAddress == "" {
-		http.Error(w, "Blockchain address not found", http.StatusNotFound)
-		return
-	}
+		if blockchainAddress == "" {
+			http.Error(w, "Blockchain address not found", http.StatusNotFound)
+			return
+		}
 
-	response := map[string]string{"blockchainAddress": blockchainAddress}
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to serialize response: %v", err)
-		http.Error(w, "Failed to serialize response", http.StatusInternalServerError)
-		return
-	}
+		response := map[string]string{"blockchainAddress": blockchainAddress}
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("Failed to serialize response: %v", err)
+			http.Error(w, "Failed to serialize response", http.StatusInternalServerError)
+			return
+		}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonResponse)
-}
-
-func (node *Node) CheckPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
-
-	publicKey := r.URL.Query().Get("publicKey") // Use r.URL.Query().Get to fetch query parameters
-	if publicKey == "" {
-		http.Error(w, "Public key parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	exists, err := node.Blockchain.Database.PublicKeyExists(publicKey)
-	if err != nil {
-		http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	response := map[string]bool{"exists": exists}
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode response: "+err.Error(), http.StatusInternalServerError)
-		return
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResponse)
 	}
 }
 
-func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("RegisterWalletHandler request received")
-	var req struct {
-		PublicKey string `json:"publicKey"` // Public key expected to be in base64 format
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Failed to decode request: %v", err)
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
+func (node *Node) CheckPublicKeyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		publicKey := r.URL.Query().Get("publicKey") // Use r.URL.Query().Get to fetch query parameters
+		if publicKey == "" {
+			http.Error(w, "Public key parameter is required", http.StatusBadRequest)
+			return
+		}
 
-	log.Printf("Received registration request for public key: %s", req.PublicKey)
+		exists, err := node.Blockchain.Database.PublicKeyExists(publicKey)
+		if err != nil {
+			http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
-	// Decode base64 string to bytes
-	publicKeyBytes, err := base64.StdEncoding.DecodeString(req.PublicKey)
-	if err != nil {
-		log.Printf("Invalid base64 format for public key: %v", err)
-		http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
-		return
+		response := map[string]bool{"exists": exists}
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to serialize response: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResponse)
 	}
-
-	// Generate Bech32 address from public key
-	bech32Address, err := publicKeyToBech32(req.PublicKey)
-	if err != nil {
-		log.Printf("Failed to convert public key to Bech32 address: %v", err)
-		http.Error(w, "Failed to generate Bech32 address: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Check if the Bech32 address is already registered
-	addressExists, err := node.Blockchain.Database.Bech32AddressExists(bech32Address)
-	if err != nil {
-		log.Printf("Failed to check address existence: %v", err)
-		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if addressExists {
-		log.Printf("Blockchain address already registered: %s", bech32Address)
-		http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
-		return
-	}
-
-	// Ensure there are sufficient funds in the genesis account
-	initialBalance := int64(70) // Set initial balance for the new wallet
-	currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
-	if !genesisExists || currentBalance < initialBalance {
-		http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
-		return
-	}
-
-	// Deduct from genesis and assign to new account
-	node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
-	node.Blockchain.Stakeholders[bech32Address] = initialBalance
-
-	// Create initial UTXO for the account
-	utxo := shared.UTXO{
-		OwnerAddress: bech32Address,
-		Amount:       initialBalance,
-	}
-	if err := node.Blockchain.addUTXO(utxo); err != nil {
-		http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
-		http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalance)
-	log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
-
-	response := struct {
-		PublicKey         string        `json:"publicKey"`
-		BlockchainAddress string        `json:"blockchainAddress"`
-		Balance           int64         `json:"balance"`
-		UTXOs             []shared.UTXO `json:"utxos"` // Add this line
-	}{
-		PublicKey:         req.PublicKey,
-		BlockchainAddress: bech32Address,
-		Balance:           initialBalance,
-		UTXOs:             []shared.UTXO{utxo}, // Assuming you store the UTXO in an array or similar structure
-	}
-
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to serialize response: %v", err)
-		http.Error(w, "Failed to serialize wallet data: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonResponse)
 }
 
-func (node *Node) GetPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
-	address := r.URL.Query().Get("address")
-	if address == "" {
-		http.Error(w, "Address parameter is missing", http.StatusBadRequest)
-		return
-	}
-
-	publicKey, err := node.RetrievePublicKey(address)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-
-	response := map[string]string{
-		"publicKey": base64.StdEncoding.EncodeToString(publicKey),
-	}
-
-	jsonResp, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, "Failed to serialize public key response", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonResp)
+// generateUTXOID generates a new unique ID for a UTXO
+func generateUTXOID() string {
+	return uuid.New().String()
 }
 
-func (node *Node) BlockchainHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := json.Marshal(node.Blockchain)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+func (node *Node) RegisterWalletHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PublicKey string `json:"publicKey"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			log.Printf("Failed to decode request: %v", err)
+			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Received registration request for public key: %s", req.PublicKey)
+
+		// Decode base64 string to bytes
+		publicKeyBytes, err := base64.StdEncoding.DecodeString(req.PublicKey)
+		if err != nil {
+			log.Printf("Invalid base64 format for public key: %v", err)
+			http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Generate Bech32 address from public key
+		bech32Address, err := publicKeyToBech32(req.PublicKey)
+		if err != nil {
+			log.Printf("Failed to convert public key to Bech32 address: %v", err)
+			http.Error(w, "Failed to generate Bech32 address: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Check if the Bech32 address is already registered
+		addressExists, err := node.Blockchain.Database.Bech32AddressExists(bech32Address)
+		if err != nil {
+			log.Printf("Failed to check address existence: %v", err)
+			http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if addressExists {
+			log.Printf("Blockchain address already registered: %s", bech32Address)
+			http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
+			return
+		}
+
+		// Ensure there are sufficient funds in the genesis account
+		initialBalance := int64(70)
+		log.Printf("Initial balance set to: %d", initialBalance)
+
+		genesisAccount := node.Blockchain.GenesisAccount
+		currentBalance, genesisExists := node.Blockchain.Stakeholders[genesisAccount]
+		if !genesisExists || currentBalance < initialBalance {
+			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
+			return
+		}
+
+		// Deduct from genesis and assign to new account
+		node.Blockchain.Stakeholders[genesisAccount] -= initialBalance
+		node.Blockchain.Stakeholders[bech32Address] = initialBalance
+
+		// Create initial UTXO for the account
+		utxo := shared.UTXO{
+			ID:            generateUTXOID(),
+			TransactionID: "genesis_tx",
+			Index:         0,
+			OwnerAddress:  bech32Address,
+			Amount:        initialBalance,
+			IsSpent:       false,
+		}
+		log.Printf("Created UTXO: %+v", utxo)
+
+		if err := node.Blockchain.addUTXO(utxo); err != nil {
+			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
+			http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalance)
+		log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
+
+		response := struct {
+			PublicKey         string        `json:"publicKey"`
+			BlockchainAddress string        `json:"blockchainAddress"`
+			Balance           int64         `json:"balance"`
+			UTXOs             []shared.UTXO `json:"utxos"`
+		}{
+			PublicKey:         req.PublicKey,
+			BlockchainAddress: bech32Address,
+			Balance:           initialBalance,
+			UTXOs:             []shared.UTXO{utxo},
+		}
+
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("Failed to serialize response: %v", err)
+			http.Error(w, "Failed to serialize wallet data: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResponse)
 	}
-	w.Write(data)
 }
 
-func (node *Node) BlockHandler(w http.ResponseWriter, r *http.Request) {
-	var block Block
-	if err := json.NewDecoder(r.Body).Decode(&block); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+func (node *Node) GetPublicKeyHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		publicKey, err := node.RetrievePublicKey(address)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		response := map[string]string{
+			"publicKey": base64.StdEncoding.EncodeToString(publicKey),
+		}
+
+		jsonResp, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to serialize public key response", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResp)
 	}
-
-	prevBlock, prevIndex, err := node.Blockchain.GetLastBlock()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get the last block: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if prevBlock != nil && !node.Blockchain.ValidateBlock(&block, prevBlock) {
-		http.Error(w, "Block validation failed", http.StatusUnprocessableEntity)
-		return
-	}
-
-	success, err := node.Blockchain.AddBlock(block.Transactions, block.Validator, block.PrevHash, block.Timestamp)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to add block: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if !success {
-		http.Error(w, "Failed to add block due to validation or other issues", http.StatusBadRequest)
-		return
-	}
-
-	if prevBlock != nil {
-		log.Printf("Previous Block Index: %d, Block Hash: %s", prevIndex, prevBlock.Hash)
-	} else {
-		log.Println("No previous block exists.")
-	}
-
-	w.WriteHeader(http.StatusCreated)
-}
-
-func (node *Node) PeersHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := json.Marshal(node.Peers)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
-func (node *Node) VoteHandler(w http.ResponseWriter, r *http.Request) {
-	var vote Vote
-	if err := json.NewDecoder(r.Body).Decode(&vote); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	node.Votes = append(node.Votes, vote)
-}
-
-func (node *Node) StatsHandler(w http.ResponseWriter, r *http.Request) {
-	stats := node.GetBlockchainStats()
-	statsJSON, err := json.Marshal(stats)
-	if err != nil {
-		http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
-		return
-	}
-	sendResponse(w, statsJSON)
-}
-
-func (node *Node) TransactionHandler(w http.ResponseWriter, r *http.Request) {
-	var jsonTx thrylos.TransactionJSON
-	if err := json.NewDecoder(r.Body).Decode(&jsonTx); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	tx := ConvertJSONToProto(jsonTx)
-
-	if err := node.VerifyAndProcessTransaction(tx); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-
-	node.AddPendingTransaction(tx)
-	fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.GetId())
-	w.WriteHeader(http.StatusCreated)
 }
 
 // Start initializes the HTTP server for the node, setting up endpoints for blockchain, block, peers,
 // votes, and transactions handling. It also starts background tasks for discovering peers and counting votes.
-func (node *Node) SetupRoutes() *mux.Router {
-	r := mux.NewRouter()
-
-	// Apply the middleware to all routes
-	r.Use(corsMiddleware)
+func (node *Node) Start() {
+	mux := http.NewServeMux() // Create a new ServeMux
 
 	// Define handlers for various endpoints
-	r.HandleFunc("/block", node.BlockHandler).Methods("POST")
-	r.HandleFunc("/blockchain", node.BlockchainHandler).Methods("GET")
-	r.HandleFunc("/check-public-key", node.CheckPublicKeyHandler).Methods("GET")
-	r.HandleFunc("/consensus-info", node.ConsensusInfoHandler).Methods("GET")
-	r.HandleFunc("/delegate-stake", node.DelegateStakeHandler).Methods("POST")
-	r.HandleFunc("/fund-wallet", node.FundWalletHandler).Methods("POST")
-	r.HandleFunc("/gas-fee", node.GasEstimateHandler).Methods("GET")
-	r.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler).Methods("GET")
-	r.HandleFunc("/get-publickey", node.GetPublicKeyHandler).Methods("GET")
-	r.HandleFunc("/get-transaction", node.GetTransactionHandler).Methods("GET")
-	r.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler).Methods("GET")
-	r.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler).Methods("GET")
-	r.HandleFunc("/network-health", node.NetworkHealthHandler).Methods("GET")
-	r.HandleFunc("/peers", node.PeersHandler).Methods("GET")
-	r.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler).Methods("POST")
-	r.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler).Methods("POST")
-	r.HandleFunc("/register-validator", node.RegisterValidatorHandler).Methods("POST")
-	r.HandleFunc("/register-wallet", node.RegisterWalletHandler).Methods("POST", "OPTIONS")
-	r.HandleFunc("/stats", node.StatsHandler).Methods("GET")
-	r.HandleFunc("/transaction", node.TransactionHandler).Methods("POST")
-	r.HandleFunc("/update-stake", node.UpdateStakeHandler).Methods("POST")
-	r.HandleFunc("/vote", node.VoteHandler).Methods("POST")
-	r.HandleFunc("/pending-transactions", node.PendingTransactionsHandler).Methods("GET")
+	mux.HandleFunc("/blockchain", func(w http.ResponseWriter, r *http.Request) {
+		data, err := json.Marshal(node.Blockchain)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write(data)
+	})
 
-	return r
-}
+	mux.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler())
+	mux.HandleFunc("/check-public-key", node.CheckPublicKeyHandler())
+	mux.HandleFunc("/get-publickey", node.GetPublicKeyHandler())
+	mux.HandleFunc("/register-wallet", node.RegisterWalletHandler())
+	mux.HandleFunc("/register-validator", node.RegisterValidatorHandler())
+	mux.HandleFunc("/update-stake", node.UpdateStakeHandler())
+	mux.HandleFunc("/delegate-stake", node.DelegateStakeHandler())
+	mux.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler())
+	mux.HandleFunc("/gas-fee", node.GasEstimateHandler())
+	mux.HandleFunc("/get-transaction", node.GetTransactionHandler())
 
-func (node *Node) StartBackgroundTasks() {
-	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
-	tickerCountVotes := time.NewTicker(1 * time.Minute)
+	mux.HandleFunc("/consensus-info", node.ConsensusInfoHandler())
+
+	mux.HandleFunc("/network-health", node.NetworkHealthHandler())
+
+	mux.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler())
+
+	http.HandleFunc("/ws/balance", node.WebSocketBalanceHandler())
+
+	mux.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler())
+
+	mux.HandleFunc("/fund-wallet", node.FundWalletHandler())
+
+	mux.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler())
+
+	mux.HandleFunc("/block", func(w http.ResponseWriter, r *http.Request) {
+		var block Block
+		if err := json.NewDecoder(r.Body).Decode(&block); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Retrieving the last block and its index
+		prevBlock, prevIndex, err := node.Blockchain.GetLastBlock()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to get the last block: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		if prevBlock != nil && !node.Blockchain.ValidateBlock(&block, prevBlock) {
+			http.Error(w, "Block validation failed", http.StatusUnprocessableEntity)
+			return
+		}
+
+		success, err := node.Blockchain.AddBlock(block.Transactions, block.Validator, block.PrevHash, block.Timestamp)
+		if err != nil {
+			// If there's an error, respond with an internal server error status and the error message
+			http.Error(w, fmt.Sprintf("Failed to add block: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if !success {
+			// If the block was not successfully added for some reason (e.g., validation failure),
+			// you might want to respond accordingly. Adjust this based on your application's needs.
+			http.Error(w, "Failed to add block due to validation or other issues", http.StatusBadRequest)
+			return
+		}
+
+		// Log the retrieval of the previous block for debugging
+		if prevBlock != nil {
+			log.Printf("Previous Block Index: %d, Block Hash: %s", prevIndex, prevBlock.Hash)
+		} else {
+			log.Println("No previous block exists.")
+		}
+
+		// If successful, respond with a status indicating the block was created.
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
+		data, err := json.Marshal(node.Peers)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write(data)
+	})
+
+	mux.HandleFunc("/vote", func(w http.ResponseWriter, r *http.Request) {
+		var vote Vote
+		if err := json.NewDecoder(r.Body).Decode(&vote); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		node.Votes = append(node.Votes, vote)
+	})
+
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		stats := node.GetBlockchainStats()
+		statsJSON, err := json.Marshal(stats)
+		if err != nil {
+			http.Error(w, "Failed to serialize blockchain statistics", http.StatusInternalServerError)
+			return
+		}
+		sendResponse(w, statsJSON) // Use your existing sendResponse function to send the JSON data
+	})
+
+	mux.HandleFunc("/transaction", func(w http.ResponseWriter, r *http.Request) {
+		// Assuming you have a struct that mirrors thrylos.Transaction for JSON purposes
+		var jsonTx thrylos.TransactionJSON
+		if err := json.NewDecoder(r.Body).Decode(&jsonTx); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Convert jsonTx to thrylos.Transaction
+		tx := ConvertJSONToProto(jsonTx)
+
+		if err := node.VerifyAndProcessTransaction(tx); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+
+		// Assuming AddPendingTransaction accepts *thrylos.Transaction
+		node.AddPendingTransaction(tx)
+		fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.GetId())
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	// Start background tasks
+	tickerDiscoverPeers := time.NewTicker(10 * time.Minute) // Discover peers every 10 minutes
+	tickerCountVotes := time.NewTicker(1 * time.Minute)     // Count votes every 1 minute
 
 	go func() {
 		for {
@@ -1722,4 +1809,15 @@ func (node *Node) StartBackgroundTasks() {
 			}
 		}
 	}()
+
+	// Start the HTTP server
+	log.Printf("Starting HTTP server on %s", node.Address)
+	srv := &http.Server{
+		Addr:    node.Address,
+		Handler: mux,
+	}
+
+	if err := srv.ListenAndServe(); err != nil {
+		log.Fatalf("Failed to start HTTP server on %s: %v", node.Address, err)
+	}
 }

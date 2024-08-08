@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/ed25519"
+
+	// ensure this import path is correct
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Verifying with a Different Public Key Than the One Used for Signing
