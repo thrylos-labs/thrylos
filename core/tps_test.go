@@ -275,38 +275,49 @@ func TestTransactionThroughputWithGRPCUpdated(t *testing.T) {
 
 func TestTransactionCosts(t *testing.T) {
 	const (
-		smallDataSize  = 10    // 10 bytes
-		mediumDataSize = 1000  // 1000 bytes
-		largeDataSize  = 10000 // 10 KB
+		smallDataSize     = 100    // 100 bytes
+		mediumDataSize    = 1000   // 1 KB
+		largeDataSize     = 10000  // 10 KB
+		veryLargeDataSize = 100000 // 100 KB
 	)
 
-	conn, err := grpc.Dial("localhost:50051", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Set up a timeout for the entire test
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, "localhost:50051", grpc.WithContextDialer(bufDialer), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
 	defer conn.Close()
+
 	client := pb.NewBlockchainServiceClient(conn)
 
 	// Simulated balance for testing
-	const testBalance = 5000
+	const testBalance = 5000000000 // 5 THRYLOS (in nanoTHRYLOS)
 
 	testCases := []struct {
-		name        string
-		dataSize    int
-		expectedGas int
+		name     string
+		dataSize int
 	}{
-		{"SmallData", smallDataSize, CalculateGas(smallDataSize, testBalance)},
-		{"MediumData", mediumDataSize, CalculateGas(mediumDataSize, testBalance)},
-		{"LargeData", largeDataSize, CalculateGas(largeDataSize, testBalance)},
+		{"SmallData", smallDataSize},
+		{"MediumData", mediumDataSize},
+		{"LargeData", largeDataSize},
+		{"VeryLargeData", veryLargeDataSize},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Create a context with a timeout for each transaction
+			txCtx, txCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer txCancel()
+
 			data := make([]byte, tc.dataSize)
+			rand.Read(data) // Fill with random data to simulate real transaction data
+
 			transaction := &thrylos.Transaction{
-				Id:        fmt.Sprintf("%s-transaction", tc.name),
-				Timestamp: time.Now().Unix(),
-				// Assuming encrypted data is representative of actual transaction data
+				Id:               fmt.Sprintf("%s-transaction", tc.name),
+				Timestamp:        time.Now().Unix(),
 				EncryptedInputs:  data,
 				EncryptedOutputs: data,
 				Signature:        []byte("dummy-signature"),
@@ -314,16 +325,40 @@ func TestTransactionCosts(t *testing.T) {
 			}
 
 			request := &thrylos.TransactionRequest{Transaction: transaction}
-			_, err := client.SubmitTransaction(context.Background(), request)
+
+			// Calculate expected gas fee
+			expectedGasFee := CalculateGas(tc.dataSize, testBalance)
+			expectedGasFeeThrylos := float64(expectedGasFee) / 10000000 // Convert to THRYLOS
+
+			t.Logf("Transaction %s:", tc.name)
+			t.Logf("  - Data size: %d bytes", tc.dataSize)
+			t.Logf("  - Expected gas fee: %d nanoTHRYLOS (%.7f THRYLOS)", expectedGasFee, expectedGasFeeThrylos)
+
+			// Submit the transaction with a timeout
+			start := time.Now()
+			response, err := client.SubmitTransaction(txCtx, request)
+			elapsed := time.Since(start)
+
 			if err != nil {
-				t.Errorf("Failed to submit transaction: %v", err)
+				if err == context.DeadlineExceeded {
+					t.Errorf("Transaction submission timed out after %v", elapsed)
+				} else {
+					t.Errorf("Failed to submit transaction: %v", err)
+				}
+				return
 			}
 
-			// Log the expected gas cost for the transaction
-			t.Logf("Transaction %s expected to cost %d gas units", tc.name, tc.expectedGas)
+			// Log the response and timing
+			t.Logf("  - Transaction submission time: %v", elapsed)
+			t.Logf("  - Response: %+v", response)
 
-			// Optionally, validate that the gas cost matches expected values
+			// TODO: Add assertions to verify the actual gas fee charged
 			// This might involve querying a mock or actual database, or adjusting the test setup to capture this data.
+			// For example:
+			// assert.Equal(t, expectedGasFee, actualGasFee, "Gas fee should match expected value")
+
+			// Add a small delay between tests to avoid overwhelming the test server
+			time.Sleep(100 * time.Millisecond)
 		})
 	}
 }

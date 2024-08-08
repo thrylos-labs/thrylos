@@ -1178,7 +1178,7 @@ func validateInputsAndOutputs(tx *Transaction) error {
 
 	for _, input := range tx.Inputs {
 		if input.Amount <= 0 {
-			return fmt.Errorf("invalid input amount: %d", input.Amount)
+			return fmt.Errorf("invalid input amount: %d nanoTHRYLOS", input.Amount)
 		}
 		inputSum += input.Amount
 	}

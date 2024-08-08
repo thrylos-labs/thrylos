@@ -1059,7 +1059,7 @@ func (node *Node) DelegateStakeHandler() http.HandlerFunc {
 
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
-const MinTransactionAmount = 10 // Move this to package level if used elsewhere
+const MinTransactionAmount int64 = 1000000 // 0.1 THRYLOS in nanoTHRYLOS
 
 func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1203,8 +1203,8 @@ func (n *Node) ProcessSignedTransactionHandler() http.HandlerFunc {
 			totalOutputAmount += output.Amount
 		}
 
-		if totalOutputAmount < MinTransactionAmount {
-			sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d", MinTransactionAmount), http.StatusBadRequest)
+		if totalOutputAmount < int64(MinTransactionAmount) {
+			sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d nanoTHRYLOS", MinTransactionAmount), http.StatusBadRequest)
 			return
 		}
 
@@ -1303,16 +1303,15 @@ func (node *Node) GasEstimateHandler() http.HandlerFunc {
 			return
 		}
 		gas := CalculateGas(dataSize, 0)
-        log.Printf("Calculated gas fee for data size %d: %d nanoTHRYLOS (%.7f THRYLOS)", dataSize, gas, float64(gas)/10000000)
-        response := struct {
-            GasFee int `json:"gasFee"`
-        }{
-            GasFee: gas,
-        }
-        w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(response)
-    }
-}
+		log.Printf("Calculated gas fee for data size %d: %d nanoTHRYLOS (%.7f THRYLOS)", dataSize, gas, float64(gas)/10000000)
+		response := struct {
+			GasFee int `json:"gasFee"`
+		}{
+			GasFee: gas,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
 }
 
 func enableCors(w *http.ResponseWriter) {
