@@ -288,8 +288,8 @@ func loadTLSCredentials() credentials.TransportCredentials {
 		certPath = os.Getenv("TLS_CERT_PATH")
 		keyPath = os.Getenv("TLS_KEY_PATH")
 	} else { // Default to development paths
-		certPath = "../../localhost.crt"
-		keyPath = "../../localhost.key"
+		certPath = "../../localhost.pem"
+		keyPath = "../../localhost-key.pem"
 	}
 
 	// Load the server's certificate and its private key
@@ -315,8 +315,8 @@ func loadCertificate() tls.Certificate {
 		certPath = os.Getenv("TLS_CERT_PATH")
 		keyPath = os.Getenv("TLS_KEY_PATH")
 	} else { // Default to development paths
-		certPath = "../../localhost.crt"
-		keyPath = "../../localhost.key"
+		certPath = "../../localhost.pem"
+		keyPath = "../../localhost-key.pem"
 	}
 
 	// Load the server's certificate and its private key
