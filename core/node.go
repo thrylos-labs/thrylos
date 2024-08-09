@@ -1241,35 +1241,6 @@ func generateUTXOID() string {
 	return uuid.New().String()
 }
 
-// func (node *Node) GetPublicKeyHandler() http.HandlerFunc {
-// 	return func(w http.ResponseWriter, r *http.Request) {
-// 		address := r.URL.Query().Get("address")
-// 		if address == "" {
-// 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
-// 			return
-// 		}
-
-// 		publicKey, err := node.RetrievePublicKey(address)
-// 		if err != nil {
-// 			http.Error(w, err.Error(), http.StatusNotFound)
-// 			return
-// 		}
-
-// 		response := map[string]string{
-// 			"publicKey": base64.StdEncoding.EncodeToString(publicKey),
-// 		}
-
-// 		jsonResp, err := json.Marshal(response)
-// 		if err != nil {
-// 			http.Error(w, "Failed to serialize public key response", http.StatusInternalServerError)
-// 			return
-// 		}
-
-// 		w.Header().Set("Content-Type", "application/json")
-// 		w.Write(jsonResp)
-// 	}
-// }
-
 func (node *Node) GasEstimateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -1302,19 +1273,32 @@ func (node *Node) GasEstimateHandler(w http.ResponseWriter, r *http.Request) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("CORS middleware invoked")
-		// Allow requests from any origin for development
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		// Allow requests from specific origins
+		allowedOrigins := []string{"http://localhost:3000", "https://your-production-domain.com"}
+		origin := r.Header.Get("Origin")
+		for _, allowedOrigin := range allowedOrigins {
+			if origin == allowedOrigin {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				break
+			}
+		}
+
+		// Set other CORS headers
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
 			log.Println("Preflight request received")
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+
 		// Set content type for the response
 		w.Header().Set("Content-Type", "application/json")
+
 		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
@@ -1518,6 +1502,35 @@ func (node *Node) GetPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonResp)
 }
 
+// func (node *Node) GetPublicKeyHandler() http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		address := r.URL.Query().Get("address")
+// 		if address == "" {
+// 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
+// 			return
+// 		}
+
+// 		publicKey, err := node.RetrievePublicKey(address)
+// 		if err != nil {
+// 			http.Error(w, err.Error(), http.StatusNotFound)
+// 			return
+// 		}
+
+// 		response := map[string]string{
+// 			"publicKey": base64.StdEncoding.EncodeToString(publicKey),
+// 		}
+
+// 		jsonResp, err := json.Marshal(response)
+// 		if err != nil {
+// 			http.Error(w, "Failed to serialize public key response", http.StatusInternalServerError)
+// 			return
+// 		}
+
+// 		w.Header().Set("Content-Type", "application/json")
+// 		w.Write(jsonResp)
+// 	}
+// }
+
 func (node *Node) BlockchainHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := json.Marshal(node.Blockchain)
 	if err != nil {
@@ -1646,7 +1659,7 @@ func (node *Node) SetupRoutes() *mux.Router {
 	r.HandleFunc("/fund-wallet", node.FundWalletHandler).Methods("POST")
 	r.HandleFunc("/gas-fee", node.GasEstimateHandler).Methods("GET")
 	r.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler).Methods("GET")
-	r.HandleFunc("/get-publickey", node.GetPublicKeyHandler).Methods("GET")
+	r.HandleFunc("/get-publickey", node.GetPublicKeyHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/get-transaction", node.GetTransactionHandler).Methods("GET")
 	r.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler).Methods("GET")
 	r.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler).Methods("GET")
@@ -1661,6 +1674,7 @@ func (node *Node) SetupRoutes() *mux.Router {
 	r.HandleFunc("/update-stake", node.UpdateStakeHandler).Methods("POST")
 	r.HandleFunc("/vote", node.VoteHandler).Methods("POST")
 	r.HandleFunc("/pending-transactions", node.PendingTransactionsHandler).Methods("GET")
+	r.HandleFunc("/ws/balance", node.WebSocketBalanceHandler)
 
 	return r
 }
