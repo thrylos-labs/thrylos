@@ -1111,9 +1111,19 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
 
-	if balance < totalCost {
+	// Convert all amounts to nanoTHRYLOS for consistency
+	totalOutputAmountNano := int64(0)
+	for _, output := range transactionData.Outputs {
+		totalOutputAmountNano += output.Amount * 1e7 // Convert THRYLOS to nanoTHRYLOS
+	}
+
+	totalCostNano := totalOutputAmountNano + int64(transactionData.GasFee)
+
+	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d nanoTHRYLOS", totalOutputAmountNano, transactionData.GasFee, totalCostNano)
+
+	if balance < totalCostNano {
 		errorMsg := fmt.Sprintf("Insufficient balance. Required: %d nanoTHRYLOS, Available: %d nanoTHRYLOS, Transaction Amount: %d nanoTHRYLOS, Gas Fee: %d nanoTHRYLOS",
-			totalCost, balance, totalOutputAmount, transactionData.GasFee)
+			totalCostNano, balance, totalOutputAmountNano, transactionData.GasFee)
 		log.Printf(errorMsg)
 		http.Error(w, errorMsg, http.StatusBadRequest)
 		return

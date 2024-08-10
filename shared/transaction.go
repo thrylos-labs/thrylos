@@ -1174,36 +1174,31 @@ func validateInputsAndOutputs(tx *Transaction) error {
 		return fmt.Errorf("transaction has no outputs")
 	}
 
-	var inputSum, outputSum int64
+	// Convert all amounts to nanoTHRYLOS for consistency
+	var inputSumNano, outputSumNano int64
 
-	// Validate inputs (in THRYLOS)
 	for _, input := range tx.Inputs {
 		if input.Amount <= 0 {
-			return fmt.Errorf("invalid input amount: %d THRYLOS", input.Amount)
+			return fmt.Errorf("invalid input amount: %d nanoTHRYLOS", input.Amount)
 		}
-		inputSum += input.Amount
+		inputSumNano += input.Amount * 1e7 // Convert THRYLOS to nanoTHRYLOS
 	}
 
-	// Validate outputs (in THRYLOS)
 	for _, output := range tx.Outputs {
 		if output.Amount <= 0 {
-			return fmt.Errorf("invalid output amount: %d THRYLOS", output.Amount)
+			return fmt.Errorf("invalid output amount: %d nanoTHRYLOS", output.Amount)
 		}
-		outputSum += output.Amount
+		outputSumNano += output.Amount * 1e7 // Convert THRYLOS to nanoTHRYLOS
 	}
 
-	// Convert gas fee to THRYLOS for comparison
-	gasFeeInThrylos := int64(tx.GasFee) / 1e7
+	log.Printf("Transaction validation - Input sum: %d nanoTHRYLOS", inputSumNano)
+	log.Printf("Transaction validation - Output sum: %d nanoTHRYLOS", outputSumNano)
+	log.Printf("Transaction validation - Gas fee: %d nanoTHRYLOS", tx.GasFee)
+	log.Printf("Transaction validation - Total (outputs + gas fee): %d nanoTHRYLOS", outputSumNano+int64(tx.GasFee))
 
-	log.Printf("Transaction validation - Input sum: %d THRYLOS", inputSum)
-	log.Printf("Transaction validation - Output sum: %d THRYLOS", outputSum)
-	log.Printf("Transaction validation - Gas fee: %d nanoTHRYLOS (%d THRYLOS)", tx.GasFee, gasFeeInThrylos)
-	log.Printf("Transaction validation - Total (outputs + gas fee): %d THRYLOS", outputSum+gasFeeInThrylos)
-
-	// Account for gas fee in the balance calculation
-	if inputSum != outputSum+gasFeeInThrylos {
-		return fmt.Errorf("inputs (%d THRYLOS) do not match outputs (%d THRYLOS) plus gas fee (%d THRYLOS)",
-			inputSum, outputSum, gasFeeInThrylos)
+	if inputSumNano != outputSumNano+int64(tx.GasFee) {
+		return fmt.Errorf("inputs (%d nanoTHRYLOS) do not match outputs (%d nanoTHRYLOS) plus gas fee (%d nanoTHRYLOS)",
+			inputSumNano, outputSumNano, tx.GasFee)
 	}
 
 	return nil
