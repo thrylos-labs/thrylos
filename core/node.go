@@ -501,7 +501,7 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		return 0, err
 	}
 
-	log.Printf("Final balance for %s: %d", address, balance)
+	log.Printf("Final balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)", address, balance, float64(balance)/1e7)
 	return balance, nil
 }
 
@@ -570,11 +570,13 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 			}
 
 			response := struct {
-				BlockchainAddress string `json:"blockchainAddress"`
-				Balance           int64  `json:"balance"`
+				BlockchainAddress string  `json:"blockchainAddress"`
+				BalanceNano       int64   `json:"balanceNano"`
+				Balance           float64 `json:"balance"`
 			}{
 				BlockchainAddress: address,
-				Balance:           balance,
+				BalanceNano:       balance,
+				Balance:           float64(balance) / 1e7,
 			}
 
 			if err := ws.WriteJSON(response); err != nil {
@@ -1030,7 +1032,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	// Continue with the rest of your existing code to process the transaction
 	var transactionData shared.Transaction
 
-	// Handle GasFee conversion
+	// Handle GasFee conversion (keep it in nanoTHRYLOS)
 	if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
 		transactionData.GasFee = int(gasFeeFloat)
 	} else {
@@ -1076,7 +1078,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Fetch the balance for the sender
+	// Fetch the balance for the sender (ensure this returns whole THRYLOS)
 	balance, err := n.GetBalance(transactionData.Sender)
 	if err != nil {
 		log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
@@ -1096,10 +1098,10 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		gasEstimate = int32(transactionData.GasFee)
 	}
 
-	// Calculate total output amount
+	// Calculate total output amount (in whole THRYLOS)
 	totalOutputAmount := int64(0)
 	for _, output := range transactionData.Outputs {
-		totalOutputAmount += output.Amount // Assuming Amount is now in nanoTHRYLOS
+		totalOutputAmount += output.Amount // Assuming Amount is in whole THRYLOS
 	}
 
 	if totalOutputAmount < MinTransactionAmount {
@@ -1107,27 +1109,25 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	totalCost := totalOutputAmount + int64(transactionData.GasFee)
+	// Convert gas fee to THRYLOS for calculations
+	gasFeeInThrylos := float64(transactionData.GasFee) / 1e7
 
-	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
+	// Calculate total cost in THRYLOS
+	totalCost := float64(totalOutputAmount) + gasFeeInThrylos
 
-	// Convert all amounts to nanoTHRYLOS for consistency
-	totalOutputAmountNano := int64(0)
-	for _, output := range transactionData.Outputs {
-		totalOutputAmountNano += output.Amount * 1e7 // Convert THRYLOS to nanoTHRYLOS
-	}
+	log.Printf("Transaction details - Outputs: %d THRYLOS, Gas Fee: %d nanoTHRYLOS (%.7f THRYLOS), Total Cost: %.7f THRYLOS",
+		totalOutputAmount, transactionData.GasFee, gasFeeInThrylos, totalCost)
 
-	totalCostNano := totalOutputAmountNano + int64(transactionData.GasFee)
-
-	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d nanoTHRYLOS", totalOutputAmountNano, transactionData.GasFee, totalCostNano)
-
-	if balance < totalCostNano {
-		errorMsg := fmt.Sprintf("Insufficient balance. Required: %d nanoTHRYLOS, Available: %d nanoTHRYLOS, Transaction Amount: %d nanoTHRYLOS, Gas Fee: %d nanoTHRYLOS",
-			totalCostNano, balance, totalOutputAmountNano, transactionData.GasFee)
+	// Check if balance is sufficient
+	if float64(balance) < totalCost {
+		errorMsg := fmt.Sprintf("Insufficient balance. Required: %.7f THRYLOS, Available: %d THRYLOS, Transaction Amount: %d THRYLOS, Gas Fee: %.7f THRYLOS",
+			totalCost, balance, totalOutputAmount, gasFeeInThrylos)
 		log.Printf(errorMsg)
 		http.Error(w, errorMsg, http.StatusBadRequest)
 		return
 	}
+
+	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
 
 	if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
 		log.Printf("Failed to process transaction: %v", err)
@@ -1167,24 +1167,46 @@ func sendResponseProcess(w http.ResponseWriter, data interface{}) {
 func (n *Node) FetchGasEstimate(dataSize int, balance int64) (int, error) {
 	url := fmt.Sprintf("%s?dataSize=%d&balance=%d", "https://node.thrylos.org/gas-fee", dataSize, balance)
 	log.Printf("Fetching gas estimate from URL: %s", url)
+
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Printf("HTTP request failed: %v", err)
 		return 0, err
 	}
 	defer resp.Body.Close()
+
 	log.Printf("Received response with status code: %d", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("Failed to fetch gas estimate, status code: %d", resp.StatusCode)
 		return 0, fmt.Errorf("failed to fetch gas estimate, status code: %d", resp.StatusCode)
 	}
-	var result map[string]int
+
+	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		log.Printf("Error decoding JSON response: %v", err)
 		return 0, err
 	}
+
 	log.Printf("Gas estimate received: %v", result)
-	if gasEstimate, exists := result["gasFee"]; exists {
+
+	if gasFeeValue, exists := result["gasFee"]; exists {
+		var gasEstimate int
+
+		switch v := gasFeeValue.(type) {
+		case float64:
+			gasEstimate = int(v)
+		case string:
+			parsedValue, err := strconv.Atoi(v)
+			if err != nil {
+				log.Printf("Error parsing gas fee string: %v", err)
+				return 0, fmt.Errorf("invalid gas fee format: %v", err)
+			}
+			gasEstimate = parsedValue
+		default:
+			log.Printf("Unexpected type for gas fee: %T", v)
+			return 0, fmt.Errorf("unexpected gas fee type: %T", v)
+		}
+
 		log.Printf("Gas estimate found: %d (0.%06d THRYLOS)", gasEstimate, gasEstimate)
 		return gasEstimate, nil
 	} else {
@@ -1474,7 +1496,7 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Ensure there are sufficient funds in the genesis account
-	initialBalance := int64(70) // Set initial balance for the new wallet
+	initialBalance := int64(70 * 1e7) // 70 THRYLOS in nanoTHRYLOS
 	currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
 	if !genesisExists || currentBalance < initialBalance {
 		http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
@@ -1504,12 +1526,13 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 	response := struct {
 		PublicKey         string        `json:"publicKey"`
 		BlockchainAddress string        `json:"blockchainAddress"`
-		Balance           int64         `json:"balance"`
-		UTXOs             []shared.UTXO `json:"utxos"` // Add this line
+		BalanceNano       int64         `json:"balanceNano"`
+		Balance           float64       `json:"balance"`
+		UTXOs             []shared.UTXO `json:"utxos"`
 	}{
 		PublicKey:         req.PublicKey,
 		BlockchainAddress: bech32Address,
-		Balance:           initialBalance,
+		Balance:           float64(initialBalance) / 1e7,
 		UTXOs:             []shared.UTXO{utxo}, // Assuming you store the UTXO in an array or similar structure
 	}
 	jsonResponse, err := json.Marshal(response)
