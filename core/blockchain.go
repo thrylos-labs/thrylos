@@ -93,6 +93,16 @@ type Fork struct {
 	Blocks []*Block
 }
 
+const NanoPerThrylos = 1e7
+
+func ThrylosToNano(thrylos float64) int64 {
+	return int64(thrylos * NanoPerThrylos)
+}
+
+func NanoToThrylos(nano int64) float64 {
+	return float64(nano) / NanoPerThrylos
+}
+
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebaseApp *firebase.App) (*Blockchain, shared.BlockchainDBInterface, error) {
@@ -112,9 +122,9 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	// Simulate several stakeholders
 	stakeholders := []struct {
 		Address string
-		Balance int64
+		Balance float64 // Change this to float64 to represent THRYLOS
 	}{
-		{genesisAccount, 100000}, // Assume a starting balance for the genesis account
+		{genesisAccount, 120000000}, // 120,000,000 THRYLOS TOKENS
 		// {"6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19", 10000},
 		// {"8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7", 20000},
 	}
@@ -125,18 +135,22 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	// Precompute genesis transactions and UTXOs
 	genesisTransactions := make([]*thrylos.Transaction, 0, len(stakeholders))
 	utxoMap := make(map[string][]*thrylos.UTXO, len(stakeholders))
+
 	for _, stakeholder := range stakeholders {
-		stakeholdersMap[stakeholder.Address] = int64(stakeholder.Balance)
+		balanceNano := ThrylosToNano(stakeholder.Balance)
+		stakeholdersMap[stakeholder.Address] = balanceNano
+
 		genesisTx := &thrylos.Transaction{
 			Id:        "genesis_tx_" + stakeholder.Address,
 			Timestamp: time.Now().Unix(),
 			Outputs: []*thrylos.UTXO{{
 				OwnerAddress: stakeholder.Address,
-				Amount:       stakeholder.Balance,
+				Amount:       balanceNano,
 			}},
 			Signature: []byte("genesis_signature"),
 		}
 		genesisTransactions = append(genesisTransactions, genesisTx)
+
 		utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
 		utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 	}

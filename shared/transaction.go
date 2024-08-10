@@ -985,25 +985,6 @@ func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publi
 		return fmt.Errorf("gas estimator is nil")
 	}
 
-	// Calculate total data size from the already prepared transaction data
-	totalDataSize := len(tx.EncryptedInputs) + len(tx.EncryptedOutputs)
-
-	// Fetch gas estimate and convert to int64 if necessary
-	gasFee, err := estimator.FetchGasEstimate(totalDataSize, balance)
-	if err != nil {
-		return fmt.Errorf("failed to fetch gas estimate: %v", err)
-	}
-	intGasFee := int64(gasFee) // Assuming FetchGasEstimate returns int, convert to int64
-
-	// Adjust the transaction outputs for the gas fee
-	if len(tx.Outputs) == 0 {
-		return fmt.Errorf("transaction has no outputs")
-	}
-	if intGasFee > int64(tx.Outputs[0].Amount) {
-		return fmt.Errorf("not enough balance to cover gas fees: required %d, available %d", intGasFee, tx.Outputs[0].Amount)
-	}
-	tx.Outputs[0].Amount -= intGasFee
-
 	// Select tips (previous transactions) to link this transaction
 	tips, err := selectTips()
 	if err != nil {
@@ -1176,34 +1157,34 @@ func validateInputsAndOutputs(tx *Transaction) error {
 
 	var inputSum, outputSum int64
 
-	// Validate inputs (in THRYLOS)
+	// Validate inputs (in nanoTHRYLOS)
 	for _, input := range tx.Inputs {
 		if input.Amount <= 0 {
-			return fmt.Errorf("invalid input amount: %d THRYLOS", input.Amount)
+			return fmt.Errorf("invalid input amount: %d nanoTHRYLOS", input.Amount)
 		}
 		inputSum += input.Amount
 	}
 
-	// Validate outputs (in THRYLOS)
+	// Validate outputs (in nanoTHRYLOS)
 	for _, output := range tx.Outputs {
 		if output.Amount <= 0 {
-			return fmt.Errorf("invalid output amount: %d THRYLOS", output.Amount)
+			return fmt.Errorf("invalid output amount: %d nanoTHRYLOS", output.Amount)
 		}
 		outputSum += output.Amount
 	}
 
-	// Convert gas fee to THRYLOS for comparison
-	gasFeeInThrylos := float64(tx.GasFee) / 1e7
+	// Convert gas fee to int64 to ensure type consistency
+	gasFeeNano := int64(tx.GasFee)
 
-	log.Printf("Transaction validation - Input sum: %d THRYLOS", inputSum)
-	log.Printf("Transaction validation - Output sum: %d THRYLOS", outputSum)
-	log.Printf("Transaction validation - Gas fee: %d nanoTHRYLOS (%.7f THRYLOS)", tx.GasFee, gasFeeInThrylos)
-	log.Printf("Transaction validation - Total (outputs + gas fee): %.7f THRYLOS", float64(outputSum)+gasFeeInThrylos)
+	log.Printf("Transaction validation - Input sum: %d nanoTHRYLOS (%.7f THRYLOS)", inputSum, float64(inputSum)/1e7)
+	log.Printf("Transaction validation - Output sum: %d nanoTHRYLOS (%.7f THRYLOS)", outputSum, float64(outputSum)/1e7)
+	log.Printf("Transaction validation - Gas fee: %d nanoTHRYLOS (%.7f THRYLOS)", gasFeeNano, float64(gasFeeNano)/1e7)
+	log.Printf("Transaction validation - Total (outputs + gas fee): %d nanoTHRYLOS (%.7f THRYLOS)", outputSum+gasFeeNano, float64(outputSum+gasFeeNano)/1e7)
 
-	// Account for gas fee in the balance calculation
-	if float64(inputSum) != float64(outputSum)+gasFeeInThrylos {
-		return fmt.Errorf("inputs (%d THRYLOS) do not match outputs (%d THRYLOS) plus gas fee (%.7f THRYLOS)",
-			inputSum, outputSum, gasFeeInThrylos)
+	// Account for gas fee in the balance calculation using integer arithmetic
+	if inputSum != outputSum+gasFeeNano {
+		return fmt.Errorf("inputs (%d nanoTHRYLOS) do not match outputs (%d nanoTHRYLOS) plus gas fee (%d nanoTHRYLOS)",
+			inputSum, outputSum, gasFeeNano)
 	}
 
 	return nil

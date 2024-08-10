@@ -559,7 +559,7 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 			log.Printf("WebSocket connection closed for address: %s", address)
 			return
 		case <-ticker.C:
-			balance, err := node.GetBalance(address)
+			balanceNano, err := node.GetBalance(address)
 			if err != nil {
 				log.Printf("Error fetching balance: %v", err)
 				if err := ws.WriteMessage(websocket.TextMessage, []byte("Error fetching balance")); err != nil {
@@ -569,16 +569,19 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 				continue
 			}
 
+			// Convert nano balance to regular THRYLOS balance
+			balance := float64(balanceNano) / 1e7
+
+			// Create a response structure with the relevant balance fields
 			response := struct {
 				BlockchainAddress string  `json:"blockchainAddress"`
-				BalanceNano       int64   `json:"balanceNano"`
-				Balance           float64 `json:"balance"`
+				Balance           float64 `json:"balance"` // Balance in THRYLOS
 			}{
 				BlockchainAddress: address,
-				BalanceNano:       balance,
-				Balance:           float64(balance) / 1e7,
+				Balance:           balance,
 			}
 
+			// Send the response as JSON over the WebSocket
 			if err := ws.WriteJSON(response); err != nil {
 				log.Printf("Error sending balance update: %v", err)
 				return
@@ -1127,7 +1130,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
+	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, int64(totalCost))
 
 	if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
 		log.Printf("Failed to process transaction: %v", err)
@@ -1457,6 +1460,10 @@ func (node *Node) CheckPublicKeyHandler(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+func ThrylosTo(thrylos float64) int64 {
+	return int64(thrylos)
+}
+
 func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("RegisterWalletHandler request received")
 	var req struct {
@@ -1495,22 +1502,26 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
 		return
 	}
+
 	// Ensure there are sufficient funds in the genesis account
-	initialBalance := int64(70 * 1e7) // 70 THRYLOS in nanoTHRYLOS
-	currentBalance, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
-	if !genesisExists || currentBalance < initialBalance {
+	initialBalanceThrylos := 70.0 // 70 THRYLOS
+	initialBalanceNano := ThrylosTo(initialBalanceThrylos)
+
+	currentBalanceNano, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
+	if !genesisExists || currentBalanceNano < initialBalanceNano {
+		log.Printf("Insufficient funds in genesis account. Required: %d nanoTHRYLOS, Available: %d nanoTHRYLOS", initialBalanceNano, currentBalanceNano)
 		http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
 		return
 	}
 
 	// Deduct from genesis and assign to new account
-	node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalance
-	node.Blockchain.Stakeholders[bech32Address] = initialBalance
+	node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalanceNano
+	node.Blockchain.Stakeholders[bech32Address] = initialBalanceNano
 
 	// Create initial UTXO for the account
 	utxo := shared.UTXO{
 		OwnerAddress: bech32Address,
-		Amount:       initialBalance,
+		Amount:       initialBalanceNano,
 	}
 	if err := node.Blockchain.addUTXO(utxo); err != nil {
 		http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
@@ -1520,21 +1531,21 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalance)
+	log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalanceNano)
 	log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
 
 	response := struct {
 		PublicKey         string        `json:"publicKey"`
 		BlockchainAddress string        `json:"blockchainAddress"`
-		BalanceNano       int64         `json:"balanceNano"`
-		Balance           float64       `json:"balance"`
+		Balance           float64       `json:"balance"` // Balance in THRYLOS
 		UTXOs             []shared.UTXO `json:"utxos"`
 	}{
 		PublicKey:         req.PublicKey,
 		BlockchainAddress: bech32Address,
-		Balance:           float64(initialBalance) / 1e7,
-		UTXOs:             []shared.UTXO{utxo}, // Assuming you store the UTXO in an array or similar structure
+		Balance:           initialBalanceThrylos, // Balance in THRYLOS
+		UTXOs:             []shared.UTXO{utxo},
 	}
+
 	jsonResponse, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Failed to serialize response: %v", err)

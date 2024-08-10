@@ -499,7 +499,7 @@ func (bdb *BlockchainDB) GetBalance(address string, utxos map[string][]shared.UT
 	}
 	for _, utxo := range userUTXOs {
 		if !utxo.IsSpent {
-			balance += utxo.Amount
+			balance += utxo.Amount * 1e7 // Convert THRYLOS to nanoTHRYLOS
 		}
 	}
 	return balance, nil
