@@ -1176,30 +1176,34 @@ func validateInputsAndOutputs(tx *Transaction) error {
 
 	var inputSum, outputSum int64
 
+	// Validate inputs (in THRYLOS)
 	for _, input := range tx.Inputs {
 		if input.Amount <= 0 {
-			return fmt.Errorf("invalid input amount: %d nanoTHRYLOS", input.Amount)
+			return fmt.Errorf("invalid input amount: %d THRYLOS", input.Amount)
 		}
 		inputSum += input.Amount
 	}
 
-	log.Printf("Transaction validation - Number of outputs: %d", len(tx.Outputs))
-	for i, output := range tx.Outputs {
-		log.Printf("Output %d: Amount: %d, Address: %s", i, output.Amount, output.OwnerAddress)
+	// Validate outputs (in THRYLOS)
+	for _, output := range tx.Outputs {
 		if output.Amount <= 0 {
-			return fmt.Errorf("invalid output amount: %d", output.Amount)
+			return fmt.Errorf("invalid output amount: %d THRYLOS", output.Amount)
 		}
 		outputSum += output.Amount
 	}
 
-	log.Printf("Transaction validation - Input sum: %d", inputSum)
-	log.Printf("Transaction validation - Output sum: %d", outputSum)
-	log.Printf("Transaction validation - Gas fee: %d", tx.GasFee)
-	log.Printf("Transaction validation - Total (outputs + gas fee): %d", outputSum+int64(tx.GasFee))
+	// Convert gas fee to THRYLOS for comparison
+	gasFeeInThrylos := int64(tx.GasFee) / 1e7
+
+	log.Printf("Transaction validation - Input sum: %d THRYLOS", inputSum)
+	log.Printf("Transaction validation - Output sum: %d THRYLOS", outputSum)
+	log.Printf("Transaction validation - Gas fee: %d nanoTHRYLOS (%d THRYLOS)", tx.GasFee, gasFeeInThrylos)
+	log.Printf("Transaction validation - Total (outputs + gas fee): %d THRYLOS", outputSum+gasFeeInThrylos)
 
 	// Account for gas fee in the balance calculation
-	if inputSum != outputSum+int64(tx.GasFee) {
-		return fmt.Errorf("inputs (%d) do not match outputs (%d) plus gas fee (%d)", inputSum, outputSum, tx.GasFee)
+	if inputSum != outputSum+gasFeeInThrylos {
+		return fmt.Errorf("inputs (%d THRYLOS) do not match outputs (%d THRYLOS) plus gas fee (%d THRYLOS)",
+			inputSum, outputSum, gasFeeInThrylos)
 	}
 
 	return nil

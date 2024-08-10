@@ -953,9 +953,15 @@ func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
 
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
-const MinTransactionAmount int64 = 1000000 // 0.1 THRYLOS in nanoTHRYLOS
+const MinTransactionAmount int64 = 1 // 1 THRYLOS (changed from 1000000 nanoTHRYLOS)
 
 func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	// Handle OPTIONS request
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	if n.Database == nil {
 		log.Printf("Error: Database interface is nil in ProcessSignedTransactionHandler")
 		sendErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
@@ -1091,23 +1097,23 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	// Calculate total output amount
-	var totalOutputAmount int64
+	totalOutputAmount := int64(0)
 	for _, output := range transactionData.Outputs {
-		totalOutputAmount += output.Amount
+		totalOutputAmount += output.Amount // Assuming Amount is now in nanoTHRYLOS
 	}
 
-	if totalOutputAmount < int64(MinTransactionAmount) {
-		sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d nanoTHRYLOS", MinTransactionAmount), http.StatusBadRequest)
+	if totalOutputAmount < MinTransactionAmount {
+		sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d THRYLOS", MinTransactionAmount), http.StatusBadRequest)
 		return
 	}
 
-	totalCost := totalOutputAmount + int64(gasEstimate)
+	totalCost := totalOutputAmount + int64(transactionData.GasFee)
 
 	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, totalCost)
 
 	if balance < totalCost {
-		errorMsg := fmt.Sprintf("Insufficient balance. Required: %d, Available: %d, Transaction Amount: %d, Gas Fee: %d",
-			totalCost, balance, totalOutputAmount, gasEstimate)
+		errorMsg := fmt.Sprintf("Insufficient balance. Required: %d nanoTHRYLOS, Available: %d nanoTHRYLOS, Transaction Amount: %d nanoTHRYLOS, Gas Fee: %d nanoTHRYLOS",
+			totalCost, balance, totalOutputAmount, transactionData.GasFee)
 		log.Printf(errorMsg)
 		http.Error(w, errorMsg, http.StatusBadRequest)
 		return
@@ -1242,32 +1248,58 @@ func generateUTXOID() string {
 }
 
 func (node *Node) GasEstimateHandler(w http.ResponseWriter, r *http.Request) {
+	// Log the incoming request
+	log.Printf("GasEstimateHandler called with method: %s", r.Method)
+
+	// Handle OPTIONS request
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
+	// Ensure the request method is GET
+	if r.Method != http.MethodGet {
+		log.Printf("Invalid method for GasEstimateHandler: %s", r.Method)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get and validate dataSize parameter
 	dataSizeStr := r.URL.Query().Get("dataSize")
 	if dataSizeStr == "" {
+		log.Print("dataSize parameter is missing")
 		http.Error(w, "dataSize parameter is missing", http.StatusBadRequest)
 		return
 	}
 
 	dataSize, err := strconv.Atoi(dataSizeStr)
 	if err != nil {
+		log.Printf("Invalid dataSize parameter: %v", err)
 		http.Error(w, "Invalid dataSize parameter", http.StatusBadRequest)
 		return
 	}
-	// Calculate gas using the provided data size
+
+	// Calculate gas
 	gas := CalculateGas(dataSize, 0)
+
 	// Prepare the response
 	response := struct {
-		GasFee int `json:"gasFee"`
+		GasFee     int    `json:"gasFee"`
+		GasFeeUnit string `json:"gasFeeUnit"`
 	}{
-		GasFee: gas,
+		GasFee:     gas,
+		GasFeeUnit: "nanoTHRYLOS",
 	}
+
+	// Set content type and encode response
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Gas fee estimate sent: %d for data size: %d", gas, dataSize)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -1305,6 +1337,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func (node *Node) GetUTXOsForAddressHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("GetUTXOsForAddressHandler called with method: %s", r.Method)
+
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -1313,9 +1347,11 @@ func (node *Node) GetUTXOsForAddressHandler(w http.ResponseWriter, r *http.Reque
 	log.Printf("Request URL: %s", r.URL.String())
 	address := r.URL.Query().Get("address")
 	if address == "" {
+		log.Printf("Address parameter is missing")
 		http.Error(w, "Address parameter is missing", http.StatusBadRequest)
 		return
 	}
+
 	log.Printf("Fetching UTXOs for address: %s", address)
 	utxos, err := node.Blockchain.GetUTXOsForAddress(address)
 	if err != nil {
@@ -1657,15 +1693,15 @@ func (node *Node) SetupRoutes() *mux.Router {
 	r.HandleFunc("/consensus-info", node.ConsensusInfoHandler).Methods("GET")
 	r.HandleFunc("/delegate-stake", node.DelegateStakeHandler).Methods("POST")
 	r.HandleFunc("/fund-wallet", node.FundWalletHandler).Methods("POST")
-	r.HandleFunc("/gas-fee", node.GasEstimateHandler).Methods("GET")
+	r.HandleFunc("/gas-fee", node.GasEstimateHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/get-blockchain-address", node.GetBlockchainAddressHandler).Methods("GET")
 	r.HandleFunc("/get-publickey", node.GetPublicKeyHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/get-transaction", node.GetTransactionHandler).Methods("GET")
-	r.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler).Methods("GET")
+	r.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler).Methods("GET")
 	r.HandleFunc("/network-health", node.NetworkHealthHandler).Methods("GET")
 	r.HandleFunc("/peers", node.PeersHandler).Methods("GET")
-	r.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler).Methods("POST")
+	r.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler).Methods("POST")
 	r.HandleFunc("/register-validator", node.RegisterValidatorHandler).Methods("POST")
 	r.HandleFunc("/register-wallet", node.RegisterWalletHandler).Methods("POST", "OPTIONS")
