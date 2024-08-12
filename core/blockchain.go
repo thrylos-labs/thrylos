@@ -608,36 +608,64 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
+	log.Printf("Starting to process %d pending transactions", len(bc.PendingTransactions))
+
+	successfulTransactions := []*thrylos.Transaction{}
+
 	for _, tx := range bc.PendingTransactions {
 		log.Printf("Processing transaction %s", tx.Id)
+
+		isValid := true
 		for _, input := range tx.Inputs {
 			if removed := bc.removeUTXO(input.TransactionId, input.Index); !removed {
 				log.Printf("Failed to remove input UTXO: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
-				continue // Skip this transaction if the input UTXO cannot be removed (not found or already spent)
+				isValid = false
+				break
 			}
 			log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
 		}
+
+		if !isValid {
+			log.Printf("Skipping invalid transaction %s", tx.Id)
+			continue
+		}
+
 		for _, output := range tx.Outputs {
 			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int64(output.Amount))
 			if err := newUTXO.ValidateUTXO(); err != nil {
-				log.Printf("Validation failed for UTXO: %v", err)
-				continue // Skip adding this UTXO if validation fails
+				log.Printf("Validation failed for UTXO in transaction %s: %v", tx.Id, err)
+				isValid = false
+				break
 			}
-			bc.addUTXO(newUTXO)
+			if err := bc.addUTXO(newUTXO); err != nil {
+				log.Printf("Failed to add UTXO for transaction %s: %v", tx.Id, err)
+				isValid = false
+				break
+			}
 			log.Printf("Output UTXO added: Transaction ID: %s, Owner: %s, Amount: %d", tx.Id, output.OwnerAddress, output.Amount)
 		}
 
+		if isValid {
+			successfulTransactions = append(successfulTransactions, tx)
+			log.Printf("Transaction %s processed successfully", tx.Id)
+		} else {
+			log.Printf("Transaction %s failed processing", tx.Id)
+		}
 	}
+
+	log.Printf("%d out of %d transactions processed successfully", len(successfulTransactions), len(bc.PendingTransactions))
 
 	selectedValidator := bc.SelectValidator()
 	if validator != selectedValidator {
+		log.Printf("Validator mismatch: expected %s, got %s", selectedValidator, validator)
 		return nil, fmt.Errorf("selected validator does not match")
 	}
 
 	rewardTransaction := &thrylos.Transaction{
 		// Implementation for reward transaction
 	}
-	bc.PendingTransactions = append(bc.PendingTransactions, rewardTransaction)
+	successfulTransactions = append(successfulTransactions, rewardTransaction)
+	log.Printf("Reward transaction added to block")
 
 	newBlock := bc.CreateBlock(bc.PendingTransactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash, time.Now().Unix())
 	if newBlock == nil {
@@ -645,8 +673,66 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	}
 
 	bc.Blocks = append(bc.Blocks, newBlock)
+
+	// Log information about the new block
+	log.Printf("New block created: Index=%d, Hash=%s, Transactions=%d", newBlock.Index, newBlock.Hash, len(newBlock.Transactions))
+
+	// Log each transaction in the new block
+	for _, tx := range newBlock.Transactions {
+		log.Printf("Transaction %s included in block %s", tx.Id, newBlock.Hash)
+		// Update transaction status
+		bc.UpdateTransactionStatus(tx.Id, "included", newBlock.Hash)
+	}
+
 	bc.PendingTransactions = nil
 	return newBlock, nil
+}
+
+func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockHash string) error {
+	// Begin a new database transaction
+	txn, err := bc.Database.BeginTransaction()
+	if err != nil {
+		return fmt.Errorf("failed to begin database transaction: %v", err)
+	}
+	defer bc.Database.RollbackTransaction(txn) // Rollback in case of error
+
+	// Retrieve the existing transaction
+	txKey := []byte("transaction-" + txID)
+	txItem, err := txn.Txn.Get(txKey)
+	if err != nil {
+		return fmt.Errorf("error retrieving transaction: %v", err)
+	}
+
+	var tx thrylos.Transaction
+	err = txItem.Value(func(val []byte) error {
+		return json.Unmarshal(val, &tx)
+	})
+	if err != nil {
+		return fmt.Errorf("error unmarshaling transaction: %v", err)
+	}
+
+	// Update the transaction status
+	tx.Status = status
+	tx.BlockHash = blockHash
+
+	// Serialize the updated transaction
+	updatedTxJSON, err := json.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("error marshaling updated transaction: %v", err)
+	}
+
+	// Store the updated transaction
+	if err := bc.Database.SetTransaction(txn, txKey, updatedTxJSON); err != nil {
+		return fmt.Errorf("error updating transaction: %v", err)
+	}
+
+	// Commit the transaction
+	if err := bc.Database.CommitTransaction(txn); err != nil {
+		return fmt.Errorf("error committing transaction update: %v", err)
+	}
+
+	log.Printf("Transaction %s status updated to %s in block %s", txID, status, blockHash)
+	return nil
 }
 
 // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.

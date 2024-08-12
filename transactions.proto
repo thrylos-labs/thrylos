@@ -16,6 +16,8 @@ message Transaction {
   bytes encrypted_aes_key = 9; // Keep as bytes, ensure encryption keys are not logged or misused.
   string sender = 10;
   int32 gas_fee = 11; // Added gas fee field
+  string status = 12;  // New field for transaction status
+  string block_hash = 13;  // New field for the hash of the block containing this transaction
 }
 
 // UTXO message optimized for size and clarity.

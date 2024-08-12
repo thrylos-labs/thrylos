@@ -49,6 +49,8 @@ type Transaction struct {
 	PreviousTxIds    []string `json:"previoustxids,omitempty"`
 	Sender           string   `json:"sender"`
 	GasFee           int      `json:"gasfee"`
+	Status           string   `json:"status,omitempty"`
+	BlockHash        string   `json:"blockHash,omitempty"`
 }
 
 var hashCache sync.Map // A thread-safe map to cache hash results

@@ -734,8 +734,56 @@ func (bc *Blockchain) SelectValidator() string {
 }
 
 func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("cannot add nil transaction")
+	}
+
+	// Basic validation
+	if tx.Id == "" {
+		return fmt.Errorf("transaction ID cannot be empty")
+	}
+
+	// Check for duplicate transactions
+	for _, pendingTx := range node.PendingTransactions {
+		if pendingTx.Id == tx.Id {
+			log.Printf("Transaction %s already in pending pool, skipping", tx.Id)
+			return nil
+		}
+	}
+
 	node.PendingTransactions = append(node.PendingTransactions, tx)
-	return nil // Assuming you might want to handle errors in some scenarios
+	log.Printf("Transaction %s added to pending pool. Total pending: %d", tx.Id, len(node.PendingTransactions))
+
+	// If the pending pool reaches a certain size, trigger block creation
+	// You can define a constant for this or make it configurable
+	const MaxPendingTransactions = 100 // Example value, adjust as needed
+	if len(node.PendingTransactions) >= MaxPendingTransactions {
+		go node.TriggerBlockCreation()
+	}
+
+	return nil
+}
+
+// Add this method to your Node struct
+func (node *Node) TriggerBlockCreation() {
+	log.Println("Triggering block creation due to full pending transaction pool")
+
+	// Assuming your Blockchain has a method to get the current validator
+	validator := node.Blockchain.GetCurrentValidator()
+
+	newBlock, err := node.Blockchain.ProcessPendingTransactions(validator)
+	if err != nil {
+		log.Printf("Error creating new block: %v", err)
+	} else if newBlock != nil {
+		log.Printf("New block created successfully: Index=%d, Hash=%s, Transactions=%d",
+			newBlock.Index, newBlock.Hash, len(newBlock.Transactions))
+	}
+}
+
+func (bc *Blockchain) GetCurrentValidator() string {
+	// Implementation to return the current validator
+	// This could be based on your consensus mechanism
+	return "SomeValidatorAddress"
 }
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
@@ -1089,6 +1137,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Estimate the gas
 	var gasEstimate int32
 	if transactionData.GasFee == 0 {
 		estimate, err := n.FetchGasEstimate(len(transactionData.EncryptedInputs)+len(transactionData.EncryptedOutputs), balance)
