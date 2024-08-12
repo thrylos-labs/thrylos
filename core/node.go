@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -754,14 +755,25 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	node.PendingTransactions = append(node.PendingTransactions, tx)
 	log.Printf("Transaction %s added to pending pool. Total pending: %d", tx.Id, len(node.PendingTransactions))
 
-	// If the pending pool reaches a certain size, trigger block creation
-	// You can define a constant for this or make it configurable
-	const MaxPendingTransactions = 100 // Example value, adjust as needed
-	if len(node.PendingTransactions) >= MaxPendingTransactions {
-		go node.TriggerBlockCreation()
+	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", ""); err != nil {
+		log.Printf("Error updating transaction status: %v", err)
 	}
 
+	go node.TriggerBlockCreation() // Trigger after each transaction
+
 	return nil
+}
+
+// Add this method to periodically check and create blocks
+func (node *Node) StartBlockCreationTimer() {
+	ticker := time.NewTicker(1 * time.Minute) // Adjust time as needed
+	go func() {
+		for range ticker.C {
+			if len(node.PendingTransactions) > 0 {
+				node.TriggerBlockCreation()
+			}
+		}
+	}()
 }
 
 // Add this method to your Node struct
@@ -781,9 +793,27 @@ func (node *Node) TriggerBlockCreation() {
 }
 
 func (bc *Blockchain) GetCurrentValidator() string {
-	// Implementation to return the current validator
-	// This could be based on your consensus mechanism
-	return "SomeValidatorAddress"
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+
+	if len(bc.Stakeholders) == 0 {
+		return "" // No validators available
+	}
+
+	// Use the current time to select a validator
+	currentTime := time.Now().Unix()
+
+	// Convert the Stakeholders map to a sorted slice for deterministic selection
+	validators := make([]string, 0, len(bc.Stakeholders))
+	for address := range bc.Stakeholders {
+		validators = append(validators, address)
+	}
+	sort.Strings(validators)
+
+	// Simple round-robin selection based on time
+	index := int(currentTime) % len(validators)
+
+	return validators[index]
 }
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction

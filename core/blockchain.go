@@ -679,9 +679,10 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 
 	// Log each transaction in the new block
 	for _, tx := range newBlock.Transactions {
+		if err := bc.UpdateTransactionStatus(tx.Id, "included", newBlock.Hash); err != nil {
+			log.Printf("Error updating transaction status: %v", err)
+		}
 		log.Printf("Transaction %s included in block %s", tx.Id, newBlock.Hash)
-		// Update transaction status
-		bc.UpdateTransactionStatus(tx.Id, "included", newBlock.Hash)
 	}
 
 	bc.PendingTransactions = nil
