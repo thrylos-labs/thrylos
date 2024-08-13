@@ -157,15 +157,16 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 
 	genesis.Transactions = genesisTransactions
 	blockchain := &Blockchain{
-		Blocks:         []*Block{genesis},
-		Genesis:        genesis,
-		Stakeholders:   stakeholdersMap,
-		Database:       bdb,
-		PublicKeyMap:   publicKeyMap, // Initialize the public key map
-		UTXOs:          utxoMap,
-		Forks:          make([]*Fork, 0),
-		GenesisAccount: genesisAccount, // Set the genesis account
-		FirebaseClient: firebaseApp,
+		Blocks:              []*Block{genesis},
+		Genesis:             genesis,
+		Stakeholders:        stakeholdersMap,
+		Database:            bdb,
+		PublicKeyMap:        publicKeyMap, // Initialize the public key map
+		UTXOs:               utxoMap,
+		Forks:               make([]*Fork, 0),
+		GenesisAccount:      genesisAccount, // Set the genesis account
+		FirebaseClient:      firebaseApp,
+		PendingTransactions: make([]*thrylos.Transaction, 0), // Initialize PendingTransactions
 	}
 	// Optionally, add test UTXOs for development and testing
 	blockchain.AddTestUTXOs()
@@ -605,8 +606,10 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) {
 // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
 	bc.Mu.Lock()
-	pendingTransactions := bc.PendingTransactions
-	bc.PendingTransactions = nil // Clear pending transactions
+	log.Printf("Number of pending transactions before processing: %d", len(bc.PendingTransactions))
+	pendingTransactions := make([]*thrylos.Transaction, len(bc.PendingTransactions))
+	copy(pendingTransactions, bc.PendingTransactions)
+	bc.PendingTransactions = make([]*thrylos.Transaction, 0) // Reset pending transactions
 	bc.Mu.Unlock()
 
 	log.Printf("Processing %d pending transactions", len(pendingTransactions))
@@ -614,7 +617,8 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	successfulTransactions := []*thrylos.Transaction{}
 
 	for _, tx := range pendingTransactions {
-		// Convert thrylos.Transaction to shared.Transaction
+		log.Printf("Processing transaction %s", tx.Id)
+
 		sharedTx, err := shared.ConvertThrylosTransactionToLocal(tx)
 		if err != nil {
 			log.Printf("Failed to convert transaction %s: %v", tx.Id, err)
@@ -625,9 +629,21 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		err = shared.ProcessTransactionsBatch([]*shared.Transaction{&sharedTx}, bc.Database)
 		if err != nil {
 			log.Printf("Failed to process transaction %s: %v", tx.Id, err)
+			// Add the transaction back to the pending pool
+			bc.Mu.Lock()
+			bc.PendingTransactions = append(bc.PendingTransactions, tx)
+			bc.Mu.Unlock()
 			continue
 		}
 		successfulTransactions = append(successfulTransactions, tx)
+		log.Printf("Transaction %s processed successfully", tx.Id)
+	}
+
+	log.Printf("%d out of %d transactions processed successfully", len(successfulTransactions), len(pendingTransactions))
+
+	if len(successfulTransactions) == 0 {
+		log.Println("No transactions to include in the new block")
+		return nil, nil
 	}
 
 	// Create new block with successful transactions
@@ -645,6 +661,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		if err := bc.UpdateTransactionStatus(tx.Id, "included", newBlock.Hash); err != nil {
 			log.Printf("Error updating transaction status: %v", err)
 		}
+		log.Printf("Transaction %s included in block %s", tx.Id, newBlock.Hash)
 	}
 
 	return newBlock, nil

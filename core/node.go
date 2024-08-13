@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ed25519"
@@ -60,6 +61,9 @@ type Node struct {
 	Database       shared.BlockchainDBInterface // Updated the type to interface
 	GasEstimateURL string                       // New field to store the URL for gas estimation
 	FirebaseApp    *firebase.App
+	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
+	// preventing race conditions and ensuring data integrity.
+	Mu sync.RWMutex
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -738,30 +742,39 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	if tx == nil {
 		return fmt.Errorf("cannot add nil transaction")
 	}
-
 	// Basic validation
 	if tx.Id == "" {
 		return fmt.Errorf("transaction ID cannot be empty")
 	}
 
+	node.Blockchain.Mu.Lock()
+	defer node.Blockchain.Mu.Unlock()
+
 	// Check for duplicate transactions
-	for _, pendingTx := range node.PendingTransactions {
+	for _, pendingTx := range node.Blockchain.PendingTransactions {
 		if pendingTx.Id == tx.Id {
 			log.Printf("Transaction %s already in pending pool, skipping", tx.Id)
 			return nil
 		}
 	}
 
-	node.PendingTransactions = append(node.PendingTransactions, tx)
-	log.Printf("Transaction %s added to pending pool. Total pending: %d", tx.Id, len(node.PendingTransactions))
+	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
+	log.Printf("Transaction %s added to pending pool. Total pending: %d", tx.Id, len(node.Blockchain.PendingTransactions))
 
 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", ""); err != nil {
 		log.Printf("Error updating transaction status: %v", err)
 	}
 
 	go node.TriggerBlockCreation() // Trigger after each transaction
-
 	return nil
+}
+
+func calculateTotalAmount(outputs []*thrylos.UTXO) int64 {
+	var total int64
+	for _, utxo := range outputs {
+		total += int64(utxo.Amount)
+	}
+	return total
 }
 
 // Add this method to periodically check and create blocks
@@ -780,8 +793,14 @@ func (node *Node) StartBlockCreationTimer() {
 func (node *Node) TriggerBlockCreation() {
 	log.Println("Triggering block creation due to full pending transaction pool")
 
-	// Assuming your Blockchain has a method to get the current validator
+	node.Mu.Lock()
+	pendingCount := len(node.PendingTransactions)
+	node.Mu.Unlock()
+
+	log.Printf("Current pending transactions before processing: %d", pendingCount)
+
 	validator := node.Blockchain.GetCurrentValidator()
+	log.Printf("Selected validator: %s", validator)
 
 	newBlock, err := node.Blockchain.ProcessPendingTransactions(validator)
 	if err != nil {
@@ -789,15 +808,22 @@ func (node *Node) TriggerBlockCreation() {
 	} else if newBlock != nil {
 		log.Printf("New block created successfully: Index=%d, Hash=%s, Transactions=%d",
 			newBlock.Index, newBlock.Hash, len(newBlock.Transactions))
+	} else {
+		log.Println("No new block created")
 	}
+
+	node.Mu.Lock()
+	remainingPending := len(node.PendingTransactions)
+	node.Mu.Unlock()
+
+	log.Printf("Remaining pending transactions after processing: %d", remainingPending)
 }
 
 func (bc *Blockchain) GetCurrentValidator() string {
 	bc.Mu.RLock()
 	defer bc.Mu.RUnlock()
 	if len(bc.Stakeholders) == 0 {
-		log.Println("No validators available")
-		return ""
+		return "" // No validators available
 	}
 	// Use the current time to select a validator
 	currentTime := time.Now().Unix()
@@ -809,9 +835,7 @@ func (bc *Blockchain) GetCurrentValidator() string {
 	sort.Strings(validators)
 	// Simple round-robin selection based on time
 	index := int(currentTime) % len(validators)
-	selectedValidator := validators[index]
-	log.Printf("Selected validator: %s", selectedValidator)
-	return selectedValidator
+	return validators[index]
 }
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
