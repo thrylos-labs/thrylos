@@ -603,89 +603,50 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) {
 }
 
 // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
-// ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
 	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
+	pendingTransactions := bc.PendingTransactions
+	bc.PendingTransactions = nil // Clear pending transactions
+	bc.Mu.Unlock()
 
-	log.Printf("Starting to process %d pending transactions", len(bc.PendingTransactions))
+	log.Printf("Processing %d pending transactions", len(pendingTransactions))
 
 	successfulTransactions := []*thrylos.Transaction{}
 
-	for _, tx := range bc.PendingTransactions {
-		log.Printf("Processing transaction %s", tx.Id)
-
-		isValid := true
-		for _, input := range tx.Inputs {
-			if removed := bc.removeUTXO(input.TransactionId, input.Index); !removed {
-				log.Printf("Failed to remove input UTXO: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
-				isValid = false
-				break
-			}
-			log.Printf("Input UTXO removed: TransactionID: %s, Index: %d", input.TransactionId, input.Index)
-		}
-
-		if !isValid {
-			log.Printf("Skipping invalid transaction %s", tx.Id)
+	for _, tx := range pendingTransactions {
+		// Convert thrylos.Transaction to shared.Transaction
+		sharedTx, err := shared.ConvertThrylosTransactionToLocal(tx)
+		if err != nil {
+			log.Printf("Failed to convert transaction %s: %v", tx.Id, err)
 			continue
 		}
 
-		for _, output := range tx.Outputs {
-			newUTXO := shared.CreateUTXO(tx.Id, tx.Id, int(output.Index), output.OwnerAddress, int64(output.Amount))
-			if err := newUTXO.ValidateUTXO(); err != nil {
-				log.Printf("Validation failed for UTXO in transaction %s: %v", tx.Id, err)
-				isValid = false
-				break
-			}
-			if err := bc.addUTXO(newUTXO); err != nil {
-				log.Printf("Failed to add UTXO for transaction %s: %v", tx.Id, err)
-				isValid = false
-				break
-			}
-			log.Printf("Output UTXO added: Transaction ID: %s, Owner: %s, Amount: %d", tx.Id, output.OwnerAddress, output.Amount)
+		// Process and store the transaction
+		err = shared.ProcessTransactionsBatch([]*shared.Transaction{&sharedTx}, bc.Database)
+		if err != nil {
+			log.Printf("Failed to process transaction %s: %v", tx.Id, err)
+			continue
 		}
-
-		if isValid {
-			successfulTransactions = append(successfulTransactions, tx)
-			log.Printf("Transaction %s processed successfully", tx.Id)
-		} else {
-			log.Printf("Transaction %s failed processing", tx.Id)
-		}
+		successfulTransactions = append(successfulTransactions, tx)
 	}
 
-	log.Printf("%d out of %d transactions processed successfully", len(successfulTransactions), len(bc.PendingTransactions))
-
-	selectedValidator := bc.SelectValidator()
-	if validator != selectedValidator {
-		log.Printf("Validator mismatch: expected %s, got %s", selectedValidator, validator)
-		return nil, fmt.Errorf("selected validator does not match")
-	}
-
-	rewardTransaction := &thrylos.Transaction{
-		// Implementation for reward transaction
-	}
-	successfulTransactions = append(successfulTransactions, rewardTransaction)
-	log.Printf("Reward transaction added to block")
-
-	newBlock := bc.CreateBlock(bc.PendingTransactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash, time.Now().Unix())
+	// Create new block with successful transactions
+	newBlock := bc.CreateBlock(successfulTransactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash, time.Now().Unix())
 	if newBlock == nil {
 		return nil, fmt.Errorf("failed to create a new block")
 	}
 
+	bc.Mu.Lock()
 	bc.Blocks = append(bc.Blocks, newBlock)
+	bc.Mu.Unlock()
 
-	// Log information about the new block
-	log.Printf("New block created: Index=%d, Hash=%s, Transactions=%d", newBlock.Index, newBlock.Hash, len(newBlock.Transactions))
-
-	// Log each transaction in the new block
+	// Update transaction statuses
 	for _, tx := range newBlock.Transactions {
 		if err := bc.UpdateTransactionStatus(tx.Id, "included", newBlock.Hash); err != nil {
 			log.Printf("Error updating transaction status: %v", err)
 		}
-		log.Printf("Transaction %s included in block %s", tx.Id, newBlock.Hash)
 	}
 
-	bc.PendingTransactions = nil
 	return newBlock, nil
 }
 

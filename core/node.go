@@ -795,25 +795,23 @@ func (node *Node) TriggerBlockCreation() {
 func (bc *Blockchain) GetCurrentValidator() string {
 	bc.Mu.RLock()
 	defer bc.Mu.RUnlock()
-
 	if len(bc.Stakeholders) == 0 {
-		return "" // No validators available
+		log.Println("No validators available")
+		return ""
 	}
-
 	// Use the current time to select a validator
 	currentTime := time.Now().Unix()
-
 	// Convert the Stakeholders map to a sorted slice for deterministic selection
 	validators := make([]string, 0, len(bc.Stakeholders))
 	for address := range bc.Stakeholders {
 		validators = append(validators, address)
 	}
 	sort.Strings(validators)
-
 	// Simple round-robin selection based on time
 	index := int(currentTime) % len(validators)
-
-	return validators[index]
+	selectedValidator := validators[index]
+	log.Printf("Selected validator: %s", selectedValidator)
+	return selectedValidator
 }
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
@@ -1211,9 +1209,10 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, int64(totalCost))
 
-	if err := shared.ProcessTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
-		log.Printf("Failed to process transaction: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to process transaction: %v", err), http.StatusInternalServerError)
+	// Validate the transaction
+	if err := shared.ValidateAndConvertTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
+		log.Printf("Failed to validate transaction: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to validate transaction: %v", err), http.StatusBadRequest)
 		return
 	}
 

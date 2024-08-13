@@ -975,7 +975,7 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 
 // Process batched transactions
 
-func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
+func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
 	// Nil checks
 	if tx == nil {
 		return fmt.Errorf("transaction is nil")
@@ -994,22 +994,21 @@ func ProcessTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publi
 	}
 	tx.PreviousTxIds = tips
 
-	// Convert thrylos.Transaction to shared.Transaction for database storage
+	// Convert thrylos.Transaction to shared.Transaction for validation
 	sharedTx, err := ConvertThrylosTransactionToLocal(tx)
 	if err != nil {
 		return fmt.Errorf("failed to convert transaction to shared type: %v", err)
 	}
 
-	// Use processTransactionsBatch to handle batching
-	err = processTransactionsBatch([]*Transaction{&sharedTx}, db)
-	if err != nil {
-		return fmt.Errorf("failed to process transaction batch: %v", err)
+	// Validate the transaction
+	if err := validateInputsAndOutputs(&sharedTx); err != nil {
+		return fmt.Errorf("invalid transaction: %v", err)
 	}
 
 	return nil
 }
 
-func processTransactionsBatch(transactions []*Transaction, db BlockchainDBInterface) error {
+func ProcessTransactionsBatch(transactions []*Transaction, db BlockchainDBInterface) error {
 	if db == nil {
 		return fmt.Errorf("database interface is nil")
 	}
