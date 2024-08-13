@@ -63,7 +63,9 @@ type Node struct {
 	FirebaseApp    *firebase.App
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
-	Mu sync.RWMutex
+	Mu                   sync.RWMutex
+	WebSocketConnections map[string]*websocket.Conn
+	WebSocketMutex       sync.RWMutex
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -146,16 +148,16 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 	}
 
 	node := &Node{
-		Address:          address,
-		Peers:            knownPeers,
-		Blockchain:       bc,
-		Database:         db, // Set the Database field
-		Shard:            shard,
-		FirebaseApp:      firebaseApp,
-		PublicKeyMap:     make(map[string]ed25519.PublicKey), // Initialize the map
-		ResponsibleUTXOs: make(map[string]shared.UTXO),
-		GasEstimateURL:   gasEstimateURL, // Set the URL in the node struct
-
+		Address:              address,
+		Peers:                knownPeers,
+		Blockchain:           bc,
+		Database:             db, // Set the Database field
+		Shard:                shard,
+		FirebaseApp:          firebaseApp,
+		PublicKeyMap:         make(map[string]ed25519.PublicKey), // Initialize the map
+		ResponsibleUTXOs:     make(map[string]shared.UTXO),
+		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
+		WebSocketConnections: make(map[string]*websocket.Conn),
 	}
 
 	if shard != nil {
@@ -539,6 +541,18 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 		ws.WriteMessage(websocket.TextMessage, []byte("Blockchain address is required"))
 		return
 	}
+
+	// Store the WebSocket connection
+	node.WebSocketMutex.Lock()
+	node.WebSocketConnections[address] = ws
+	node.WebSocketMutex.Unlock()
+
+	// Remove the connection when this function returns
+	defer func() {
+		node.WebSocketMutex.Lock()
+		delete(node.WebSocketConnections, address)
+		node.WebSocketMutex.Unlock()
+	}()
 
 	log.Printf("WebSocket connection established for address: %s", address)
 
@@ -1252,9 +1266,56 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Send immediate balance update after successful transaction processing
+	if err := n.SendBalanceUpdate(transactionData.Sender); err != nil {
+		log.Printf("Failed to send immediate balance update: %v", err)
+		// Note: We're not returning here as the transaction was successful,
+		// and this is just an additional update that failed
+	}
+
+	// Send balance updates for all output addresses as well
+	for _, output := range transactionData.Outputs {
+		if err := n.SendBalanceUpdate(output.OwnerAddress); err != nil {
+			log.Printf("Failed to send immediate balance update for recipient %s: %v", output.OwnerAddress, err)
+		}
+	}
+
 	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
 }
 
+func (node *Node) SendBalanceUpdate(address string) error {
+	balance, err := node.GetBalance(address)
+	if err != nil {
+		return err
+	}
+
+	response := struct {
+		BlockchainAddress string  `json:"blockchainAddress"`
+		Balance           float64 `json:"balance"`
+	}{
+		BlockchainAddress: address,
+		Balance:           float64(balance) / 1e7,
+	}
+
+	// Convert the response to JSON
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		return fmt.Errorf("failed to marshal balance update: %v", err)
+	}
+
+	// Find the WebSocket connection for this address and send the update
+	// You'll need to modify this part based on how you're storing WebSocket connections
+	if ws, ok := node.WebSocketConnections[address]; ok {
+		err := ws.WriteMessage(websocket.TextMessage, jsonResponse)
+		if err != nil {
+			return fmt.Errorf("failed to send balance update: %v", err)
+		}
+	} else {
+		return fmt.Errorf("no WebSocket connection found for address: %s", address)
+	}
+
+	return nil
+}
 func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
