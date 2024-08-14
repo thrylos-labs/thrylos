@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/gob"
+	"math/big"
+	"sort"
 
 	"golang.org/x/crypto/ed25519"
 	xEd25519 "golang.org/x/crypto/ed25519"
@@ -82,6 +84,12 @@ type Blockchain struct {
 
 	// Manages the preictive modal
 	TOBManager *TOBManager // Add this field
+
+	ConsensusManager *ConsensusManager
+
+	ActiveValidators []string
+
+	MinStakeForValidator *big.Int
 }
 
 // NewTransaction creates a new transaction
@@ -106,6 +114,25 @@ func NanoToThrylos(nano int64) float64 {
 	return float64(nano) / NanoPerThrylos
 }
 
+// GetMinStakeForValidator returns the current minimum stake required for a validator
+func (bc *Blockchain) GetMinStakeForValidator() *big.Int {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+	return new(big.Int).Set(bc.MinStakeForValidator) // Return a copy to prevent modification
+}
+
+// You might also want to add a setter method if you need to update this value dynamically
+func (bc *Blockchain) SetMinStakeForValidator(newMinStake *big.Int) {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
+}
+
+const (
+	TotalSupply        = 120_000_000 // 120 million tokens
+	MinStakePercentage = 0.1         // 0.1% of total supply as minimum stake
+)
+
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebaseApp *firebase.App) (*Blockchain, shared.BlockchainDBInterface, error) {
@@ -122,89 +149,75 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	// Initialize the map for public keys
 	publicKeyMap := make(map[string]ed25519.PublicKey)
 
-	// Simulate several stakeholders
-	stakeholders := []struct {
-		Address string
-		Balance float64 // Change this to float64 to represent THRYLOS
-	}{
-		{genesisAccount, 120000000}, // 120,000,000 THRYLOS TOKENS
-		// {"6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19", 10000},
-		// {"8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7", 20000},
-	}
+	// Use total supply for the genesis account
+	totalSupply := big.NewInt(120_000_000) // 120 million tokens
+	totalSupplyNano := ThrylosToNano(float64(totalSupply.Int64()))
 
-	// Initialize Stakeholders map
+	// Initialize Stakeholders map with only the genesis account
 	stakeholdersMap := make(map[string]int64)
+	stakeholdersMap[genesisAccount] = totalSupplyNano
 
-	// Precompute genesis transactions and UTXOs
-	genesisTransactions := make([]*thrylos.Transaction, 0, len(stakeholders))
-	utxoMap := make(map[string][]*thrylos.UTXO, len(stakeholders))
-
-	for _, stakeholder := range stakeholders {
-		balanceNano := ThrylosToNano(stakeholder.Balance)
-		stakeholdersMap[stakeholder.Address] = balanceNano
-
-		genesisTx := &thrylos.Transaction{
-			Id:        "genesis_tx_" + stakeholder.Address,
-			Timestamp: time.Now().Unix(),
-			Outputs: []*thrylos.UTXO{{
-				OwnerAddress: stakeholder.Address,
-				Amount:       balanceNano,
-			}},
-			Signature: []byte("genesis_signature"),
-		}
-		genesisTransactions = append(genesisTransactions, genesisTx)
-
-		utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
-		utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
+	// Create genesis transaction
+	genesisTx := &thrylos.Transaction{
+		Id:        "genesis_tx_" + genesisAccount,
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress: genesisAccount,
+			Amount:       totalSupplyNano,
+		}},
+		Signature: []byte("genesis_signature"),
 	}
 
-	genesis.Transactions = genesisTransactions
+	// Initialize UTXO map with the genesis transaction
+	utxoMap := make(map[string][]*thrylos.UTXO)
+	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
+	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
+
+	genesis.Transactions = []*thrylos.Transaction{genesisTx}
+
 	blockchain := &Blockchain{
 		Blocks:              []*Block{genesis},
 		Genesis:             genesis,
 		Stakeholders:        stakeholdersMap,
 		Database:            bdb,
-		PublicKeyMap:        publicKeyMap, // Initialize the public key map
+		PublicKeyMap:        publicKeyMap,
 		UTXOs:               utxoMap,
 		Forks:               make([]*Fork, 0),
-		GenesisAccount:      genesisAccount, // Set the genesis account
+		GenesisAccount:      genesisAccount,
 		FirebaseClient:      firebaseApp,
-		PendingTransactions: make([]*thrylos.Transaction, 0), // Initialize PendingTransactions
-		TOBManager:          NewTOBManager(0.3),              // Initialize TOBManager
-
+		PendingTransactions: make([]*thrylos.Transaction, 0),
+		ActiveValidators:    make([]string, 0),
 	}
-	// Optionally, add test UTXOs for development and testing
-	blockchain.AddTestUTXOs()
 
-	// Optionally, add test UTXOs for development and testing
-	blockchain.AddTestPublicKeys()
+	// Calculate and set the minimum stake for validators
+	minStakePercentage := big.NewFloat(0.001) // 0.1%
+	minStake := new(big.Float).Mul(new(big.Float).SetInt(totalSupply), minStakePercentage)
 
-	blockchain.TestEd25519Implementations()
+	blockchain.MinStakeForValidator = new(big.Int)
+	minStake.Int(blockchain.MinStakeForValidator) // Convert big.Float to big.Int
 
-	// Serialize the genesis block and insert into the database
+	// Initialize ConsensusManager
+	blockchain.ConsensusManager = NewConsensusManager(blockchain)
+
+	// Initialize TOBManager
+	blockchain.TOBManager = NewTOBManager(0.3, blockchain.ConsensusManager)
+
+	// Update active validators (only genesis account will be active initially)
+	blockchain.UpdateActiveValidators(100)
+
+	blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
+
+	// Serialize and store the genesis block
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
 	if err := encoder.Encode(genesis); err != nil {
 		return nil, nil, fmt.Errorf("failed to serialize genesis block: %v", err)
 	}
-	serializedGenesis := buf.Bytes()
-
-	if err := bdb.InsertBlock(serializedGenesis, 0); err != nil {
+	if err := bdb.InsertBlock(buf.Bytes(), 0); err != nil {
 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
-	// After setting up the blockchain, log the balance of the genesis account to confirm it's correctly set
-	genesisBalance, ok := stakeholdersMap[genesisAccount]
-	if !ok {
-		return nil, nil, fmt.Errorf("genesis account %s does not exist", genesisAccount)
-	}
-	log.Printf("Genesis account %s initialized with balance: %d", genesisAccount, genesisBalance)
-
-	// Check if genesis balance is sufficient for expected operations
-	expectedInitialFunding := int64(100000) // Adjust based on expected number of users * funding amount
-	if genesisBalance < expectedInitialFunding {
-		return nil, nil, fmt.Errorf("genesis account balance %d is insufficient to cover expected initial funding of %d", genesisBalance, expectedInitialFunding)
-	}
+	log.Printf("Genesis account %s initialized with total supply: %d", genesisAccount, totalSupplyNano)
 
 	return blockchain, bdb, nil
 }
@@ -219,6 +232,15 @@ func (bc *Blockchain) calculateAverageLatency() time.Duration {
 	// This is a placeholder. In a real implementation, you would measure actual network latency.
 	// For now, we'll return a constant value.
 	return 200 * time.Millisecond
+}
+
+func (bc *Blockchain) StartPeriodicValidatorUpdate(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
+		}
+	}()
 }
 
 func (bc *Blockchain) TestEd25519Implementations() {
@@ -629,7 +651,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	bc.PendingTransactions = make([]*thrylos.Transaction, 0) // Reset pending transactions
 	bc.Mu.Unlock()
 
-	// Update network conditions and potentially optimize consensus
+	// Update network conditions
 	currentMetrics := NetworkMetrics{
 		TransactionVolume: len(pendingTransactions),
 		NodeCount:         bc.getActiveNodeCount(),
@@ -637,13 +659,10 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	}
 	bc.TOBManager.UpdateNetworkConditions(currentMetrics)
 
-	// Check if consensus optimization is needed
-	optimalConsensus, needsChange := bc.TOBManager.GetOptimalConsensus()
-	if needsChange {
-		bc.updateConsensusMethod(optimalConsensus)
-	}
+	// The TOBManager now handles updating the ConsensusManager internally
+	currentBlockTime := bc.TOBManager.GetCurrentBlockTime()
 
-	log.Printf("Processing %d pending transactions", len(pendingTransactions))
+	log.Printf("Processing %d pending transactions with block time %v", len(pendingTransactions), currentBlockTime)
 
 	successfulTransactions := []*thrylos.Transaction{}
 
@@ -677,10 +696,27 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		return nil, nil
 	}
 
+	// Ensure the validator is active
+	if !bc.IsActiveValidator(validator) {
+		return nil, fmt.Errorf("validator %s is not in the active set", validator)
+	}
+
 	// Create new block with successful transactions
-	newBlock := bc.CreateBlock(successfulTransactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash, time.Now().Unix())
+	prevBlock := bc.Blocks[len(bc.Blocks)-1]
+	newBlock := bc.CreateBlock(successfulTransactions, validator, prevBlock.Hash, time.Now().Unix())
 	if newBlock == nil {
 		return nil, fmt.Errorf("failed to create a new block")
+	}
+
+	// Validate the block using the current consensus method
+	if !bc.ConsensusManager.ValidateBlock(newBlock) {
+		return nil, fmt.Errorf("block failed consensus validation")
+	}
+
+	// Check if the block time is within the allowed range
+	if newBlock.Timestamp < prevBlock.Timestamp+int64(currentBlockTime.Seconds()) ||
+		newBlock.Timestamp > prevBlock.Timestamp+int64(currentBlockTime.Seconds()*2) {
+		return nil, fmt.Errorf("block time is outside the allowed range")
 	}
 
 	bc.Mu.Lock()
@@ -694,6 +730,9 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		}
 		log.Printf("Transaction %s included in block %s", tx.Id, newBlock.Hash)
 	}
+
+	// After adding a new block, we might want to update the active validator set
+	bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
 
 	return newBlock, nil
 }
@@ -743,41 +782,6 @@ func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockH
 
 	log.Printf("Transaction %s status updated to %s in block %s", txID, status, blockHash)
 	return nil
-}
-
-func (bc *Blockchain) updateConsensusMethod(newMethod ConsensusMethod) {
-	bc.TOBManager.CurrentConsensus = newMethod
-	// Implement logic to switch consensus methods
-	// This might involve updating validator selection, block creation rules, etc.
-}
-
-func (bc *Blockchain) validateBlockWithConsensus(block *Block) bool {
-	switch bc.TOBManager.CurrentConsensus {
-	case ProofOfStake:
-		return bc.validateProofOfStake(block)
-	case DelegatedProofOfStake:
-		return bc.validateDelegatedProofOfStake(block)
-	case PracticalByzantineFailureTolerance:
-		return bc.validatePBFT(block)
-	default:
-		return false
-	}
-}
-
-// Implement these methods based on your specific consensus rules
-func (bc *Blockchain) validateProofOfStake(block *Block) bool {
-	// Implement PoS validation logic
-	return true
-}
-
-func (bc *Blockchain) validateDelegatedProofOfStake(block *Block) bool {
-	// Implement DPoS validation logic
-	return true
-}
-
-func (bc *Blockchain) validatePBFT(block *Block) bool {
-	// Implement PBFT validation logic
-	return true
 }
 
 // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
@@ -1038,6 +1042,42 @@ func (bc *Blockchain) DelegateStake(from, to string, amount int64) error {
 	}
 
 	return nil
+}
+
+func (bc *Blockchain) UpdateActiveValidators(count int) {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Sort stakeholders by stake
+	type stakeholderInfo struct {
+		address string
+		stake   int64
+	}
+	stakeholders := make([]stakeholderInfo, 0, len(bc.Stakeholders))
+	for address, stake := range bc.Stakeholders {
+		stakeholders = append(stakeholders, stakeholderInfo{address, stake})
+	}
+	sort.Slice(stakeholders, func(i, j int) bool {
+		return stakeholders[i].stake > stakeholders[j].stake
+	})
+
+	// Select top 'count' stakeholders as active validators
+	bc.ActiveValidators = make([]string, 0, count)
+	for i := 0; i < count && i < len(stakeholders); i++ {
+		bc.ActiveValidators = append(bc.ActiveValidators, stakeholders[i].address)
+	}
+}
+
+func (bc *Blockchain) IsActiveValidator(address string) bool {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+
+	for _, validator := range bc.ActiveValidators {
+		if validator == address {
+			return true
+		}
+	}
+	return false
 }
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.

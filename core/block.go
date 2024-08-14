@@ -59,6 +59,8 @@ type Block struct {
 
 	Data string `json:"data"` // Assuming the block's content is just a string for simplicity
 
+	Signature []byte `json:"signature"` // Add this field
+
 }
 
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.

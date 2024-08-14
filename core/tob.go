@@ -12,22 +12,13 @@ type NetworkMetrics struct {
 	AverageLatency    time.Duration
 }
 
-// ConsensusMethod represents different consensus algorithms
-type ConsensusMethod int
-
-const (
-	ProofOfStake ConsensusMethod = iota
-	DelegatedProofOfStake
-	PracticalByzantineFailureTolerance
-)
-
 // TOBManager manages the Temporal-Optimized Blockchain functionality
 type TOBManager struct {
 	CurrentMetrics     NetworkMetrics
 	PredictedMetrics   NetworkMetrics
-	CurrentConsensus   ConsensusMethod
 	PredictionModel    *ExponentialSmoothingModel
 	OptimizationNeeded bool
+	ConsensusManager   *ConsensusManager
 }
 
 // ExponentialSmoothingModel implements a simple prediction model
@@ -38,10 +29,10 @@ type ExponentialSmoothingModel struct {
 }
 
 // NewTOBManager creates and initializes a new TOBManager
-func NewTOBManager(alpha float64) *TOBManager {
+func NewTOBManager(alpha float64, consensusManager *ConsensusManager) *TOBManager {
 	return &TOBManager{
 		PredictionModel:  NewExponentialSmoothingModel(alpha),
-		CurrentConsensus: ProofOfStake, // Default consensus method
+		ConsensusManager: consensusManager,
 	}
 }
 
@@ -80,6 +71,10 @@ func (tob *TOBManager) UpdateNetworkConditions(currentMetrics NetworkMetrics) {
 	tob.PredictionModel.Update(currentMetrics)
 	tob.PredictedMetrics = tob.PredictionModel.Predict()
 	tob.OptimizationNeeded = tob.needsOptimization()
+
+	if tob.OptimizationNeeded {
+		tob.ConsensusManager.UpdatePredictions(tob.PredictedMetrics.TransactionVolume, tob.PredictedMetrics.NodeCount)
+	}
 }
 
 // needsOptimization determines if the consensus method needs to be optimized
@@ -93,20 +88,7 @@ func (tob *TOBManager) needsOptimization() bool {
 		math.Abs(float64(tob.PredictedMetrics.AverageLatency-tob.CurrentMetrics.AverageLatency)) > float64(latencyThreshold)
 }
 
-// OptimizeConsensus determines the best consensus method based on predicted conditions
-func (tob *TOBManager) OptimizeConsensus() ConsensusMethod {
-	if tob.PredictedMetrics.TransactionVolume > 1000 && tob.PredictedMetrics.NodeCount > 100 {
-		return PracticalByzantineFailureTolerance
-	} else if tob.PredictedMetrics.TransactionVolume > 500 || tob.PredictedMetrics.NodeCount > 50 {
-		return DelegatedProofOfStake
-	}
-	return ProofOfStake
-}
-
-// GetOptimalConsensus returns the optimal consensus method if optimization is needed
-func (tob *TOBManager) GetOptimalConsensus() (ConsensusMethod, bool) {
-	if tob.OptimizationNeeded {
-		return tob.OptimizeConsensus(), true
-	}
-	return tob.CurrentConsensus, false
+// GetCurrentBlockTime returns the current block time from the ConsensusManager
+func (tob *TOBManager) GetCurrentBlockTime() time.Duration {
+	return tob.ConsensusManager.GetCurrentBlockTime()
 }
