@@ -806,8 +806,10 @@ func (node *Node) StartBlockCreationTimer() {
 	ticker := time.NewTicker(1 * time.Minute) // Adjust time as needed
 	go func() {
 		for range ticker.C {
-			if len(node.PendingTransactions) > 0 {
-				node.TriggerBlockCreation()
+			for shardID, shard := range node.Blockchain.ShardManager.Shards {
+				if len(shard.PendingTransactions) > 0 {
+					node.TriggerBlockCreation(shardID)
+				}
 			}
 		}
 	}()

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/stathat/consistent"
@@ -68,6 +69,68 @@ type Shard struct {
 	UTXOs    map[string]shared.UTXO // Current state of unspent transaction outputs managed by this shard.
 	Blocks   []*Block               // Blocks that have been confirmed and added to the shard's blockchain.
 	MaxNodes int                    // Maximum number of nodes allowed to be part of the shard.
+	mu       sync.RWMutex           // Add mutex for thread-safe operations
+}
+
+func (s *Shard) AddNode(node *Node) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.Nodes) >= s.MaxNodes {
+		return fmt.Errorf("shard %d is at maximum capacity", s.ID)
+	}
+
+	for _, n := range s.Nodes {
+		if n.Address == node.Address {
+			return fmt.Errorf("node %s already exists in shard %d", node.Address, s.ID)
+		}
+	}
+
+	s.Nodes = append(s.Nodes, node)
+	return nil
+}
+
+func (s *Shard) RemoveNode(nodeAddress string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, node := range s.Nodes {
+		if node.Address == nodeAddress {
+			// Remove the node
+			s.Nodes = append(s.Nodes[:i], s.Nodes[i+1:]...)
+			// Redistribute the node's UTXOs
+			s.redistributeNodeUTXOs(node)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("node %s not found in shard %d", nodeAddress, s.ID)
+}
+
+func (s *Shard) redistributeNodeUTXOs(node *Node) {
+	if len(s.Nodes) == 0 {
+		// If this was the last node, clear all UTXOs
+		s.UTXOs = make(map[string]shared.UTXO)
+		return
+	}
+
+	ring := NewConsistentHashRing()
+	for _, n := range s.Nodes {
+		ring.AddNode(n.Address)
+	}
+
+	for txID, utxo := range node.ResponsibleUTXOs {
+		newResponsibleNode := ring.GetNode(txID)
+		for _, n := range s.Nodes {
+			if n.Address == newResponsibleNode {
+				n.ResponsibleUTXOs[txID] = utxo
+				break
+			}
+		}
+	}
+
+	// Clear the removed node's UTXOs
+	node.ResponsibleUTXOs = make(map[string]shared.UTXO)
 }
 
 // Initialize or update the shard, including UTXO redistribution
@@ -121,14 +184,6 @@ func NewShard(id int, maxNodes int) *Shard {
 		Blocks:   make([]*Block, 0),
 		MaxNodes: maxNodes,
 	}
-}
-
-// AddNode adds a new node to the shard's list of participating nodes. This method registers a node
-// as part of the shard, allowing it to participate in the shard's transaction and block processing activities.
-// The method may include additional logic to integrate the node into the shard's operations.
-func (s *Shard) AddNode(node *Node) {
-	s.Nodes = append(s.Nodes, node)
-	// Additional logic to integrate the node into the shard can be added here.
 }
 
 // AssignNode attempts to add a node to the shard, ensuring the node is not already a member and that

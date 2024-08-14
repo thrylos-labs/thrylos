@@ -90,6 +90,9 @@ type Blockchain struct {
 	ActiveValidators []string
 
 	MinStakeForValidator *big.Int
+
+	Network      *Network
+	ShardManager *ShardManager
 }
 
 // NewTransaction creates a new transaction
@@ -175,6 +178,8 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 
 	genesis.Transactions = []*thrylos.Transaction{genesisTx}
 
+	network := NewNetwork()
+
 	blockchain := &Blockchain{
 		Blocks:              []*Block{genesis},
 		Genesis:             genesis,
@@ -187,7 +192,11 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 		FirebaseClient:      firebaseApp,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
+		Network:             network,
 	}
+
+	// Initialize ShardManager
+	blockchain.ShardManager = NewShardManager(network)
 
 	// Calculate and set the minimum stake for validators
 	minStakePercentage := big.NewFloat(0.001) // 0.1%
@@ -216,6 +225,10 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	if err := bdb.InsertBlock(buf.Bytes(), 0); err != nil {
 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
+
+	// Initialize the first shard with the genesis block
+	initialShard := blockchain.ShardManager.Shards[0]
+	initialShard.Blocks = append(initialShard.Blocks, genesis)
 
 	log.Printf("Genesis account %s initialized with total supply: %d", genesisAccount, totalSupplyNano)
 
