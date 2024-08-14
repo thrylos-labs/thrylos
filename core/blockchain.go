@@ -79,6 +79,8 @@ type Blockchain struct {
 	GenesisAccount string // Add this to store the genesis account address
 
 	FirebaseClient *firebase.App
+
+	TOBManager *TOBManager // Add this field
 }
 
 // NewTransaction creates a new transaction
@@ -167,6 +169,8 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 		GenesisAccount:      genesisAccount, // Set the genesis account
 		FirebaseClient:      firebaseApp,
 		PendingTransactions: make([]*thrylos.Transaction, 0), // Initialize PendingTransactions
+		TOBManager:          NewTOBManager(0.3),              // Initialize TOBManager
+
 	}
 	// Optionally, add test UTXOs for development and testing
 	blockchain.AddTestUTXOs()
@@ -202,6 +206,18 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	}
 
 	return blockchain, bdb, nil
+}
+
+func (bc *Blockchain) getActiveNodeCount() int {
+	// This is a placeholder. In a real implementation, you would track active nodes.
+	// For now, we'll return a constant value.
+	return 50
+}
+
+func (bc *Blockchain) calculateAverageLatency() time.Duration {
+	// This is a placeholder. In a real implementation, you would measure actual network latency.
+	// For now, we'll return a constant value.
+	return 200 * time.Millisecond
 }
 
 func (bc *Blockchain) TestEd25519Implementations() {
@@ -612,6 +628,20 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	bc.PendingTransactions = make([]*thrylos.Transaction, 0) // Reset pending transactions
 	bc.Mu.Unlock()
 
+	// Update network conditions and potentially optimize consensus
+	currentMetrics := NetworkMetrics{
+		TransactionVolume: len(pendingTransactions),
+		NodeCount:         bc.getActiveNodeCount(),
+		AverageLatency:    bc.calculateAverageLatency(),
+	}
+	bc.TOBManager.UpdateNetworkConditions(currentMetrics)
+
+	// Check if consensus optimization is needed
+	optimalConsensus, needsChange := bc.TOBManager.GetOptimalConsensus()
+	if needsChange {
+		bc.updateConsensusMethod(optimalConsensus)
+	}
+
 	log.Printf("Processing %d pending transactions", len(pendingTransactions))
 
 	successfulTransactions := []*thrylos.Transaction{}
@@ -712,6 +742,41 @@ func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockH
 
 	log.Printf("Transaction %s status updated to %s in block %s", txID, status, blockHash)
 	return nil
+}
+
+func (bc *Blockchain) updateConsensusMethod(newMethod ConsensusMethod) {
+	bc.TOBManager.CurrentConsensus = newMethod
+	// Implement logic to switch consensus methods
+	// This might involve updating validator selection, block creation rules, etc.
+}
+
+func (bc *Blockchain) validateBlockWithConsensus(block *Block) bool {
+	switch bc.TOBManager.CurrentConsensus {
+	case ProofOfStake:
+		return bc.validateProofOfStake(block)
+	case DelegatedProofOfStake:
+		return bc.validateDelegatedProofOfStake(block)
+	case PracticalByzantineFailureTolerance:
+		return bc.validatePBFT(block)
+	default:
+		return false
+	}
+}
+
+// Implement these methods based on your specific consensus rules
+func (bc *Blockchain) validateProofOfStake(block *Block) bool {
+	// Implement PoS validation logic
+	return true
+}
+
+func (bc *Blockchain) validateDelegatedProofOfStake(block *Block) bool {
+	// Implement DPoS validation logic
+	return true
+}
+
+func (bc *Blockchain) validatePBFT(block *Block) bool {
+	// Implement PBFT validation logic
+	return true
 }
 
 // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
