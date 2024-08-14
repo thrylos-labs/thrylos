@@ -80,6 +80,7 @@ type Blockchain struct {
 
 	FirebaseClient *firebase.App
 
+	// Manages the preictive modal
 	TOBManager *TOBManager // Add this field
 }
 
