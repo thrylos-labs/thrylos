@@ -11,7 +11,6 @@ import (
 	"golang.org/x/crypto/ed25519"
 
 	"github.com/thrylos-labs/thrylos"
-	pb "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -21,7 +20,7 @@ import (
 )
 
 type server struct {
-	pb.UnimplementedBlockchainServiceServer
+	thrylos.UnimplementedBlockchainServiceServer
 	db           *database.BlockchainDB       // Include a pointer to BlockchainDB
 	PublicKeyMap map[string]ed25519.PublicKey // Maps sender addresses to their public keys
 	hasherPool   *XOFPool                     // Add the hasher pool here
@@ -204,7 +203,7 @@ func (s *server) addPublicKey(sender string, pubKey ed25519.PublicKey) {
 	s.PublicKeyMap[sender] = pubKey
 }
 
-func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionRequest) (*pb.TransactionResponse, error) {
+func (s *server) SubmitTransaction(ctx context.Context, req *thrylos.TransactionRequest) (*thrylos.TransactionResponse, error) {
 	log.Printf("Received transaction request: %+v", req)
 	if req == nil || req.Transaction == nil {
 		return nil, status.Error(codes.InvalidArgument, "Transaction request or transaction data is nil")
@@ -225,10 +224,10 @@ func (s *server) SubmitTransaction(ctx context.Context, req *pb.TransactionReque
 	}
 
 	log.Printf("Transaction %s added successfully", req.Transaction.Id)
-	return &pb.TransactionResponse{Status: "Transaction added successfully"}, nil
+	return &thrylos.TransactionResponse{Status: "Transaction added successfully"}, nil
 }
 
-func ConvertProtoTransactionToThrylos(protoTx *pb.Transaction) (*thrylos.Transaction, error) {
+func ConvertProtoTransactionToThrylos(protoTx *thrylos.Transaction) (*thrylos.Transaction, error) {
 	if protoTx == nil {
 		return nil, errors.New("protoTx is nil")
 	}
