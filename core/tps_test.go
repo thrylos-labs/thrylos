@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
@@ -12,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
-	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/supabase-community/supabase-go"
+	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 
 	"google.golang.org/grpc"
@@ -22,23 +21,23 @@ import (
 )
 
 type mockBlockchainServer struct {
-	pb.UnimplementedBlockchainServiceServer
+	thrylos.UnimplementedBlockchainServiceServer
 }
 
-func (s *mockBlockchainServer) ValidateTransaction(tx *pb.Transaction) bool {
+func (s *mockBlockchainServer) ValidateTransaction(tx *thrylos.Transaction) bool {
 	// Example simple validation: check if transaction ID is not empty
 	return tx.Id != ""
 }
 
 // Add this method to handle batch submissions
-func (s *mockBlockchainServer) SubmitTransactionBatch(ctx context.Context, req *pb.TransactionBatchRequest) (*pb.TransactionBatchResponse, error) {
+func (s *mockBlockchainServer) SubmitTransactionBatch(ctx context.Context, req *thrylos.TransactionBatchRequest) (*thrylos.TransactionBatchResponse, error) {
 	start := time.Now()
 	if req == nil {
 		return nil, fmt.Errorf("request cannot be nil")
 	}
 	var wg sync.WaitGroup
 	for _, tx := range req.Transactions {
-		go func(tx *pb.Transaction) {
+		go func(tx *thrylos.Transaction) {
 			if !s.ValidateTransaction(tx) {
 				fmt.Printf("Invalid transaction %s\n", tx.Id)
 				return
@@ -51,14 +50,14 @@ func (s *mockBlockchainServer) SubmitTransactionBatch(ctx context.Context, req *
 	wg.Wait()
 	elapsed := time.Since(start)
 	fmt.Printf("Processed batch in %s\n", elapsed)
-	return &pb.TransactionBatchResponse{
+	return &thrylos.TransactionBatchResponse{
 		Status: "All transactions processed successfully",
 	}, nil
 }
 
 func startMockServer() *grpc.Server {
 	server := grpc.NewServer()
-	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
+	thrylos.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
 	go func() {
 		if err := server.Serve(lis); err != nil {
 			log.Fatalf("Server exited with error: %v", err)
@@ -73,10 +72,7 @@ func TestConvertUTXOsToRequiredFormat(t *testing.T) {
 	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
-	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
+	tempDir := os.TempDir()
 	defer os.RemoveAll(tempDir)
 
 	aesKey, err := shared.GenerateAESKey() // Generate an AES key
@@ -84,10 +80,9 @@ func TestConvertUTXOsToRequiredFormat(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -126,10 +121,8 @@ func TestConvertToSharedTransaction(t *testing.T) {
 	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
-	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
+	tempDir := os.TempDir()
+
 	defer os.RemoveAll(tempDir)
 
 	aesKey, err := shared.GenerateAESKey() // Generate an AES key
@@ -137,10 +130,9 @@ func TestConvertToSharedTransaction(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -170,10 +162,7 @@ func TestValidateTransactionsConcurrently(t *testing.T) {
 	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
-	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
+	tempDir := os.TempDir()
 	defer os.RemoveAll(tempDir)
 
 	aesKey, err := shared.GenerateAESKey() // Generate an AES key
@@ -181,10 +170,9 @@ func TestValidateTransactionsConcurrently(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -235,7 +223,7 @@ func TestTransactionThroughputWithGRPCUpdated(t *testing.T) {
 		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
 	defer conn.Close()
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -247,12 +235,12 @@ func TestTransactionThroughputWithGRPCUpdated(t *testing.T) {
 		go func(goroutineIndex int) {
 			defer wg.Done()
 			for i := 0; i < transactionsPerGoroutine; i += batchSize {
-				transactions := make([]*pb.Transaction, batchSize)
+				transactions := make([]*thrylos.Transaction, batchSize)
 				for j := 0; j < batchSize && goroutineIndex*transactionsPerGoroutine+i+j < numTransactions; j++ {
 					txID := fmt.Sprintf("tx%d", goroutineIndex*transactionsPerGoroutine+i+j)
-					transactions[j] = &pb.Transaction{Id: txID}
+					transactions[j] = &thrylos.Transaction{Id: txID}
 				}
-				batchRequest := &pb.TransactionBatchRequest{Transactions: transactions}
+				batchRequest := &thrylos.TransactionBatchRequest{Transactions: transactions}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_, err := client.SubmitTransactionBatch(ctx, batchRequest)
@@ -291,7 +279,7 @@ func TestTransactionCosts(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	// Simulated balance for testing
 	const testBalance = 5000000000 // 5 THRYLOS (in nanoTHRYLOS)
@@ -381,7 +369,7 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	// Simulate block formation
 	var wg sync.WaitGroup
@@ -391,12 +379,12 @@ func TestBlockTimeWithGRPC(t *testing.T) {
 		wg.Add(1)
 		go func(blockIndex int) {
 			defer wg.Done()
-			transactions := make([]*pb.Transaction, blockSize)
+			transactions := make([]*thrylos.Transaction, blockSize)
 			for j := 0; j < blockSize; j++ {
 				txID := fmt.Sprintf("tx%d", blockIndex*blockSize+j)
-				transactions[j] = &pb.Transaction{Id: txID}
+				transactions[j] = &thrylos.Transaction{Id: txID}
 			}
-			batchRequest := &pb.TransactionBatchRequest{Transactions: transactions}
+			batchRequest := &thrylos.TransactionBatchRequest{Transactions: transactions}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_, err := client.SubmitTransactionBatch(ctx, batchRequest)
@@ -439,7 +427,7 @@ func TestRealisticBlockTimeWithGRPC(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	var wg sync.WaitGroup
 	var blockFinalizeTimes []time.Duration
@@ -452,12 +440,12 @@ func TestRealisticBlockTimeWithGRPC(t *testing.T) {
 			defer wg.Done()
 			blockStartTime := time.Now()
 
-			transactions := make([]*pb.Transaction, blockSize)
+			transactions := make([]*thrylos.Transaction, blockSize)
 			for j := 0; j < blockSize; j++ {
 				txID := fmt.Sprintf("tx%d", blockIndex*blockSize+j)
-				transactions[j] = &pb.Transaction{Id: txID}
+				transactions[j] = &thrylos.Transaction{Id: txID}
 			}
-			batchRequest := &pb.TransactionBatchRequest{Transactions: transactions}
+			batchRequest := &thrylos.TransactionBatchRequest{Transactions: transactions}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -504,7 +492,7 @@ func TestTransactionThroughputWithoutGRPC(t *testing.T) {
 
 	transactionsPerGoroutine := numTransactions / numGoroutines
 
-	processTransactions := func(transactions []*pb.Transaction) error {
+	processTransactions := func(transactions []*thrylos.Transaction) error {
 		// Simulate processing delay, remove or adjust as needed
 		time.Sleep(10 * time.Millisecond)
 		return nil
@@ -515,10 +503,10 @@ func TestTransactionThroughputWithoutGRPC(t *testing.T) {
 		go func(goroutineIndex int) {
 			defer wg.Done()
 			for i := 0; i < transactionsPerGoroutine; i += batchSize {
-				transactions := make([]*pb.Transaction, 0, batchSize)
+				transactions := make([]*thrylos.Transaction, 0, batchSize)
 				for j := 0; j < batchSize && goroutineIndex*transactionsPerGoroutine+i+j < numTransactions; j++ {
 					txID := fmt.Sprintf("tx%d", goroutineIndex*transactionsPerGoroutine+i+j)
-					transactions = append(transactions, &pb.Transaction{Id: txID})
+					transactions = append(transactions, &thrylos.Transaction{Id: txID})
 				}
 				if err := processTransactions(transactions); err != nil {
 					t.Errorf("Failed to process transaction batch: %v", err)
@@ -547,10 +535,7 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Set a dummy GENESIS_ACCOUNT
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
-	tempDir, err := ioutil.TempDir("", "blockchain_test") // Create a temporary directory
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
+	tempDir := os.TempDir()
 	defer os.RemoveAll(tempDir)
 
 	aesKey, err := shared.GenerateAESKey() // Generate an AES key
@@ -558,10 +543,9 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	firebaseApp := initializeFirebaseApp() // Initialize Firebase app
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -570,11 +554,11 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 	start := time.Now()
 	var wg sync.WaitGroup
 
-	processTransactions := func(transactions []*pb.Transaction) error {
+	processTransactions := func(transactions []*thrylos.Transaction) error {
 		// Simulate realistic network delay
 		time.Sleep(20 * time.Millisecond)
 
-		// Convert pb.Transaction to thrylos.Transaction
+		// Convert thrylos.Transaction to thrylos.Transaction
 		thrylosTransactions := make([]*thrylos.Transaction, len(transactions))
 		for i, tx := range transactions {
 			thrylosTransactions[i] = &thrylos.Transaction{Id: tx.Id}
@@ -598,10 +582,10 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 		go func(goroutineIndex int) {
 			defer wg.Done()
 			for i := 0; i < numTransactions/numGoroutines; i += batchSize {
-				transactions := make([]*pb.Transaction, 0, batchSize)
+				transactions := make([]*thrylos.Transaction, 0, batchSize)
 				for j := 0; j < batchSize && i+j < numTransactions; j++ {
 					txID := fmt.Sprintf("tx%d", i+j)
-					transactions = append(transactions, &pb.Transaction{Id: txID})
+					transactions = append(transactions, &thrylos.Transaction{Id: txID})
 				}
 				if err := processTransactions(transactions); err != nil {
 					t.Errorf("Failed to process transaction batch: %v", err)
@@ -645,7 +629,7 @@ func executeLoadTest(t *testing.T, numTransactions, batchSize, numGoroutines int
 	start := time.Now()
 	var wg sync.WaitGroup
 
-	processTransactions := func(transactions []*pb.Transaction) error {
+	processTransactions := func(transactions []*thrylos.Transaction) error {
 		// Introduce variable delay to simulate network and processing time
 		delay := time.Duration(rand.Intn(100)) * time.Millisecond
 		time.Sleep(delay)
@@ -664,13 +648,13 @@ func executeLoadTest(t *testing.T, numTransactions, batchSize, numGoroutines int
 		go func(goroutineIndex int) {
 			defer wg.Done()
 			for i := 0; i < numTransactions/numGoroutines; i += batchSize {
-				transactions := make([]*pb.Transaction, 0, batchSize)
+				transactions := make([]*thrylos.Transaction, 0, batchSize)
 				for j := 0; j < batchSize && i+j < numTransactions; j++ {
 					txID := fmt.Sprintf("tx%d", i+j)
-					transaction := &pb.Transaction{Id: txID}
+					transaction := &thrylos.Transaction{Id: txID}
 					// Simulate serialization of transaction data
 					data, _ := proto.Marshal(transaction)
-					transaction = &pb.Transaction{}
+					transaction = &thrylos.Transaction{}
 					_ = proto.Unmarshal(data, transaction)
 					transactions = append(transactions, transaction)
 				}

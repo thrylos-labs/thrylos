@@ -2,7 +2,6 @@ package core
 
 import (
 	"bytes"
-	"context"
 	stdEd25519 "crypto/ed25519"
 	"database/sql"
 	"encoding/base64"
@@ -10,7 +9,6 @@ import (
 	"math/big"
 	"sort"
 
-	"golang.org/x/crypto/ed25519"
 	xEd25519 "golang.org/x/crypto/ed25519"
 
 	"encoding/json"
@@ -21,12 +19,10 @@ import (
 	"sync"
 	"time"
 
-	firebase "firebase.google.com/go"
-
+	"github.com/supabase-community/supabase-go"
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/shared"
-
 	"github.com/thrylos-labs/thrylos/database"
+	"github.com/thrylos-labs/thrylos/shared"
 	// other necessary imports
 )
 
@@ -76,11 +72,11 @@ type Blockchain struct {
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
 	Database shared.BlockchainDBInterface // Updated the type to interface
 
-	PublicKeyMap map[string]ed25519.PublicKey // To store public keys
+	PublicKeyMap map[string]xEd25519.PublicKey // To store public keys
 
 	GenesisAccount string // Add this to store the genesis account address
 
-	FirebaseClient *firebase.App
+	SupabaseClient *supabase.Client
 
 	// Manages the preictive modal
 	TOBManager *TOBManager // Add this field
@@ -138,7 +134,7 @@ const (
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebaseApp *firebase.App) (*Blockchain, shared.BlockchainDBInterface, error) {
+func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, supabaseClient *supabase.Client) (*Blockchain, shared.BlockchainDBInterface, error) {
 	// Initialize the database
 	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
@@ -150,7 +146,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 	genesis := NewGenesisBlock()
 
 	// Initialize the map for public keys
-	publicKeyMap := make(map[string]ed25519.PublicKey)
+	publicKeyMap := make(map[string]xEd25519.PublicKey)
 
 	// Use total supply for the genesis account
 	totalSupply := big.NewInt(120_000_000) // 120 million tokens
@@ -189,7 +185,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, firebas
 		UTXOs:               utxoMap,
 		Forks:               make([]*Fork, 0),
 		GenesisAccount:      genesisAccount,
-		FirebaseClient:      firebaseApp,
+		SupabaseClient:      supabaseClient,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
 		Network:             network,
@@ -258,13 +254,13 @@ func (bc *Blockchain) StartPeriodicValidatorUpdate(interval time.Duration) {
 
 func (bc *Blockchain) TestEd25519Implementations() {
 	// Generate a key pair
-	publicKey, privateKey, _ := ed25519.GenerateKey(nil)
+	publicKey, privateKey, _ := xEd25519.GenerateKey(nil)
 
 	// Data to sign
 	message := []byte("Test message")
 
-	// Sign with x/crypto/ed25519
-	signature := ed25519.Sign(privateKey, message)
+	// Sign with x/crypto/xEd25519
+	signature := xEd25519.Sign(privateKey, message)
 
 	// Verify with both implementations
 	stdResult := stdEd25519.Verify(publicKey, message, signature)
@@ -282,15 +278,15 @@ func (bc *Blockchain) AddTestPublicKeys() {
 
 	testKeys := []struct {
 		Address   string
-		PublicKey ed25519.PublicKey
+		PublicKey xEd25519.PublicKey
 	}{
 		{
 			Address:   "tl11rn2agc9tqwg6eemqefj5uvtns2glepu2uaztj0v8pz3d4zg87k8szawc22",
-			PublicKey: ed25519.PublicKey("YourPublicKeyDataHere"),
+			PublicKey: xEd25519.PublicKey("YourPublicKeyDataHere"),
 		},
 		{
 			Address:   "tl11y7u0zczfarwextp4q66gs0jdx5798qu75jzznr7494rs2qx2emzsqr7p6q",
-			PublicKey: ed25519.PublicKey("AnotherPublicKeyDataHere"),
+			PublicKey: xEd25519.PublicKey("AnotherPublicKeyDataHere"),
 		},
 	}
 
@@ -325,25 +321,29 @@ func (bc *Blockchain) AddTestUTXOs() {
 	}
 }
 
-func (bc *Blockchain) FetchPublicKeyFromFirebase(userID string) (string, error) {
-	ctx := context.Background()
-	client, err := bc.FirebaseClient.Firestore(ctx)
+func (bc *Blockchain) FetchPublicKeyFromSupabase(userID string) (string, error) {
+	data, _, err := bc.SupabaseClient.From("blockchain_info").
+		Select("public_key_base64", "exact", false).
+		Eq("user_id", userID).
+		Single().
+		Execute()
+
 	if err != nil {
-		return "", fmt.Errorf("Failed to create Firestore client: %v", err)
+		fmt.Println("Error executing query:", err)
+		return "", fmt.Errorf("error executing query: %v", err)
 	}
-	defer client.Close()
 
-	doc, err := client.Collection("users").Doc(userID).Get(ctx)
+	var result struct {
+		PublicKeyBase64 string `json:"public_key_base64"`
+	}
+
+	err = json.Unmarshal(data, &result)
 	if err != nil {
-		return "", fmt.Errorf("Failed to fetch user document: %v", err)
+		fmt.Println("Error unmarshaling data:", err)
+		return "", fmt.Errorf("public key not found for user %s", userID)
 	}
 
-	publicKey, ok := doc.Data()["publicKey"].(string)
-	if !ok {
-		return "", fmt.Errorf("Public key not found for user %s", userID)
-	}
-
-	return publicKey, nil
+	return result.PublicKeyBase64, nil
 }
 
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
@@ -441,7 +441,7 @@ func (bc *Blockchain) RegisterPublicKey(pubKey string) error {
 }
 
 // In blockchain.go, within your Blockchain struct definition
-func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey, error) {
+func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (xEd25519.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key from database for address: %s", ownerAddress)
 	publicKeyBytes, err := bc.Database.RetrieveEd25519PublicKey(ownerAddress)
 	if err != nil {
@@ -449,13 +449,13 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 		return nil, err
 	}
 
-	if len(publicKeyBytes) != ed25519.PublicKeySize {
+	if len(publicKeyBytes) != xEd25519.PublicKeySize {
 		errorMsg := fmt.Sprintf("retrieved public key size is incorrect for address: %s", ownerAddress)
 		log.Printf(errorMsg)
 		return nil, fmt.Errorf(errorMsg)
 	}
 
-	publicKey := ed25519.PublicKey(publicKeyBytes)
+	publicKey := xEd25519.PublicKey(publicKeyBytes)
 	log.Printf("Successfully retrieved and validated public key for address: %s", ownerAddress)
 	return publicKey, nil
 }
@@ -621,10 +621,10 @@ func (bc *Blockchain) removeUTXO(transactionID string, index int32) bool {
 // Example snippet for VerifyTransaction method adjustment
 func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 	// Function to retrieve Ed25519 public key from the address
-	getEd25519PublicKeyFunc := func(address string) (ed25519.PublicKey, error) {
+	getEd25519PublicKeyFunc := func(address string) (xEd25519.PublicKey, error) {
 		pubKey, err := bc.Database.RetrievePublicKeyFromAddress(address)
 		if err != nil {
-			return ed25519.PublicKey{}, err // Return the zero value for ed25519.PublicKey in case of error
+			return xEd25519.PublicKey{}, err // Return the zero value for ed25519.PublicKey in case of error
 		}
 		return pubKey, nil
 	}
@@ -998,7 +998,7 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string) error {
 	}
 
 	// Ensure the public key size matches expected size for Ed25519
-	if len(pubKeyBytes) != ed25519.PublicKeySize {
+	if len(pubKeyBytes) != xEd25519.PublicKeySize {
 		return fmt.Errorf("public key has incorrect size")
 	}
 
@@ -1009,7 +1009,7 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string) error {
 	}
 
 	// Register or update the public key in a map, might also store additional validator metadata
-	bc.PublicKeyMap[address] = ed25519.PublicKey(pubKeyBytes)
+	bc.PublicKeyMap[address] = xEd25519.PublicKey(pubKeyBytes)
 
 	return nil
 }

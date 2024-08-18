@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"crypto/rand"
 	"io/ioutil"
 	"log"
@@ -10,10 +9,9 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	firebase "firebase.google.com/go"
 	"github.com/joho/godotenv"
+	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos/shared"
-	"google.golang.org/api/option"
 )
 
 func loadEnvTest() {
@@ -22,29 +20,8 @@ func loadEnvTest() {
 	}
 }
 
-func initializeFirebaseApp() *firebase.App {
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../serviceAccountKey.json")
-
-	projectID := os.Getenv("FIREBASE_PROJECT_ID")
-	if projectID == "" {
-		log.Fatalf("FIREBASE_PROJECT_ID environment variable is not set")
-	}
-
-	// Initialize the Firebase app with project ID
-	conf := &firebase.Config{
-		ProjectID: projectID, // Use the project ID from environment variable
-	}
-
-	app, err := firebase.NewApp(ctx, conf, sa)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
-	return app
-}
-
 func TestNewBlockchain(t *testing.T) {
-	loadEnvTest() // Ensure environment variables are loaded before any Firebase operations
+	loadEnvTest() // Ensure environment variables are loaded before any Supabase operations
 
 	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Load this from .env for consistency
 	defer os.Unsetenv("GENESIS_ACCOUNT")
@@ -60,11 +37,10 @@ func TestNewBlockchain(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	firebaseApp := initializeFirebaseApp()
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
 	// Correctly handle all three return values
-	blockchain, db, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	blockchain, db, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}

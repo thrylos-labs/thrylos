@@ -2,7 +2,6 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -19,16 +18,14 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	firebase "firebase.google.com/go"
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/supabase-community/supabase-go"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
-	"google.golang.org/api/option"
 
 	"github.com/joho/godotenv"
 )
@@ -59,7 +56,7 @@ type Node struct {
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
 	Database       shared.BlockchainDBInterface // Updated the type to interface
 	GasEstimateURL string                       // New field to store the URL for gas estimation
-	FirebaseApp    *firebase.App
+	SupabaseClient *supabase.Client
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
 	Mu                   sync.RWMutex
@@ -97,7 +94,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 	aesKeyEncoded := os.Getenv("AES_KEY_ENV_VAR")
 	if aesKeyEncoded == "" {
 		if isTest {
-			aesKeyEncoded = "A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=" // Ensure this is properly base64-encoded
+			aesKeyEncoded = "2QhNbYk67zhjlOK3QsSCnCiRyP2xk0qnwL+bxRi1MGc=" // Ensure this is properly base64-encoded
 		} else {
 			log.Fatal("AES key is not set in environment variables")
 		}
@@ -124,24 +121,14 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../../serviceAccountKey.json")
-
-	projectID := os.Getenv("FIREBASE_PROJECT_ID")
-	if projectID == "" {
-		log.Fatalf("FIREBASE_PROJECT_ID environment variable is not set")
-	}
-
-	conf := &firebase.Config{
-		ProjectID: projectID,
-	}
-
-	firebaseApp, err := firebase.NewApp(ctx, conf, sa)
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabasePublicKey := os.Getenv("SUPABASE_PUBLIC_KEY")
+	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
 	if err != nil {
 		log.Fatalf("error initializing app: %v\n", err)
 	}
 
-	bc, db, err := NewBlockchain(dataDir, aesKey, genesisAccount, firebaseApp)
+	bc, db, err := NewBlockchain(dataDir, aesKey, genesisAccount, supabaseClient)
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}
@@ -152,7 +139,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		Blockchain:           bc,
 		Database:             db, // Set the Database field
 		Shard:                shard,
-		FirebaseApp:          firebaseApp,
+		SupabaseClient:       supabaseClient,
 		PublicKeyMap:         make(map[string]ed25519.PublicKey), // Initialize the map
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
@@ -1418,35 +1405,29 @@ func publicKeyToBech32(pubKeyBase64 string) (string, error) {
 	return bech32Address, nil
 }
 
-func GetBlockchainAddressByUID(app *firebase.App, uid string) (string, error) {
-	ctx := context.Background()
-	client, err := app.Firestore(ctx)
+func GetBlockchainAddressByUID(supabaseClient *supabase.Client, userID string) (string, error) {
+	data, _, err := supabaseClient.From("blockchain_info").
+		Select("blockchain_address", "exact", false).
+		Eq("user_id", userID).
+		Single().
+		Execute()
+
 	if err != nil {
-		log.Printf("Failed to get Firestore client: %v", err)
-		return "", fmt.Errorf("error getting Firestore client: %v", err)
+		fmt.Println("Error executing query:", err)
+		return "", fmt.Errorf("error executing query: %v", err)
 	}
-	defer client.Close()
 
-	doc, err := client.Collection("users").Doc(uid).Get(ctx)
+	var result struct {
+		PublicKeyBase64 string `json:"blockchain_address"`
+	}
+
+	err = json.Unmarshal(data, &result)
 	if err != nil {
-		log.Printf("Failed to fetch user document for UID %s: %v", uid, err)
-		return "", fmt.Errorf("error fetching user document: %v", err)
+		fmt.Println("Error unmarshaling data:", err)
+		return "", fmt.Errorf("public key not found for user %s", userID)
 	}
 
-	log.Printf("Document data for UID %s: %v", uid, doc.Data()) // Log the document data for debugging
-
-	blockchainAddress, ok := doc.Data()["blockchainAddress"].(string)
-	if !ok {
-		log.Printf("Blockchain address not found or invalid for user %s", uid)
-		return "", fmt.Errorf("blockchain address not found or invalid for user %s", uid)
-	}
-
-	return blockchainAddress, nil
-}
-
-// generateUTXOID generates a new unique ID for a UTXO
-func generateUTXOID() string {
-	return uuid.New().String()
+	return result.PublicKeyBase64, nil
 }
 
 func (node *Node) GasEstimateHandler(w http.ResponseWriter, r *http.Request) {
@@ -1869,7 +1850,7 @@ func (node *Node) GetBlockchainAddressHandler(w http.ResponseWriter, r *http.Req
 		http.Error(w, "User ID parameter is missing", http.StatusBadRequest)
 		return
 	}
-	blockchainAddress, err := GetBlockchainAddressByUID(node.FirebaseApp, uid)
+	blockchainAddress, err := GetBlockchainAddressByUID(node.SupabaseClient, uid)
 	if err != nil {
 		log.Printf("Failed to retrieve blockchain address for UID %s: %v", uid, err)
 		http.Error(w, "Internal server error: "+err.Error(), http.StatusInternalServerError)

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"io/ioutil"
@@ -10,59 +9,9 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	firebase "firebase.google.com/go"
+	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos/shared"
-	"google.golang.org/api/option"
 )
-
-// setupTestBlockchain initializes a blockchain instance for testing, including the creation of a genesis block if necessary.
-// func setupTestBlockchain(t *testing.T) *Blockchain {
-// 	// Create a temporary directory for blockchain data
-// 	tempDir, err := ioutil.TempDir("", "blockchain_test")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create temporary directory: %v", err)
-// 	}
-
-// 	// Clean up the temporary directory after the test
-// 	defer os.RemoveAll(tempDir)
-
-// 	// Generate a dummy AES key for testing
-// 	aesKey, err := shared.GenerateAESKey() // Adjust the function call according to your package and method
-// 	if err != nil {
-// 		t.Fatalf("Failed to generate AES key: %v", err)
-// 	}
-
-// 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
-// 	if genesisAccount == "" {
-// 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
-// 	}
-
-// 	ctx := context.Background()
-// 	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
-// 	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-// 	if err != nil {
-// 		log.Fatalf("error initializing app: %v\n", err)
-// 	}
-
-// 	// You should ensure the temporary directory is cleaned up after the test runs,
-// 	// possibly in the test function that calls setupTestBlockchain
-// 	// defer os.RemoveAll(tempDir)
-
-// 	// Initialize the blockchain using the temporary directory
-// 	bc, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
-// 	if err != nil {
-// 		t.Fatalf("Failed to initialize blockchain for testing: %v", err)
-// 	}
-
-// 	// Add a genesis block if it's not automatically created by NewBlockchain
-// 	if len(bc.Blocks) == 0 {
-// 		genesis := NewGenesisBlock()
-// 		bc.Blocks = append(bc.Blocks, genesis)
-// 		// If needed, insert the genesis block into the database here
-// 	}
-
-// 	return bc
-// }
 
 func TestGenesisBlockCreation(t *testing.T) {
 	// Set the environment variable needed for the test
@@ -87,16 +36,16 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
 
-	// Initialize Firebase app
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../serviceAccountKey.json")
-	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
+	// Initialize Supabase app
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabasePublicKey := os.Getenv("SUPABASE_PUBLIC_KEY")
+	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
 	if err != nil {
 		t.Fatalf("error initializing app: %v\n", err)
 	}
 
 	// Initialize the blockchain with the temporary directory
-	blockchain, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	blockchain, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, supabaseClient)
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

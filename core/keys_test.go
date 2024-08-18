@@ -2,19 +2,16 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"io/ioutil"
-	"log"
 	"os"
 	"testing"
 
 	"golang.org/x/crypto/ed25519"
 
-	firebase "firebase.google.com/go"
+	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos/shared"
-	"google.golang.org/api/option"
 )
 
 // This test ensures your RSA keys are generated, stored, retrieved, and used correctly throughout your application.
@@ -134,14 +131,7 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
 
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../serviceAccountKey.json")
-	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
-
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -192,23 +182,6 @@ func TestNewNodeInitialization(t *testing.T) {
 	t.Log("Node initialization test passed")
 }
 
-// parsing the OwnerAddress as expected
-// func TestJSONParsing(t *testing.T) {
-// 	dummySignature := base64.StdEncoding.EncodeToString([]byte("dummy_signature"))
-
-// 	jsonStr := fmt.Sprintf(`{"ID":"transaction_id_here","Timestamp":1714042156,"Inputs":[{"TransactionID":"previous_tx_id","Index":0,"OwnerAddress":"c623f591835d9846f3b0180593956bd213439cc6acec5a11c5afc63792ba3900","Amount":100}],"Outputs":[{"TransactionID":"transaction_id_here","Index":0,"OwnerAddress":"1efadd9af828a4fdb20c1a149bd798fa798b25b2acfc27489dde00d5b265fd22","Amount":100}],"Signature":"%s"}`, dummySignature)
-
-// 	var tx thrylos.Transaction
-// 	if err := json.Unmarshal([]byte(jsonStr), &tx); err != nil {
-// 		t.Fatalf("Failed to unmarshal: %v", err)
-// 	}
-// 	t.Logf("Parsed transaction: %+v", tx) // This will show all fields
-
-// 	if tx.Inputs[0].OwnerAddress != "c623f591835d9846f3b0180593956bd213439cc6acec5a11c5afc63792ba3900" {
-// 		t.Errorf("OwnerAddress does not match expected address after parsing")
-// 	}
-// }
-
 type MockBlockchain struct {
 	shared.BlockchainDBInterface
 	MockSelectValidator func() string
@@ -220,76 +193,3 @@ func (m *MockBlockchain) SelectValidator() string {
 	}
 	return "default_validator_address" // return a default or mock address
 }
-
-// func TestTransactionSubmission(t *testing.T) {
-// 	mockBlockchain := &MockBlockchain{
-// 		MockSelectValidator: func() string {
-// 			return "expected_validator_address"
-// 		},
-// 	}
-// 	// Set the environment variable needed for the test
-// 	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value")
-// 	defer os.Unsetenv("GENESIS_ACCOUNT") // Ensure clean-up after the test
-
-// 	tempDir, err := ioutil.TempDir("", "testBlockchain")
-// 	if err != nil {
-// 		t.Fatalf("Failed to create temp directory: %v", err)
-// 	}
-// 	defer os.RemoveAll(tempDir)
-
-// 	// This should now always be set
-// 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
-// 	if genesisAccount == "" {
-// 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
-// 	}
-
-// 	ctx := context.Background()
-// 	sa := option.WithCredentialsFile("../serviceAccountKey.json")
-// 	firebaseApp, err := firebase.NewApp(ctx, nil, sa)
-// 	if err != nil {
-// 		log.Fatalf("error initializing app: %v\n", err)
-// 	}
-
-// 	aesKey, _ := base64.StdEncoding.DecodeString("A6uv/jWDTJtCHQe8xvuYjFN7Oxc29ahnaVHDH+zrXfM=")
-// 	blockchain, err := NewBlockchain(tempDir, aesKey, genesisAccount, firebaseApp)
-// 	if err != nil {
-// 		t.Fatalf("Failed to initialize blockchain: %v", err)
-// 	}
-
-// 	senderPublicKey, senderPrivateKey, _ := ed25519.GenerateKey(rand.Reader)
-// 	senderAddress := base64.StdEncoding.EncodeToString(senderPublicKey)
-// 	recipientPublicKey, _, _ := ed25519.GenerateKey(rand.Reader)
-// 	recipientAddress := base64.StdEncoding.EncodeToString(recipientPublicKey)
-
-// 	blockchain.Stakeholders[senderAddress] = 1000 // Assign initial tokens for testing
-
-// 	transaction := &thrylos.Transaction{
-// 		Id:        "txTest123",
-// 		Timestamp: time.Now().Unix(),
-// 		Inputs:    []*thrylos.UTXO{{TransactionId: "tx0", Index: 0, OwnerAddress: senderAddress, Amount: 100}},
-// 		Outputs:   []*thrylos.UTXO{{TransactionId: "txTest123", Index: 0, OwnerAddress: recipientAddress, Amount: 95}},
-// 		Signature: []byte(""),
-// 	}
-
-// 	txBytes, _ := json.Marshal(transaction)
-// 	signature := ed25519.Sign(senderPrivateKey, txBytes)
-// 	transaction.Signature = signature // Assign the signature directly as a byte slice
-
-// 	blockchain.AddPendingTransaction(transaction)
-
-// 	if len(blockchain.PendingTransactions) != 1 {
-// 		t.Errorf("Transaction not added to pending transactions properly, got %d", len(blockchain.PendingTransactions))
-// 	}
-
-// 	_, err = blockchain.ProcessPendingTransactions(senderAddress)
-// 	if err != nil {
-// 		t.Errorf("Failed to process pending transactions: %v", err)
-// 	}
-
-// 	balance, _ := blockchain.GetBalance(recipientAddress)
-// 	if balance != 95 {
-// 		t.Errorf("Transaction amount not reflected in recipient's balance, expected 95, got %d", balance)
-// 	}
-
-// 	t.Log("Transaction submission and processing test passed")
-// }

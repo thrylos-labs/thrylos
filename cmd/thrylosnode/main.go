@@ -1,11 +1,10 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,21 +13,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	firebase "firebase.google.com/go"
+	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 
-	pb "github.com/thrylos-labs/thrylos"
-
 	"github.com/joho/godotenv"
-	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	// Import your blockchain package
 )
 
-func loadEnv() {
+func loadEnv() (map[string]string, error) {
 	env := os.Getenv("ENV")
 	var envPath string
 	if env == "production" {
@@ -36,46 +31,9 @@ func loadEnv() {
 	} else {
 		envPath = "../../.env.dev" // Managed through local host
 	}
-	if err := godotenv.Load(envPath); err != nil {
-		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
-	}
-}
+	envFile, err := godotenv.Read(envPath)
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000") // Specify the exact origin
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-func initializeFirebaseApp() *firebase.App {
-	ctx := context.Background()
-	sa := option.WithCredentialsFile("../.././serviceAccountKey.json")
-
-	projectID := os.Getenv("FIREBASE_PROJECT_ID")
-	if projectID == "" {
-		log.Fatalf("FIREBASE_PROJECT_ID environment variable is not set")
-	}
-
-	// Initialize the Firebase app with project ID
-	conf := &firebase.Config{
-		ProjectID: projectID, // Use the project ID from environment variable
-	}
-
-	app, err := firebase.NewApp(ctx, conf, sa)
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
-	return app
+	return envFile, err
 }
 
 func main() {
@@ -88,23 +46,32 @@ func main() {
 	}
 	log.Printf("Running from directory: %s", cwd)
 
-	loadEnv()
+	envFile, err := loadEnv()
 
-	fmt.Println("Loaded FIREBASE_PROJECT_ID:", os.Getenv("FIREBASE_PROJECT_ID"))
-	firebaseApp := initializeFirebaseApp()
+	if err != nil {
+		log.Fatalf("Error loading environment variables: %v", err)
+	}
+
+	supabaseURL := envFile["SUPABASE_URL"]
+	supabasePublicKey := envFile["SUPABASE_PUBLIC_KEY"]
+	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
+
+	if err != nil {
+		log.Fatalf("Error creating Supabase client: %v", err)
+	}
 
 	// Environment variables
-	grpcAddress := os.Getenv("GRPC_NODE_ADDRESS")
-	httpAddress := os.Getenv("HTTP_NODE_ADDRESS")
-	httpsAddress := os.Getenv("HTTPS_NODE_ADDRESS")
-	wsAddress := os.Getenv("WS_NODE_ADDRESS")
-	knownPeers := os.Getenv("PEERS")
-	nodeDataDir := os.Getenv("DATA")
-	testnet := os.Getenv("TESTNET") == "true" // Convert to boolean
-	wasmPath := os.Getenv("WASM_PATH")
-	dataDir := os.Getenv("DATA_DIR")
+	grpcAddress := envFile["GRPC_NODE_ADDRESS"]
+	httpAddress := envFile["HTTP_NODE_ADDRESS"]
+	httpsAddress := envFile["HTTPS_NODE_ADDRESS"]
+	wsAddress := envFile["WS_NODE_ADDRESS"]
+	knownPeers := envFile["PEERS"]
+	nodeDataDir := envFile["DATA"]
+	testnet := envFile["TESTNET"] == "true" // Convert to boolea]
+	wasmPath := envFile["WASM_PATH"]
+	dataDir := envFile["DATA_DIR"]
 	chainID := "0x539" // Default local chain ID (1337 in decimal)
-	// domainName := os.Getenv("DOMAIN_NAME")
+	// domainName := envFile["DOMAIN_NAME")
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
@@ -128,7 +95,7 @@ func main() {
 
 	// Load WebAssembly binary
 
-	wasmBytes, err := ioutil.ReadAll(response.Body)
+	wasmBytes, err := io.ReadAll(response.Body)
 	if err != nil {
 		log.Fatalf("Failed to read wasm file: %v", err)
 	}
@@ -138,7 +105,7 @@ func main() {
 	fmt.Printf("Result from wasm: %d\n", result)
 
 	// Fetch the Base64-encoded AES key from the environment variable
-	base64Key := os.Getenv("AES_KEY_ENV_VAR")
+	base64Key := envFile["AES_KEY_ENV_VAR"]
 	if base64Key == "" {
 		log.Fatal("AES key is not set in environment variables")
 	}
@@ -149,7 +116,7 @@ func main() {
 	}
 
 	// Genesis account
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	genesisAccount := envFile["GENESIS_ACCOUNT"]
 	if genesisAccount == "" {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
@@ -162,7 +129,7 @@ func main() {
 	log.Printf("Using blockchain data directory: %s", absPath)
 
 	// Initialize the blockchain and database with the AES key
-	blockchain, _, err := core.NewBlockchain(absPath, aesKey, genesisAccount, firebaseApp)
+	blockchain, _, err := core.NewBlockchain(absPath, aesKey, genesisAccount, supabaseClient)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
@@ -205,13 +172,13 @@ func main() {
 		Addr:    wsAddress,
 		Handler: r,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{loadCertificate()},
+			Certificates: []tls.Certificate{loadCertificate(envFile)},
 		},
 	}
 
 	// Start the HTTP server for development
 	// Start the HTTP server for development
-	if os.Getenv("ENV") == "development" {
+	if envFile["ENV"] == "development" {
 		go func() {
 			log.Printf("Starting HTTP server on %s\n", httpAddress)
 			if err := http.ListenAndServe(httpAddress, r); err != nil {
@@ -241,7 +208,7 @@ func main() {
 		Addr:    httpsAddress, // Use the address from the environment variable
 		Handler: r,            // Reference the CORS-wrapped handler
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{loadCertificate()}, // Load static certificate
+			Certificates: []tls.Certificate{loadCertificate(envFile)}, // Load static certificate
 		},
 	}
 
@@ -259,7 +226,7 @@ func main() {
 	blockchainDatabase := database.NewBlockchainDB(blockchainDB, encryptionKey)
 
 	// Set up TLS credentials for the gRPC server
-	creds := loadTLSCredentials()
+	creds := loadTLSCredentials(envFile)
 	if err != nil {
 		log.Fatalf("Failed to load TLS credentials: %v", err)
 	}
@@ -271,7 +238,7 @@ func main() {
 	}
 
 	s := grpc.NewServer(grpc.Creds(creds))
-	pb.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
+	thrylos.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
 
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 	if err := s.Serve(lis); err != nil {
@@ -280,13 +247,13 @@ func main() {
 
 }
 
-func loadTLSCredentials() credentials.TransportCredentials {
+func loadTLSCredentials(envFile map[string]string) credentials.TransportCredentials {
 	var certPath, keyPath string
 
 	// Determine paths based on the environment
 	if os.Getenv("ENV") == "production" {
-		certPath = os.Getenv("TLS_CERT_PATH")
-		keyPath = os.Getenv("TLS_KEY_PATH")
+		certPath = envFile["TLS_CERT_PATH"]
+		keyPath = envFile["TLS_KEY_PATH"]
 	} else { // Default to development paths
 		certPath = "../../localhost.pem"
 		keyPath = "../../localhost-key.pem"
@@ -307,13 +274,13 @@ func loadTLSCredentials() credentials.TransportCredentials {
 	return credentials.NewTLS(config)
 }
 
-func loadCertificate() tls.Certificate {
+func loadCertificate(envFile map[string]string) tls.Certificate {
 	var certPath, keyPath string
 
 	// Determine paths based on the environment
 	if os.Getenv("ENV") == "production" {
-		certPath = os.Getenv("TLS_CERT_PATH")
-		keyPath = os.Getenv("TLS_KEY_PATH")
+		certPath = envFile["TLS_CERT_PATH"]
+		keyPath = envFile["TLS_KEY_PATH"]
 	} else { // Default to development paths
 		certPath = "../../localhost.pem"
 		keyPath = "../../localhost-key.pem"
