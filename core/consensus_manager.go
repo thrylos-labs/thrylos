@@ -1,6 +1,7 @@
 package core
 
 import (
+	"log"
 	"math/big"
 	"time"
 
@@ -59,24 +60,36 @@ func (cm *ConsensusManager) adjustValidatorSet() {
 }
 
 func (cm *ConsensusManager) ValidateBlock(block *Block) bool {
+	log.Printf("Validating block created by validator: %s", block.Validator)
+
 	if !cm.verifyStake(block.Validator) {
+		log.Printf("Stake verification failed for validator: %s", block.Validator)
 		return false
 	}
+	log.Printf("Stake verified successfully for validator: %s", block.Validator)
 
 	if !cm.verifyBlockSignature(block) {
+		log.Printf("Block signature verification failed for validator: %s", block.Validator)
 		return false
 	}
+	log.Printf("Block signature verified successfully for validator: %s", block.Validator)
 
 	prevBlock := cm.Blockchain.Blocks[len(cm.Blockchain.Blocks)-1]
 	if block.Timestamp < prevBlock.Timestamp ||
 		block.Timestamp > prevBlock.Timestamp+int64(cm.CurrentBlockTime.Seconds()*2) {
+		log.Printf("Block timestamp validation failed for validator: %s. Current: %d, Previous: %d, Max allowed: %d",
+			block.Validator, block.Timestamp, prevBlock.Timestamp, prevBlock.Timestamp+int64(cm.CurrentBlockTime.Seconds()*2))
 		return false
 	}
+	log.Printf("Block timestamp verified successfully for validator: %s", block.Validator)
 
 	if !cm.Blockchain.IsActiveValidator(block.Validator) {
+		log.Printf("Validator %s is not in the active set", block.Validator)
 		return false
 	}
+	log.Printf("Validator %s confirmed as active", block.Validator)
 
+	log.Printf("Block validation successful for validator: %s", block.Validator)
 	return true
 }
 
@@ -90,11 +103,23 @@ func (cm *ConsensusManager) verifyStake(validator string) bool {
 }
 
 func (cm *ConsensusManager) verifyBlockSignature(block *Block) bool {
+	log.Printf("Attempting to verify block signature for validator: %s", block.Validator)
+
 	pubKey, err := cm.Blockchain.RetrievePublicKey(block.Validator)
 	if err != nil {
+		log.Printf("Failed to retrieve public key for validator %s: %v", block.Validator, err)
 		return false
 	}
-	return ed25519.Verify(pubKey, []byte(block.Hash), block.Signature)
+	log.Printf("Successfully retrieved public key for validator: %s", block.Validator)
+
+	isValid := ed25519.Verify(pubKey, []byte(block.Hash), block.Signature)
+	if !isValid {
+		log.Printf("Signature verification failed for validator: %s", block.Validator)
+	} else {
+		log.Printf("Signature verified successfully for validator: %s", block.Validator)
+	}
+
+	return isValid
 }
 
 func (cm *ConsensusManager) UpdatePredictions(transactionVolume, nodeCount int) {

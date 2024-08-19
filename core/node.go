@@ -833,12 +833,13 @@ func (node *Node) TriggerBlockCreation() {
 func (bc *Blockchain) GetCurrentValidator() string {
 	bc.Mu.RLock()
 	defer bc.Mu.RUnlock()
+
 	if len(bc.ActiveValidators) == 0 {
 		return "" // No active validators available
 	}
+
 	// Use the current time to select a validator
 	currentTime := time.Now().Unix()
-	// Simple round-robin selection based on time
 	index := int(currentTime) % len(bc.ActiveValidators)
 	return bc.ActiveValidators[index]
 }
@@ -1005,17 +1006,35 @@ func (node *Node) ConsensusInfoHandler(w http.ResponseWriter, r *http.Request) {
 func (node *Node) RegisterValidatorHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Address   string `json:"address"`
-		PublicKey string `json:"publicKey"` // Public key to be registered
+		PublicKey string `json:"publicKey"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if err := node.Blockchain.RegisterValidator(req.Address, req.PublicKey); err != nil {
+
+	// TO DO - Set the Stake amount for the validators
+
+	// Verify the requester has sufficient stake
+	// stake, err := node.Blockchain.GetStake(req.Address)
+	// if err != nil {
+	// 	http.Error(w, "Failed to retrieve stake: "+err.Error(), http.StatusInternalServerError)
+	// 	return
+	// }
+
+	// minStake := node.Blockchain.GetMinStakeForValidator()
+	// if stake.Cmp(minStake) < 0 {
+	// 	http.Error(w, "Insufficient stake to become a validator", http.StatusBadRequest)
+	// 	return
+	// }
+
+	// Register the validator without bypassing stake check
+	if err := node.Blockchain.RegisterValidator(req.Address, req.PublicKey, false); err != nil {
 		http.Error(w, "Failed to register as validator: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Registered as validator successfully"))
 }

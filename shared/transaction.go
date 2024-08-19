@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/ed25519"
 
 	"github.com/asaskevich/govalidator"
+	"github.com/btcsuite/btcutil/bech32"
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/tyler-smith/go-bip39"
@@ -799,20 +800,27 @@ func GenerateTransactionID(inputs []UTXO, outputs []UTXO, address string, amount
 
 // SanitizeAndFormatAddress cleans and validates blockchain addresses.
 func SanitizeAndFormatAddress(address string) (string, error) {
-	originalAddress := address // Store the original address for logging
+	// Trim any leading/trailing whitespace
 	address = strings.TrimSpace(address)
-	address = strings.ToLower(address)
 
-	log.Printf("SanitizeAndFormatAddress: original='%s', trimmed and lowercased='%s'", originalAddress, address)
-
-	addressRegex := regexp.MustCompile(`^[0-9a-fA-F]{40,64}$`)
-	if !addressRegex.MatchString(address) {
-		log.Printf("SanitizeAndFormatAddress: invalid format after regex check, address='%s'", address)
-		return "", fmt.Errorf("invalid address format: %s", address)
+	// Check if the address starts with the correct prefix
+	if !strings.HasPrefix(address, "tl1") {
+		return "", fmt.Errorf("invalid address: must start with 'tl1'")
 	}
 
-	log.Printf("SanitizeAndFormatAddress: validated and formatted address='%s'", address)
-	return address, nil
+	// Attempt to decode the Bech32 address
+	_, decoded, err := bech32.Decode(address)
+	if err != nil {
+		return "", fmt.Errorf("invalid Bech32 address: %v", err)
+	}
+
+	// Re-encode to ensure it's in the canonical format
+	reencoded, err := bech32.Encode("tl1", decoded)
+	if err != nil {
+		return "", fmt.Errorf("failed to re-encode address: %v", err)
+	}
+
+	return reencoded, nil
 }
 
 // BatchSignTransactions signs a slice of transactions using both Ed25519.

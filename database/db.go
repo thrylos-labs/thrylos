@@ -337,30 +337,58 @@ type publicKeyData struct {
 }
 
 func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
+	log.Printf("Attempting to retrieve public key for address: %s", address)
+
 	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
+		log.Printf("Error sanitizing and formatting address %s: %v", address, err)
 		return nil, err
 	}
+	log.Printf("Formatted address: %s", formattedAddress)
 
 	var publicKeyData []byte
 	err = bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("publicKey-" + formattedAddress))
+		key := []byte("publicKey-" + formattedAddress)
+		log.Printf("Attempting to retrieve data for key: %s", string(key))
+
+		item, err := txn.Get(key)
 		if err != nil {
+			log.Printf("Error retrieving item from database for key %s: %v", string(key), err)
 			return err
 		}
+
 		return item.Value(func(val []byte) error {
+			log.Printf("Retrieved data from database for key %s: %s", string(key), string(val))
+
 			var data map[string][]byte
 			if err := json.Unmarshal(val, &data); err != nil {
+				log.Printf("Error unmarshaling data for key %s: %v", string(key), err)
 				return err
 			}
+
 			publicKeyData = data["ed25519PublicKey"]
+			if publicKeyData == nil {
+				log.Printf("Public key data not found in unmarshaled data for key %s", string(key))
+				return fmt.Errorf("public key data not found")
+			}
+			log.Printf("Successfully extracted public key data for key %s", string(key))
+
 			return nil
 		})
 	})
+
 	if err != nil {
+		log.Printf("Error in database transaction for address %s: %v", formattedAddress, err)
 		return nil, err
 	}
 
+	if len(publicKeyData) != ed25519.PublicKeySize {
+		log.Printf("Retrieved public key has incorrect size for address %s. Expected %d, got %d",
+			formattedAddress, ed25519.PublicKeySize, len(publicKeyData))
+		return nil, fmt.Errorf("invalid public key size")
+	}
+
+	log.Printf("Successfully retrieved public key for address %s", formattedAddress)
 	return ed25519.PublicKey(publicKeyData), nil
 }
 
@@ -424,6 +452,7 @@ func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.P
 			return nil
 		})
 	})
+
 	if err != nil {
 		return nil, err
 	}
