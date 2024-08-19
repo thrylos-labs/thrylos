@@ -12,9 +12,7 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	pb "github.com/thrylos-labs/thrylos" // ensure this import path is correct
-
-	// ensure this import path is correct
+	"github.com/thrylos-labs/thrylos"
 
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/grpc"
@@ -208,7 +206,7 @@ func TestBlockTime(t *testing.T) {
 
 // func startMockServer() *grpc.Server {
 // 	server := grpc.NewServer()
-// 	pb.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
+// 	thrylos.RegisterBlockchainServiceServer(server, &mockBlockchainServer{})
 // 	go func() {
 // 		if err := server.Serve(lis); err != nil {
 // 			log.Fatalf("Server exited with error: %v", err)
@@ -220,7 +218,7 @@ func TestBlockTime(t *testing.T) {
 const bufSize = 1024 * 1024
 
 // type mockBlockchainServer struct {
-// 	pb.UnimplementedBlockchainServiceServer
+// 	thrylos.UnimplementedBlockchainServiceServer
 // }
 
 func bufDialer(ctx context.Context, s string) (net.Conn, error) {
@@ -249,7 +247,7 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 		t.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
 	defer conn.Close()
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -259,16 +257,16 @@ func TestTransactionThroughputWithGRPC(t *testing.T) {
 		wg.Add(1)
 		go func(startIndex int) {
 			defer wg.Done()
-			transactions := make([]*pb.Transaction, batchSize)
+			transactions := make([]*thrylos.Transaction, batchSize)
 			for j := 0; j < batchSize && startIndex+j < numTransactions; j++ {
 				txID := fmt.Sprintf("tx%d", startIndex+j)
-				transactions[j] = &pb.Transaction{
+				transactions[j] = &thrylos.Transaction{
 					Id: txID,
 					// Assume other necessary fields are populated here
 				}
 			}
 
-			batchRequest := &pb.TransactionBatchRequest{Transactions: transactions}
+			batchRequest := &thrylos.TransactionBatchRequest{Transactions: transactions}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_, err := client.SubmitTransactionBatch(ctx, batchRequest)

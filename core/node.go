@@ -69,36 +69,26 @@ func (n *Node) SetChainID(chainID string) {
 	n.chainID = chainID
 }
 
-func loadEnv() {
+func loadEnv() (map[string]string, error) {
 	env := os.Getenv("ENV")
 	var envPath string
 	if env == "production" {
-		envPath = "../../.env.prod" // Ensure this is the correct path relative to where the app is run
+		envPath = "../../.env.prod" // The Cert is managed through the droplet
 	} else {
-		envPath = "../../.env.dev" // Default to development environment
+		envPath = "../../.env.dev" // Managed through local host
 	}
-	if err := godotenv.Load(envPath); err != nil {
-		log.Fatalf("Error loading .env file from %s: %v", envPath, err)
-	}
+	envFile, err := godotenv.Read(envPath)
+
+	return envFile, err
 }
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
-func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, isTest bool) *Node {
-	// Load configuration from .env file, particularly for non-test environments
-	if !isTest {
-		loadEnv() // Dynamically load the correct environment configuration
-	}
+func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) *Node {
+	envFile, _ := loadEnv() // Dynamically load the correct environment configuration
 
 	// Retrieve the AES key securely from an environment variable, with a fallback for tests
-	aesKeyEncoded := os.Getenv("AES_KEY_ENV_VAR")
-	if aesKeyEncoded == "" {
-		if isTest {
-			aesKeyEncoded = "2QhNbYk67zhjlOK3QsSCnCiRyP2xk0qnwL+bxRi1MGc=" // Ensure this is properly base64-encoded
-		} else {
-			log.Fatal("AES key is not set in environment variables")
-		}
-	}
+	aesKeyEncoded := envFile["AES_KEY_ENV_VAR"]
 
 	log.Printf("AES Key from environment: %s", aesKeyEncoded) // Debug output to see what is retrieved
 
@@ -110,19 +100,19 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 	}
 
 	// Retrieve the URL for gas estimation from an environment variable
-	gasEstimateURL := os.Getenv("GAS_ESTIMATE_URL")
+	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
 	if gasEstimateURL == "" {
 		log.Fatal("Gas estimate URL is not set in environment variables. Please configure it before starting.")
 	}
 
 	// Assuming you have a way to get or set a default genesis account address
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	genesisAccount := envFile["GENESIS_ACCOUNT"]
 	if genesisAccount == "" {
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
-	supabaseURL := os.Getenv("SUPABASE_URL")
-	supabasePublicKey := os.Getenv("SUPABASE_PUBLIC_KEY")
+	supabaseURL := envFile["SUPABASE_URL"]
+	supabasePublicKey := envFile["SUPABASE_PUBLIC_KEY"]
 	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
 	if err != nil {
 		log.Fatalf("error initializing app: %v\n", err)
@@ -150,9 +140,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard, 
 		shard.AssignNode(node)
 	}
 
-	if !isTest {
-		node.DiscoverPeers() // Skip this during tests
-	}
+	node.DiscoverPeers() // Skip this during tests
 
 	return node
 }

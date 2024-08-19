@@ -12,27 +12,38 @@ Jump into action with these simple steps:
 
 3. **Create a .env file**: in the .env file it needs to have the following:
 
-HTTP_NODE_ADDRESS=localhost:6080
+SUPABASE_PUBLIC_KEY=XXXXXXXXX
+SUPABASE_URL=XXXXXXXXX
+ENV=development
+HTTP_NODE_ADDRESS=localhost:8546
 GRPC_NODE_ADDRESS=localhost:50051
-PEERS=
+WS_NODE_ADDRESS=localhost:8444
+DOMAIN_NAME=node.thrylos.org
+PEERS=XXXXXXXXX
 DATA=./blockchain_data
 TESTNET=true
-AES_KEY_ENV_VAR=['Generatethiskey']
-WASM_PATH=[LeaveOut]
+AES_KEY_ENV_VAR=XXXXXXXXX
+WASM_PATH="https://raw.githubusercontent.com/thrylos-labs/rust_wasm/main/target/wasm32-unknown-unknown/release/rust_wasm.wasm"
 DATA_DIR=/database
+GENESIS_ACCOUNT=XXXXXXXXX
+GAS_ESTIMATE_URL=https://localhost:8546/api/gas-estimate
 
 4. **Navigate**: In terminal change directory to `cd cmd/thrylosnode`.
 
 5. **Run**: Execute `'export ENV=development'` in your terminal. 
 
-5. **Run**: Execute `'go run .'` in your terminal. 
+6. **Run**: Execute `'go run .'` in your terminal. 
 
 
 ## send a transaction using the cli signer 
 
-6. **Navigate**: in a new terminal  change directory to `cd cmd/clisigner`.
-
-7. **Run**: Execute `go run . --sender=6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19 --receiver=8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7 --amount=4` in your terminal.
+1. In a new terminal:
+```shell
+# change to clisigner directory
+cd cmd/clisigner
+# run a sample send and receive test
+go run . --sender=6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19 --receiver=8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7 --amount=4
+```
 
 ## Inside the Blockchain
 

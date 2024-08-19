@@ -50,7 +50,7 @@ func TestAssignNodeToShard(t *testing.T) {
 	knownPeers := []string{} // Empty slice for known peers
 
 	// Update with correct arguments including dataDir
-	node := NewNode("localhost:8080", knownPeers, tempDir, shard, true)
+	node := NewNode("localhost:8080", knownPeers, tempDir, shard)
 
 	if err := shard.AssignNode(node); err != nil {
 		t.Errorf("Failed to assign node to shard: %v", err)
@@ -90,8 +90,8 @@ func TestRedistributeData(t *testing.T) {
 	defer os.RemoveAll(tempDir2) // Ensure cleanup of the temporary directory for node2
 
 	// Initialize nodes with their respective temporary directories
-	node1 := NewNode("localhost:8080", knownPeers, tempDir1, shard, true)
-	node2 := NewNode("localhost:8081", knownPeers, tempDir2, shard, true)
+	node1 := NewNode("localhost:8080", knownPeers, tempDir1, shard)
+	node2 := NewNode("localhost:8081", knownPeers, tempDir2, shard)
 
 	shard.AssignNode(node1)
 	shard.AssignNode(node2)
@@ -113,7 +113,7 @@ func TestShardUnderHighLoad(t *testing.T) {
 		defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
 
 		nodeAddress := fmt.Sprintf("localhost:%d", 8080+i)
-		node := NewNode(nodeAddress, []string{}, tempDir, shard, true)
+		node := NewNode(nodeAddress, []string{}, tempDir, shard)
 		if err := shard.AssignNode(node); err != nil {
 			t.Errorf("Failed to assign node %d to shard: %v", i, err)
 		}
@@ -136,7 +136,7 @@ func TestShardNodeFailureRecovery(t *testing.T) {
 	defer os.RemoveAll(tempDir) // Ensure cleanup of the temporary directory
 
 	// Initialize node with the temporary directory
-	node := NewNode("localhost:8080", []string{}, tempDir, shard, true)
+	node := NewNode("localhost:8080", []string{}, tempDir, shard)
 	shard.AssignNode(node)
 
 	// Simulate node failure
@@ -165,8 +165,8 @@ func TestCrossShardTransactions(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir2)
 
-	node1 := NewNode("localhost:8080", []string{}, tempDir1, shard1, true)
-	node2 := NewNode("localhost:8081", []string{}, tempDir2, shard2, true)
+	node1 := NewNode("localhost:8080", []string{}, tempDir1, shard1)
+	node2 := NewNode("localhost:8081", []string{}, tempDir2, shard2)
 
 	shard1.AssignNode(node1)
 	shard2.AssignNode(node2)
@@ -191,8 +191,8 @@ func TestShardDataConsistency(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir2)
 
-	node1 := NewNode("localhost:8080", []string{}, tempDir1, shard, true)
-	node2 := NewNode("localhost:8081", []string{}, tempDir2, shard, true)
+	node1 := NewNode("localhost:8080", []string{}, tempDir1, shard)
+	node2 := NewNode("localhost:8081", []string{}, tempDir2, shard)
 
 	shard.AssignNode(node1)
 	shard.AssignNode(node2)
@@ -206,7 +206,7 @@ func NewTestNode(address string, shard *Shard) *Node {
 	// Use a static directory and empty slice for peers for testing
 	tempDir := "/tmp" // This would be a mock or a suitable temporary directory.
 	knownPeers := []string{}
-	return NewNode(address, knownPeers, tempDir, shard, true) // true indicates it is a test environment
+	return NewNode(address, knownPeers, tempDir, shard) // true indicates it is a test environment
 }
 
 // Doesn't test well now
@@ -218,9 +218,9 @@ func TestDistributeUTXOs(t *testing.T) {
 	tempDir1, tempDir2, tempDir3 := "/tmp/node1", "/tmp/node2", "/tmp/node3"
 	knownPeers := []string{} // assuming no known peers for simplicity
 
-	node1 := NewNode("node1", knownPeers, tempDir1, shard, true) // Set isTest to true
-	node2 := NewNode("node2", knownPeers, tempDir2, shard, true) // Set isTest to true
-	node3 := NewNode("node3", knownPeers, tempDir3, shard, true) // Set isTest to true
+	node1 := NewNode("node1", knownPeers, tempDir1, shard) // Set isTest to true
+	node2 := NewNode("node2", knownPeers, tempDir2, shard) // Set isTest to true
+	node3 := NewNode("node3", knownPeers, tempDir3, shard) // Set isTest to true
 
 	shard.AddNode(node1)
 	shard.AddNode(node2)

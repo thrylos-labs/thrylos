@@ -37,21 +37,13 @@ func loadEnv() (map[string]string, error) {
 }
 
 func main() {
-	log.SetOutput(os.Stdout)                     // Change to os.Stdout for visibility in standard output
-	log.SetFlags(log.LstdFlags | log.Lshortfile) // Adding file name and line number for clarity
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("Error getting current working directory: %v", err)
-	}
-	log.Printf("Running from directory: %s", cwd)
-
+	// Load environment variables
 	envFile, err := loadEnv()
-
 	if err != nil {
 		log.Fatalf("Error loading environment variables: %v", err)
 	}
 
+	// Setup Supabase client
 	supabaseURL := envFile["SUPABASE_URL"]
 	supabasePublicKey := envFile["SUPABASE_PUBLIC_KEY"]
 	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
@@ -62,9 +54,6 @@ func main() {
 
 	// Environment variables
 	grpcAddress := envFile["GRPC_NODE_ADDRESS"]
-	httpAddress := envFile["HTTP_NODE_ADDRESS"]
-	httpsAddress := envFile["HTTPS_NODE_ADDRESS"]
-	wsAddress := envFile["WS_NODE_ADDRESS"]
 	knownPeers := envFile["PEERS"]
 	nodeDataDir := envFile["DATA"]
 	testnet := envFile["TESTNET"] == "true" // Convert to boolea]
@@ -153,83 +142,29 @@ func main() {
 		peersList = strings.Split(knownPeers, ",")
 	}
 
-	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil, false)
+	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil)
 
 	node.SetChainID(chainID)
 
 	// Set up routes
-	r := node.SetupRoutes()
+	mux := node.SetupRoutes()
 
-	r.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
 	})
 
 	// Start background tasks
 	node.StartBackgroundTasks()
 
-	// Define WebSocket server
-	wsServer := &http.Server{
-		Addr:    wsAddress,
-		Handler: r,
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{loadCertificate(envFile)},
-		},
-	}
+	// Create a sample HTTP handler
+	// mux := http.NewServeMux()
 
-	// Start the HTTP server for development
-	// Start the HTTP server for development
-	if envFile["ENV"] == "development" {
-		go func() {
-			log.Printf("Starting HTTP server on %s\n", httpAddress)
-			if err := http.ListenAndServe(httpAddress, r); err != nil {
-				log.Fatalf("Failed to start HTTP server: %v", err)
-			}
-		}()
-
-		// Start WebSocket server in development
-		go func() {
-			log.Printf("Starting WebSocket server on %s\n", wsServer.Addr)
-			if err := wsServer.ListenAndServeTLS("", ""); err != nil {
-				log.Fatalf("Failed to start WebSocket server: %v", err)
-			}
-		}()
-	} else {
-		// Start WebSocket server in production
-		log.Printf("Starting WebSocket server on %s\n", wsServer.Addr)
-		go func() {
-			if err := wsServer.ListenAndServeTLS("", ""); err != nil {
-				log.Fatalf("Failed to start WebSocket server: %v", err)
-			}
-		}()
-	}
-
-	// Use static certificate files for local development
-	httpsServer := &http.Server{
-		Addr:    httpsAddress, // Use the address from the environment variable
-		Handler: r,            // Reference the CORS-wrapped handler
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{loadCertificate(envFile)}, // Load static certificate
-		},
-	}
-
-	// Serve using HTTPS with the static certificate
-	log.Printf("Starting HTTPS server on %s\n", httpsServer.Addr)
-	go func() {
-		err := httpsServer.ListenAndServeTLS("", "")
-		if err != nil {
-			log.Fatalf("Failed to start HTTPS server: %v", err)
-		}
-	}()
+	// Setup and start servers
+	setupServers(mux, envFile)
 
 	// Create BlockchainDB instance
 	encryptionKey := []byte(aesKey) // This should ideally come from a secure source
 	blockchainDatabase := database.NewBlockchainDB(blockchainDB, encryptionKey)
-
-	// Set up TLS credentials for the gRPC server
-	creds := loadTLSCredentials(envFile)
-	if err != nil {
-		log.Fatalf("Failed to load TLS credentials: %v", err)
-	}
 
 	// Setup and start gRPC server
 	lis, err := net.Listen("tcp", grpcAddress)
@@ -237,14 +172,85 @@ func main() {
 		log.Fatalf("Failed to listen on %s: %v", grpcAddress, err)
 	}
 
-	s := grpc.NewServer(grpc.Creds(creds))
+	var s *grpc.Server
+
+	if envFile["ENV"] == "development" {
+		// Development mode: No TLS
+		log.Println("Starting gRPC server in development mode (no TLS)")
+		s = grpc.NewServer()
+	} else {
+		// Production mode: Use TLS
+		log.Println("Starting gRPC server in production mode (with TLS)")
+		creds := loadTLSCredentials(envFile)
+		if err != nil {
+			log.Fatalf("Failed to load TLS credentials: %v", err)
+		}
+		s = grpc.NewServer(grpc.Creds(creds))
+	}
+
+	// Setup and start gRPC server
+	// lis, err := net.Listen("tcp", grpcAddress)
+	// if err != nil {
+	// 	log.Fatalf("Failed to listen on %s: %v", grpcAddress, err)
+	// }
+
+	log.Printf("Starting gRPC server on %s\n", grpcAddress)
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
+	}
 	thrylos.RegisterBlockchainServiceServer(s, &server{db: blockchainDatabase})
 
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
 	}
+}
 
+func setupServers(r http.Handler, envFile map[string]string) {
+	wsAddress := envFile["WS_ADDRESS"]
+	httpAddress := envFile["HTTP_NODE_ADDRESS"]
+	isDevelopment := envFile["ENV"] == "development"
+
+	var tlsConfig *tls.Config = nil
+	if !isDevelopment {
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{loadCertificate(envFile)},
+		}
+	}
+
+	// WebSocket server
+	wsServer := &http.Server{
+		Addr:      wsAddress,
+		Handler:   r,
+		TLSConfig: tlsConfig,
+	}
+	// HTTP(S) server
+	httpServer := &http.Server{
+		Addr:      httpAddress,
+		Handler:   r,
+		TLSConfig: tlsConfig,
+	}
+
+	// Start servers
+	go startServer(wsServer, "WebSocket", isDevelopment)
+	go startServer(httpServer, "HTTP(S)", isDevelopment)
+}
+
+func startServer(server *http.Server, serverType string, isDevelopment bool) {
+	var err error
+	protocol := "HTTP"
+	if !isDevelopment {
+		protocol = "HTTPS"
+		log.Printf("Starting %s server in production mode (with TLS) on %s\n", serverType, server.Addr)
+		err = server.ListenAndServeTLS("", "")
+	} else {
+		log.Printf("Starting %s server in development mode (no TLS) on %s\n", serverType, server.Addr)
+		err = server.ListenAndServe()
+	}
+
+	if err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Failed to start %s %s server: %v", protocol, serverType, err)
+	}
 }
 
 func loadTLSCredentials(envFile map[string]string) credentials.TransportCredentials {
@@ -275,21 +281,9 @@ func loadTLSCredentials(envFile map[string]string) credentials.TransportCredenti
 }
 
 func loadCertificate(envFile map[string]string) tls.Certificate {
-	var certPath, keyPath string
-
-	// Determine paths based on the environment
-	if os.Getenv("ENV") == "production" {
-		certPath = envFile["TLS_CERT_PATH"]
-		keyPath = envFile["TLS_KEY_PATH"]
-	} else { // Default to development paths
-		certPath = "../../localhost.pem"
-		keyPath = "../../localhost-key.pem"
-	}
-
-	// Load the server's certificate and its private key
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	cert, err := tls.LoadX509KeyPair(envFile["CERT_FILE"], envFile["KEY_FILE"])
 	if err != nil {
-		log.Fatalf("could not load TLS keys: %v", err)
+		log.Fatalf("Failed to load TLS certificate: %v", err)
 	}
 	return cert
 }

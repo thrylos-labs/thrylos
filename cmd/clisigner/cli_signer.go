@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	pb "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -72,7 +72,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	client := pb.NewBlockchainServiceClient(conn)
+	client := thrylos.NewBlockchainServiceClient(conn)
 
 	// Convert transaction to protobuf format
 	protoTx, err := shared.ConvertToProtoTransaction(transaction)
@@ -80,7 +80,7 @@ func main() {
 		log.Fatalf("Failed to convert transaction to protobuf: %v", err)
 	}
 
-	transactionReq := &pb.TransactionRequest{
+	transactionReq := &thrylos.TransactionRequest{
 		Transaction: protoTx,
 	}
 
