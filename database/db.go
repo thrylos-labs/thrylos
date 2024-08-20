@@ -299,11 +299,14 @@ func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error
 }
 
 func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
+	log.Printf("Attempting to insert/update public key for address: %s", address)
+
 	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Error sanitizing address %s: %v", address, err)
 		return err
 	}
+	log.Printf("Sanitized and formatted address: %s", formattedAddress)
 
 	// Prepare the data to be inserted or updated
 	data, err := json.Marshal(map[string][]byte{"ed25519PublicKey": ed25519PublicKey})
@@ -311,16 +314,21 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 		log.Printf("Failed to marshal public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("Failed to marshal public key: %v", err)
 	}
+	log.Printf("Marshalled public key data length: %d bytes", len(data))
 
 	// Start a new transaction for the database operation
 	txn := bdb.DB.NewTransaction(true)
 	defer txn.Discard() // Ensure that the transaction is discarded if not committed
 
+	log.Printf("Started new transaction for address: %s", formattedAddress)
+
 	// Attempt to set the public key in the database
-	if err := txn.Set([]byte("publicKey-"+formattedAddress), data); err != nil {
+	key := []byte("publicKey-" + formattedAddress)
+	if err := txn.Set(key, data); err != nil {
 		log.Printf("Failed to insert public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("Failed to insert public key for address %s: %v", formattedAddress, err)
 	}
+	log.Printf("Public key set in transaction for address: %s", formattedAddress)
 
 	// Commit the transaction
 	if err := txn.Commit(); err != nil {
@@ -328,6 +336,7 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 		return fmt.Errorf("Transaction commit failed for public key update for address %s: %v", formattedAddress, err)
 	}
 
+	log.Printf("Transaction committed successfully for address: %s", formattedAddress)
 	log.Printf("Public key successfully updated for address %s", formattedAddress)
 	return nil
 }
