@@ -262,9 +262,6 @@ func loadTLSCredentials(envFile map[string]string) credentials.TransportCredenti
 	if os.Getenv("ENV") == "production" {
 		certPath = envFile["TLS_CERT_PATH"]
 		keyPath = envFile["TLS_KEY_PATH"]
-	} else { // Default to development paths
-		certPath = "../../localhost.pem"
-		keyPath = "../../localhost-key.pem"
 	}
 
 	// Load the server's certificate and its private key
