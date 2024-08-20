@@ -40,7 +40,7 @@ func TestNewBlockchain(t *testing.T) {
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
 	// Correctly handle all three return values
-	blockchain, db, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
+	blockchain, db, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}

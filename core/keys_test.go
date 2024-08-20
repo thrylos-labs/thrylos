@@ -131,7 +131,7 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

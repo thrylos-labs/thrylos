@@ -82,7 +82,7 @@ func TestConvertUTXOsToRequiredFormat(t *testing.T) {
 
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestConvertToSharedTransaction(t *testing.T) {
 
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestValidateTransactionsConcurrently(t *testing.T) {
 
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestTransactionThroughputWithMoreRealism(t *testing.T) {
 
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
-	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, &supabase.Client{})
+	bc, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, &supabase.Client{})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

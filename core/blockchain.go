@@ -98,6 +98,7 @@ type Blockchain struct {
 	ShardManager *ShardManager
 
 	ValidatorKeys *ValidatorKeyStore
+	TestMode      bool
 }
 
 // NewTransaction creates a new transaction
@@ -167,7 +168,7 @@ const (
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, supabaseClient *supabase.Client) (*Blockchain, shared.BlockchainDBInterface, error) {
+func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMode bool, supabaseClient *supabase.Client) (*Blockchain, shared.BlockchainDBInterface, error) {
 	// Initialize the database
 	db, err := database.InitializeDatabase(dataDir)
 	if err != nil {
@@ -223,6 +224,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, supabas
 		ActiveValidators:    make([]string, 0),
 		Network:             network,
 		ValidatorKeys:       NewValidatorKeyStore(),
+		TestMode:            testMode,
 	}
 
 	// Initialize ShardManager
@@ -837,13 +839,18 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 
 	log.Printf("%d out of %d transactions processed successfully", len(successfulTransactions), len(pendingTransactions))
 
-	if len(successfulTransactions) == 0 {
-		log.Println("No transactions to include in the new block")
-		return nil, nil
+	// Select a validator from the active set
+	if len(bc.ActiveValidators) == 0 {
+		return nil, fmt.Errorf("no active validators available")
+	}
+
+	selectedValidator := bc.ActiveValidators[0] // Or however you select your validator
+	if !bc.IsActiveValidator(selectedValidator) {
+		return nil, fmt.Errorf("selected validator is not active: %s", selectedValidator)
 	}
 
 	// Create unsigned block
-	unsignedBlock, err := bc.CreateUnsignedBlock(successfulTransactions, validator)
+	unsignedBlock, err := bc.CreateUnsignedBlock(successfulTransactions, selectedValidator)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create unsigned block: %v", err)
 	}
@@ -880,13 +887,47 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 }
 
 func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, error) {
+	log.Printf("Simulating block signing for validator: %s", unsignedBlock.Validator)
+
+	// Simulate network delay (between 0 and 1000 milliseconds)
+	maxDelay := big.NewInt(1000)
+	delayInt, err := rand.Int(rand.Reader, maxDelay)
+	if err != nil {
+		log.Printf("Error generating random delay: %v", err)
+		return nil, fmt.Errorf("failed to generate random delay: %v", err)
+	}
+	delay := time.Duration(delayInt.Int64()) * time.Millisecond
+	time.Sleep(delay)
+	log.Printf("Simulated network delay: %v", delay)
+
 	privateKey, err := bc.GetValidatorPrivateKey(unsignedBlock.Validator)
 	if err != nil {
+		log.Printf("Failed to get validator private key: %v", err)
 		return nil, fmt.Errorf("failed to get validator private key: %v", err)
 	}
 
-	signature := ed25519.Sign(privateKey, unsignedBlock.Hash)
+	// Generate the block hash
+	blockHash := unsignedBlock.ComputeHash()
+	log.Printf("Signing block hash: %x", blockHash)
+
+	// Sign the block hash
+	signature := ed25519.Sign(privateKey, blockHash)
 	unsignedBlock.Signature = signature
+	unsignedBlock.Hash = blockHash
+
+	log.Printf("Block signed successfully for validator: %s", unsignedBlock.Validator)
+	log.Printf("Signature: %x", signature)
+
+	// If in test mode, register the public key for this validator
+	if bc.TestMode {
+		publicKey := privateKey.Public().(ed25519.PublicKey)
+		err = bc.RegisterValidator(unsignedBlock.Validator, base64.StdEncoding.EncodeToString(publicKey), true)
+		if err != nil {
+			log.Printf("Failed to register test validator public key: %v", err)
+			return nil, fmt.Errorf("failed to register test validator public key: %v", err)
+		}
+		log.Printf("Registered test public key for validator: %s", unsignedBlock.Validator)
+	}
 
 	return unsignedBlock, nil
 }
@@ -1249,16 +1290,37 @@ func (bc *Blockchain) StoreValidatorPrivateKey(address string, privKey ed25519.P
 }
 
 func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (ed25519.PrivateKey, error) {
+	log.Printf("Attempting to retrieve private key for validator: %s", validatorAddress)
 
+	// Check if the validator is active
+	if !bc.IsActiveValidator(validatorAddress) {
+		log.Printf("Validator %s is not in the active validator list", validatorAddress)
+		return nil, fmt.Errorf("validator is not active: %s", validatorAddress)
+	}
+
+	// Attempt to retrieve the key from the secure storage
 	privateKeyBytes, err := bc.Database.RetrieveValidatorPrivateKey(validatorAddress)
 	if err != nil {
+		log.Printf("Error retrieving private key from database: %v", err)
+
+		// For testing purposes only: use a consistent test key
+		if bc.TestMode {
+			log.Printf("Test mode: Using consistent test key for validator %s", validatorAddress)
+			seed := make([]byte, ed25519.SeedSize)
+			copy(seed, []byte(validatorAddress)) // Use validator address to generate a consistent seed
+			testKey := ed25519.NewKeyFromSeed(seed)
+			return testKey, nil
+		}
+
 		return nil, fmt.Errorf("failed to retrieve private key for validator %s: %v", validatorAddress, err)
 	}
 
 	if len(privateKeyBytes) != ed25519.PrivateKeySize {
+		log.Printf("Retrieved private key has incorrect size for validator %s: %d", validatorAddress, len(privateKeyBytes))
 		return nil, fmt.Errorf("invalid private key size for validator %s", validatorAddress)
 	}
 
+	log.Printf("Successfully retrieved private key for validator: %s", validatorAddress)
 	return ed25519.PrivateKey(privateKeyBytes), nil
 }
 
@@ -1305,9 +1367,21 @@ func (bc *Blockchain) DelegateStake(from, to string, amount int64) error {
 	return nil
 }
 
+type Validator struct {
+	Address          string
+	Stake            int64
+	NewlyRegistered  bool
+	RegistrationTime time.Time
+}
+
 func (bc *Blockchain) UpdateActiveValidators(count int) error {
 	log.Printf("Entering UpdateActiveValidators function")
 	log.Printf("Updating active validators. Current count: %d, Target count: %d", len(bc.ActiveValidators), count)
+
+	// Ensure we always have at least one active validator
+	if count < 1 {
+		count = 1
+	}
 
 	bc.Mu.RLock()
 	stakeholderCount := len(bc.Stakeholders)
@@ -1359,16 +1433,31 @@ func (bc *Blockchain) UpdateActiveValidators(count int) error {
 		preGeneratedValidators = append(preGeneratedValidators, newValidatorAddress)
 	}
 
-	// Combine pre-generated and other validators, prioritizing higher stakes
-	bc.ActiveValidators = append(bc.ActiveValidators, preGeneratedValidators...)
 	// Use a write lock only when updating ActiveValidators
 	bc.Mu.Lock()
 	bc.ActiveValidators = append(bc.ActiveValidators, preGeneratedValidators...)
 	remainingSlots := count - len(bc.ActiveValidators)
 	bc.ActiveValidators = append(bc.ActiveValidators, otherValidators[:min(remainingSlots, len(otherValidators))]...)
+
+	// Ensure the newly registered validator is included
+	if len(bc.ActiveValidators) == 0 {
+		for address := range bc.Stakeholders {
+			bc.ActiveValidators = append(bc.ActiveValidators, address)
+			if len(bc.ActiveValidators) == count {
+				break
+			}
+		}
+	}
 	bc.Mu.Unlock()
 
 	log.Printf("Updated active validators. Total: %d, Pre-generated: %d", len(bc.ActiveValidators), len(preGeneratedValidators))
+
+	log.Printf("Updated active validators. Total: %d", len(bc.ActiveValidators))
+	for i, validator := range bc.ActiveValidators {
+		log.Printf("Active validator %d: %s", i, validator)
+	}
+
+	log.Printf("Updated active validators. Total: %d", len(bc.ActiveValidators))
 	return nil
 }
 

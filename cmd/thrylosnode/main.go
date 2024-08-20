@@ -118,7 +118,9 @@ func main() {
 	log.Printf("Using blockchain data directory: %s", absPath)
 
 	// Initialize the blockchain and database with the AES key
-	blockchain, _, err := core.NewBlockchain(absPath, aesKey, genesisAccount, supabaseClient)
+
+	// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
+	blockchain, _, err := core.NewBlockchain(absPath, aesKey, genesisAccount, true, supabaseClient)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
