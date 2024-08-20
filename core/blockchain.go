@@ -574,38 +574,40 @@ func (bc *Blockchain) GetValidatorPublicKey(validatorAddress string) (ed25519.Pu
 
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // This method encapsulates the logic for building a block to be added to the blockchain.
-func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, timestamp int64) *Block {
-	// Log the incoming transactions
-	log.Printf("Creating block with %d transactions", len(transactions))
-	for i, tx := range transactions {
-		log.Printf("Transaction %d: ID=%s, Outputs=%+v", i, tx.Id, tx.Outputs)
-	}
-
-	// Create a new block with Protobuf transactions
+func (bc *Blockchain) CreateUnsignedBlock(transactions []*thrylos.Transaction, validator string) (*Block, error) {
+	prevBlock := bc.Blocks[len(bc.Blocks)-1]
 	newBlock := &Block{
-		Index:        int32(len(bc.Blocks)), // Convert len to int32
-		Transactions: transactions,          // Directly use the Protobuf transactions
-		Timestamp:    timestamp,
+		Index:        int32(len(bc.Blocks)),
+		Timestamp:    time.Now().Unix(),
+		Transactions: transactions,
 		Validator:    validator,
-		PrevHash:     prevHash,
+		PrevHash:     prevBlock.Hash,
+		// Hash and Signature fields are left empty
 	}
 
-	// Log the newly created block details before returning
-	log.Printf("New block created: Index=%d, Hash=%s, Transactions=%d, Timestamp=%d, Validator=%s, PrevHash=%s",
-		newBlock.Index, newBlock.Hash, len(newBlock.Transactions), newBlock.Timestamp, newBlock.Validator, newBlock.PrevHash)
-
-	// Assuming ComputeHash() is adapted to work with the new Transactions type
+	// Compute the hash
 	newBlock.Hash = newBlock.ComputeHash()
 
-	// Sign the block
-	signature, err := bc.SignBlock(newBlock, validator)
-	if err != nil {
-		log.Printf("Failed to sign block: %v", err)
-		return nil
-	}
-	newBlock.Signature = signature
+	return newBlock, nil
+}
 
-	return newBlock
+func (bc *Blockchain) VerifySignedBlock(signedBlock *Block) error {
+	// Verify the block's hash
+	if !bytes.Equal(signedBlock.ComputeHash(), signedBlock.Hash) {
+		return errors.New("invalid block hash")
+	}
+
+	// Verify the signature
+	publicKey, err := bc.GetValidatorPublicKey(signedBlock.Validator)
+	if err != nil {
+		return fmt.Errorf("failed to get validator public key: %v", err)
+	}
+
+	if !ed25519.Verify(publicKey, signedBlock.Hash, signedBlock.Signature) {
+		return errors.New("invalid block signature")
+	}
+
+	return nil
 }
 
 func (bc *Blockchain) SignBlock(block *Block, validatorAddress string) ([]byte, error) {
@@ -840,45 +842,53 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		return nil, nil
 	}
 
-	// Ensure the validator is active
-	if !bc.IsActiveValidator(validator) {
-		return nil, fmt.Errorf("validator %s is not in the active set", validator)
+	// Create unsigned block
+	unsignedBlock, err := bc.CreateUnsignedBlock(successfulTransactions, validator)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create unsigned block: %v", err)
 	}
 
-	// Create new block with successful transactions
-	prevBlock := bc.Blocks[len(bc.Blocks)-1]
-	newBlock := bc.CreateBlock(successfulTransactions, validator, prevBlock.Hash, time.Now().Unix())
-	if newBlock == nil {
-		return nil, fmt.Errorf("failed to create a new block")
+	// In a real implementation, you would send this unsigned block to the validator for signing
+	// For now, we'll simulate this by directly signing it (this should be removed in production)
+	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to simulate block signing: %v", err)
 	}
 
-	// Validate the block using the current consensus method
-	if !bc.ConsensusManager.ValidateBlock(newBlock) {
-		return nil, fmt.Errorf("block failed consensus validation")
+	// Verify the signed block
+	if err := bc.VerifySignedBlock(signedBlock); err != nil {
+		return nil, fmt.Errorf("invalid signed block: %v", err)
 	}
 
-	// Check if the block time is within the allowed range
-	if newBlock.Timestamp < prevBlock.Timestamp+int64(currentBlockTime.Seconds()) ||
-		newBlock.Timestamp > prevBlock.Timestamp+int64(currentBlockTime.Seconds()*2) {
-		return nil, fmt.Errorf("block time is outside the allowed range")
-	}
-
+	// Add the verified block to the blockchain
 	bc.Mu.Lock()
-	bc.Blocks = append(bc.Blocks, newBlock)
+	bc.Blocks = append(bc.Blocks, signedBlock)
 	bc.Mu.Unlock()
 
 	// Update transaction statuses
-	for _, tx := range newBlock.Transactions {
-		if err := bc.UpdateTransactionStatus(tx.Id, "included", newBlock.Hash); err != nil {
+	for _, tx := range signedBlock.Transactions {
+		if err := bc.UpdateTransactionStatus(tx.Id, "included", signedBlock.Hash); err != nil {
 			log.Printf("Error updating transaction status: %v", err)
 		}
-		log.Printf("Transaction %s included in block %s", tx.Id, newBlock.Hash)
+		log.Printf("Transaction %s included in block %x", tx.Id, signedBlock.Hash)
 	}
 
 	// After adding a new block, we might want to update the active validator set
 	bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
 
-	return newBlock, nil
+	return signedBlock, nil
+}
+
+func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, error) {
+	privateKey, err := bc.GetValidatorPrivateKey(unsignedBlock.Validator)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get validator private key: %v", err)
+	}
+
+	signature := ed25519.Sign(privateKey, unsignedBlock.Hash)
+	unsignedBlock.Signature = signature
+
+	return unsignedBlock, nil
 }
 
 func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockHash []byte) error {
@@ -1466,13 +1476,6 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
-	var timestamp int64
-	if len(optionalTimestamp) > 0 && optionalTimestamp[0] > 0 {
-		timestamp = optionalTimestamp[0]
-	} else {
-		timestamp = time.Now().Unix()
-	}
-
 	// Handle potential forks.
 	if len(bc.Blocks) > 0 && !bytes.Equal(prevHash, bc.Blocks[len(bc.Blocks)-1].Hash) {
 		var selectedFork *Fork
@@ -1483,23 +1486,35 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 			}
 		}
 
-		newBlock := bc.CreateBlock(transactions, validator, prevHash, timestamp)
-		if newBlock == nil {
-			return false, fmt.Errorf("failed to create a new block")
+		// Create unsigned block for the fork
+		unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
+		if err != nil {
+			return false, fmt.Errorf("failed to create unsigned block: %v", err)
 		}
 
-		blockData, err := json.Marshal(newBlock) // Serialize here
+		// Simulate validator signing
+		signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+		if err != nil {
+			return false, fmt.Errorf("failed to simulate block signing: %v", err)
+		}
+
+		// Verify the signed block
+		if err := bc.VerifySignedBlock(signedBlock); err != nil {
+			return false, fmt.Errorf("invalid signed block: %v", err)
+		}
+
+		blockData, err := json.Marshal(signedBlock)
 		if err != nil {
 			return false, fmt.Errorf("failed to serialize new block: %v", err)
 		}
 
-		blockNumber := len(bc.Blocks) // This should be after block validation
+		blockNumber := len(bc.Blocks)
 		if selectedFork != nil {
-			selectedFork.Blocks = append(selectedFork.Blocks, newBlock)
+			selectedFork.Blocks = append(selectedFork.Blocks, signedBlock)
 			blockNumber = len(selectedFork.Blocks) - 1
 		} else {
-			bc.Blocks = append(bc.Blocks, newBlock)
-			blockNumber = len(bc.Blocks) - 1 // Use the index of the newly appended block
+			bc.Blocks = append(bc.Blocks, signedBlock)
+			blockNumber = len(bc.Blocks) - 1
 		}
 
 		if err := bc.Database.StoreBlock(blockData, blockNumber); err != nil {
@@ -1511,49 +1526,55 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 
 	// Verify transactions.
 	for _, tx := range transactions {
-		isValid, err := bc.VerifyTransaction(tx) // Ensure VerifyTransaction accepts *thrylos.Transaction
+		isValid, err := bc.VerifyTransaction(tx)
 		if err != nil || !isValid {
 			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
 		}
 	}
 
-	// Handle UTXOs: updating UTXO set with new transactions.
-	for _, tx := range transactions {
+	// Create unsigned block
+	unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
+	if err != nil {
+		return false, fmt.Errorf("failed to create unsigned block: %v", err)
+	}
+
+	// Simulate validator signing
+	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+	if err != nil {
+		return false, fmt.Errorf("failed to simulate block signing: %v", err)
+	}
+
+	// Verify the signed block
+	if err := bc.VerifySignedBlock(signedBlock); err != nil {
+		return false, fmt.Errorf("invalid signed block: %v", err)
+	}
+
+	// Update UTXO set
+	for _, tx := range signedBlock.Transactions {
 		for _, input := range tx.GetInputs() {
 			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
 			delete(bc.UTXOs, utxoKey)
 		}
 		for index, output := range tx.GetOutputs() {
 			utxoKey := fmt.Sprintf("%s:%d", tx.GetId(), index)
-			// Append output to the slice for this utxoKey
 			bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], output)
 		}
 	}
 
-	// Create and validate the new block.
-	prevBlock := bc.Blocks[len(bc.Blocks)-1] // Ensure there is at least one block before doing this
-	newBlock := bc.CreateBlock(transactions, validator, prevHash, timestamp)
-	if newBlock == nil || !bc.ValidateBlock(newBlock, prevBlock) {
-		return false, fmt.Errorf("failed to create or validate a new block")
-	}
-
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	if err := encoder.Encode(newBlock); err != nil {
+	// Serialize and store the block
+	blockData, err := json.Marshal(signedBlock)
+	if err != nil {
 		return false, fmt.Errorf("failed to serialize new block: %v", err)
 	}
-	blockData := buf.Bytes()
 
-	// Use the length of the blockchain as the new block number
-	blockNumber := len(bc.Blocks) // This should be calculated appropriately
-
-	if err := bc.Database.InsertBlock(blockData, blockNumber); err != nil {
-		return false, fmt.Errorf("failed to insert block into database: %v", err)
+	blockNumber := len(bc.Blocks)
+	if err := bc.Database.StoreBlock(blockData, blockNumber); err != nil {
+		return false, fmt.Errorf("failed to store block in database: %v", err)
 	}
 
 	// Update the blockchain with the new block
-	bc.Blocks = append(bc.Blocks, newBlock)
-	bc.lastTimestamp = timestamp
+	bc.Blocks = append(bc.Blocks, signedBlock)
+	bc.lastTimestamp = signedBlock.Timestamp
 
 	return true, nil
 }
