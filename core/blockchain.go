@@ -252,7 +252,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 	log.Println("Validator keys generated and stored")
 
 	log.Println("Updating active validators")
-	err = blockchain.UpdateActiveValidators(2) // Reduced to 2
+	err = blockchain.UpdateActiveValidators(1) // Reduced to 1 for testnet
 	if err != nil {
 		log.Printf("Error updating active validators: %v", err)
 		return nil, nil, fmt.Errorf("failed to update active validators: %v", err)
@@ -613,17 +613,20 @@ func (bc *Blockchain) VerifySignedBlock(signedBlock *Block) error {
 }
 
 func (bc *Blockchain) SignBlock(block *Block, validatorAddress string) ([]byte, error) {
-	privateKey, err := bc.GetValidatorPrivateKey(validatorAddress)
+	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(validatorAddress)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get validator private key: %v", err)
 	}
+
+	// Update the block's validator address to the Bech32 format
+	block.Validator = bech32Address
 
 	blockData, err := block.SerializeForSigning()
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize block for signing: %v", err)
 	}
 
-	signature := ed25519.Sign(privateKey, blockData)
+	signature := stdEd25519.Sign(privateKey, blockData)
 	return signature, nil
 }
 
@@ -900,34 +903,27 @@ func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, er
 	time.Sleep(delay)
 	log.Printf("Simulated network delay: %v", delay)
 
-	privateKey, err := bc.GetValidatorPrivateKey(unsignedBlock.Validator)
+	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(unsignedBlock.Validator)
 	if err != nil {
 		log.Printf("Failed to get validator private key: %v", err)
 		return nil, fmt.Errorf("failed to get validator private key: %v", err)
 	}
+
+	// Update the block's validator address to the Bech32 format
+	unsignedBlock.Validator = bech32Address
+	log.Printf("Updated block validator to Bech32 address: %s", bech32Address)
 
 	// Generate the block hash
 	blockHash := unsignedBlock.ComputeHash()
 	log.Printf("Signing block hash: %x", blockHash)
 
 	// Sign the block hash
-	signature := ed25519.Sign(privateKey, blockHash)
+	signature := stdEd25519.Sign(privateKey, blockHash)
 	unsignedBlock.Signature = signature
 	unsignedBlock.Hash = blockHash
 
 	log.Printf("Block signed successfully for validator: %s", unsignedBlock.Validator)
 	log.Printf("Signature: %x", signature)
-
-	// If in test mode, register the public key for this validator
-	if bc.TestMode {
-		publicKey := privateKey.Public().(ed25519.PublicKey)
-		err = bc.RegisterValidator(unsignedBlock.Validator, base64.StdEncoding.EncodeToString(publicKey), true)
-		if err != nil {
-			log.Printf("Failed to register test validator public key: %v", err)
-			return nil, fmt.Errorf("failed to register test validator public key: %v", err)
-		}
-		log.Printf("Registered test public key for validator: %s", unsignedBlock.Validator)
-	}
 
 	return unsignedBlock, nil
 }
@@ -1289,39 +1285,86 @@ func (bc *Blockchain) StoreValidatorPrivateKey(address string, privKey ed25519.P
 	return nil
 }
 
-func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (ed25519.PrivateKey, error) {
+func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (ed25519.PrivateKey, string, error) {
 	log.Printf("Attempting to retrieve private key for validator: %s", validatorAddress)
 
 	// Check if the validator is active
 	if !bc.IsActiveValidator(validatorAddress) {
 		log.Printf("Validator %s is not in the active validator list", validatorAddress)
-		return nil, fmt.Errorf("validator is not active: %s", validatorAddress)
+		return nil, "", fmt.Errorf("validator is not active: %s", validatorAddress)
 	}
 
-	// Attempt to retrieve the key from the secure storage
-	privateKeyBytes, err := bc.Database.RetrieveValidatorPrivateKey(validatorAddress)
-	if err != nil {
-		log.Printf("Error retrieving private key from database: %v", err)
+	// For testing purposes only: generate a deterministic key
+	if bc.TestMode {
+		log.Printf("Test mode: Generating deterministic key for validator %s", validatorAddress)
 
-		// For testing purposes only: use a consistent test key
-		if bc.TestMode {
-			log.Printf("Test mode: Using consistent test key for validator %s", validatorAddress)
-			seed := make([]byte, ed25519.SeedSize)
-			copy(seed, []byte(validatorAddress)) // Use validator address to generate a consistent seed
-			testKey := ed25519.NewKeyFromSeed(seed)
-			return testKey, nil
+		var seed [32]byte
+		var bech32Address string
+
+		// If the address is already in Bech32 format, use it directly
+		if strings.HasPrefix(validatorAddress, "tl1") {
+			bech32Address = validatorAddress
+			hashResult := sha256.Sum256([]byte(validatorAddress))
+			copy(seed[:], hashResult[:])
+		} else {
+			// If not, generate a new Bech32 address
+			hashResult := sha256.Sum256([]byte(validatorAddress))
+			copy(seed[:], hashResult[:])
+			privateKey := ed25519.NewKeyFromSeed(seed[:])
+			publicKey := privateKey.Public().(ed25519.PublicKey)
+			var err error
+			bech32Address, err = generateBech32Address(publicKey)
+			if err != nil {
+				return nil, "", fmt.Errorf("failed to generate Bech32 address: %v", err)
+			}
 		}
 
-		return nil, fmt.Errorf("failed to retrieve private key for validator %s: %v", validatorAddress, err)
+		privateKey := ed25519.NewKeyFromSeed(seed[:])
+
+		// Ensure the validator is registered with the correct public key and Bech32 address
+		err := bc.EnsureTestValidatorRegistered(bech32Address, privateKey.Public().(ed25519.PublicKey))
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to ensure test validator is registered: %v", err)
+		}
+
+		log.Printf("Using Bech32 address for test validator: %s", bech32Address)
+		return privateKey, bech32Address, nil
 	}
 
-	if len(privateKeyBytes) != ed25519.PrivateKeySize {
-		log.Printf("Retrieved private key has incorrect size for validator %s: %d", validatorAddress, len(privateKeyBytes))
-		return nil, fmt.Errorf("invalid private key size for validator %s", validatorAddress)
+	// In production mode, we don't retrieve or store private keys
+	return nil, "", fmt.Errorf("private keys are not stored or retrieved in production mode")
+}
+
+func generateBech32Address(publicKey ed25519.PublicKey) (string, error) {
+	hash := sha256.Sum256(publicKey)
+	converted, err := bech32.ConvertBits(hash[:20], 8, 5, true)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert bits for Bech32 address: %v", err)
+	}
+	bech32Address, err := bech32.Encode("tl1", converted)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode Bech32 address: %v", err)
+	}
+	return bech32Address, nil
+}
+
+func (bc *Blockchain) EnsureTestValidatorRegistered(address string, publicKey ed25519.PublicKey) error {
+	// Check if the validator is already registered
+	_, err := bc.RetrievePublicKey(address)
+	if err == nil {
+		// Validator is already registered
+		return nil
 	}
 
-	log.Printf("Successfully retrieved private key for validator: %s", validatorAddress)
-	return ed25519.PrivateKey(privateKeyBytes), nil
+	// Register the validator
+	pubKeyBase64 := base64.StdEncoding.EncodeToString(publicKey)
+	err = bc.RegisterValidator(address, pubKeyBase64, true)
+	if err != nil {
+		return fmt.Errorf("failed to register test validator: %v", err)
+	}
+
+	log.Printf("Registered test validator: %s", address)
+	return nil
 }
 
 func (bc *Blockchain) TransferFunds(from, to string, amount int64) error {
