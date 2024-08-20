@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/crypto/ed25519"
 
 	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"
@@ -38,11 +38,11 @@ type Block struct {
 
 	// PrevHash stores the hash of the previous block in the chain, establishing the link between
 	// this block and its predecessor. This linkage is crucial for the blockchain's integrity.
-	PrevHash string `json:"prevHash"`
+	PrevHash []byte `json:"prevHash"`
 
 	// Hash is the block's own hash, computed from its contents and metadata. It uniquely identifies
 	// the block and secures the blockchain against tampering.
-	Hash string `json:"Hash"` // Ensure the hash is part of the block's structure
+	Hash []byte `json:"Hash"` // Ensure the hash is part of the block's structure
 
 	// Transactions is the list of transactions included in the block. Transactions are the actions
 	// that modify the blockchain's state, such as transferring assets between parties.
@@ -61,6 +61,36 @@ type Block struct {
 
 	Signature []byte `json:"signature"` // Add this field
 
+}
+
+func (b *Block) SerializeForSigning() ([]byte, error) {
+	pbBlock := &thrylos.Block{
+		Index:        b.Index,
+		Timestamp:    b.Timestamp,
+		PrevHash:     b.PrevHash,
+		Validator:    b.Validator,
+		Transactions: b.Transactions,
+		Hash:         b.Hash,
+	}
+
+	return proto.Marshal(pbBlock)
+}
+
+func (b *Block) Sign(privateKey ed25519.PrivateKey) error {
+	data, err := b.SerializeForSigning()
+	if err != nil {
+		return err
+	}
+	b.Signature = ed25519.Sign(privateKey, data)
+	return nil
+}
+
+func (b *Block) VerifySignature(publicKey ed25519.PublicKey) bool {
+	data, err := b.SerializeForSigning()
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(publicKey, data, b.Signature)
 }
 
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
@@ -98,12 +128,13 @@ func (b *Block) InitializeVerkleTree() error {
 // NewGenesisBlock creates and returns the genesis block for the blockchain. The genesis block
 // is the first block in the blockchain, serving as the foundation upon which the entire chain is built.
 func NewGenesisBlock() *Block {
+
 	block := &Block{
 		Index:      0,
 		Timestamp:  time.Now().Unix(),
 		VerkleRoot: []byte{}, // Or some predefined value, since it's a special case.
-		PrevHash:   "",
-		Hash:       "",
+		PrevHash:   []byte{},
+		Hash:       []byte{},
 		Validator:  "",
 	}
 	block.Hash = block.ComputeHash()
@@ -202,41 +233,8 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 // NewBlock creates a new block with the specified parameters, including the index, transactions,
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
-func (bc *Blockchain) NewBlock(index int, transactions []*thrylos.Transaction, prevHash string, validator string, prevTimestamp int64) (*Block, error) {
-	fmt.Printf("Creating new block at index %d with %d transactions.\n", index, len(transactions))
-	currentTimestamp := max(time.Now().Unix(), prevTimestamp+1)
-
-	// Validate transactions concurrently before including them in the block
-	validationErrors := bc.validateTransactionsConcurrently(transactions)
-	if len(validationErrors) > 0 {
-		for _, err := range validationErrors {
-			fmt.Println("Transaction validation error:", err)
-		}
-		return nil, fmt.Errorf("some transactions failed validation")
-	}
-
-	// All transactions are valid, proceed with block creation
-	block := &Block{
-		Index:        int32(index),
-		Timestamp:    currentTimestamp,
-		PrevHash:     prevHash,
-		Hash:         "",
-		Transactions: transactions,
-		Validator:    validator,
-	}
-
-	if err := block.InitializeVerkleTree(); err != nil {
-		fmt.Printf("Error initializing Verkle Tree: %v\n", err)
-		return nil, err
-	}
-
-	block.Hash = block.ComputeHash()
-	fmt.Printf("Block created - Index: %d, Hash: %s, Transactions: %d\n", block.Index, block.Hash, len(block.Transactions))
-	return block, nil
-}
-
-func (b *Block) ComputeHash() string {
-	if b.Hash != "" {
+func (b *Block) ComputeHash() []byte {
+	if len(b.Hash) > 0 {
 		return b.Hash // Use the cached hash if available
 	}
 
@@ -244,17 +242,16 @@ func (b *Block) ComputeHash() string {
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		log.Printf("Failed to create hasher: %v", err)
-		return ""
+		return nil
 	}
 
 	// Using binary encoding to convert integers directly to bytes
 	binary.Write(hasher, binary.BigEndian, b.Index)
 	binary.Write(hasher, binary.BigEndian, b.Timestamp)
-	hasher.Write([]byte(b.PrevHash))
+	hasher.Write([]byte(b.PrevHash)) // PrevHash is already []byte
 	hasher.Write([]byte(b.Validator))
 
 	// Process transactions concurrently if possible
-	// Example placeholder for transaction hashing
 	txHashes := make(chan []byte, len(b.Transactions))
 	var wg sync.WaitGroup
 
@@ -290,6 +287,6 @@ func (b *Block) ComputeHash() string {
 	}
 
 	// Compute and store the hash
-	b.Hash = hex.EncodeToString(hasher.Sum(nil))
+	b.Hash = hasher.Sum(nil)
 	return b.Hash
 }

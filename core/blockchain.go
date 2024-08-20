@@ -2,13 +2,14 @@ package core
 
 import (
 	"bytes"
-	"context"
+
 	stdEd25519 "crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/gob"
+	"encoding/hex"
 	"math/big"
 	"sort"
 	"strings"
@@ -95,6 +96,8 @@ type Blockchain struct {
 
 	Network      *Network
 	ShardManager *ShardManager
+
+	ValidatorKeys *ValidatorKeyStore
 }
 
 // NewTransaction creates a new transaction
@@ -107,6 +110,30 @@ type Stakeholder struct {
 type Fork struct {
 	Index  int
 	Blocks []*Block
+}
+
+type ValidatorKeyStore struct {
+	keys map[string]ed25519.PrivateKey
+	mu   sync.RWMutex
+}
+
+func (vks *ValidatorKeyStore) StoreKey(address string, privKey ed25519.PrivateKey) {
+	vks.mu.Lock()
+	defer vks.mu.Unlock()
+	vks.keys[address] = privKey
+}
+
+func (vks *ValidatorKeyStore) GetKey(address string) (ed25519.PrivateKey, bool) {
+	vks.mu.RLock()
+	defer vks.mu.RUnlock()
+	key, exists := vks.keys[address]
+	return key, exists
+}
+
+func NewValidatorKeyStore() *ValidatorKeyStore {
+	return &ValidatorKeyStore{
+		keys: make(map[string]ed25519.PrivateKey),
+	}
 }
 
 const NanoPerThrylos = 1e7
@@ -195,6 +222,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, supabas
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
 		Network:             network,
+		ValidatorKeys:       NewValidatorKeyStore(),
 	}
 
 	// Initialize ShardManager
@@ -529,9 +557,24 @@ func (bc *Blockchain) LoadAllValidatorPublicKeys() error {
 	return nil
 }
 
+func (bc *Blockchain) GetValidatorPublicKey(validatorAddress string) (ed25519.PublicKey, error) {
+	// Retrieve the public key from your storage mechanism
+	// This is just an example, adjust according to your actual implementation
+	publicKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(validatorAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve public key for validator %s: %v", validatorAddress, err)
+	}
+
+	if len(publicKeyBytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid public key size for validator %s", validatorAddress)
+	}
+
+	return ed25519.PublicKey(publicKeyBytes), nil
+}
+
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // This method encapsulates the logic for building a block to be added to the blockchain.
-func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator string, prevHash string, timestamp int64) *Block {
+func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, timestamp int64) *Block {
 	// Log the incoming transactions
 	log.Printf("Creating block with %d transactions", len(transactions))
 	for i, tx := range transactions {
@@ -554,7 +597,30 @@ func (bc *Blockchain) CreateBlock(transactions []*thrylos.Transaction, validator
 	// Assuming ComputeHash() is adapted to work with the new Transactions type
 	newBlock.Hash = newBlock.ComputeHash()
 
+	// Sign the block
+	signature, err := bc.SignBlock(newBlock, validator)
+	if err != nil {
+		log.Printf("Failed to sign block: %v", err)
+		return nil
+	}
+	newBlock.Signature = signature
+
 	return newBlock
+}
+
+func (bc *Blockchain) SignBlock(block *Block, validatorAddress string) ([]byte, error) {
+	privateKey, err := bc.GetValidatorPrivateKey(validatorAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get validator private key: %v", err)
+	}
+
+	blockData, err := block.SerializeForSigning()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize block for signing: %v", err)
+	}
+
+	signature := ed25519.Sign(privateKey, blockData)
+	return signature, nil
 }
 
 func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmount int64) {
@@ -604,26 +670,22 @@ func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKey []byte, 
 
 // ValidateBlock checks if the block is valid
 func (bc *Blockchain) ValidateBlock(newBlock *Block, prevBlock *Block) bool {
-	// Debugging: Print the timestamps for debugging
-	fmt.Printf("Validating block with timestamp: %d against previous block with timestamp: %d\n", newBlock.Timestamp, prevBlock.Timestamp)
-
 	// Check if PrevHash matches the hash of the previous block
-	if newBlock.Timestamp <= prevBlock.Timestamp {
-		fmt.Printf("Invalid timestamp in block %d: should be greater than %d, got %d\n", newBlock.Index, prevBlock.Timestamp, newBlock.Timestamp)
+	if !bytes.Equal(newBlock.PrevHash, prevBlock.Hash) {
+		fmt.Printf("Invalid previous hash in block %d\n", newBlock.Index)
 		return false
 	}
 
 	// Validate the block's proof of stake
 	if !bc.VerifyPoSRules(*newBlock) {
 		fmt.Printf("Invalid block %d due to PoS rules: validator was %s\n", newBlock.Index, newBlock.Validator)
-		fmt.Printf("Full block: %+v\n", newBlock)
 		return false
 	}
 
 	// Validate the block's hash
 	computedHash := newBlock.ComputeHash()
-	if newBlock.Hash != computedHash {
-		fmt.Printf("Invalid hash in block %d: expected %s, got %s\n", newBlock.Index, computedHash, newBlock.Hash)
+	if !bytes.Equal(newBlock.Hash, computedHash) {
+		fmt.Printf("Invalid hash in block %d: expected %x, got %x\n", newBlock.Index, computedHash, newBlock.Hash)
 		return false
 	}
 
@@ -819,7 +881,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	return newBlock, nil
 }
 
-func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockHash string) error {
+func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockHash []byte) error {
 	// Begin a new database transaction
 	txn, err := bc.Database.BeginTransaction()
 	if err != nil {
@@ -971,13 +1033,31 @@ func (bc *Blockchain) convertUTXOsToRequiredFormat() map[string][]shared.UTXO {
 // Get the block and see how many transactions are in each block
 
 func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
-	// iterate over blocks and find by ID
-	for _, block := range bc.Blocks {
-		if block.Hash == id || strconv.Itoa(int(block.Index)) == id { // Convert int32 to int before converting to string
-			log.Printf("Block found: Index=%d, Transactions=%v", block.Index, block.Transactions)
+	// First, try to parse id as a block index
+	if index, err := strconv.Atoi(id); err == nil {
+		// id is a valid integer, so we treat it as a block index
+		if index >= 0 && index < len(bc.Blocks) {
+			block := bc.Blocks[index]
+			log.Printf("Block found by index: Index=%d, Transactions=%v", block.Index, block.Transactions)
 			return block, nil
 		}
 	}
+
+	// If id is not a valid index, try to match it as a hash
+	idBytes, err := hex.DecodeString(id)
+	if err != nil {
+		log.Printf("Invalid block ID format: %s", id)
+		return nil, errors.New("invalid block ID format")
+	}
+
+	// Iterate over blocks and find by hash
+	for _, block := range bc.Blocks {
+		if bytes.Equal(block.Hash, idBytes) {
+			log.Printf("Block found by hash: Index=%d, Transactions=%v", block.Index, block.Transactions)
+			return block, nil
+		}
+	}
+
 	log.Println("Block not found with ID:", id)
 	return nil, errors.New("block not found")
 }
@@ -1085,8 +1165,13 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassSta
 
 	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKey)
 	if err != nil {
-		log.Printf("Error decoding public key for %s: %v", formattedAddress, err)
 		return fmt.Errorf("error decoding public key: %v", err)
+	}
+
+	// Store the public key
+	err = bc.Database.StoreValidatorPublicKey(address, pubKeyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to store validator public key: %v", err)
 	}
 	log.Printf("Decoded public key length for %s: %d", formattedAddress, len(pubKeyBytes))
 
@@ -1118,6 +1203,12 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassSta
 		dbChan <- bc.Database.InsertOrUpdateEd25519PublicKey(formattedAddress, pubKeyBytes)
 	}()
 
+	// Store the public key
+	err = bc.Database.StoreValidatorPublicKey(address, pubKeyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to store validator public key: %v", err)
+	}
+
 	select {
 	case err := <-dbChan:
 		if err != nil {
@@ -1142,11 +1233,23 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassSta
 
 func (bc *Blockchain) StoreValidatorPrivateKey(address string, privKey ed25519.PrivateKey) error {
 	log.Printf("Storing private key for validator: %s", address)
-	// Implement secure storage of private keys
-	// This could be in a separate, encrypted database or secure enclave
-	// For demonstration, we'll just log it (DO NOT do this in production)
+	bc.ValidatorKeys.StoreKey(address, privKey)
 	log.Printf("Private key for validator %s stored securely", address)
 	return nil
+}
+
+func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (ed25519.PrivateKey, error) {
+
+	privateKeyBytes, err := bc.Database.RetrieveValidatorPrivateKey(validatorAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve private key for validator %s: %v", validatorAddress, err)
+	}
+
+	if len(privateKeyBytes) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("invalid private key size for validator %s", validatorAddress)
+	}
+
+	return ed25519.PrivateKey(privateKeyBytes), nil
 }
 
 func (bc *Blockchain) TransferFunds(from, to string, amount int64) error {
@@ -1295,75 +1398,29 @@ func GenerateValidatorAddress() (string, error) {
 }
 
 func (bc *Blockchain) GenerateAndStoreValidatorKey() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	done := make(chan struct {
-		address string
-		err     error
-	})
-
-	go func() {
-		log.Println("Starting to generate validator key")
-		address, err := GenerateValidatorAddress()
-		if err != nil {
-			log.Printf("Failed to generate validator address: %v", err)
-			done <- struct {
-				address string
-				err     error
-			}{"", fmt.Errorf("failed to generate validator address: %v", err)}
-			return
-		}
-		log.Printf("Generated validator address: %s", address)
-
-		pub, priv, err := ed25519.GenerateKey(nil)
-		if err != nil {
-			log.Printf("Failed to generate key pair: %v", err)
-			done <- struct {
-				address string
-				err     error
-			}{"", fmt.Errorf("failed to generate key pair: %v", err)}
-			return
-		}
-		log.Println("Generated ed25519 key pair")
-
-		pubKeyBase64 := base64.StdEncoding.EncodeToString(pub)
-		log.Println("Attempting to register validator")
-
-		err = bc.RegisterValidator(address, pubKeyBase64, true)
-		if err != nil {
-			log.Printf("Failed to register validator: %v", err)
-			done <- struct {
-				address string
-				err     error
-			}{"", fmt.Errorf("failed to register validator: %v", err)}
-			return
-		}
-		log.Printf("Validator registered: %s", address)
-
-		err = bc.StoreValidatorPrivateKey(address, priv)
-		if err != nil {
-			log.Printf("Failed to store validator private key: %v", err)
-			done <- struct {
-				address string
-				err     error
-			}{"", fmt.Errorf("failed to store validator private key: %v", err)}
-			return
-		}
-		log.Printf("Stored private key for validator %s", address)
-
-		done <- struct {
-			address string
-			err     error
-		}{address, nil}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return "", fmt.Errorf("operation timed out after 30 seconds")
-	case result := <-done:
-		return result.address, result.err
+	address, err := GenerateValidatorAddress()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate validator address: %v", err)
 	}
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate key pair: %v", err)
+	}
+
+	pubKeyBase64 := base64.StdEncoding.EncodeToString(pub)
+
+	err = bc.RegisterValidator(address, pubKeyBase64, true)
+	if err != nil {
+		return "", fmt.Errorf("failed to register validator: %v", err)
+	}
+
+	err = bc.StoreValidatorPrivateKey(address, priv)
+	if err != nil {
+		return "", fmt.Errorf("failed to store validator private key: %v", err)
+	}
+
+	return address, nil
 }
 
 // For generating multiple Validator Keys if necessary
@@ -1405,7 +1462,7 @@ func (bc *Blockchain) IsActiveValidator(address string) bool {
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.
 // If the timestamp is 0, the current system time is used as the block's timestamp.
-func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash string, optionalTimestamp ...int64) (bool, error) {
+func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
@@ -1417,10 +1474,10 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 	}
 
 	// Handle potential forks.
-	if len(bc.Blocks) > 0 && prevHash != bc.Blocks[len(bc.Blocks)-1].Hash {
+	if len(bc.Blocks) > 0 && !bytes.Equal(prevHash, bc.Blocks[len(bc.Blocks)-1].Hash) {
 		var selectedFork *Fork
 		for _, fork := range bc.Forks {
-			if fork.Blocks[len(fork.Blocks)-1].Hash == prevHash {
+			if bytes.Equal(fork.Blocks[len(fork.Blocks)-1].Hash, prevHash) {
 				selectedFork = fork
 				break
 			}
@@ -1522,12 +1579,17 @@ func (bc *Blockchain) CheckChainIntegrity() bool {
 	for i := 1; i < len(bc.Blocks); i++ {
 		prevBlock := bc.Blocks[i-1]
 		currentBlock := bc.Blocks[i]
-		if currentBlock.PrevHash != prevBlock.Hash {
-			fmt.Println("Invalid previous hash in block:", currentBlock.Index)
+
+		if !bytes.Equal(currentBlock.PrevHash, prevBlock.Hash) {
+			fmt.Printf("Invalid previous hash in block %d. Expected %x, got %x\n",
+				currentBlock.Index, prevBlock.Hash, currentBlock.PrevHash)
 			return false
 		}
-		if currentBlock.Hash != currentBlock.ComputeHash() {
-			fmt.Println("Invalid hash in block:", currentBlock.Index)
+
+		computedHash := currentBlock.ComputeHash()
+		if !bytes.Equal(currentBlock.Hash, computedHash) {
+			fmt.Printf("Invalid hash in block %d. Expected %x, got %x\n",
+				currentBlock.Index, computedHash, currentBlock.Hash)
 			return false
 		}
 	}

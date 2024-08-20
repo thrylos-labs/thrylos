@@ -27,6 +27,8 @@ const (
 	BlockchainService_GetBalance_FullMethodName             = "/thrylos.BlockchainService/GetBalance"
 	BlockchainService_GetStats_FullMethodName               = "/thrylos.BlockchainService/GetStats"
 	BlockchainService_GetPendingTransactions_FullMethodName = "/thrylos.BlockchainService/GetPendingTransactions"
+	BlockchainService_GetBlockByHash_FullMethodName         = "/thrylos.BlockchainService/GetBlockByHash"
+	BlockchainService_GetBlockByIndex_FullMethodName        = "/thrylos.BlockchainService/GetBlockByIndex"
 )
 
 // BlockchainServiceClient is the client API for BlockchainService service.
@@ -41,6 +43,8 @@ type BlockchainServiceClient interface {
 	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*BalanceResponse, error)
 	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*StatsResponse, error)
 	GetPendingTransactions(ctx context.Context, in *GetPendingTransactionsRequest, opts ...grpc.CallOption) (*PendingTransactionsResponse, error)
+	GetBlockByHash(ctx context.Context, in *GetBlockByHashRequest, opts ...grpc.CallOption) (*BlockResponse, error)
+	GetBlockByIndex(ctx context.Context, in *GetBlockByIndexRequest, opts ...grpc.CallOption) (*BlockResponse, error)
 }
 
 type blockchainServiceClient struct {
@@ -131,6 +135,26 @@ func (c *blockchainServiceClient) GetPendingTransactions(ctx context.Context, in
 	return out, nil
 }
 
+func (c *blockchainServiceClient) GetBlockByHash(ctx context.Context, in *GetBlockByHashRequest, opts ...grpc.CallOption) (*BlockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BlockResponse)
+	err := c.cc.Invoke(ctx, BlockchainService_GetBlockByHash_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *blockchainServiceClient) GetBlockByIndex(ctx context.Context, in *GetBlockByIndexRequest, opts ...grpc.CallOption) (*BlockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BlockResponse)
+	err := c.cc.Invoke(ctx, BlockchainService_GetBlockByIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BlockchainServiceServer is the server API for BlockchainService service.
 // All implementations must embed UnimplementedBlockchainServiceServer
 // for forward compatibility.
@@ -143,6 +167,8 @@ type BlockchainServiceServer interface {
 	GetBalance(context.Context, *GetBalanceRequest) (*BalanceResponse, error)
 	GetStats(context.Context, *GetStatsRequest) (*StatsResponse, error)
 	GetPendingTransactions(context.Context, *GetPendingTransactionsRequest) (*PendingTransactionsResponse, error)
+	GetBlockByHash(context.Context, *GetBlockByHashRequest) (*BlockResponse, error)
+	GetBlockByIndex(context.Context, *GetBlockByIndexRequest) (*BlockResponse, error)
 	mustEmbedUnimplementedBlockchainServiceServer()
 }
 
@@ -176,6 +202,12 @@ func (UnimplementedBlockchainServiceServer) GetStats(context.Context, *GetStatsR
 }
 func (UnimplementedBlockchainServiceServer) GetPendingTransactions(context.Context, *GetPendingTransactionsRequest) (*PendingTransactionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPendingTransactions not implemented")
+}
+func (UnimplementedBlockchainServiceServer) GetBlockByHash(context.Context, *GetBlockByHashRequest) (*BlockResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBlockByHash not implemented")
+}
+func (UnimplementedBlockchainServiceServer) GetBlockByIndex(context.Context, *GetBlockByIndexRequest) (*BlockResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBlockByIndex not implemented")
 }
 func (UnimplementedBlockchainServiceServer) mustEmbedUnimplementedBlockchainServiceServer() {}
 func (UnimplementedBlockchainServiceServer) testEmbeddedByValue()                           {}
@@ -342,6 +374,42 @@ func _BlockchainService_GetPendingTransactions_Handler(srv interface{}, ctx cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BlockchainService_GetBlockByHash_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBlockByHashRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BlockchainServiceServer).GetBlockByHash(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BlockchainService_GetBlockByHash_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BlockchainServiceServer).GetBlockByHash(ctx, req.(*GetBlockByHashRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BlockchainService_GetBlockByIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBlockByIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BlockchainServiceServer).GetBlockByIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BlockchainService_GetBlockByIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BlockchainServiceServer).GetBlockByIndex(ctx, req.(*GetBlockByIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BlockchainService_ServiceDesc is the grpc.ServiceDesc for BlockchainService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -380,6 +448,14 @@ var BlockchainService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPendingTransactions",
 			Handler:    _BlockchainService_GetPendingTransactions_Handler,
+		},
+		{
+			MethodName: "GetBlockByHash",
+			Handler:    _BlockchainService_GetBlockByHash_Handler,
+		},
+		{
+			MethodName: "GetBlockByIndex",
+			Handler:    _BlockchainService_GetBlockByIndex_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

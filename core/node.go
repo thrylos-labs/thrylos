@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -34,7 +35,7 @@ import (
 // the validator's address, and the stake the validator had at the time of voting. This is used in consensus mechanisms
 // that involve staking and voting for block validity.
 type Vote struct {
-	BlockHash string // Hash of the block that is being voted for.
+	BlockHash []byte // Hash of the block that is being voted for.
 	Validator string // Address of the validator casting the vote.
 	Stake     int64  // Stake amount of the validator at the time of voting.
 }
@@ -169,12 +170,15 @@ func (node *Node) VoteForBlock(block *Block) {
 }
 
 // HasBlock checks whether a block with the specified hash exists in the node's blockchain.
-func (n *Node) HasBlock(blockHash string) bool {
+func (n *Node) HasBlock(blockHash []byte) bool {
+	log.Printf("Searching for block with hash: %s", hex.EncodeToString(blockHash))
 	for _, block := range n.Blockchain.Blocks {
-		if block.Hash == blockHash {
+		if bytes.Equal(block.Hash, blockHash) {
+			log.Printf("Block found: %s", hex.EncodeToString(block.Hash))
 			return true
 		}
 	}
+	log.Println("Block not found")
 	return false
 }
 
@@ -670,15 +674,29 @@ func (node *Node) CountVotes() {
 	voteStakes := make(map[string]int64)
 
 	for _, vote := range node.Votes {
-		voteStakes[vote.BlockHash] += vote.Stake
-		if voteStakes[vote.BlockHash] >= majorityStake {
+		// Convert []byte to string for map key
+		hashStr := hex.EncodeToString(vote.BlockHash)
+		voteStakes[hashStr] += vote.Stake
+		if voteStakes[hashStr] >= majorityStake {
 			// This block has a majority stake vote
-			// Add it to the blockchain and broadcast it
-			var majorityBlock *Block // Assume you find this block somehow
-			// node.blockchain.AddBlock( /* appropriate arguments */ )
-			node.BroadcastBlock(majorityBlock)
-			node.Votes = []Vote{} // Clear votes
-			break
+			// Find the block with this hash
+			var majorityBlock *Block
+			for _, block := range node.Blockchain.Blocks {
+				if bytes.Equal(block.Hash, vote.BlockHash) {
+					majorityBlock = block
+					break
+				}
+			}
+
+			if majorityBlock != nil {
+				// Add it to the blockchain and broadcast it
+				// node.Blockchain.AddBlock(majorityBlock)
+				node.BroadcastBlock(majorityBlock)
+				node.Votes = []Vote{} // Clear votes
+				break
+			} else {
+				log.Printf("Majority block with hash %x not found", vote.BlockHash)
+			}
 		}
 	}
 }
@@ -760,7 +778,7 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
 	log.Printf("Transaction %s added to pending pool. Total pending: %d", tx.Id, len(node.Blockchain.PendingTransactions))
 
-	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", ""); err != nil {
+	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", nil); err != nil {
 		log.Printf("Error updating transaction status: %v", err)
 	}
 

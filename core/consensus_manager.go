@@ -89,6 +89,24 @@ func (cm *ConsensusManager) ValidateBlock(block *Block) bool {
 	}
 	log.Printf("Validator %s confirmed as active", block.Validator)
 
+	// Verify block signature
+	publicKey, err := cm.Blockchain.GetValidatorPublicKey(block.Validator)
+	if err != nil {
+		log.Printf("Failed to get validator public key: %v", err)
+		return false
+	}
+
+	blockData, err := block.SerializeForSigning()
+	if err != nil {
+		log.Printf("Failed to serialize block for signing: %v", err)
+		return false
+	}
+
+	if !ed25519.Verify(publicKey, blockData, block.Signature) {
+		log.Printf("Block signature verification failed for validator: %s", block.Validator)
+		return false
+	}
+
 	log.Printf("Block validation successful for validator: %s", block.Validator)
 	return true
 }

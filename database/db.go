@@ -70,6 +70,7 @@ func InitializeDatabase(dataDir string) (*badger.DB, error) {
 // NewBlockchainDB creates a new instance of BlockchainDB with the necessary initialization.
 // encryptionKey should be securely provided, e.g., from environment variables or a secure vault service.
 func NewBlockchainDB(db *badger.DB, encryptionKey []byte) *BlockchainDB {
+
 	return &BlockchainDB{
 		DB:            db,
 		utxos:         make(map[string]shared.UTXO),
@@ -399,6 +400,112 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 
 	log.Printf("Successfully retrieved public key for address %s", formattedAddress)
 	return ed25519.PublicKey(publicKeyData), nil
+}
+
+func (bdb *BlockchainDB) RetrieveValidatorPrivateKey(validatorAddress string) ([]byte, error) {
+	var encryptedPrivateKey []byte
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("validatorPrivKey-" + validatorAddress))
+		if err != nil {
+			return err
+		}
+		encryptedPrivateKey, err = item.ValueCopy(nil)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
+	}
+
+	// Decrypt the private key
+	privateKey, err := decrypt(encryptedPrivateKey, bdb.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
+	}
+
+	return privateKey, nil
+}
+
+// func (bdb *BlockchainDB) StoreValidatorPrivateKey(validatorAddress string, privateKey []byte) error {
+// 	// Encrypt the private key before storing
+// 	encryptedPrivateKey, err := encrypt(privateKey, bdb.encryptionKey)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to encrypt private key: %v", err)
+// 	}
+
+// 	return bdb.DB.Update(func(txn *badger.Txn) error {
+// 		err := txn.Set([]byte("validatorPrivKey-"+validatorAddress), encryptedPrivateKey)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to store encrypted private key: %v", err)
+// 		}
+// 		return nil
+// 	})
+// }
+
+// Encryption helper function
+func encrypt(data, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	return gcm.Seal(nonce, nonce, data, nil), nil
+}
+
+// Decryption helper function
+func decrypt(data, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
+func (bdb *BlockchainDB) RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error) {
+	var publicKey []byte
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		key := []byte("validatorPubKey-" + validatorAddress)
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+		publicKey, err = item.ValueCopy(nil)
+		return err
+	})
+
+	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, fmt.Errorf("public key not found for validator %s", validatorAddress)
+		}
+		return nil, fmt.Errorf("error retrieving public key for validator %s: %v", validatorAddress, err)
+	}
+
+	return publicKey, nil
+}
+
+func (bdb *BlockchainDB) StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error {
+	return bdb.DB.Update(func(txn *badger.Txn) error {
+		err := txn.Set([]byte("validatorPubKey-"+validatorAddress), publicKey)
+		if err != nil {
+			return fmt.Errorf("failed to store public key: %v", err)
+		}
+		return nil
+	})
 }
 
 func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey []byte) error {

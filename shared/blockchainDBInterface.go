@@ -40,4 +40,7 @@ type BlockchainDBInterface interface {
 	GetUTXOsForAddress(address string) ([]UTXO, error)
 	AddUTXO(utxo UTXO) error // Add this line
 	TransactionExists(txn *TransactionContext, txID string) (bool, error)
+	RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error)
+	StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error
+	RetrieveValidatorPrivateKey(validatorAddress string) ([]byte, error)
 }
