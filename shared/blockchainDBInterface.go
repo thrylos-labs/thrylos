@@ -42,5 +42,4 @@ type BlockchainDBInterface interface {
 	TransactionExists(txn *TransactionContext, txID string) (bool, error)
 	RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error)
 	StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error
-	RetrieveValidatorPrivateKey(validatorAddress string) ([]byte, error)
 }

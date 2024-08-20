@@ -402,28 +402,28 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 	return ed25519.PublicKey(publicKeyData), nil
 }
 
-func (bdb *BlockchainDB) RetrieveValidatorPrivateKey(validatorAddress string) ([]byte, error) {
-	var encryptedPrivateKey []byte
-	err := bdb.DB.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte("validatorPrivKey-" + validatorAddress))
-		if err != nil {
-			return err
-		}
-		encryptedPrivateKey, err = item.ValueCopy(nil)
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
-	}
+// func (bdb *BlockchainDB) RetrieveValidatorPrivateKey(validatorAddress string) ([]byte, error) {
+// 	var encryptedPrivateKey []byte
+// 	err := bdb.DB.View(func(txn *badger.Txn) error {
+// 		item, err := txn.Get([]byte("validatorPrivKey-" + validatorAddress))
+// 		if err != nil {
+// 			return err
+// 		}
+// 		encryptedPrivateKey, err = item.ValueCopy(nil)
+// 		return err
+// 	})
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
+// 	}
 
-	// Decrypt the private key
-	privateKey, err := decrypt(encryptedPrivateKey, bdb.encryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
-	}
+// 	// Decrypt the private key
+// 	privateKey, err := decrypt(encryptedPrivateKey, bdb.encryptionKey)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
+// 	}
 
-	return privateKey, nil
-}
+// 	return privateKey, nil
+// }
 
 // func (bdb *BlockchainDB) StoreValidatorPrivateKey(validatorAddress string, privateKey []byte) error {
 // 	// Encrypt the private key before storing
