@@ -1139,6 +1139,29 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		return fmt.Errorf("invalid transaction: %v", err)
 	}
 
+	// Mark input UTXOs as spent
+	for _, input := range tx.Inputs {
+		err := db.MarkUTXOAsSpent(txn, input)
+		if err != nil {
+			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
+		}
+	}
+
+	// Create new UTXOs for outputs
+	for i, output := range tx.Outputs {
+		utxo := UTXO{
+			TransactionID: tx.ID,
+			Index:         i,
+			Amount:        output.Amount,
+			OwnerAddress:  output.OwnerAddress,
+			IsSpent:       false,
+		}
+		err := db.AddNewUTXO(txn, utxo)
+		if err != nil {
+			return fmt.Errorf("failed to add new UTXO: %v", err)
+		}
+	}
+
 	// Serialize the transaction data to JSON
 	txJSON, err := json.Marshal(tx)
 	if err != nil {

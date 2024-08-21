@@ -61,7 +61,7 @@ type Node struct {
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
 	Mu                   sync.RWMutex
-	WebSocketConnections map[string]*websocket.Conn
+	WebSocketConnections map[string]*WebSocketConnection
 	WebSocketMutex       sync.RWMutex
 }
 
@@ -134,7 +134,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		PublicKeyMap:         make(map[string]ed25519.PublicKey), // Initialize the map
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
-		WebSocketConnections: make(map[string]*websocket.Conn),
+		WebSocketConnections: make(map[string]*WebSocketConnection),
 	}
 
 	if shard != nil {
@@ -505,86 +505,161 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+const (
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 60 * time.Second
+
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+
+	// Maximum message size allowed from peer.
+	maxMessageSize = 512
+)
+
+type WebSocketConnection struct {
+	ws   *websocket.Conn
+	send chan []byte
+}
+
 func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade to WebSocket: %v", err)
 		return
 	}
-	defer ws.Close()
 
 	address := r.URL.Query().Get("address")
 	if address == "" {
 		log.Println("Blockchain address is required")
 		ws.WriteMessage(websocket.TextMessage, []byte("Blockchain address is required"))
+		ws.Close()
 		return
 	}
 
-	// Store the WebSocket connection
+	conn := &WebSocketConnection{ws: ws, send: make(chan []byte, 256)}
+
 	node.WebSocketMutex.Lock()
-	node.WebSocketConnections[address] = ws
+	node.WebSocketConnections[address] = conn
 	node.WebSocketMutex.Unlock()
 
-	// Remove the connection when this function returns
+	log.Printf("WebSocket connection established for address: %s", address)
+
+	go node.writePump(conn, address)
+	go node.readPump(conn, address)
+
+	// Send initial balance update
+	if err := node.SendBalanceUpdate(address); err != nil {
+		log.Printf("Error sending initial balance update for address %s: %v", address, err)
+	}
+}
+
+func (node *Node) readPump(conn *WebSocketConnection, address string) {
 	defer func() {
 		node.WebSocketMutex.Lock()
 		delete(node.WebSocketConnections, address)
 		node.WebSocketMutex.Unlock()
+		conn.ws.Close()
+		log.Printf("WebSocket connection closed for address: %s", address)
 	}()
 
-	log.Printf("WebSocket connection established for address: %s", address)
+	conn.ws.SetReadLimit(maxMessageSize)
+	conn.ws.SetReadDeadline(time.Now().Add(pongWait))
+	conn.ws.SetPongHandler(func(string) error {
+		conn.ws.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 
-	ticker := time.NewTicker(5 * time.Second) // Adjust the interval as needed
-	defer ticker.Stop()
-
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			_, _, err := ws.ReadMessage()
-			if err != nil {
-				log.Printf("WebSocket read error: %v", err)
-				return
+	for {
+		_, _, err := conn.ws.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket read error for address %s: %v", address, err)
 			}
+			break
 		}
+	}
+}
+
+func (node *Node) writePump(conn *WebSocketConnection, address string) {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		conn.ws.Close()
 	}()
 
 	for {
 		select {
-		case <-done:
-			log.Printf("WebSocket connection closed for address: %s", address)
-			return
-		case <-ticker.C:
-			balanceNano, err := node.GetBalance(address)
-			if err != nil {
-				log.Printf("Error fetching balance: %v", err)
-				if err := ws.WriteMessage(websocket.TextMessage, []byte("Error fetching balance")); err != nil {
-					log.Printf("Error sending message: %v", err)
-					return
-				}
-				continue
-			}
-
-			// Convert nano balance to regular THRYLOS balance
-			balance := float64(balanceNano) / 1e7
-
-			// Create a response structure with the relevant balance fields
-			response := struct {
-				BlockchainAddress string  `json:"blockchainAddress"`
-				Balance           float64 `json:"balance"` // Balance in THRYLOS
-			}{
-				BlockchainAddress: address,
-				Balance:           balance,
-			}
-
-			// Send the response as JSON over the WebSocket
-			if err := ws.WriteJSON(response); err != nil {
-				log.Printf("Error sending balance update: %v", err)
+		case message, ok := <-conn.send:
+			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				conn.ws.WriteMessage(websocket.CloseMessage, []byte{})
 				return
+			}
+
+			w, err := conn.ws.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+			// Send balance update
+			if err := node.SendBalanceUpdate(address); err != nil {
+				log.Printf("Error sending periodic balance update for address %s: %v", address, err)
 			}
 		}
 	}
+}
+
+func (node *Node) SendBalanceUpdate(address string) error {
+	balance, err := node.GetBalance(address)
+	if err != nil {
+		log.Printf("Failed to get balance for address %s: %v", address, err)
+		return err
+	}
+
+	response := struct {
+		BlockchainAddress string  `json:"blockchainAddress"`
+		Balance           float64 `json:"balance"`
+	}{
+		BlockchainAddress: address,
+		Balance:           float64(balance) / 1e7,
+	}
+
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal balance update for address %s: %v", address, err)
+		return fmt.Errorf("failed to marshal balance update: %v", err)
+	}
+
+	node.WebSocketMutex.Lock()
+	conn, ok := node.WebSocketConnections[address]
+	node.WebSocketMutex.Unlock()
+
+	if !ok {
+		log.Printf("No WebSocket connection found for address: %s", address)
+		return fmt.Errorf("no WebSocket connection found for address: %s", address)
+	}
+
+	select {
+	case conn.send <- jsonResponse:
+		log.Printf("Balance update sent successfully for address %s: %f", address, response.Balance)
+	default:
+		log.Printf("WebSocket send buffer full for address %s", address)
+		return fmt.Errorf("WebSocket send buffer full for address %s", address)
+	}
+
+	return nil
 }
 
 func isValidBech32Address(address string) bool {
@@ -1284,7 +1359,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	// Send immediate balance update after successful transaction processing
 	if err := n.SendBalanceUpdate(transactionData.Sender); err != nil {
-		log.Printf("Failed to send immediate balance update: %v", err)
+		log.Printf("Failed to send immediate balance update for sender: %v", err)
 		// Note: We're not returning here as the transaction was successful,
 		// and this is just an additional update that failed
 	}
@@ -1299,39 +1374,6 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
 }
 
-func (node *Node) SendBalanceUpdate(address string) error {
-	balance, err := node.GetBalance(address)
-	if err != nil {
-		return err
-	}
-
-	response := struct {
-		BlockchainAddress string  `json:"blockchainAddress"`
-		Balance           float64 `json:"balance"`
-	}{
-		BlockchainAddress: address,
-		Balance:           float64(balance) / 1e7,
-	}
-
-	// Convert the response to JSON
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		return fmt.Errorf("failed to marshal balance update: %v", err)
-	}
-
-	// Find the WebSocket connection for this address and send the update
-	// You'll need to modify this part based on how you're storing WebSocket connections
-	if ws, ok := node.WebSocketConnections[address]; ok {
-		err := ws.WriteMessage(websocket.TextMessage, jsonResponse)
-		if err != nil {
-			return fmt.Errorf("failed to send balance update: %v", err)
-		}
-	} else {
-		return fmt.Errorf("no WebSocket connection found for address: %s", address)
-	}
-
-	return nil
-}
 func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)

@@ -931,8 +931,11 @@ func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner st
 
 // UpdateUTXOs updates the UTXOs in the database, marking the inputs as spent and adding new outputs.
 func (bdb *BlockchainDB) UpdateUTXOs(inputs []shared.UTXO, outputs []shared.UTXO) error {
-	txn := bdb.DB.NewTransaction(true)
-	defer txn.Discard()
+	badgerTxn := bdb.DB.NewTransaction(true)
+	defer badgerTxn.Discard()
+
+	// Create a TransactionContext wrapper
+	txn := &shared.TransactionContext{Txn: badgerTxn}
 
 	for _, input := range inputs {
 		err := bdb.MarkUTXOAsSpent(txn, input)
@@ -942,34 +945,33 @@ func (bdb *BlockchainDB) UpdateUTXOs(inputs []shared.UTXO, outputs []shared.UTXO
 	}
 
 	for _, output := range outputs {
-		err := bdb.addNewUTXO(txn, output)
+		err := bdb.AddNewUTXO(txn, output)
 		if err != nil {
 			return fmt.Errorf("error adding new UTXO: %w", err)
 		}
 	}
 
-	return txn.Commit()
+	return badgerTxn.Commit()
 }
 
 // MarkUTXOAsSpent marks a UTXO as spent in the database.
-func (bdb *BlockchainDB) MarkUTXOAsSpent(txn *badger.Txn, utxo shared.UTXO) error {
+func (bdb *BlockchainDB) MarkUTXOAsSpent(txn *shared.TransactionContext, utxo shared.UTXO) error {
 	key := []byte(fmt.Sprintf("utxo-%s-%d", utxo.TransactionID, utxo.Index))
 	utxo.IsSpent = true
 	utxoData, err := json.Marshal(utxo)
 	if err != nil {
 		return err
 	}
-	return txn.Set(key, utxoData)
+	return txn.Txn.Set(key, utxoData)
 }
 
-// addNewUTXO adds a new UTXO to the database.
-func (bdb *BlockchainDB) addNewUTXO(txn *badger.Txn, utxo shared.UTXO) error {
+func (bdb *BlockchainDB) AddNewUTXO(txn *shared.TransactionContext, utxo shared.UTXO) error {
 	key := []byte(fmt.Sprintf("utxo-%s-%d", utxo.TransactionID, utxo.Index))
 	utxoData, err := json.Marshal(utxo)
 	if err != nil {
 		return err
 	}
-	return txn.Set(key, utxoData)
+	return txn.Txn.Set(key, utxoData)
 }
 
 // GetUTXOs retrieves all UTXOs for a specific address.
