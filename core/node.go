@@ -588,6 +588,7 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 	defer func() {
 		ticker.Stop()
 		conn.ws.Close()
+		node.removeWebSocketConnection(address)
 	}()
 
 	for {
@@ -601,24 +602,39 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 
 			w, err := conn.ws.NextWriter(websocket.TextMessage)
 			if err != nil {
+				log.Printf("Error getting next writer for address %s: %v", address, err)
 				return
 			}
-			w.Write(message)
+
+			if _, err := w.Write(message); err != nil {
+				log.Printf("Error writing message for address %s: %v", address, err)
+				return
+			}
 
 			if err := w.Close(); err != nil {
+				log.Printf("Error closing writer for address %s: %v", address, err)
 				return
 			}
+
 		case <-ticker.C:
 			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("Error sending ping message for address %s: %v", address, err)
 				return
 			}
-			// Send balance update
+
 			if err := node.SendBalanceUpdate(address); err != nil {
 				log.Printf("Error sending periodic balance update for address %s: %v", address, err)
 			}
 		}
 	}
+}
+
+func (node *Node) removeWebSocketConnection(address string) {
+	node.WebSocketMutex.Lock()
+	defer node.WebSocketMutex.Unlock()
+	delete(node.WebSocketConnections, address)
+	log.Printf("Removed WebSocket connection for address: %s", address)
 }
 
 func (node *Node) SendBalanceUpdate(address string) error {

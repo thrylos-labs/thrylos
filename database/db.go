@@ -765,6 +765,18 @@ func (bdb *BlockchainDB) GetAllUTXOs() (map[string][]shared.UTXO, error) {
 		}
 		return nil
 	})
+
+	// Remove spent UTXOs from the result
+	for address, utxos := range allUTXOs {
+		var unspentUTXOs []shared.UTXO
+		for _, utxo := range utxos {
+			if !utxo.IsSpent {
+				unspentUTXOs = append(unspentUTXOs, utxo)
+			}
+		}
+		allUTXOs[address] = unspentUTXOs
+	}
+
 	return allUTXOs, err
 }
 
