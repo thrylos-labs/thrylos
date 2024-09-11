@@ -1139,12 +1139,40 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		return fmt.Errorf("invalid transaction: %v", err)
 	}
 
+	// Get all UTXOs (this should be optimized in a real-world scenario)
+	allUTXOs, err := db.GetAllUTXOs()
+	if err != nil {
+		return fmt.Errorf("failed to get all UTXOs: %v", err)
+	}
+
+	// Track balance changes and log initial balances
+	affectedAddresses := make(map[string]bool)
+	for _, input := range tx.Inputs {
+		affectedAddresses[input.OwnerAddress] = true
+	}
+	for _, output := range tx.Outputs {
+		affectedAddresses[output.OwnerAddress] = true
+	}
+
+	initialBalances := make(map[string]int64)
+	for address := range affectedAddresses {
+		balance, err := db.GetBalance(address, allUTXOs)
+		if err != nil {
+			return fmt.Errorf("failed to get initial balance for %s: %v", address, err)
+		}
+		initialBalances[address] = balance
+		log.Printf("Initial balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, balance, float64(balance)/1e7)
+	}
+
 	// Mark input UTXOs as spent
 	for _, input := range tx.Inputs {
 		err := db.MarkUTXOAsSpent(txn, input)
 		if err != nil {
 			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
 		}
+		log.Printf("Marked UTXO as spent for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			input.OwnerAddress, input.Amount, float64(input.Amount)/1e7)
 	}
 
 	// Create new UTXOs for outputs
@@ -1160,18 +1188,32 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		if err != nil {
 			return fmt.Errorf("failed to add new UTXO: %v", err)
 		}
+		log.Printf("Added new UTXO for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			output.OwnerAddress, output.Amount, float64(output.Amount)/1e7)
 	}
 
-	// Serialize the transaction data to JSON
+	// Get updated UTXOs and log final balances
+	updatedUTXOs, err := db.GetAllUTXOs()
+	if err != nil {
+		return fmt.Errorf("failed to get updated UTXOs: %v", err)
+	}
+
+	for address := range affectedAddresses {
+		newBalance, err := db.GetBalance(address, updatedUTXOs)
+		if err != nil {
+			return fmt.Errorf("failed to get final balance for %s: %v", address, err)
+		}
+		change := newBalance - initialBalances[address]
+		log.Printf("Final balance for %s: %d nanoTHRYLOS (%.7f THRYLOS), Change: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, newBalance, float64(newBalance)/1e7, change, float64(change)/1e7)
+	}
+
+	// Serialize and store the transaction
 	txJSON, err := json.Marshal(tx)
 	if err != nil {
 		return fmt.Errorf("error serializing transaction: %v", err)
 	}
-
-	// Generate a unique key for this transaction
 	key := []byte("transaction-" + tx.ID)
-
-	// Store the serialized transaction data
 	if err := db.SetTransaction(txn, key, txJSON); err != nil {
 		return fmt.Errorf("error storing transaction: %v", err)
 	}

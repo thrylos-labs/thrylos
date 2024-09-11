@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"math"
 
 	stdEd25519 "crypto/ed25519"
 	"crypto/rand"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/ed25519"
 	xEd25519 "golang.org/x/crypto/ed25519"
 
@@ -458,36 +460,46 @@ func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
 	return bc.Database.GetUTXOsForUser(address)
 }
 
-func (bc *Blockchain) GetBalance(address string) (int, error) {
-	var balance int
-	spentOutputs := make(map[string]bool)
+func (bc *Blockchain) GetBalance(address string) (decimal.Decimal, error) {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
 
-	for _, block := range bc.Blocks {
-		for _, tx := range block.Transactions {
-			for i, output := range tx.Outputs {
-				outputKey := fmt.Sprintf("%s:%d", tx.Id, i)
-				if output.OwnerAddress == address {
-					if !spentOutputs[outputKey] {
-						balance += int(output.Amount)
-						log.Printf("Added to balance: %d from output %s", output.Amount, outputKey)
-					}
-				}
-			}
+	balance := decimal.NewFromInt(0)
+	utxos, exists := bc.UTXOs[address]
+	if !exists {
+		return balance, nil
+	}
 
-			for _, input := range tx.Inputs {
-				if input.OwnerAddress == address {
-					spentKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
-					if !spentOutputs[spentKey] {
-						spentOutputs[spentKey] = true
-						balance -= int(input.Amount)
-						log.Printf("Subtracted from balance: %d from input %s", input.Amount, spentKey)
-					}
-				}
+	for _, utxo := range utxos {
+		if !utxo.IsSpent {
+			amount := decimal.NewFromInt(utxo.Amount)
+			balance = balance.Add(amount)
+
+			if balance.GreaterThan(decimal.NewFromInt(math.MaxInt64)) {
+				return decimal.Decimal{}, errors.New("balance overflow")
 			}
 		}
 	}
-	log.Printf("Final balance for %s: %d", address, balance)
+
+	if balance.LessThan(decimal.Zero) {
+		return decimal.Decimal{}, errors.New("negative balance detected")
+	}
+
+	thrylosBalance := balance.Div(decimal.NewFromInt(1e7))
+	log.Printf("Balance for %s: %s nanoTHRYLOS (%.7f THRYLOS)",
+		address, balance.String(), thrylosBalance)
+
 	return balance, nil
+}
+
+// ConvertToThrylos converts nanoTHRYLOS to THRYLOS
+func ConvertToThrylos(nanoThrylos decimal.Decimal) decimal.Decimal {
+	return nanoThrylos.Div(decimal.NewFromInt(1e7))
+}
+
+// ConvertToNanoThrylos converts THRYLOS to nanoTHRYLOS
+func ConvertToNanoThrylos(thrylos decimal.Decimal) decimal.Decimal {
+	return thrylos.Mul(decimal.NewFromInt(1e7))
 }
 
 func (bc *Blockchain) RegisterPublicKey(pubKey string) error {

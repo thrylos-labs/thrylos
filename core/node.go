@@ -21,6 +21,7 @@ import (
 
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/shopspring/decimal"
 	"github.com/supabase-community/supabase-go"
 
 	"github.com/gorilla/mux"
@@ -473,20 +474,37 @@ func (node *Node) NetworkHealthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const NanoThrylosPerThrylos = 1e7
+
+func formatBalance(balanceNano int64) string {
+	balanceThrylos := float64(balanceNano) / NanoThrylosPerThrylos
+	return fmt.Sprintf("%d nanoTHRYLOS (%.7f THRYLOS)", balanceNano, balanceThrylos)
+}
+
+func ThrylosToNanoNode(thrylos float64) int64 {
+	return int64(thrylos * NanoThrylosPerThrylos)
+}
+
 func (node *Node) GetBalance(address string) (int64, error) {
-	utxos, err := node.Blockchain.GetAllUTXOs()
+	utxos, err := node.Blockchain.Database.GetUTXOsForAddress(address)
 	if err != nil {
-		log.Printf("Error fetching UTXOs: %v", err)
+		log.Printf("Error fetching UTXOs for address %s: %v", address, err)
 		return 0, err
 	}
 
-	balance, err := node.Blockchain.Database.GetBalance(address, utxos)
-	if err != nil {
-		log.Printf("Error calculating balance: %v", err)
-		return 0, err
+	balance := int64(0)
+	for _, utxo := range utxos {
+		if !utxo.IsSpent {
+			balance += utxo.Amount
+		}
 	}
 
-	log.Printf("Final balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)", address, balance, float64(balance)/1e7)
+	if balance < 0 {
+		return 0, fmt.Errorf("negative balance detected for address %s", address)
+	}
+
+	log.Printf("Final balance for %s: %s", address, formatBalance(balance))
+
 	return balance, nil
 }
 
@@ -585,6 +603,7 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 
 func (node *Node) writePump(conn *WebSocketConnection, address string) {
 	ticker := time.NewTicker(pingPeriod)
+	balanceUpdateTicker := time.NewTicker(5 * time.Minute) // Update balance every 5 minutes
 	defer func() {
 		ticker.Stop()
 		conn.ws.Close()
@@ -623,19 +642,21 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 				return
 			}
 
+		case <-balanceUpdateTicker.C:
 			if err := node.SendBalanceUpdate(address); err != nil {
 				log.Printf("Error sending periodic balance update for address %s: %v", address, err)
 			}
 		}
 	}
 }
-
 func (node *Node) removeWebSocketConnection(address string) {
 	node.WebSocketMutex.Lock()
 	defer node.WebSocketMutex.Unlock()
 	delete(node.WebSocketConnections, address)
 	log.Printf("Removed WebSocket connection for address: %s", address)
 }
+
+const NANO_THRYLOS_PER_THRYLOS = 1e7
 
 func (node *Node) SendBalanceUpdate(address string) error {
 	balance, err := node.GetBalance(address)
@@ -644,12 +665,16 @@ func (node *Node) SendBalanceUpdate(address string) error {
 		return err
 	}
 
+	balanceInThrylos := float64(balance) / NANO_THRYLOS_PER_THRYLOS
+
 	response := struct {
 		BlockchainAddress string  `json:"blockchainAddress"`
-		Balance           float64 `json:"balance"`
+		Balance           int64   `json:"balance"`
+		BalanceThrylos    float64 `json:"balanceThrylos"`
 	}{
 		BlockchainAddress: address,
-		Balance:           float64(balance) / 1e7,
+		Balance:           balance,
+		BalanceThrylos:    balanceInThrylos,
 	}
 
 	jsonResponse, err := json.Marshal(response)
@@ -669,7 +694,8 @@ func (node *Node) SendBalanceUpdate(address string) error {
 
 	select {
 	case conn.send <- jsonResponse:
-		log.Printf("Balance update sent successfully for address %s: %f", address, response.Balance)
+		log.Printf("Balance update sent successfully for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, response.Balance, response.BalanceThrylos)
 	default:
 		log.Printf("WebSocket send buffer full for address %s", address)
 		return fmt.Errorf("WebSocket send buffer full for address %s", address)
@@ -1179,7 +1205,7 @@ func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
 
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
-const MinTransactionAmount int64 = 1 // 1 THRYLOS (changed from 1000000 nanoTHRYLOS)
+const MinTransactionAmount int64 = 1 * NanoThrylosPerThrylos // 1 THRYLOS in nanoTHRYLOS
 
 func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	// Handle OPTIONS request
@@ -1309,6 +1335,32 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Convert all values to decimal for precise calculations
+	balanceDecimal := decimal.NewFromInt(balance)
+	totalOutputAmountNano := decimal.Zero
+	for _, output := range transactionData.Outputs {
+		totalOutputAmountNano = totalOutputAmountNano.Add(decimal.NewFromInt(int64(output.Amount)))
+	}
+
+	gasFeeNano := decimal.NewFromInt(int64(transactionData.GasFee))
+
+	// Calculate total cost in nanoTHRYLOS
+	totalCostNano := totalOutputAmountNano.Add(gasFeeNano)
+
+	// Check if balance is sufficient
+	if balanceDecimal.LessThan(totalCostNano) {
+		errorMsg := fmt.Sprintf("Insufficient balance. Required: %s nanoTHRYLOS (%.7f THRYLOS), Available: %s nanoTHRYLOS (%.7f THRYLOS)",
+			totalCostNano.String(), totalCostNano.Div(decimal.NewFromInt(NanoThrylosPerThrylos)).InexactFloat64(),
+			balanceDecimal.String(), balanceDecimal.Div(decimal.NewFromInt(NanoThrylosPerThrylos)).InexactFloat64())
+		log.Printf(errorMsg)
+		http.Error(w, errorMsg, http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Total Cost: %s nanoTHRYLOS (%.7f THRYLOS)",
+		totalCostNano.String(),
+		totalCostNano.Div(decimal.NewFromInt(NanoThrylosPerThrylos)).InexactFloat64())
 
 	// Estimate the gas
 	var gasEstimate int32
@@ -1736,7 +1788,7 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 
 	// Ensure there are sufficient funds in the genesis account
 	initialBalanceThrylos := 70.0 // 70 THRYLOS
-	initialBalanceNano := ThrylosTo(initialBalanceThrylos)
+	initialBalanceNano := ThrylosToNanoNode(initialBalanceThrylos)
 
 	currentBalanceNano, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
 	if !genesisExists || currentBalanceNano < initialBalanceNano {
@@ -1762,18 +1814,20 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Created initial UTXO for %s with amount %d", bech32Address, initialBalanceNano)
+	log.Printf("Created initial UTXO for %s with amount %d nanoTHRYLOS (%.7f THRYLOS)", bech32Address, initialBalanceNano, float64(initialBalanceNano)/NanoThrylosPerThrylos)
 	log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
 
 	response := struct {
 		PublicKey         string        `json:"publicKey"`
 		BlockchainAddress string        `json:"blockchainAddress"`
-		Balance           float64       `json:"balance"` // Balance in THRYLOS
+		Balance           int64         `json:"balance"`        // Balance in nanoTHRYLOS
+		BalanceThrylos    float64       `json:"balanceThrylos"` // Balance in THRYLOS
 		UTXOs             []shared.UTXO `json:"utxos"`
 	}{
 		PublicKey:         req.PublicKey,
 		BlockchainAddress: bech32Address,
-		Balance:           initialBalanceThrylos, // Balance in THRYLOS
+		Balance:           initialBalanceNano,
+		BalanceThrylos:    initialBalanceThrylos,
 		UTXOs:             []shared.UTXO{utxo},
 	}
 

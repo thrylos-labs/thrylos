@@ -220,18 +220,31 @@ func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
 // fetching of UTXOs from BadgerDB
 // GetUTXOsForAddress fetches UTXOs for a given address.
 func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
-	// Check if the BlockchainDB instance or the Badger DB is nil
-	if bdb == nil {
-		return nil, fmt.Errorf("BlockchainDB is not initialized")
-	}
-	if bdb.DB == nil {
-		return nil, fmt.Errorf("Badger DB is not initialized")
-	}
-
 	var utxos []shared.UTXO
 	err := bdb.DB.View(func(txn *badger.Txn) error {
-		return fetchUTXOs(txn, address, &utxos)
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+
+		prefix := []byte(fmt.Sprintf("utxo-%s-", address))
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var utxo shared.UTXO
+				if err := json.Unmarshal(val, &utxo); err != nil {
+					return err
+				}
+				if !utxo.IsSpent {
+					utxos = append(utxos, utxo)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+
 	return utxos, err
 }
 
@@ -644,9 +657,13 @@ func (bdb *BlockchainDB) GetBalance(address string, utxos map[string][]shared.UT
 	}
 	for _, utxo := range userUTXOs {
 		if !utxo.IsSpent {
-			balance += utxo.Amount * 1e7 // Convert THRYLOS to nanoTHRYLOS
+			balance += utxo.Amount // Assuming Amount is already in nanoTHRYLOS
+			log.Printf("Adding UTXO to balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+				address, utxo.Amount, float64(utxo.Amount)/1e7)
 		}
 	}
+	log.Printf("Final calculated balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+		address, balance, float64(balance)/1e7)
 	return balance, nil
 }
 
@@ -765,17 +782,6 @@ func (bdb *BlockchainDB) GetAllUTXOs() (map[string][]shared.UTXO, error) {
 		}
 		return nil
 	})
-
-	// Remove spent UTXOs from the result
-	for address, utxos := range allUTXOs {
-		var unspentUTXOs []shared.UTXO
-		for _, utxo := range utxos {
-			if !utxo.IsSpent {
-				unspentUTXOs = append(unspentUTXOs, utxo)
-			}
-		}
-		allUTXOs[address] = unspentUTXOs
-	}
 
 	return allUTXOs, err
 }
