@@ -371,7 +371,7 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 
 	var publicKeyData []byte
 	err = bdb.DB.View(func(txn *badger.Txn) error {
-		key := []byte("publicKey-" + formattedAddress)
+		key := []byte(validatorPublicKeyPrefix + formattedAddress)
 		log.Printf("Attempting to retrieve data for key: %s", string(key))
 
 		item, err := txn.Get(key)
@@ -381,21 +381,8 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 		}
 
 		return item.Value(func(val []byte) error {
-			log.Printf("Retrieved data from database for key %s: %s", string(key), string(val))
-
-			var data map[string][]byte
-			if err := json.Unmarshal(val, &data); err != nil {
-				log.Printf("Error unmarshaling data for key %s: %v", string(key), err)
-				return err
-			}
-
-			publicKeyData = data["ed25519PublicKey"]
-			if publicKeyData == nil {
-				log.Printf("Public key data not found in unmarshaled data for key %s", string(key))
-				return fmt.Errorf("public key data not found")
-			}
-			log.Printf("Successfully extracted public key data for key %s", string(key))
-
+			publicKeyData = val
+			log.Printf("Retrieved public key data for key %s", string(key))
 			return nil
 		})
 	})
@@ -415,44 +402,47 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 	return ed25519.PublicKey(publicKeyData), nil
 }
 
-// func (bdb *BlockchainDB) RetrieveValidatorPrivateKey(validatorAddress string) ([]byte, error) {
-// 	var encryptedPrivateKey []byte
-// 	err := bdb.DB.View(func(txn *badger.Txn) error {
-// 		item, err := txn.Get([]byte("validatorPrivKey-" + validatorAddress))
-// 		if err != nil {
-// 			return err
-// 		}
-// 		encryptedPrivateKey, err = item.ValueCopy(nil)
-// 		return err
-// 	})
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to retrieve encrypted private key: %v", err)
-// 	}
+func (bdb *BlockchainDB) GetAllValidatorPublicKeys() (map[string]ed25519.PublicKey, error) {
+	log.Println("Retrieving all validator public keys")
 
-// 	// Decrypt the private key
-// 	privateKey, err := decrypt(encryptedPrivateKey, bdb.encryptionKey)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to decrypt private key: %v", err)
-// 	}
+	publicKeys := make(map[string]ed25519.PublicKey)
 
-// 	return privateKey, nil
-// }
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchSize = 10
+		it := txn.NewIterator(opts)
+		defer it.Close()
 
-// func (bdb *BlockchainDB) StoreValidatorPrivateKey(validatorAddress string, privateKey []byte) error {
-// 	// Encrypt the private key before storing
-// 	encryptedPrivateKey, err := encrypt(privateKey, bdb.encryptionKey)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to encrypt private key: %v", err)
-// 	}
+		prefix := []byte(validatorPublicKeyPrefix)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			key := item.Key()
 
-// 	return bdb.DB.Update(func(txn *badger.Txn) error {
-// 		err := txn.Set([]byte("validatorPrivKey-"+validatorAddress), encryptedPrivateKey)
-// 		if err != nil {
-// 			return fmt.Errorf("failed to store encrypted private key: %v", err)
-// 		}
-// 		return nil
-// 	})
-// }
+			err := item.Value(func(val []byte) error {
+				if len(val) != ed25519.PublicKeySize {
+					return fmt.Errorf("invalid public key size for key %s", string(key))
+				}
+
+				address := string(key[len(prefix):]) // Remove prefix to get address
+				publicKeys[address] = ed25519.PublicKey(val)
+				return nil
+			})
+
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("Error retrieving all validator public keys: %v", err)
+		return nil, err
+	}
+
+	log.Printf("Successfully retrieved %d validator public keys", len(publicKeys))
+	return publicKeys, nil
+}
 
 // Encryption helper function
 func encrypt(data, key []byte) ([]byte, error) {
@@ -511,12 +501,20 @@ func (bdb *BlockchainDB) RetrieveValidatorPublicKey(validatorAddress string) ([]
 	return publicKey, nil
 }
 
+const validatorPublicKeyPrefix = "validatorPubKey-"
+
 func (bdb *BlockchainDB) StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error {
+	if !strings.HasPrefix(validatorAddress, "tl1") {
+		return fmt.Errorf("invalid address format: must start with 'tl1'")
+	}
+
 	return bdb.DB.Update(func(txn *badger.Txn) error {
-		err := txn.Set([]byte("validatorPubKey-"+validatorAddress), publicKey)
+		key := []byte(validatorPublicKeyPrefix + validatorAddress)
+		err := txn.Set(key, publicKey)
 		if err != nil {
 			return fmt.Errorf("failed to store public key: %v", err)
 		}
+		log.Printf("Stored public key for validator: %s", validatorAddress)
 		return nil
 	})
 }

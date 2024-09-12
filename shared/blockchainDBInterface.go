@@ -44,4 +44,5 @@ type BlockchainDBInterface interface {
 	StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error
 	MarkUTXOAsSpent(txn *TransactionContext, utxo UTXO) error
 	AddNewUTXO(txn *TransactionContext, utxo UTXO) error
+	GetAllValidatorPublicKeys() (map[string]ed25519.PublicKey, error)
 }

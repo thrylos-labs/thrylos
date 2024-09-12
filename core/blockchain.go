@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcutil/bech32"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/supabase-community/supabase-go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/database"
@@ -168,6 +168,34 @@ const (
 	MinStakePercentage = 0.1         // 0.1% of total supply as minimum stake
 )
 
+func ConvertToBech32Address(address string) (string, error) {
+	// Decode the hexadecimal address to bytes
+	addressBytes, err := hex.DecodeString(address)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode hexadecimal address: %v", err)
+	}
+
+	// Take the first 20 bytes (40 characters of the hex string)
+	// This is similar to how Ethereum addresses are derived from public keys
+	if len(addressBytes) > 20 {
+		addressBytes = addressBytes[:20]
+	}
+
+	// Convert to 5-bit groups for Bech32 encoding
+	converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert bits: %v", err)
+	}
+
+	// Encode to Bech32
+	bech32Address, err := bech32.Encode("tl1", converted)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
+	}
+
+	return bech32Address, nil
+}
+
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
 func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMode bool, supabaseClient *supabase.Client) (*Blockchain, shared.BlockchainDBInterface, error) {
@@ -189,12 +217,37 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 	// Initialize Stakeholders map with the genesis account
 	totalSupply := big.NewInt(120_000_000) // 120 million tokens
 	totalSupplyNano := ThrylosToNano(float64(totalSupply.Int64()))
+
+	log.Printf("Initializing genesis account: %s", genesisAccount)
+
+	// Convert the genesis account address to Bech32 format
+	bech32GenesisAccount, err := ConvertToBech32Address(genesisAccount)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert genesis account to Bech32: %v", err)
+	}
+
+	// Generate a new key pair for the genesis account
+	log.Println("Generating key pair for genesis account")
+	genesisPublicKey, genesisPrivateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
+	}
+	log.Println("Genesis account key pair generated successfully")
+
+	log.Println("Storing public key for genesis account")
+	err = bdb.StoreValidatorPublicKey(bech32GenesisAccount, genesisPublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
+	}
+	log.Println("Genesis account public key stored successfully")
+
+	// Use bech32GenesisAccount instead of genesisAccount from here on
 	stakeholdersMap := make(map[string]int64)
-	stakeholdersMap[genesisAccount] = totalSupplyNano
+	stakeholdersMap[bech32GenesisAccount] = totalSupplyNano
 
 	// Create genesis transaction
 	genesisTx := &thrylos.Transaction{
-		Id:        "genesis_tx_" + genesisAccount,
+		Id:        "genesis_tx_" + bech32GenesisAccount,
 		Timestamp: time.Now().Unix(),
 		Outputs: []*thrylos.UTXO{{
 			OwnerAddress: genesisAccount,
@@ -220,7 +273,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		PublicKeyMap:        publicKeyMap,
 		UTXOs:               utxoMap,
 		Forks:               make([]*Fork, 0),
-		GenesisAccount:      genesisAccount,
+		GenesisAccount:      bech32GenesisAccount,
 		SupabaseClient:      supabaseClient,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
@@ -228,6 +281,27 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		ValidatorKeys:       NewValidatorKeyStore(),
 		TestMode:            testMode,
 	}
+
+	// Now store the private key for the genesis account
+	log.Println("Storing private key for genesis account")
+	blockchain.ValidatorKeys.StoreKey(bech32GenesisAccount, genesisPrivateKey)
+
+	// Verify that the key was stored correctly
+	storedKey, exists := blockchain.ValidatorKeys.GetKey(bech32GenesisAccount)
+	if !exists {
+		return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
+	}
+	if !bytes.Equal(storedKey, genesisPrivateKey) {
+		return nil, nil, fmt.Errorf("failed to store genesis account private key: stored key does not match original")
+	}
+	log.Println("Genesis account private key stored and verified successfully")
+
+	// Add the genesis public key to the publicKeyMap
+	blockchain.PublicKeyMap[bech32GenesisAccount] = genesisPublicKey
+	log.Println("Genesis account public key added to publicKeyMap")
+
+	// When logging the genesis account
+	log.Printf("Genesis account %s initialized with total supply: %d", bech32GenesisAccount, totalSupplyNano)
 
 	// Initialize ShardManager
 	blockchain.ShardManager = NewShardManager(network)
@@ -250,16 +324,18 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 	err = blockchain.GenerateAndStoreValidatorKeys(2)
 	if err != nil {
 		log.Printf("Warning: Failed to generate validator keys: %v", err)
+		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
 	}
 	log.Println("Validator keys generated and stored")
 
-	log.Println("Updating active validators")
-	err = blockchain.UpdateActiveValidators(1) // Reduced to 1 for testnet
+	// Add this check
+	log.Println("Verifying stored validator keys")
+	keys, err := bdb.GetAllValidatorPublicKeys()
 	if err != nil {
-		log.Printf("Error updating active validators: %v", err)
-		return nil, nil, fmt.Errorf("failed to update active validators: %v", err)
+		log.Printf("Failed to retrieve all validator public keys: %v", err)
+		return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
 	}
-	log.Println("Active validators updated")
+	log.Printf("Retrieved %d validator public keys", len(keys))
 
 	log.Println("Loading all validator public keys")
 	err = blockchain.LoadAllValidatorPublicKeys()
@@ -427,20 +503,6 @@ func (bc *Blockchain) Status() string {
 	return fmt.Sprintf("Current blockchain length: %d blocks", len(bc.Blocks))
 }
 
-// In this updated method, you're retrieving a slice of *thrylos.UTXO from the UTXOs map using the provided address. Then, you iterate over this slice, converting each *thrylos.UTXO to shared.UTXO using the ConvertProtoUTXOToShared function, and build a slice of shared.UTXO to return.
-
-// GetUTXOsForAddress returns all UTXOs for a given address.
-// func (bc *Blockchain) GetUTXOsForAddress(address string) []shared.UTXO {
-// 	protoUTXOs := bc.UTXOs[address] // This retrieves a slice of *thrylos.UTXO
-// 	sharedUTXOs := make([]shared.UTXO, len(protoUTXOs))
-
-// 	for i, protoUTXO := range protoUTXOs {
-// 		sharedUTXOs[i] = ConvertProtoUTXOToShared(protoUTXO)
-// 	}
-
-// 	return sharedUTXOs
-// }
-
 func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
 	log.Printf("Fetching UTXOs for address: %s", address)
 	utxos, err := bc.Database.GetUTXOsForAddress(address)
@@ -556,15 +618,25 @@ func (bc *Blockchain) LoadAllValidatorPublicKeys() error {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
-	log.Printf("Loading public keys for %d active validators", len(bc.ActiveValidators))
+	log.Println("Loading all validator public keys")
 
-	for _, validator := range bc.ActiveValidators {
-		pubKeyBytes, err := bc.Database.RetrieveEd25519PublicKey(validator)
+	for address := range bc.Stakeholders {
+		log.Printf("Attempting to load public key for stakeholder: %s", address)
+		pubKey, err := bc.Database.RetrieveValidatorPublicKey(address)
 		if err != nil {
-			log.Printf("Failed to load public key for validator %s: %v", validator, err)
+			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
 			continue
 		}
-		bc.PublicKeyMap[validator] = ed25519.PublicKey(pubKeyBytes)
+
+		if err != nil {
+			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
+			continue
+		}
+
+		if len(pubKey) > 0 {
+			bc.PublicKeyMap[address] = ed25519.PublicKey(pubKey)
+			log.Printf("Loaded public key for validator: %s", address)
+		}
 	}
 
 	log.Printf("Loaded public keys for %d validators", len(bc.PublicKeyMap))
@@ -1228,11 +1300,15 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassSta
 	}
 
 	// Store the public key
-	err = bc.Database.StoreValidatorPublicKey(address, pubKeyBytes)
+	err = bc.Database.StoreValidatorPublicKey(formattedAddress, pubKeyBytes)
 	if err != nil {
 		return fmt.Errorf("failed to store validator public key: %v", err)
 	}
 	log.Printf("Decoded public key length for %s: %d", formattedAddress, len(pubKeyBytes))
+
+	// Store in memory
+	bc.PublicKeyMap[formattedAddress] = ed25519.PublicKey(pubKeyBytes)
+	log.Printf("Stored public key in memory for address: %s", formattedAddress)
 
 	if len(pubKeyBytes) != ed25519.PublicKeySize {
 		log.Printf("Public key has incorrect size for %s: %d", formattedAddress, len(pubKeyBytes))
@@ -1582,9 +1658,30 @@ func (bc *Blockchain) GenerateAndStoreValidatorKeys(count int) error {
 	log.Printf("Starting to generate and store %d validator keys", count)
 	for i := 0; i < count; i++ {
 		log.Printf("Generating validator key %d of %d", i+1, count)
-		// Your existing code here
-		// ...
-		log.Printf("Successfully generated and stored validator key %d", i+1)
+		address, err := bc.GenerateAndStoreValidatorKey()
+		if err != nil {
+			log.Printf("Failed to generate and store validator key %d: %v", i+1, err)
+			return err
+		}
+		log.Printf("Successfully generated and stored validator key %d: %s", i+1, address)
+
+		// Verify the key was stored correctly
+		publicKey, err := bc.Database.RetrieveValidatorPublicKey(address)
+		if err != nil {
+			log.Printf("Error retrieving validator public key immediately after storage: %v", err)
+			return fmt.Errorf("failed to verify stored validator key: %v", err)
+		}
+
+		// Check if the retrieved public key is valid
+		if len(publicKey) != ed25519.PublicKeySize {
+			log.Printf("Retrieved public key for address %s has incorrect size. Expected %d, got %d", address, ed25519.PublicKeySize, len(publicKey))
+			return fmt.Errorf("invalid public key size for address %s", address)
+		}
+
+		log.Printf("Successfully verified stored validator public key for address: %s (Key size: %d bytes)", address, len(publicKey))
+
+		// Optionally, you could add the verified key to the PublicKeyMap
+		bc.PublicKeyMap[address] = publicKey
 	}
 	log.Println("Finished generating and storing validator keys")
 	return nil
