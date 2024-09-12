@@ -64,6 +64,7 @@ type Node struct {
 	Mu                   sync.RWMutex
 	WebSocketConnections map[string]*WebSocketConnection
 	WebSocketMutex       sync.RWMutex
+	balanceUpdateQueue   *BalanceUpdateQueue
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -137,6 +138,12 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
 		WebSocketConnections: make(map[string]*WebSocketConnection),
 	}
+
+	// Initialize the balanceUpdateQueue
+	node.balanceUpdateQueue = newBalanceUpdateQueue(node)
+
+	// Start the balance update worker goroutine
+	go node.balanceUpdateQueue.balanceUpdateWorker()
 
 	if shard != nil {
 		shard.AssignNode(node)
@@ -676,6 +683,23 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 
 const NANO_THRYLOS_PER_THRYLOS = 1e7
 
+type BalanceUpdateRequest struct {
+	Address string
+	Retries int
+}
+
+type BalanceUpdateQueue struct {
+	queue chan BalanceUpdateRequest
+	node  *Node
+}
+
+func newBalanceUpdateQueue(node *Node) *BalanceUpdateQueue {
+	return &BalanceUpdateQueue{
+		queue: make(chan BalanceUpdateRequest, 1000),
+		node:  node,
+	}
+}
+
 func (node *Node) SendBalanceUpdate(address string) error {
 	balance, err := node.GetBalance(address)
 	if err != nil {
@@ -706,7 +730,11 @@ func (node *Node) SendBalanceUpdate(address string) error {
 	node.WebSocketMutex.Unlock()
 
 	if !ok {
-		log.Printf("No WebSocket connection found for address: %s", address)
+		// Add the balance update request to the queue
+		node.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+			Address: address,
+			Retries: 3, // Maximum number of retries
+		}
 		return fmt.Errorf("no WebSocket connection found for address: %s", address)
 	}
 
@@ -720,6 +748,20 @@ func (node *Node) SendBalanceUpdate(address string) error {
 	}
 
 	return nil
+}
+
+func (q *BalanceUpdateQueue) balanceUpdateWorker() {
+	for req := range q.queue {
+		if req.Retries > 0 {
+			if err := q.node.SendBalanceUpdate(req.Address); err != nil {
+				req.Retries--
+				q.queue <- req
+				continue
+			}
+		} else {
+			log.Printf("Failed to send balance update for address %s after maximum retries", req.Address)
+		}
+	}
 }
 
 func isValidBech32Address(address string) bool {
