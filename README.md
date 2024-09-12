@@ -28,11 +28,18 @@ DATA_DIR=/database
 GENESIS_ACCOUNT=XXXXXXXXX
 GAS_ESTIMATE_URL=https://localhost:8546/api/gas-estimate
 
-4. **Navigate**: In terminal change directory to `cd cmd/thrylosnode`.
 
-5. **Run**: Execute `'export ENV=development'` in your terminal. 
+4. **Run_Thrylos**: Execute `run_thrylos` in your terminal to run thyrlos testnet in development.
 
-6. **Run**: Execute `'go run .'` in your terminal. 
+
+
+How to run manaully without using run_thrylos.sh:
+
+**Navigate**: In terminal change directory to `cd cmd/thrylosnode`.
+
+**Run**: Execute `'export ENV=development'` in your terminal. 
+
+**Run**: Execute `'go run .'` in your terminal. 
 
 
 ## send a transaction using the cli signer 
