@@ -572,6 +572,24 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 	if err := node.SendBalanceUpdate(address); err != nil {
 		log.Printf("Error sending initial balance update for address %s: %v", address, err)
 	}
+	go func() {
+		defer func() {
+			node.removeWebSocketConnection(address)
+			conn.ws.Close()
+		}()
+		node.readPump(conn, address)
+	}()
+
+	go func() {
+		node.writePump(conn, address)
+	}()
+}
+
+func (node *Node) removeWebSocketConnection(address string) {
+	node.WebSocketMutex.Lock()
+	defer node.WebSocketMutex.Unlock()
+	delete(node.WebSocketConnections, address)
+	log.Printf("Removed WebSocket connection for address: %s", address)
 }
 
 func (node *Node) readPump(conn *WebSocketConnection, address string) {
@@ -583,7 +601,6 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 		log.Printf("WebSocket connection closed for address: %s", address)
 	}()
 
-	conn.ws.SetReadLimit(maxMessageSize)
 	conn.ws.SetReadDeadline(time.Now().Add(pongWait))
 	conn.ws.SetPongHandler(func(string) error {
 		conn.ws.SetReadDeadline(time.Now().Add(pongWait))
@@ -646,14 +663,15 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 			if err := node.SendBalanceUpdate(address); err != nil {
 				log.Printf("Error sending periodic balance update for address %s: %v", address, err)
 			}
+
+		case <-ticker.C:
+			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("Error sending ping message for address %s: %v", address, err)
+				return
+			}
 		}
 	}
-}
-func (node *Node) removeWebSocketConnection(address string) {
-	node.WebSocketMutex.Lock()
-	defer node.WebSocketMutex.Unlock()
-	delete(node.WebSocketConnections, address)
-	log.Printf("Removed WebSocket connection for address: %s", address)
 }
 
 const NANO_THRYLOS_PER_THRYLOS = 1e7
