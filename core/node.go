@@ -1927,35 +1927,6 @@ func (node *Node) GetPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(jsonResp)
 }
 
-// func (node *Node) GetPublicKeyHandler() http.HandlerFunc {
-// 	return func(w http.ResponseWriter, r *http.Request) {
-// 		address := r.URL.Query().Get("address")
-// 		if address == "" {
-// 			http.Error(w, "Address parameter is missing", http.StatusBadRequest)
-// 			return
-// 		}
-
-// 		publicKey, err := node.RetrievePublicKey(address)
-// 		if err != nil {
-// 			http.Error(w, err.Error(), http.StatusNotFound)
-// 			return
-// 		}
-
-// 		response := map[string]string{
-// 			"publicKey": base64.StdEncoding.EncodeToString(publicKey),
-// 		}
-
-// 		jsonResp, err := json.Marshal(response)
-// 		if err != nil {
-// 			http.Error(w, "Failed to serialize public key response", http.StatusInternalServerError)
-// 			return
-// 		}
-
-// 		w.Header().Set("Content-Type", "application/json")
-// 		w.Write(jsonResp)
-// 	}
-// }
-
 func (node *Node) BlockchainHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := json.Marshal(node.Blockchain)
 	if err != nil {
