@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 	"net/http"
 	"os"
@@ -138,6 +139,9 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
 		WebSocketConnections: make(map[string]*WebSocketConnection),
 	}
+
+	// Set the callback function
+	node.Blockchain.OnNewBlock = node.ProcessConfirmedTransactions
 
 	// Initialize the balanceUpdateQueue
 	node.balanceUpdateQueue = newBalanceUpdateQueue(node)
@@ -752,37 +756,19 @@ func (node *Node) SendBalanceUpdate(address string) error {
 
 func (q *BalanceUpdateQueue) balanceUpdateWorker() {
 	for req := range q.queue {
-		if req.Retries > 0 {
-			if err := q.node.SendBalanceUpdate(req.Address); err != nil {
-				req.Retries--
-				q.queue <- req
-				continue
+		success := false
+		for attempt := 0; attempt < req.Retries && !success; attempt++ {
+			if err := q.node.SendBalanceUpdate(req.Address); err == nil {
+				success = true
+			} else {
+				log.Printf("Failed to update balance for %s, attempt %d: %v", req.Address, attempt+1, err)
+				time.Sleep(time.Duration(math.Pow(2, float64(attempt))) * time.Second)
 			}
-		} else {
-			log.Printf("Failed to send balance update for address %s after maximum retries", req.Address)
+		}
+		if !success {
+			log.Printf("Failed to update balance for %s after %d attempts", req.Address, req.Retries)
 		}
 	}
-}
-
-func isValidBech32Address(address string) bool {
-	// Decode the address using the bech32 package
-	hrp, decoded, err := bech32.Decode(address)
-	if err != nil {
-		return false // The address is not valid if it cannot be decoded
-	}
-
-	// Optionally check for specific human-readable parts (hrp)
-	// For instance, if you expect the hrp to be 'tl', you can check it as follows:
-	if hrp != "tl1" {
-		return false
-	}
-
-	// Check the length of the decoded data; adjust conditions based on your needs
-	if len(decoded) == 0 {
-		return false
-	}
-
-	return true
 }
 
 // The faucet handler can utilize this genesis account without needing to specify which account to use:
@@ -1018,13 +1004,30 @@ func (bc *Blockchain) GetCurrentValidator() string {
 	defer bc.Mu.RUnlock()
 
 	if len(bc.ActiveValidators) == 0 {
-		return "" // No active validators available
+		log.Println("Warning: No active validators available. Attempting to add genesis account as validator.")
+		bc.Mu.RUnlock()
+		bc.Mu.Lock()
+		bc.ActiveValidators = append(bc.ActiveValidators, bc.GenesisAccount)
+		bc.Mu.Unlock()
+		bc.Mu.RLock()
 	}
 
-	// Use the current time to select a validator
-	currentTime := time.Now().Unix()
-	index := int(currentTime) % len(bc.ActiveValidators)
-	return bc.ActiveValidators[index]
+	if len(bc.ActiveValidators) == 0 {
+		log.Println("Error: Still no active validators available after adding genesis account.")
+		return ""
+	}
+
+	// Use a combination of time and block height for selection
+	currentTime := time.Now().UnixNano()
+	currentHeight := len(bc.Blocks)
+	combinedFactor := currentTime + int64(currentHeight)
+
+	index := combinedFactor % int64(len(bc.ActiveValidators))
+	selectedValidator := bc.ActiveValidators[index]
+
+	log.Printf("Selected validator: %s (index: %d out of %d)", selectedValidator, index, len(bc.ActiveValidators))
+
+	return selectedValidator
 }
 
 // BroadcastTransaction sends a transaction to all peers in the network. This is part of the transaction
@@ -1485,21 +1488,46 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Send immediate balance update after successful transaction processing
-	if err := n.SendBalanceUpdate(transactionData.Sender); err != nil {
-		log.Printf("Failed to send immediate balance update for sender: %v", err)
-		// Note: We're not returning here as the transaction was successful,
-		// and this is just an additional update that failed
+	// Instead of sending immediate updates, add addresses to a queue for later updating
+	n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+		Address: transactionData.Sender,
+		Retries: 3,
 	}
-
-	// Send balance updates for all output addresses as well
 	for _, output := range transactionData.Outputs {
-		if err := n.SendBalanceUpdate(output.OwnerAddress); err != nil {
-			log.Printf("Failed to send immediate balance update for recipient %s: %v", output.OwnerAddress, err)
+		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+			Address: output.OwnerAddress,
+			Retries: 3,
 		}
 	}
 
 	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
+}
+
+func (node *Node) ProcessConfirmedTransactions(block *Block) {
+	for _, tx := range block.Transactions {
+		// Update sender's balance
+		node.UpdateBalanceAsync(tx.Sender)
+
+		// Update recipients' balances
+		for _, output := range tx.Outputs {
+			node.UpdateBalanceAsync(output.OwnerAddress)
+		}
+	}
+}
+
+func (node *Node) UpdateBalanceAsync(address string) {
+	go func() {
+		retries := 0
+		maxRetries := 5
+		for retries < maxRetries {
+			if err := node.SendBalanceUpdate(address); err == nil {
+				return
+			}
+			retries++
+			time.Sleep(time.Duration(math.Pow(2, float64(retries))) * time.Second)
+		}
+		log.Printf("Failed to update balance for %s after %d attempts", address, maxRetries)
+	}()
 }
 
 func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {

@@ -96,6 +96,8 @@ type Blockchain struct {
 
 	MinStakeForValidator *big.Int
 
+	OnNewBlock func(*Block) // Callback function for when a new block is added
+
 	Network      *Network
 	ShardManager *ShardManager
 
@@ -321,12 +323,24 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 	blockchain.TOBManager = NewTOBManager(0.3, blockchain.ConsensusManager)
 
 	log.Println("Generating and storing validator keys")
-	err = blockchain.GenerateAndStoreValidatorKeys(2)
+	validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
 	if err != nil {
 		log.Printf("Warning: Failed to generate validator keys: %v", err)
 		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
 	}
 	log.Println("Validator keys generated and stored")
+
+	// Add generated validators to ActiveValidators list
+	blockchain.ActiveValidators = append(blockchain.ActiveValidators, validatorAddresses...)
+	log.Printf("Added %d validators to ActiveValidators list", len(validatorAddresses))
+
+	// Add genesis account as a validator if it's not already included
+	if !contains(blockchain.ActiveValidators, bech32GenesisAccount) {
+		blockchain.ActiveValidators = append(blockchain.ActiveValidators, bech32GenesisAccount)
+		log.Printf("Added genesis account to ActiveValidators list")
+	}
+
+	log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
 
 	// Add this check
 	log.Println("Verifying stored validator keys")
@@ -343,6 +357,10 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		log.Printf("Warning: Failed to load all validator public keys: %v", err)
 	}
 	log.Println("Validator public keys loaded")
+
+	log.Println("Checking validator key consistency")
+	blockchain.CheckValidatorKeyConsistency()
+	log.Println("Validator key consistency check completed")
 
 	// Start periodic validator update in a separate goroutine
 	go func() {
@@ -368,6 +386,15 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 
 	log.Println("NewBlockchain initialization completed successfully")
 	return blockchain, bdb, nil
+}
+
+func contains(slice []string, item string) bool {
+	for _, a := range slice {
+		if a == item {
+			return true
+		}
+	}
+	return false
 }
 
 func (bc *Blockchain) getActiveNodeCount() int {
@@ -679,18 +706,76 @@ func (bc *Blockchain) CreateUnsignedBlock(transactions []*thrylos.Transaction, v
 
 func (bc *Blockchain) VerifySignedBlock(signedBlock *Block) error {
 	// Verify the block's hash
-	if !bytes.Equal(signedBlock.ComputeHash(), signedBlock.Hash) {
+	computedHash := signedBlock.ComputeHash()
+	if !bytes.Equal(computedHash, signedBlock.Hash) {
+		log.Printf("Block hash mismatch. Computed: %x, Block: %x", computedHash, signedBlock.Hash)
 		return errors.New("invalid block hash")
 	}
 
-	// Verify the signature
 	publicKey, err := bc.GetValidatorPublicKey(signedBlock.Validator)
 	if err != nil {
+		log.Printf("Failed to get validator public key: %v", err)
 		return fmt.Errorf("failed to get validator public key: %v", err)
 	}
+	log.Printf("Retrieved public key for verification: %x", publicKey)
 
+	// Also try to retrieve the public key directly from the database
+	storedPublicKey, err := bc.Database.RetrieveValidatorPublicKey(signedBlock.Validator)
+	if err != nil {
+		log.Printf("Failed to retrieve stored public key for validator %s: %v", signedBlock.Validator, err)
+	} else {
+		log.Printf("Stored public key for validator %s: %x", signedBlock.Validator, storedPublicKey)
+		if !bytes.Equal(publicKey, storedPublicKey) {
+			log.Printf("WARNING: Retrieved public key does not match stored public key for validator %s", signedBlock.Validator)
+		}
+	}
+
+	// Verify the signature
 	if !ed25519.Verify(publicKey, signedBlock.Hash, signedBlock.Signature) {
+		log.Printf("Signature verification failed. Validator: %s, Block Hash: %x, Signature: %x",
+			signedBlock.Validator, signedBlock.Hash, signedBlock.Signature)
 		return errors.New("invalid block signature")
+	}
+
+	log.Printf("Block signature verified successfully for validator: %s", signedBlock.Validator)
+	return nil
+}
+
+func (bc *Blockchain) CheckValidatorKeyConsistency() error {
+	log.Println("Checking validator key consistency")
+
+	allPublicKeys, err := bc.Database.GetAllValidatorPublicKeys()
+	if err != nil {
+		return fmt.Errorf("failed to retrieve all validator public keys: %v", err)
+	}
+
+	log.Printf("Total stored validator public keys: %d", len(allPublicKeys))
+	log.Printf("Total active validators: %d", len(bc.ActiveValidators))
+
+	for address, publicKey := range allPublicKeys {
+		if bc.IsActiveValidator(address) {
+			log.Printf("Checking consistency for active validator: %s", address)
+
+			privateKey, _, err := bc.GetValidatorPrivateKey(address)
+			if err != nil {
+				return fmt.Errorf("failed to retrieve private key for active validator %s: %v", address, err)
+			}
+
+			derivedPublicKey := privateKey.Public().(ed25519.PublicKey)
+			if !bytes.Equal(publicKey, derivedPublicKey) {
+				return fmt.Errorf("key mismatch for active validator %s: stored public key does not match derived public key", address)
+			}
+
+			log.Printf("Keys consistent for active validator %s", address)
+		} else {
+			log.Printf("Warning: Stored public key for inactive validator: %s", address)
+		}
+	}
+
+	for _, activeAddress := range bc.ActiveValidators {
+		if _, exists := allPublicKeys[activeAddress]; !exists {
+			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
+		}
 	}
 
 	return nil
@@ -993,6 +1078,10 @@ func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, er
 		return nil, fmt.Errorf("failed to get validator private key: %v", err)
 	}
 
+	// Log a hash of the private key for security reasons
+	privateKeyHash := sha256.Sum256(privateKey)
+	log.Printf("Private key hash used for signing: %x", privateKeyHash)
+
 	// Update the block's validator address to the Bech32 format
 	unsignedBlock.Validator = bech32Address
 	log.Printf("Updated block validator to Bech32 address: %s", bech32Address)
@@ -1002,12 +1091,27 @@ func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, er
 	log.Printf("Signing block hash: %x", blockHash)
 
 	// Sign the block hash
-	signature := stdEd25519.Sign(privateKey, blockHash)
+	signature := ed25519.Sign(privateKey, blockHash)
 	unsignedBlock.Signature = signature
 	unsignedBlock.Hash = blockHash
 
 	log.Printf("Block signed successfully for validator: %s", unsignedBlock.Validator)
 	log.Printf("Signature: %x", signature)
+
+	// Verify the signature immediately after signing
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	log.Printf("Public key derived from private key: %x", publicKey)
+
+	// Verify that this public key is stored correctly
+	storedPublicKey, err := bc.Database.RetrieveValidatorPublicKey(bech32Address)
+	if err != nil {
+		log.Printf("Failed to retrieve stored public key for validator %s: %v", bech32Address, err)
+	} else {
+		log.Printf("Stored public key for validator %s: %x", bech32Address, storedPublicKey)
+		if !bytes.Equal(publicKey, storedPublicKey) {
+			log.Printf("WARNING: Derived public key does not match stored public key for validator %s", bech32Address)
+		}
+	}
 
 	return unsignedBlock, nil
 }
@@ -1506,32 +1610,23 @@ type Validator struct {
 }
 
 func (bc *Blockchain) UpdateActiveValidators(count int) error {
-	log.Printf("Entering UpdateActiveValidators function")
-	log.Printf("Updating active validators. Current count: %d, Target count: %d", len(bc.ActiveValidators), count)
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
 
-	// Ensure we always have at least one active validator
 	if count < 1 {
 		count = 1
 	}
 
-	bc.Mu.RLock()
-	stakeholderCount := len(bc.Stakeholders)
-	bc.Mu.RUnlock()
-
-	log.Printf("Current number of stakeholders: %d", stakeholderCount)
-
-	log.Printf("Updating active validators. Current count: %d, Target count: %d", len(bc.ActiveValidators), count)
-	log.Printf("Current number of stakeholders: %d", len(bc.Stakeholders))
-
 	// Sort stakeholders by stake
-	type stakeholderInfo struct {
+	stakeholders := make([]struct {
 		address string
 		stake   int64
-	}
-	stakeholders := make([]stakeholderInfo, 0, len(bc.Stakeholders))
+	}, 0, len(bc.Stakeholders))
 	for address, stake := range bc.Stakeholders {
-		stakeholders = append(stakeholders, stakeholderInfo{address, stake})
-		log.Printf("Stakeholder: %s, Stake: %d", address, stake)
+		stakeholders = append(stakeholders, struct {
+			address string
+			stake   int64
+		}{address, stake})
 	}
 	sort.Slice(stakeholders, func(i, j int) bool {
 		return stakeholders[i].stake > stakeholders[j].stake
@@ -1539,53 +1634,17 @@ func (bc *Blockchain) UpdateActiveValidators(count int) error {
 
 	// Select top 'count' stakeholders as active validators
 	bc.ActiveValidators = make([]string, 0, count)
-	preGeneratedValidators := make([]string, 0)
-	otherValidators := make([]string, 0)
-
 	for i := 0; i < count && i < len(stakeholders); i++ {
-		address := stakeholders[i].address
-		if strings.HasPrefix(address, "validator-") {
-			preGeneratedValidators = append(preGeneratedValidators, address)
-		} else {
-			otherValidators = append(otherValidators, address)
-		}
+		bc.ActiveValidators = append(bc.ActiveValidators, stakeholders[i].address)
 	}
 
-	log.Printf("Pre-generated validators: %d, Other validators: %d", len(preGeneratedValidators), len(otherValidators))
-
-	// Ensure we have at least some pre-generated validators
-	neededPreGenerated := min(2, count/2) // Reduced from 5 to 2
-	for len(preGeneratedValidators) < neededPreGenerated {
-		newValidatorAddress, err := bc.GenerateAndStoreValidatorKey()
+	// If we don't have enough validators, generate new ones
+	for len(bc.ActiveValidators) < count {
+		newAddress, err := bc.GenerateAndStoreValidatorKey()
 		if err != nil {
-			log.Printf("Failed to generate validator key: %v", err)
-			return fmt.Errorf("failed to generate validator key: %v", err)
+			return fmt.Errorf("failed to generate new validator: %v", err)
 		}
-		preGeneratedValidators = append(preGeneratedValidators, newValidatorAddress)
-	}
-
-	// Use a write lock only when updating ActiveValidators
-	bc.Mu.Lock()
-	bc.ActiveValidators = append(bc.ActiveValidators, preGeneratedValidators...)
-	remainingSlots := count - len(bc.ActiveValidators)
-	bc.ActiveValidators = append(bc.ActiveValidators, otherValidators[:min(remainingSlots, len(otherValidators))]...)
-
-	// Ensure the newly registered validator is included
-	if len(bc.ActiveValidators) == 0 {
-		for address := range bc.Stakeholders {
-			bc.ActiveValidators = append(bc.ActiveValidators, address)
-			if len(bc.ActiveValidators) == count {
-				break
-			}
-		}
-	}
-	bc.Mu.Unlock()
-
-	log.Printf("Updated active validators. Total: %d, Pre-generated: %d", len(bc.ActiveValidators), len(preGeneratedValidators))
-
-	log.Printf("Updated active validators. Total: %d", len(bc.ActiveValidators))
-	for i, validator := range bc.ActiveValidators {
-		log.Printf("Active validator %d: %s", i, validator)
+		bc.ActiveValidators = append(bc.ActiveValidators, newAddress)
 	}
 
 	log.Printf("Updated active validators. Total: %d", len(bc.ActiveValidators))
@@ -1654,37 +1713,41 @@ func (bc *Blockchain) GenerateAndStoreValidatorKey() (string, error) {
 }
 
 // For generating multiple Validator Keys if necessary
-func (bc *Blockchain) GenerateAndStoreValidatorKeys(count int) error {
+func (bc *Blockchain) GenerateAndStoreValidatorKeys(count int) ([]string, error) {
 	log.Printf("Starting to generate and store %d validator keys", count)
+	validatorAddresses := make([]string, 0, count)
+
 	for i := 0; i < count; i++ {
 		log.Printf("Generating validator key %d of %d", i+1, count)
 		address, err := bc.GenerateAndStoreValidatorKey()
 		if err != nil {
 			log.Printf("Failed to generate and store validator key %d: %v", i+1, err)
-			return err
+			return validatorAddresses, err
 		}
 		log.Printf("Successfully generated and stored validator key %d: %s", i+1, address)
+		validatorAddresses = append(validatorAddresses, address)
 
 		// Verify the key was stored correctly
 		publicKey, err := bc.Database.RetrieveValidatorPublicKey(address)
 		if err != nil {
 			log.Printf("Error retrieving validator public key immediately after storage: %v", err)
-			return fmt.Errorf("failed to verify stored validator key: %v", err)
+			return validatorAddresses, fmt.Errorf("failed to verify stored validator key: %v", err)
 		}
 
 		// Check if the retrieved public key is valid
 		if len(publicKey) != ed25519.PublicKeySize {
 			log.Printf("Retrieved public key for address %s has incorrect size. Expected %d, got %d", address, ed25519.PublicKeySize, len(publicKey))
-			return fmt.Errorf("invalid public key size for address %s", address)
+			return validatorAddresses, fmt.Errorf("invalid public key size for address %s", address)
 		}
 
 		log.Printf("Successfully verified stored validator public key for address: %s (Key size: %d bytes)", address, len(publicKey))
 
-		// Optionally, you could add the verified key to the PublicKeyMap
+		// Add the verified key to the PublicKeyMap
 		bc.PublicKeyMap[address] = publicKey
 	}
-	log.Println("Finished generating and storing validator keys")
-	return nil
+
+	log.Printf("Finished generating and storing %d validator keys", len(validatorAddresses))
+	return validatorAddresses, nil
 }
 
 func min(a, b int) int {
@@ -1816,6 +1879,10 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 	// Update the blockchain with the new block
 	bc.Blocks = append(bc.Blocks, signedBlock)
 	bc.lastTimestamp = signedBlock.Timestamp
+
+	if bc.OnNewBlock != nil {
+		bc.OnNewBlock(signedBlock)
+	}
 
 	return true, nil
 }
