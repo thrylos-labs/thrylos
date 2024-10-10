@@ -2,8 +2,10 @@ package core
 
 import (
 	"bytes"
-	"math"
+	"strings"
 
+	"crypto/aes"
+	"crypto/cipher"
 	stdEd25519 "crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,11 +15,11 @@ import (
 	"encoding/hex"
 	"math/big"
 	"sort"
-	"strings"
 
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/ed25519"
 	xEd25519 "golang.org/x/crypto/ed25519"
+	"golang.org/x/crypto/scrypt"
 
 	"encoding/json"
 	"errors"
@@ -122,17 +124,88 @@ type ValidatorKeyStore struct {
 	mu   sync.RWMutex
 }
 
-func (vks *ValidatorKeyStore) StoreKey(address string, privKey ed25519.PrivateKey) {
+func (vks *ValidatorKeyStore) StoreKey(address string, privKey ed25519.PrivateKey) error {
 	vks.mu.Lock()
 	defer vks.mu.Unlock()
+
 	vks.keys[address] = privKey
+	return nil
 }
 
 func (vks *ValidatorKeyStore) GetKey(address string) (ed25519.PrivateKey, bool) {
 	vks.mu.RLock()
 	defer vks.mu.RUnlock()
-	key, exists := vks.keys[address]
-	return key, exists
+
+	privateKey, exists := vks.keys[address]
+	return privateKey, exists
+}
+
+const (
+	keyLen    = 32 // AES-256
+	nonceSize = 12
+	saltSize  = 32
+)
+
+var ErrInvalidKeySize = errors.New("invalid key size")
+
+func deriveKey(password []byte, salt []byte) ([]byte, error) {
+	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
+}
+
+func encryptPrivateKey(privKey ed25519.PrivateKey) ([]byte, error) {
+	salt := make([]byte, saltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
+
+	block, err := aes.NewCipher(salt)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, privKey, nil)
+	return append(append(salt, nonce...), ciphertext...), nil
+}
+
+func decryptPrivateKey(encryptedKey []byte) (ed25519.PrivateKey, error) {
+	if len(encryptedKey) < saltSize+nonceSize+1 {
+		return nil, ErrInvalidKeySize
+	}
+
+	salt := encryptedKey[:saltSize]
+	nonce := encryptedKey[saltSize : saltSize+nonceSize]
+	ciphertext := encryptedKey[saltSize+nonceSize:]
+
+	block, err := aes.NewCipher(salt)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(plaintext) != ed25519.PrivateKeySize {
+		return nil, ErrInvalidKeySize
+	}
+
+	return ed25519.PrivateKey(plaintext), nil
 }
 
 func NewValidatorKeyStore() *ValidatorKeyStore {
@@ -171,31 +244,37 @@ const (
 )
 
 func ConvertToBech32Address(address string) (string, error) {
-	// Decode the hexadecimal address to bytes
+	// Check if the address is already in Bech32 format
+	if strings.HasPrefix(address, "tl1") {
+		return address, nil
+	}
+
+	// Try to decode the address as hexadecimal
 	addressBytes, err := hex.DecodeString(address)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode hexadecimal address: %v", err)
+	if err == nil {
+		// Take the first 20 bytes (40 characters of the hex string)
+		// This is similar to how Ethereum addresses are derived from public keys
+		if len(addressBytes) > 20 {
+			addressBytes = addressBytes[:20]
+		}
+
+		// Convert to 5-bit groups for Bech32 encoding
+		converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
+		if err != nil {
+			return "", fmt.Errorf("failed to convert bits: %v", err)
+		}
+
+		// Encode to Bech32
+		bech32Address, err := bech32.Encode("tl1", converted)
+		if err != nil {
+			return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
+		}
+
+		return bech32Address, nil
 	}
 
-	// Take the first 20 bytes (40 characters of the hex string)
-	// This is similar to how Ethereum addresses are derived from public keys
-	if len(addressBytes) > 20 {
-		addressBytes = addressBytes[:20]
-	}
-
-	// Convert to 5-bit groups for Bech32 encoding
-	converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert bits: %v", err)
-	}
-
-	// Encode to Bech32
-	bech32Address, err := bech32.Encode("tl1", converted)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
-	}
-
-	return bech32Address, nil
+	// If the address is not in hexadecimal format, try to use it directly
+	return address, nil
 }
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
@@ -288,6 +367,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 	log.Println("Storing private key for genesis account")
 	blockchain.ValidatorKeys.StoreKey(bech32GenesisAccount, genesisPrivateKey)
 
+	// Verify that the key was stored correctly
 	// Verify that the key was stored correctly
 	storedKey, exists := blockchain.ValidatorKeys.GetKey(bech32GenesisAccount)
 	if !exists {
@@ -550,33 +630,23 @@ func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
 }
 
 func (bc *Blockchain) GetBalance(address string) (decimal.Decimal, error) {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
-
-	balance := decimal.NewFromInt(0)
-	utxos, exists := bc.UTXOs[address]
-	if !exists {
-		return balance, nil
+	utxos, err := bc.Database.GetUTXOsForAddress(address)
+	if err != nil {
+		log.Printf("Error fetching UTXOs for address %s: %v", address, err)
+		return decimal.Zero, err
 	}
 
+	balance := decimal.Zero
+	log.Printf("Calculating balance for address %s", address)
 	for _, utxo := range utxos {
 		if !utxo.IsSpent {
-			amount := decimal.NewFromInt(utxo.Amount)
-			balance = balance.Add(amount)
-
-			if balance.GreaterThan(decimal.NewFromInt(math.MaxInt64)) {
-				return decimal.Decimal{}, errors.New("balance overflow")
-			}
+			balance = balance.Add(decimal.NewFromInt(utxo.Amount))
+			log.Printf("Added UTXO amount: %d, New balance: %s", utxo.Amount, balance)
 		}
 	}
 
-	if balance.LessThan(decimal.Zero) {
-		return decimal.Decimal{}, errors.New("negative balance detected")
-	}
-
-	thrylosBalance := balance.Div(decimal.NewFromInt(1e7))
-	log.Printf("Balance for %s: %s nanoTHRYLOS (%.7f THRYLOS)",
-		address, balance.String(), thrylosBalance)
+	log.Printf("Final balance for %s: %s nanoTHRYLOS (%.7f THRYLOS)",
+		address, balance.String(), balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS)))
 
 	return balance, nil
 }
@@ -740,7 +810,6 @@ func (bc *Blockchain) VerifySignedBlock(signedBlock *Block) error {
 	log.Printf("Block signature verified successfully for validator: %s", signedBlock.Validator)
 	return nil
 }
-
 func (bc *Blockchain) CheckValidatorKeyConsistency() error {
 	log.Println("Checking validator key consistency")
 
@@ -753,31 +822,45 @@ func (bc *Blockchain) CheckValidatorKeyConsistency() error {
 	log.Printf("Total active validators: %d", len(bc.ActiveValidators))
 
 	for address, publicKey := range allPublicKeys {
-		if bc.IsActiveValidator(address) {
-			log.Printf("Checking consistency for active validator: %s", address)
+		log.Printf("Checking consistency for validator: %s", address)
+		log.Printf("Stored public key for %s: %x", address, publicKey)
 
-			privateKey, _, err := bc.GetValidatorPrivateKey(address)
+		if bc.IsActiveValidator(address) {
+			log.Printf("Validator %s is active", address)
+
+			privateKey, bech32Address, err := bc.GetValidatorPrivateKey(address)
 			if err != nil {
-				return fmt.Errorf("failed to retrieve private key for active validator %s: %v", address, err)
+				log.Printf("Failed to retrieve private key for validator %s: %v", address, err)
+				continue
 			}
 
-			derivedPublicKey := privateKey.Public().(ed25519.PublicKey)
+			log.Printf("Retrieved private key for %s, Bech32 address: %s", address, bech32Address)
+
+			derivedPublicKey := privateKey.Public().(stdEd25519.PublicKey)
+			log.Printf("Derived public key for %s: %x", address, derivedPublicKey)
+
 			if !bytes.Equal(publicKey, derivedPublicKey) {
-				return fmt.Errorf("key mismatch for active validator %s: stored public key does not match derived public key", address)
+				log.Printf("Key mismatch for validator %s (Bech32: %s):", address, bech32Address)
+				log.Printf("  Stored public key:  %x", publicKey)
+				log.Printf("  Derived public key: %x", derivedPublicKey)
+				return fmt.Errorf("key mismatch for active validator %s (Bech32: %s): stored public key does not match derived public key",
+					address, bech32Address)
 			}
 
 			log.Printf("Keys consistent for active validator %s", address)
 		} else {
-			log.Printf("Warning: Stored public key for inactive validator: %s", address)
+			log.Printf("Validator %s is not active", address)
 		}
 	}
 
 	for _, activeAddress := range bc.ActiveValidators {
 		if _, exists := allPublicKeys[activeAddress]; !exists {
+			log.Printf("Active validator %s does not have a stored public key", activeAddress)
 			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
 		}
 	}
 
+	log.Println("Validator key consistency check completed")
 	return nil
 }
 
@@ -787,7 +870,7 @@ func (bc *Blockchain) SignBlock(block *Block, validatorAddress string) ([]byte, 
 		return nil, fmt.Errorf("failed to get validator private key: %v", err)
 	}
 
-	// Update the block's validator address to the Bech32 format
+	// The Bech32 address is already returned by GetValidatorPrivateKey, so we don't need to convert it again
 	block.Validator = bech32Address
 
 	blockData, err := block.SerializeForSigning()
@@ -1472,7 +1555,10 @@ func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassSta
 
 func (bc *Blockchain) StoreValidatorPrivateKey(address string, privKey ed25519.PrivateKey) error {
 	log.Printf("Storing private key for validator: %s", address)
-	bc.ValidatorKeys.StoreKey(address, privKey)
+	if err := bc.ValidatorKeys.StoreKey(address, privKey); err != nil {
+		log.Printf("Failed to store private key for validator %s: %v", address, err)
+		return fmt.Errorf("failed to store private key for validator %s: %v", address, err)
+	}
 	log.Printf("Private key for validator %s stored securely", address)
 	return nil
 }
@@ -1486,45 +1572,21 @@ func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (ed25519.P
 		return nil, "", fmt.Errorf("validator is not active: %s", validatorAddress)
 	}
 
-	// For testing purposes only: generate a deterministic key
-	if bc.TestMode {
-		log.Printf("Test mode: Generating deterministic key for validator %s", validatorAddress)
-
-		var seed [32]byte
-		var bech32Address string
-
-		// If the address is already in Bech32 format, use it directly
-		if strings.HasPrefix(validatorAddress, "tl1") {
-			bech32Address = validatorAddress
-			hashResult := sha256.Sum256([]byte(validatorAddress))
-			copy(seed[:], hashResult[:])
-		} else {
-			// If not, generate a new Bech32 address
-			hashResult := sha256.Sum256([]byte(validatorAddress))
-			copy(seed[:], hashResult[:])
-			privateKey := ed25519.NewKeyFromSeed(seed[:])
-			publicKey := privateKey.Public().(ed25519.PublicKey)
-			var err error
-			bech32Address, err = generateBech32Address(publicKey)
-			if err != nil {
-				return nil, "", fmt.Errorf("failed to generate Bech32 address: %v", err)
-			}
-		}
-
-		privateKey := ed25519.NewKeyFromSeed(seed[:])
-
-		// Ensure the validator is registered with the correct public key and Bech32 address
-		err := bc.EnsureTestValidatorRegistered(bech32Address, privateKey.Public().(ed25519.PublicKey))
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to ensure test validator is registered: %v", err)
-		}
-
-		log.Printf("Using Bech32 address for test validator: %s", bech32Address)
-		return privateKey, bech32Address, nil
+	// Retrieve the private key from the ValidatorKeys store
+	privateKey, exists := bc.ValidatorKeys.GetKey(validatorAddress)
+	if !exists {
+		log.Printf("Failed to retrieve private key for validator %s", validatorAddress)
+		return nil, "", fmt.Errorf("failed to retrieve private key for validator %s", validatorAddress)
 	}
 
-	// In production mode, we don't retrieve or store private keys
-	return nil, "", fmt.Errorf("private keys are not stored or retrieved in production mode")
+	// Convert the validator address to Bech32 format
+	bech32Address, err := ConvertToBech32Address(validatorAddress)
+	if err != nil {
+		log.Printf("Failed to convert validator address %s to Bech32 format: %v", validatorAddress, err)
+		return privateKey, "", err
+	}
+
+	return privateKey, bech32Address, nil
 }
 
 func generateBech32Address(publicKey ed25519.PublicKey) (string, error) {

@@ -226,6 +226,8 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 		defer it.Close()
 
 		prefix := []byte(fmt.Sprintf("utxo-%s-", address))
+		log.Printf("Searching for UTXOs with prefix: %s", string(prefix))
+
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
@@ -233,8 +235,12 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 				if err := json.Unmarshal(val, &utxo); err != nil {
 					return err
 				}
+				log.Printf("Found UTXO: %+v", utxo)
 				if !utxo.IsSpent {
 					utxos = append(utxos, utxo)
+					log.Printf("Added unspent UTXO: %+v", utxo)
+				} else {
+					log.Printf("Skipped spent UTXO: %+v", utxo)
 				}
 				return nil
 			})
@@ -245,6 +251,7 @@ func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, erro
 		return nil
 	})
 
+	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
 	return utxos, err
 }
 
@@ -483,8 +490,10 @@ func (bdb *BlockchainDB) RetrieveValidatorPublicKey(validatorAddress string) ([]
 	var publicKey []byte
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		key := []byte("validatorPubKey-" + validatorAddress)
+		log.Printf("Retrieving public key for validator: %s, key: %s", validatorAddress, key)
 		item, err := txn.Get(key)
 		if err != nil {
+			log.Printf("Error retrieving public key for validator %s: %v", validatorAddress, err)
 			return err
 		}
 		publicKey, err = item.ValueCopy(nil)
@@ -493,11 +502,14 @@ func (bdb *BlockchainDB) RetrieveValidatorPublicKey(validatorAddress string) ([]
 
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
+			log.Printf("Public key not found for validator %s", validatorAddress)
 			return nil, fmt.Errorf("public key not found for validator %s", validatorAddress)
 		}
+		log.Printf("Error retrieving public key for validator %s: %v", validatorAddress, err)
 		return nil, fmt.Errorf("error retrieving public key for validator %s: %v", validatorAddress, err)
 	}
 
+	log.Printf("Retrieved public key for validator %s: %x", validatorAddress, publicKey)
 	return publicKey, nil
 }
 
@@ -505,13 +517,16 @@ const validatorPublicKeyPrefix = "validatorPubKey-"
 
 func (bdb *BlockchainDB) StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error {
 	if !strings.HasPrefix(validatorAddress, "tl1") {
+		log.Printf("Invalid address format for validator %s: must start with 'tl1'", validatorAddress)
 		return fmt.Errorf("invalid address format: must start with 'tl1'")
 	}
 
 	return bdb.DB.Update(func(txn *badger.Txn) error {
-		key := []byte(validatorPublicKeyPrefix + validatorAddress)
+		key := []byte("validatorPubKey-" + validatorAddress)
+		log.Printf("Storing public key for validator: %s, key: %s", validatorAddress, key)
 		err := txn.Set(key, publicKey)
 		if err != nil {
+			log.Printf("Failed to store public key for validator %s: %v", validatorAddress, err)
 			return fmt.Errorf("failed to store public key: %v", err)
 		}
 		log.Printf("Stored public key for validator: %s", validatorAddress)

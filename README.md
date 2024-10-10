@@ -41,6 +41,8 @@ How to run manaully without using run_thrylos.sh:
 
 **Run**: Execute `'go run .'` in your terminal. 
 
+If you delete the blockchain_data the account and balances will be wiped
+
 
 ## send a transaction using the cli signer 
 

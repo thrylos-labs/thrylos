@@ -66,6 +66,7 @@ type Node struct {
 	WebSocketConnections map[string]*WebSocketConnection
 	WebSocketMutex       sync.RWMutex
 	balanceUpdateQueue   *BalanceUpdateQueue
+	LastSentBalances     map[string]int64
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -138,6 +139,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
 		WebSocketConnections: make(map[string]*WebSocketConnection),
+		LastSentBalances:     make(map[string]int64),
 	}
 
 	// Set the callback function
@@ -148,6 +150,8 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 
 	// Start the balance update worker goroutine
 	go node.balanceUpdateQueue.balanceUpdateWorker()
+
+	node.StartPeriodicBalanceChecks()
 
 	if shard != nil {
 		shard.AssignNode(node)
@@ -503,10 +507,15 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		return 0, err
 	}
 
+	log.Printf("Found %d UTXOs for address %s", len(utxos), address)
+
 	balance := int64(0)
-	for _, utxo := range utxos {
+	for i, utxo := range utxos {
 		if !utxo.IsSpent {
 			balance += utxo.Amount
+			log.Printf("UTXO %d: Amount = %d, TransactionID = %s", i, utxo.Amount, utxo.TransactionID)
+		} else {
+			log.Printf("Skipping spent UTXO %d: TransactionID = %s", i, utxo.TransactionID)
 		}
 	}
 
@@ -553,7 +562,21 @@ type WebSocketConnection struct {
 	send chan []byte
 }
 
+func (node *Node) StartPeriodicBalanceChecks() {
+	ticker := time.NewTicker(1 * time.Minute)
+	go func() {
+		for range ticker.C {
+			node.WebSocketMutex.RLock()
+			for address := range node.WebSocketConnections {
+				node.UpdateBalanceAsync(address)
+			}
+			node.WebSocketMutex.RUnlock()
+		}
+	}()
+}
+
 func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received WebSocket connection request for balance updates")
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade to WebSocket: %v", err)
@@ -568,39 +591,68 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	log.Printf("WebSocket connection established for address: %s", address)
+
 	conn := &WebSocketConnection{ws: ws, send: make(chan []byte, 256)}
 
 	node.WebSocketMutex.Lock()
 	node.WebSocketConnections[address] = conn
 	node.WebSocketMutex.Unlock()
 
-	log.Printf("WebSocket connection established for address: %s", address)
-
-	go node.writePump(conn, address)
-	go node.readPump(conn, address)
+	// Process any pending balance updates
+	node.ProcessPendingBalanceUpdates(address)
 
 	// Send initial balance update
 	if err := node.SendBalanceUpdate(address); err != nil {
 		log.Printf("Error sending initial balance update for address %s: %v", address, err)
 	}
-	go func() {
-		defer func() {
-			node.removeWebSocketConnection(address)
-			conn.ws.Close()
-		}()
-		node.readPump(conn, address)
-	}()
 
-	go func() {
-		node.writePump(conn, address)
-	}()
+	go node.writePump(conn, address)
+	go node.readPump(conn, address)
+
+	// Start periodic balance updates
+	go node.startPeriodicBalanceUpdates(address)
 }
 
-func (node *Node) removeWebSocketConnection(address string) {
-	node.WebSocketMutex.Lock()
-	defer node.WebSocketMutex.Unlock()
-	delete(node.WebSocketConnections, address)
-	log.Printf("Removed WebSocket connection for address: %s", address)
+func (node *Node) writePump(conn *WebSocketConnection, address string) {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		conn.ws.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-conn.send:
+			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				log.Printf("WebSocket send channel closed for address: %s", address)
+				conn.ws.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := conn.ws.NextWriter(websocket.TextMessage)
+			if err != nil {
+				log.Printf("Error getting next writer for address %s: %v", address, err)
+				return
+			}
+			w.Write(message)
+
+			if err := w.Close(); err != nil {
+				log.Printf("Error closing writer for address %s: %v", address, err)
+				return
+			}
+			log.Printf("Successfully sent message to address %s: %s", address, string(message))
+
+		case <-ticker.C:
+			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("Error sending ping message for address %s: %v", address, err)
+				return
+			}
+			log.Printf("Sent ping message to address: %s", address)
+		}
+	}
 }
 
 func (node *Node) readPump(conn *WebSocketConnection, address string) {
@@ -612,9 +664,11 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 		log.Printf("WebSocket connection closed for address: %s", address)
 	}()
 
+	conn.ws.SetReadLimit(maxMessageSize)
 	conn.ws.SetReadDeadline(time.Now().Add(pongWait))
 	conn.ws.SetPongHandler(func(string) error {
 		conn.ws.SetReadDeadline(time.Now().Add(pongWait))
+		log.Printf("Received pong from address: %s", address)
 		return nil
 	})
 
@@ -626,60 +680,21 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 			}
 			break
 		}
+		log.Printf("Received message from address: %s", address)
 	}
 }
 
-func (node *Node) writePump(conn *WebSocketConnection, address string) {
-	ticker := time.NewTicker(pingPeriod)
-	balanceUpdateTicker := time.NewTicker(5 * time.Minute) // Update balance every 5 minutes
-	defer func() {
-		ticker.Stop()
-		conn.ws.Close()
-		node.removeWebSocketConnection(address)
-	}()
+func (node *Node) startPeriodicBalanceUpdates(address string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case message, ok := <-conn.send:
-			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				conn.ws.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			w, err := conn.ws.NextWriter(websocket.TextMessage)
-			if err != nil {
-				log.Printf("Error getting next writer for address %s: %v", address, err)
-				return
-			}
-
-			if _, err := w.Write(message); err != nil {
-				log.Printf("Error writing message for address %s: %v", address, err)
-				return
-			}
-
-			if err := w.Close(); err != nil {
-				log.Printf("Error closing writer for address %s: %v", address, err)
-				return
-			}
-
 		case <-ticker.C:
-			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Error sending ping message for address %s: %v", address, err)
-				return
-			}
-
-		case <-balanceUpdateTicker.C:
 			if err := node.SendBalanceUpdate(address); err != nil {
 				log.Printf("Error sending periodic balance update for address %s: %v", address, err)
-			}
-
-		case <-ticker.C:
-			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Error sending ping message for address %s: %v", address, err)
-				return
+			} else {
+				log.Printf("Sent periodic balance update for address: %s", address)
 			}
 		}
 	}
@@ -704,54 +719,124 @@ func newBalanceUpdateQueue(node *Node) *BalanceUpdateQueue {
 	}
 }
 
+type PendingBalanceUpdate struct {
+	Address   string
+	Balance   int64
+	Timestamp time.Time
+}
+
+var pendingBalanceUpdates = make(map[string][]PendingBalanceUpdate)
+var pendingBalanceUpdatesMutex sync.RWMutex
+
+func (node *Node) AddPendingBalanceUpdate(address string, balance int64) {
+	pendingBalanceUpdatesMutex.Lock()
+	defer pendingBalanceUpdatesMutex.Unlock()
+	pendingBalanceUpdates[address] = append(pendingBalanceUpdates[address], PendingBalanceUpdate{
+		Address:   address,
+		Balance:   balance,
+		Timestamp: time.Now(),
+	})
+	log.Printf("Added pending balance update for address %s: %d nanoTHRYLOS", address, balance)
+}
+
 func (node *Node) SendBalanceUpdate(address string) error {
-	balance, err := node.GetBalance(address)
+	balance, err := node.Blockchain.GetBalance(address)
 	if err != nil {
 		log.Printf("Failed to get balance for address %s: %v", address, err)
 		return err
 	}
 
-	balanceInThrylos := float64(balance) / NANO_THRYLOS_PER_THRYLOS
+	// Convert balance to int64 for nanoTHRYLOS
+	balanceNano := balance.IntPart()
 
-	response := struct {
-		BlockchainAddress string  `json:"blockchainAddress"`
-		Balance           int64   `json:"balance"`
-		BalanceThrylos    float64 `json:"balanceThrylos"`
-	}{
-		BlockchainAddress: address,
-		Balance:           balance,
-		BalanceThrylos:    balanceInThrylos,
-	}
+	// Calculate THRYLOS balance
+	balanceThrylos := balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS)).InexactFloat64()
 
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Failed to marshal balance update for address %s: %v", address, err)
-		return fmt.Errorf("failed to marshal balance update: %v", err)
-	}
+	log.Printf("Preparing balance update for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+		address, balanceNano, balanceThrylos)
 
-	node.WebSocketMutex.Lock()
-	conn, ok := node.WebSocketConnections[address]
-	node.WebSocketMutex.Unlock()
-
-	if !ok {
-		// Add the balance update request to the queue
-		node.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-			Address: address,
-			Retries: 3, // Maximum number of retries
+	// Check if the balance has changed
+	if node.LastSentBalances[address] != balanceNano {
+		response := struct {
+			BlockchainAddress string  `json:"blockchainAddress"`
+			Balance           int64   `json:"balance"`
+			BalanceThrylos    float64 `json:"balanceThrylos"`
+		}{
+			BlockchainAddress: address,
+			Balance:           balanceNano,
+			BalanceThrylos:    balanceThrylos,
 		}
-		return fmt.Errorf("no WebSocket connection found for address: %s", address)
-	}
 
-	select {
-	case conn.send <- jsonResponse:
-		log.Printf("Balance update sent successfully for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			address, response.Balance, response.BalanceThrylos)
-	default:
-		log.Printf("WebSocket send buffer full for address %s", address)
-		return fmt.Errorf("WebSocket send buffer full for address %s", address)
+		jsonResponse, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("Failed to marshal balance update for address %s: %v", address, err)
+			return fmt.Errorf("failed to marshal balance update: %v", err)
+		}
+
+		node.WebSocketMutex.Lock()
+		conn, ok := node.WebSocketConnections[address]
+		node.WebSocketMutex.Unlock()
+
+		if !ok {
+			// Store the update for offline recipients
+			node.AddPendingBalanceUpdate(address, balanceNano)
+			return nil
+		}
+
+		// Send the update to connected recipients
+		select {
+		case conn.send <- jsonResponse:
+			log.Printf("Balance update sent successfully for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+				address, response.Balance, response.BalanceThrylos)
+			node.LastSentBalances[address] = balanceNano
+		default:
+			log.Printf("WebSocket send buffer full for address %s", address)
+			return fmt.Errorf("WebSocket send buffer full for address %s", address)
+		}
+	} else {
+		log.Printf("Balance unchanged for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, balanceNano, balanceThrylos)
 	}
 
 	return nil
+}
+
+func (node *Node) GetPendingBalanceUpdates(address string) []PendingBalanceUpdate {
+	pendingBalanceUpdatesMutex.RLock()
+	defer pendingBalanceUpdatesMutex.RUnlock()
+	return pendingBalanceUpdates[address]
+}
+
+func (node *Node) RemovePendingBalanceUpdate(address string, update PendingBalanceUpdate) {
+	pendingBalanceUpdatesMutex.Lock()
+	defer pendingBalanceUpdatesMutex.Unlock()
+	updates := pendingBalanceUpdates[address]
+	for i, u := range updates {
+		if u.Timestamp == update.Timestamp {
+			pendingBalanceUpdates[address] = append(updates[:i], updates[i+1:]...)
+			break
+		}
+	}
+}
+
+func (node *Node) ProcessPendingBalanceUpdates(address string) {
+	pendingBalanceUpdatesMutex.Lock()
+	pendingUpdates, exists := pendingBalanceUpdates[address]
+	if exists {
+		delete(pendingBalanceUpdates, address)
+	}
+	pendingBalanceUpdatesMutex.Unlock()
+
+	if exists {
+		log.Printf("Processing %d pending balance updates for address %s", len(pendingUpdates), address)
+		for _, update := range pendingUpdates {
+			if err := node.SendBalanceUpdate(address); err != nil {
+				log.Printf("Error processing pending balance update for address %s: %v", address, err)
+			} else {
+				log.Printf("Processed pending balance update for address %s: %d nanoTHRYLOS", address, update.Balance)
+			}
+		}
+	}
 }
 
 func (q *BalanceUpdateQueue) balanceUpdateWorker() {
@@ -1488,6 +1573,27 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	time.AfterFunc(2*time.Second, func() {
+		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+			Address: transactionData.Sender,
+			Retries: 3,
+		}
+		for _, output := range transactionData.Outputs {
+			n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+				Address: output.OwnerAddress,
+				Retries: 3,
+			}
+		}
+	})
+
+	// Update the balance for the sender
+	go n.UpdateBalanceAsync(transactionData.Sender)
+
+	// Update the balance for each output address
+	for _, output := range transactionData.Outputs {
+		go n.UpdateBalanceAsync(output.OwnerAddress)
+	}
+
 	// Instead of sending immediate updates, add addresses to a queue for later updating
 	n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
 		Address: transactionData.Sender,
@@ -1501,18 +1607,31 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
+
 }
 
 func (node *Node) ProcessConfirmedTransactions(block *Block) {
-	for _, tx := range block.Transactions {
+	log.Printf("Processing confirmed transactions for block %s", block.Hash)
+	for i, tx := range block.Transactions {
+		log.Printf("Processing transaction %d: %s", i, tx.Id)
+
 		// Update sender's balance
-		node.UpdateBalanceAsync(tx.Sender)
+		log.Printf("Updating balance for sender: %s", tx.Sender)
+		node.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+			Address: tx.Sender,
+			Retries: 3,
+		}
 
 		// Update recipients' balances
-		for _, output := range tx.Outputs {
-			node.UpdateBalanceAsync(output.OwnerAddress)
+		for j, output := range tx.Outputs {
+			log.Printf("Updating balance for recipient %d: %s", j, output.OwnerAddress)
+			node.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+				Address: output.OwnerAddress,
+				Retries: 3,
+			}
 		}
 	}
+	log.Printf("Finished processing confirmed transactions for block %s", block.Hash)
 }
 
 func (node *Node) UpdateBalanceAsync(address string) {
@@ -1520,7 +1639,16 @@ func (node *Node) UpdateBalanceAsync(address string) {
 		retries := 0
 		maxRetries := 5
 		for retries < maxRetries {
+			balance, err := node.Blockchain.GetBalance(address)
+			if err != nil {
+				log.Printf("Error getting balance for %s: %v", address, err)
+				retries++
+				time.Sleep(time.Duration(math.Pow(2, float64(retries))) * time.Second)
+				continue
+			}
+
 			if err := node.SendBalanceUpdate(address); err == nil {
+				log.Printf("Balance updated successfully for %s: %d", address, balance)
 				return
 			}
 			retries++
