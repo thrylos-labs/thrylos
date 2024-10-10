@@ -1002,13 +1002,11 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 	}
 	tx.PreviousTxIds = tips
 
-	// Convert thrylos.Transaction to shared.Transaction for validation
 	sharedTx, err := ConvertThrylosTransactionToLocal(tx)
 	if err != nil {
 		return fmt.Errorf("failed to convert transaction to shared type: %v", err)
 	}
 
-	// Validate the transaction
 	if err := validateInputsAndOutputs(&sharedTx); err != nil {
 		return fmt.Errorf("invalid transaction: %v", err)
 	}

@@ -66,7 +66,6 @@ type Node struct {
 	WebSocketConnections map[string]*WebSocketConnection
 	WebSocketMutex       sync.RWMutex
 	balanceUpdateQueue   *BalanceUpdateQueue
-	LastSentBalances     map[string]int64
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -139,7 +138,6 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
 		WebSocketConnections: make(map[string]*WebSocketConnection),
-		LastSentBalances:     make(map[string]int64),
 	}
 
 	// Set the callback function
@@ -151,15 +149,29 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 	// Start the balance update worker goroutine
 	go node.balanceUpdateQueue.balanceUpdateWorker()
 
-	node.StartPeriodicBalanceChecks()
-
 	if shard != nil {
 		shard.AssignNode(node)
 	}
 
 	node.DiscoverPeers() // Skip this during tests
 
+	bc.OnTransactionProcessed = node.handleProcessedTransaction
+
 	return node
+}
+
+func (n *Node) handleProcessedTransaction(tx *thrylos.Transaction) {
+	addresses := make(map[string]bool)
+	addresses[tx.Sender] = true
+	for _, output := range tx.Outputs {
+		addresses[output.OwnerAddress] = true
+	}
+
+	for address := range addresses {
+		if err := n.SendBalanceUpdate(address); err != nil {
+			log.Printf("Failed to send balance update for %s: %v", address, err)
+		}
+	}
 }
 
 // Since these methods pertain to the behavior of a node
@@ -562,19 +574,7 @@ type WebSocketConnection struct {
 	send chan []byte
 }
 
-func (node *Node) StartPeriodicBalanceChecks() {
-	ticker := time.NewTicker(1 * time.Minute)
-	go func() {
-		for range ticker.C {
-			node.WebSocketMutex.RLock()
-			for address := range node.WebSocketConnections {
-				node.UpdateBalanceAsync(address)
-			}
-			node.WebSocketMutex.RUnlock()
-		}
-	}()
-}
-
+// Event only web socket updates
 func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received WebSocket connection request for balance updates")
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -599,7 +599,7 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 	node.WebSocketConnections[address] = conn
 	node.WebSocketMutex.Unlock()
 
-	// Process any pending balance updates
+	// Process any pending balance updates (optional)
 	node.ProcessPendingBalanceUpdates(address)
 
 	// Send initial balance update
@@ -609,9 +609,37 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 
 	go node.writePump(conn, address)
 	go node.readPump(conn, address)
+}
 
-	// Start periodic balance updates
-	go node.startPeriodicBalanceUpdates(address)
+func (node *Node) ListenForBlockchainEvents() {
+	// Subscribe to new block events using OnNewBlock callback
+	node.Blockchain.OnNewBlock = func(block *Block) {
+		log.Printf("New block detected: %s", block.Hash)
+
+		// Process transactions in the block
+		for _, tx := range block.Transactions {
+			address := tx.Sender // Replace with the actual field name
+			node.HandleBlockchainEvent(address)
+		}
+	}
+
+	// Note: You may choose to implement a future transaction subscription.
+}
+
+func (node *Node) HandleBlockchainEvent(address string) {
+	// Check if we have a WebSocket connection for this address
+	node.WebSocketMutex.RLock()
+	_, exists := node.WebSocketConnections[address]
+	node.WebSocketMutex.RUnlock()
+
+	if exists {
+		// Send balance update to the WebSocket
+		if err := node.SendBalanceUpdate(address); err != nil {
+			log.Printf("Error sending balance update for address %s: %v", address, err)
+		} else {
+			log.Printf("Balance update sent for address %s", address)
+		}
+	}
 }
 
 func (node *Node) writePump(conn *WebSocketConnection, address string) {
@@ -684,22 +712,6 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 	}
 }
 
-func (node *Node) startPeriodicBalanceUpdates(address string) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := node.SendBalanceUpdate(address); err != nil {
-				log.Printf("Error sending periodic balance update for address %s: %v", address, err)
-			} else {
-				log.Printf("Sent periodic balance update for address: %s", address)
-			}
-		}
-	}
-}
-
 const NANO_THRYLOS_PER_THRYLOS = 1e7
 
 type BalanceUpdateRequest struct {
@@ -742,63 +754,52 @@ func (node *Node) AddPendingBalanceUpdate(address string, balance int64) {
 func (node *Node) SendBalanceUpdate(address string) error {
 	balance, err := node.Blockchain.GetBalance(address)
 	if err != nil {
-		log.Printf("Failed to get balance for address %s: %v", address, err)
-		return err
+		return fmt.Errorf("failed to get balance for %s: %v", address, err)
 	}
 
-	// Convert balance to int64 for nanoTHRYLOS
-	balanceNano := balance.IntPart()
+	// Convert THRYLOS to nanoTHRYLOS
+	balanceNano := balance.Mul(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS))
 
-	// Calculate THRYLOS balance
-	balanceThrylos := balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS)).InexactFloat64()
+	// Prepare the update message
+	update := struct {
+		Address        string  `json:"blockchainAddress"`
+		Balance        int64   `json:"balance"`
+		BalanceThrylos float64 `json:"balanceThrylos"`
+	}{
+		Address:        address,
+		Balance:        balanceNano.IntPart(),
+		BalanceThrylos: balance.InexactFloat64(),
+	}
 
-	log.Printf("Preparing balance update for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-		address, balanceNano, balanceThrylos)
+	// Marshal the update to JSON
+	jsonUpdate, err := json.Marshal(update)
+	if err != nil {
+		return fmt.Errorf("failed to marshal balance update: %v", err)
+	}
 
-	// Check if the balance has changed
-	if node.LastSentBalances[address] != balanceNano {
-		response := struct {
-			BlockchainAddress string  `json:"blockchainAddress"`
-			Balance           int64   `json:"balance"`
-			BalanceThrylos    float64 `json:"balanceThrylos"`
-		}{
-			BlockchainAddress: address,
-			Balance:           balanceNano,
-			BalanceThrylos:    balanceThrylos,
-		}
+	node.WebSocketMutex.RLock()
+	conn, exists := node.WebSocketConnections[address]
+	node.WebSocketMutex.RUnlock()
 
-		jsonResponse, err := json.Marshal(response)
-		if err != nil {
-			log.Printf("Failed to marshal balance update for address %s: %v", address, err)
-			return fmt.Errorf("failed to marshal balance update: %v", err)
-		}
+	if !exists {
+		return fmt.Errorf("no WebSocket connection found for address: %s", address)
+	}
 
-		node.WebSocketMutex.Lock()
-		conn, ok := node.WebSocketConnections[address]
-		node.WebSocketMutex.Unlock()
-
-		if !ok {
-			// Store the update for offline recipients
-			node.AddPendingBalanceUpdate(address, balanceNano)
-			return nil
-		}
-
-		// Send the update to connected recipients
-		select {
-		case conn.send <- jsonResponse:
-			log.Printf("Balance update sent successfully for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-				address, response.Balance, response.BalanceThrylos)
-			node.LastSentBalances[address] = balanceNano
-		default:
-			log.Printf("WebSocket send buffer full for address %s", address)
-			return fmt.Errorf("WebSocket send buffer full for address %s", address)
-		}
-	} else {
-		log.Printf("Balance unchanged for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			address, balanceNano, balanceThrylos)
+	select {
+	case conn.send <- jsonUpdate:
+		log.Printf("Balance update sent successfully for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, balanceNano.IntPart(), balance.InexactFloat64())
+	default:
+		return fmt.Errorf("WebSocket send buffer full for address: %s", address)
 	}
 
 	return nil
+}
+
+func (node *Node) handleBalanceUpdate(address string) {
+	if err := node.SendBalanceUpdate(address); err != nil {
+		log.Printf("Failed to send balance update for %s: %v", address, err)
+	}
 }
 
 func (node *Node) GetPendingBalanceUpdates(address string) []PendingBalanceUpdate {
@@ -1351,6 +1352,12 @@ func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Stake delegated successfully"))
 }
 
+func sendJSONErrorResponse(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
 const MinTransactionAmount int64 = 1 * NanoThrylosPerThrylos // 1 THRYLOS in nanoTHRYLOS
@@ -1364,7 +1371,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	if n.Database == nil {
 		log.Printf("Error: Database interface is nil in ProcessSignedTransactionHandler")
-		sendErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
+		sendJSONErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
 		return
 	}
 	log.Printf("Database is initialized in ProcessSignedTransactionHandler")
@@ -1373,47 +1380,47 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
-		sendErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// Parse the JWT without verifying
 	token, _, err := new(jwt.Parser).ParseUnverified(requestData.Token, jwt.MapClaims{})
 	if err != nil {
-		sendErrorResponse(w, "Invalid token format: "+err.Error(), http.StatusUnauthorized)
+		sendJSONErrorResponse(w, "Invalid token format: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		sendErrorResponse(w, "Invalid token claims", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid token claims", http.StatusBadRequest)
 		return
 	}
 
 	// Extract the sender from the claims
 	sender, ok := claims["sender"].(string)
 	if !ok {
-		sendErrorResponse(w, "Invalid sender in token", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid sender in token", http.StatusBadRequest)
 		return
 	}
 
 	// Fetch the public key for the sender
 	publicKey, err := n.RetrievePublicKey(sender)
 	if err != nil {
-		sendErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
+		sendJSONErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Verify the JWT signature
 	parts := strings.Split(requestData.Token, ".")
 	if len(parts) != 3 {
-		sendErrorResponse(w, "Invalid token format", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid token format", http.StatusBadRequest)
 		return
 	}
 
 	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		sendErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1422,7 +1429,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	log.Printf("Verifying JWT signature for sender: %s", sender)
 	if !ed25519.Verify(publicKey, message, signatureBytes) {
 		log.Printf("JWT signature verification failed for sender: %s", sender)
-		sendErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
+		sendJSONErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	}
 	log.Printf("JWT signature verified successfully for sender: %s", sender)
@@ -1434,7 +1441,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
 		transactionData.GasFee = int(gasFeeFloat)
 	} else {
-		sendErrorResponse(w, "Invalid gasfee in token", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid gasfee in token", http.StatusBadRequest)
 		return
 	}
 
@@ -1445,28 +1452,28 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	if timestampFloat, ok := claims["timestamp"].(float64); ok {
 		transactionData.Timestamp = int64(timestampFloat)
 	} else {
-		sendErrorResponse(w, "Invalid timestamp in token", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid timestamp in token", http.StatusBadRequest)
 		return
 	}
 
 	// Parse inputs and outputs
 	inputsJSON, err := json.Marshal(claims["inputs"])
 	if err != nil {
-		sendErrorResponse(w, "Invalid inputs in token: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid inputs in token: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
-		sendErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	outputsJSON, err := json.Marshal(claims["outputs"])
 	if err != nil {
-		sendErrorResponse(w, "Invalid outputs in token: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid outputs in token: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
-		sendErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1530,7 +1537,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	if totalOutputAmount < MinTransactionAmount {
-		sendErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d THRYLOS", MinTransactionAmount), http.StatusBadRequest)
+		sendJSONErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d THRYLOS", MinTransactionAmount), http.StatusBadRequest)
 		return
 	}
 
@@ -1608,6 +1615,40 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
 
+}
+
+func (n *Node) updateBalances(tx *thrylos.Transaction) error {
+	// Update sender's balance
+	senderBalance, err := n.Blockchain.GetBalance(tx.Sender)
+	if err != nil {
+		return fmt.Errorf("failed to get sender balance: %v", err)
+	}
+	log.Printf("Updated sender (%s) balance: %s", tx.Sender, senderBalance.String())
+
+	// Update recipients' balances
+	for _, output := range tx.Outputs {
+		recipientBalance, err := n.Blockchain.GetBalance(output.OwnerAddress)
+		if err != nil {
+			return fmt.Errorf("failed to get recipient balance: %v", err)
+		}
+		log.Printf("Updated recipient (%s) balance: %s", output.OwnerAddress, recipientBalance.String())
+	}
+
+	return nil
+}
+
+func (node *Node) notifyBalanceUpdates(tx *thrylos.Transaction) {
+	addresses := make(map[string]bool)
+	addresses[tx.Sender] = true
+	for _, output := range tx.Outputs {
+		addresses[output.OwnerAddress] = true
+	}
+
+	for address := range addresses {
+		if err := node.SendBalanceUpdate(address); err != nil {
+			log.Printf("Failed to send balance update for %s: %v", address, err)
+		}
+	}
 }
 
 func (node *Node) ProcessConfirmedTransactions(block *Block) {

@@ -103,8 +103,10 @@ type Blockchain struct {
 	Network      *Network
 	ShardManager *ShardManager
 
-	ValidatorKeys *ValidatorKeyStore
-	TestMode      bool
+	ValidatorKeys          *ValidatorKeyStore
+	TestMode               bool
+	OnTransactionProcessed func(*thrylos.Transaction)
+	OnBalanceUpdate        func(address string, balance decimal.Decimal)
 }
 
 // NewTransaction creates a new transaction
@@ -630,25 +632,24 @@ func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
 }
 
 func (bc *Blockchain) GetBalance(address string) (decimal.Decimal, error) {
+	balance := decimal.Zero
 	utxos, err := bc.Database.GetUTXOsForAddress(address)
 	if err != nil {
-		log.Printf("Error fetching UTXOs for address %s: %v", address, err)
 		return decimal.Zero, err
 	}
 
-	balance := decimal.Zero
-	log.Printf("Calculating balance for address %s", address)
 	for _, utxo := range utxos {
 		if !utxo.IsSpent {
 			balance = balance.Add(decimal.NewFromInt(utxo.Amount))
-			log.Printf("Added UTXO amount: %d, New balance: %s", utxo.Amount, balance)
 		}
 	}
 
-	log.Printf("Final balance for %s: %s nanoTHRYLOS (%.7f THRYLOS)",
-		address, balance.String(), balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS)))
+	// Assuming utxo.Amount is in nanoTHRYLOS, convert to THRYLOS
+	balanceThrylos := balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS))
 
-	return balance, nil
+	log.Printf("Calculated balance for %s: %s THRYLOS", address, balanceThrylos.String())
+
+	return balanceThrylos, nil
 }
 
 // ConvertToThrylos converts nanoTHRYLOS to THRYLOS
@@ -1062,34 +1063,40 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	}
 	bc.TOBManager.UpdateNetworkConditions(currentMetrics)
 
-	// The TOBManager now handles updating the ConsensusManager internally
 	currentBlockTime := bc.TOBManager.GetCurrentBlockTime()
 
 	log.Printf("Processing %d pending transactions with block time %v", len(pendingTransactions), currentBlockTime)
 
 	successfulTransactions := []*thrylos.Transaction{}
 
-	for _, tx := range pendingTransactions {
-		log.Printf("Processing transaction %s", tx.Id)
+	// Start a database transaction for processing all transactions
+	txContext, err := bc.Database.BeginTransaction()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin database transaction: %v", err)
+	}
+	defer bc.Database.RollbackTransaction(txContext)
 
-		sharedTx, err := shared.ConvertThrylosTransactionToLocal(tx)
-		if err != nil {
-			log.Printf("Failed to convert transaction %s: %v", tx.Id, err)
+	for _, tx := range pendingTransactions {
+		// Verify transaction
+		isValid, err := bc.VerifyTransaction(tx)
+		if err != nil || !isValid {
+			log.Printf("Invalid transaction %s: %v", tx.Id, err)
 			continue
 		}
 
-		// Process and store the transaction
-		err = shared.ProcessTransactionsBatch([]*shared.Transaction{&sharedTx}, bc.Database)
+		// Process transaction (update UTXOs)
+		err = bc.processTransactionInBlock(txContext, tx)
 		if err != nil {
 			log.Printf("Failed to process transaction %s: %v", tx.Id, err)
-			// Add the transaction back to the pending pool
-			bc.Mu.Lock()
-			bc.PendingTransactions = append(bc.PendingTransactions, tx)
-			bc.Mu.Unlock()
 			continue
 		}
+
 		successfulTransactions = append(successfulTransactions, tx)
-		log.Printf("Transaction %s processed successfully", tx.Id)
+	}
+
+	// Commit the database transaction
+	if err := bc.Database.CommitTransaction(txContext); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %v", err)
 	}
 
 	log.Printf("%d out of %d transactions processed successfully", len(successfulTransactions), len(pendingTransactions))
@@ -1127,18 +1134,85 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	bc.Blocks = append(bc.Blocks, signedBlock)
 	bc.Mu.Unlock()
 
-	// Update transaction statuses
 	for _, tx := range signedBlock.Transactions {
 		if err := bc.UpdateTransactionStatus(tx.Id, "included", signedBlock.Hash); err != nil {
 			log.Printf("Error updating transaction status: %v", err)
 		}
 		log.Printf("Transaction %s included in block %x", tx.Id, signedBlock.Hash)
+
+		// Notify about processed transaction
+		if bc.OnTransactionProcessed != nil {
+			bc.OnTransactionProcessed(tx)
+		}
+	}
+
+	// Update transaction statuses and notify balance updates
+	for _, tx := range signedBlock.Transactions {
+		if err := bc.UpdateTransactionStatus(tx.Id, "included", signedBlock.Hash); err != nil {
+			log.Printf("Error updating transaction status: %v", err)
+		}
+		log.Printf("Transaction %s included in block %x", tx.Id, signedBlock.Hash)
+
+		// Notify balance updates
+		bc.notifyBalanceUpdates(tx)
 	}
 
 	// After adding a new block, we might want to update the active validator set
 	bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
 
 	return signedBlock, nil
+}
+
+func (bc *Blockchain) processTransactionInBlock(txContext *shared.TransactionContext, tx *thrylos.Transaction) error {
+	// Mark input UTXOs as spent
+	for _, input := range tx.Inputs {
+		utxo := shared.UTXO{
+			TransactionID: input.TransactionId,
+			Index:         int(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        int64(input.Amount),
+		}
+		if err := bc.Database.MarkUTXOAsSpent(txContext, utxo); err != nil {
+			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
+		}
+	}
+
+	// Create new UTXOs for outputs
+	for i, output := range tx.Outputs {
+		newUTXO := shared.UTXO{
+			TransactionID: tx.Id,
+			Index:         i,
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        int64(output.Amount),
+			IsSpent:       false,
+		}
+		if err := bc.Database.AddNewUTXO(txContext, newUTXO); err != nil {
+			return fmt.Errorf("failed to create new UTXO: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func (bc *Blockchain) notifyBalanceUpdates(tx *thrylos.Transaction) {
+	if bc.OnBalanceUpdate == nil {
+		return
+	}
+
+	addresses := make(map[string]bool)
+	addresses[tx.Sender] = true
+	for _, output := range tx.Outputs {
+		addresses[output.OwnerAddress] = true
+	}
+
+	for address := range addresses {
+		balance, err := bc.GetBalance(address)
+		if err != nil {
+			log.Printf("Failed to get balance for %s: %v", address, err)
+			continue
+		}
+		bc.OnBalanceUpdate(address, balance)
+	}
 }
 
 func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, error) {
@@ -1917,13 +1991,15 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 
 	// Update UTXO set
 	for _, tx := range signedBlock.Transactions {
+		// Remove spent UTXOs
 		for _, input := range tx.GetInputs() {
 			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
 			delete(bc.UTXOs, utxoKey)
 		}
+		// Add new UTXOs
 		for index, output := range tx.GetOutputs() {
 			utxoKey := fmt.Sprintf("%s:%d", tx.GetId(), index)
-			bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], output)
+			bc.UTXOs[utxoKey] = []*thrylos.UTXO{output}
 		}
 	}
 
@@ -1946,7 +2022,24 @@ func (bc *Blockchain) AddBlock(transactions []*thrylos.Transaction, validator st
 		bc.OnNewBlock(signedBlock)
 	}
 
+	// Update balances for affected addresses
+	bc.updateBalancesForBlock(signedBlock)
+
 	return true, nil
+}
+
+func (bc *Blockchain) updateBalancesForBlock(block *Block) {
+	for _, tx := range block.Transactions {
+		// Update sender's balance
+		senderBalance, _ := bc.GetBalance(tx.Sender)
+		bc.Stakeholders[tx.Sender] = senderBalance.IntPart()
+
+		// Update recipients' balances
+		for _, output := range tx.Outputs {
+			recipientBalance, _ := bc.GetBalance(output.OwnerAddress)
+			bc.Stakeholders[output.OwnerAddress] = recipientBalance.IntPart()
+		}
+	}
 }
 
 // RewardValidator rewards the validator with new tokens
