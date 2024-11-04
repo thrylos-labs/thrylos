@@ -757,21 +757,21 @@ func (node *Node) SendBalanceUpdate(address string) error {
 		return fmt.Errorf("failed to get balance for %s: %v", address, err)
 	}
 
-	// Convert THRYLOS to nanoTHRYLOS
-	balanceNano := balance.Mul(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS))
+	// Convert balance (decimal.Decimal) to appropriate types
+	balanceInt64 := balance.IntPart() // Convert to int64 for the struct
+	balanceThrylos := balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS))
 
 	// Prepare the update message
 	update := struct {
 		Address        string  `json:"blockchainAddress"`
-		Balance        int64   `json:"balance"`
-		BalanceThrylos float64 `json:"balanceThrylos"`
+		Balance        int64   `json:"balance"`        // nanoTHRYLOS
+		BalanceThrylos float64 `json:"balanceThrylos"` // THRYLOS
 	}{
 		Address:        address,
-		Balance:        balanceNano.IntPart(),
-		BalanceThrylos: balance.InexactFloat64(),
+		Balance:        balanceInt64, // Use the converted int64 value
+		BalanceThrylos: balanceThrylos.InexactFloat64(),
 	}
 
-	// Marshal the update to JSON
 	jsonUpdate, err := json.Marshal(update)
 	if err != nil {
 		return fmt.Errorf("failed to marshal balance update: %v", err)
@@ -787,8 +787,8 @@ func (node *Node) SendBalanceUpdate(address string) error {
 
 	select {
 	case conn.send <- jsonUpdate:
-		log.Printf("Balance update sent successfully for address %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			address, balanceNano.IntPart(), balance.InexactFloat64())
+		log.Printf("Balance update sent for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, balanceInt64, balanceThrylos.InexactFloat64())
 	default:
 		return fmt.Errorf("WebSocket send buffer full for address: %s", address)
 	}
@@ -799,6 +799,10 @@ func (node *Node) SendBalanceUpdate(address string) error {
 func (node *Node) handleBalanceUpdate(address string) {
 	if err := node.SendBalanceUpdate(address); err != nil {
 		log.Printf("Failed to send balance update for %s: %v", address, err)
+	} else {
+		balance, _ := node.GetBalance(address)
+		log.Printf("Successfully sent balance update for %s. Current balance: %d nanoTHRYLOS",
+			address, balance)
 	}
 }
 
@@ -1574,6 +1578,20 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Queue balance updates with retry mechanism
+	addresses := make(map[string]bool)
+	addresses[transactionData.Sender] = true
+	for _, output := range transactionData.Outputs {
+		addresses[output.OwnerAddress] = true
+	}
+
+	for address := range addresses {
+		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+			Address: address,
+			Retries: 3,
+		}
+	}
+
 	if err := n.BroadcastTransaction(thrylosTx); err != nil {
 		log.Printf("Failed to broadcast transaction: %v", err)
 		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
@@ -1653,26 +1671,33 @@ func (node *Node) notifyBalanceUpdates(tx *thrylos.Transaction) {
 
 func (node *Node) ProcessConfirmedTransactions(block *Block) {
 	log.Printf("Processing confirmed transactions for block %s", block.Hash)
-	for i, tx := range block.Transactions {
-		log.Printf("Processing transaction %d: %s", i, tx.Id)
 
-		// Update sender's balance
-		log.Printf("Updating balance for sender: %s", tx.Sender)
-		node.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-			Address: tx.Sender,
-			Retries: 3,
-		}
+	// Track all addresses that need updates
+	addressesToUpdate := make(map[string]bool)
 
-		// Update recipients' balances
-		for j, output := range tx.Outputs {
-			log.Printf("Updating balance for recipient %d: %s", j, output.OwnerAddress)
-			node.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-				Address: output.OwnerAddress,
-				Retries: 3,
-			}
+	for _, tx := range block.Transactions {
+		// Add sender to update list
+		addressesToUpdate[tx.Sender] = true
+
+		// Add all recipients to update list
+		for _, output := range tx.Outputs {
+			addressesToUpdate[output.OwnerAddress] = true
 		}
 	}
-	log.Printf("Finished processing confirmed transactions for block %s", block.Hash)
+
+	// Send updates for all affected addresses
+	for address := range addressesToUpdate {
+		// Try multiple times with exponential backoff
+		go func(addr string) {
+			for i := 0; i < 3; i++ {
+				if err := node.SendBalanceUpdate(addr); err == nil {
+					return
+				}
+				time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second)
+			}
+			log.Printf("Failed to update balance for address %s after 3 attempts", addr)
+		}(address)
+	}
 }
 
 func (node *Node) UpdateBalanceAsync(address string) {
