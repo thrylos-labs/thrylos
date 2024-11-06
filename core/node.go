@@ -519,24 +519,15 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		return 0, err
 	}
 
-	log.Printf("Found %d UTXOs for address %s", len(utxos), address)
-
 	balance := int64(0)
 	for i, utxo := range utxos {
 		if !utxo.IsSpent {
 			balance += utxo.Amount
 			log.Printf("UTXO %d: Amount = %d, TransactionID = %s", i, utxo.Amount, utxo.TransactionID)
-		} else {
-			log.Printf("Skipping spent UTXO %d: TransactionID = %s", i, utxo.TransactionID)
 		}
 	}
 
-	if balance < 0 {
-		return 0, fmt.Errorf("negative balance detected for address %s", address)
-	}
-
 	log.Printf("Final balance for %s: %s", address, formatBalance(balance))
-
 	return balance, nil
 }
 
@@ -752,24 +743,23 @@ func (node *Node) AddPendingBalanceUpdate(address string, balance int64) {
 }
 
 func (node *Node) SendBalanceUpdate(address string) error {
-	balance, err := node.Blockchain.GetBalance(address)
+	balanceInNano, err := node.GetBalance(address) // This returns nanoTHRYLOS
 	if err != nil {
 		return fmt.Errorf("failed to get balance for %s: %v", address, err)
 	}
 
-	// Convert balance (decimal.Decimal) to appropriate types
-	balanceInt64 := balance.IntPart() // Convert to int64 for the struct
-	balanceThrylos := balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS))
+	// Convert to THRYLOS
+	balanceInThrylos := float64(balanceInNano) / float64(NANO_THRYLOS_PER_THRYLOS)
 
-	// Prepare the update message
+	// Create update message
 	update := struct {
 		Address        string  `json:"blockchainAddress"`
-		Balance        int64   `json:"balance"`        // nanoTHRYLOS
-		BalanceThrylos float64 `json:"balanceThrylos"` // THRYLOS
+		Balance        int64   `json:"balance"`        // In THRYLOS
+		BalanceThrylos float64 `json:"balanceThrylos"` // In THRYLOS
 	}{
 		Address:        address,
-		Balance:        balanceInt64, // Use the converted int64 value
-		BalanceThrylos: balanceThrylos.InexactFloat64(),
+		Balance:        balanceInNano,    // Keep original nanoTHRYLOS value
+		BalanceThrylos: balanceInThrylos, // Send converted THRYLOS value
 	}
 
 	jsonUpdate, err := json.Marshal(update)
@@ -788,7 +778,7 @@ func (node *Node) SendBalanceUpdate(address string) error {
 	select {
 	case conn.send <- jsonUpdate:
 		log.Printf("Balance update sent for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			address, balanceInt64, balanceThrylos.InexactFloat64())
+			address, balanceInNano, balanceInThrylos)
 	default:
 		return fmt.Errorf("WebSocket send buffer full for address: %s", address)
 	}
