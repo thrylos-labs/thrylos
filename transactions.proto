@@ -29,6 +29,15 @@ message UTXO {
   bool is_spent = 5;
 }
 
+// WebSocket balance update message
+message BalanceMessage {
+  string blockchain_address = 1; // The address receiving the balance update
+  int64 balance = 2; // Balance in nanoTHRYLOS
+  double balance_thrylos = 3; // Balance converted to THRYLOS
+}
+
+// Update your BalanceResponse to be more consistent
+
 service BlockchainService {
   rpc SubmitTransaction(TransactionRequest) returns (TransactionResponse);
   rpc GetBlock(GetBlockRequest) returns (BlockResponse);
@@ -40,6 +49,11 @@ service BlockchainService {
   rpc GetPendingTransactions(GetPendingTransactionsRequest) returns (PendingTransactionsResponse);
   rpc GetBlockByHash(GetBlockByHashRequest) returns (BlockResponse);
   rpc GetBlockByIndex(GetBlockByIndexRequest) returns (BlockResponse);
+  rpc SubscribeToBalanceUpdates(BalanceSubscriptionRequest) returns (stream BalanceMessage);
+}
+
+message BalanceSubscriptionRequest {
+  string blockchain_address = 1;
 }
 
 message GetBlockByHashRequest {
@@ -85,7 +99,9 @@ message GetTransactionRequest {
 }
 
 message BalanceResponse {
-  double balance = 1;
+  int64 balance = 1; // Balance in nanoTHRYLOS
+  double balance_thrylos = 2; // Balance in THRYLOS
+  string blockchain_address = 3; // The address queried
 }
 
 message GetBalanceRequest {

@@ -22,7 +22,6 @@ import (
 
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/shopspring/decimal"
 	"github.com/supabase-community/supabase-go"
 
 	"github.com/gorilla/mux"
@@ -582,6 +581,15 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Validate the address exists by attempting to retrieve its public key
+	_, err = node.Database.RetrievePublicKeyFromAddress(address)
+	if err != nil {
+		log.Printf("Invalid address %s: %v", address, err)
+		ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Invalid or unregistered address: %v", err)))
+		ws.Close()
+		return
+	}
+
 	log.Printf("WebSocket connection established for address: %s", address)
 
 	conn := &WebSocketConnection{ws: ws, send: make(chan []byte, 256)}
@@ -590,31 +598,13 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 	node.WebSocketConnections[address] = conn
 	node.WebSocketMutex.Unlock()
 
-	// Process any pending balance updates (optional)
-	node.ProcessPendingBalanceUpdates(address)
-
-	// Send initial balance update
+	// Send initial balance update once
 	if err := node.SendBalanceUpdate(address); err != nil {
 		log.Printf("Error sending initial balance update for address %s: %v", address, err)
 	}
 
 	go node.writePump(conn, address)
 	go node.readPump(conn, address)
-}
-
-func (node *Node) ListenForBlockchainEvents() {
-	// Subscribe to new block events using OnNewBlock callback
-	node.Blockchain.OnNewBlock = func(block *Block) {
-		log.Printf("New block detected: %s", block.Hash)
-
-		// Process transactions in the block
-		for _, tx := range block.Transactions {
-			address := tx.Sender // Replace with the actual field name
-			node.HandleBlockchainEvent(address)
-		}
-	}
-
-	// Note: You may choose to implement a future transaction subscription.
 }
 
 func (node *Node) HandleBlockchainEvent(address string) {
@@ -741,6 +731,8 @@ func (node *Node) AddPendingBalanceUpdate(address string, balance int64) {
 	})
 	log.Printf("Added pending balance update for address %s: %d nanoTHRYLOS", address, balance)
 }
+
+// Sends updates through the websocket
 
 func (node *Node) SendBalanceUpdate(address string) error {
 	balanceInNano, err := node.GetBalance(address) // This returns nanoTHRYLOS
@@ -1002,30 +994,78 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	if tx == nil {
 		return fmt.Errorf("cannot add nil transaction")
 	}
-	// Basic validation
+
+	log.Printf("=== Starting AddPendingTransaction ===")
+	log.Printf("Transaction ID: %s", tx.Id)
+
+	// Enhanced validation with logging
 	if tx.Id == "" {
+		log.Printf("Error: Transaction ID is empty")
 		return fmt.Errorf("transaction ID cannot be empty")
 	}
+	if tx.Sender == "" {
+		log.Printf("Error: Transaction sender is empty")
+		return fmt.Errorf("transaction sender cannot be empty")
+	}
+
+	// Log transaction details
+	log.Printf("Transaction Details:")
+	log.Printf("- Sender: %s", tx.Sender)
+	log.Printf("- Gas Fee: %d nanoTHRYLOS (%.7f THRYLOS)", tx.GasFee, float64(tx.GasFee)/1e7)
+	log.Printf("- Timestamp: %d", tx.Timestamp)
+
+	// Log inputs
+	log.Printf("Inputs:")
+	var totalInput int64
+	for i, input := range tx.Inputs {
+		totalInput += input.Amount
+		log.Printf("  [%d] Address: %s, Amount: %d nanoTHRYLOS (%.7f THRYLOS)",
+			i, input.OwnerAddress, input.Amount, float64(input.Amount)/1e7)
+	}
+
+	// Log outputs
+	log.Printf("Outputs:")
+	var totalOutput int64
+	for i, output := range tx.Outputs {
+		totalOutput += output.Amount
+		log.Printf("  [%d] Address: %s, Amount: %d nanoTHRYLOS (%.7f THRYLOS)",
+			i, output.OwnerAddress, output.Amount, float64(output.Amount)/1e7)
+	}
+
+	// Log totals
+	log.Printf("Total Input: %d nanoTHRYLOS (%.7f THRYLOS)", totalInput, float64(totalInput)/1e7)
+	log.Printf("Total Output: %d nanoTHRYLOS (%.7f THRYLOS)", totalOutput, float64(totalOutput)/1e7)
+	log.Printf("Total with Gas: %d nanoTHRYLOS (%.7f THRYLOS)",
+		totalOutput+int64(tx.GasFee), float64(totalOutput+int64(tx.GasFee))/1e7)
 
 	node.Blockchain.Mu.Lock()
 	defer node.Blockchain.Mu.Unlock()
 
-	// Check for duplicate transactions
+	// Check for duplicates with logging
 	for _, pendingTx := range node.Blockchain.PendingTransactions {
 		if pendingTx.Id == tx.Id {
-			log.Printf("Transaction %s already in pending pool, skipping", tx.Id)
+			log.Printf("Warning: Transaction %s already exists in pending pool, skipping", tx.Id)
 			return nil
 		}
 	}
 
+	// Add to pending transactions
 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
-	log.Printf("Transaction %s added to pending pool. Total pending: %d", tx.Id, len(node.Blockchain.PendingTransactions))
+	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
+		tx.Id, len(node.Blockchain.PendingTransactions))
 
+	// Update transaction status
 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", nil); err != nil {
-		log.Printf("Error updating transaction status: %v", err)
+		log.Printf("Warning: Error updating transaction status: %v", err)
+	} else {
+		log.Printf("Transaction status updated to 'pending'")
 	}
 
-	go node.TriggerBlockCreation() // Trigger after each transaction
+	// Trigger block creation
+	log.Printf("Triggering block creation for transaction %s", tx.Id)
+	go node.TriggerBlockCreation()
+
+	log.Printf("=== Completed AddPendingTransaction ===")
 	return nil
 }
 
@@ -1419,19 +1459,17 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	message := []byte(parts[0] + "." + parts[1])
-
-	log.Printf("Verifying JWT signature for sender: %s", sender)
 	if !ed25519.Verify(publicKey, message, signatureBytes) {
 		log.Printf("JWT signature verification failed for sender: %s", sender)
 		sendJSONErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	}
-	log.Printf("JWT signature verified successfully for sender: %s", sender)
 
-	// Continue with the rest of your existing code to process the transaction
+	// Parse transaction data from claims
 	var transactionData shared.Transaction
+	transactionData.ID = claims["id"].(string)
+	transactionData.Sender = claims["sender"].(string)
 
-	// Handle GasFee conversion (keep it in nanoTHRYLOS)
 	if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
 		transactionData.GasFee = int(gasFeeFloat)
 	} else {
@@ -1439,10 +1477,6 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	transactionData.ID = claims["id"].(string)
-	transactionData.Sender = claims["sender"].(string)
-
-	// Handle Timestamp conversion
 	if timestampFloat, ok := claims["timestamp"].(float64); ok {
 		transactionData.Timestamp = int64(timestampFloat)
 	} else {
@@ -1471,110 +1505,55 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	log.Printf("Transaction inputs before conversion:")
+	for i, input := range transactionData.Inputs {
+		log.Printf("Input %d: OwnerAddress=%s, Amount=%d", i, input.OwnerAddress, input.Amount)
+	}
+
 	thrylosTx := shared.SharedToThrylos(&transactionData)
 	if thrylosTx == nil {
-		http.Error(w, "Failed to convert transaction data", http.StatusInternalServerError)
+		sendJSONErrorResponse(w, "Failed to convert transaction data", http.StatusInternalServerError)
 		return
 	}
 
-	// Fetch the balance for the sender (ensure this returns whole THRYLOS)
+	// Add these logs after conversion
+	log.Printf("Transaction inputs after conversion:")
+	for i, input := range thrylosTx.Inputs {
+		log.Printf("Input %d: OwnerAddress=%s, Amount=%d", i, input.OwnerAddress, input.Amount)
+	}
+
+	log.Printf("Transaction data before conversion - Sender: %s", transactionData.Sender)
+	log.Printf("Transaction after conversion - Sender: %s", thrylosTx.Sender)
+
+	// Validate balance and transaction (this includes address validation)
 	balance, err := n.GetBalance(transactionData.Sender)
 	if err != nil {
 		log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
-		http.Error(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
+		sendJSONErrorResponse(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Convert all values to decimal for precise calculations
-	balanceDecimal := decimal.NewFromInt(balance)
-	totalOutputAmountNano := decimal.Zero
-	for _, output := range transactionData.Outputs {
-		totalOutputAmountNano = totalOutputAmountNano.Add(decimal.NewFromInt(int64(output.Amount)))
-	}
-
-	gasFeeNano := decimal.NewFromInt(int64(transactionData.GasFee))
-
-	// Calculate total cost in nanoTHRYLOS
-	totalCostNano := totalOutputAmountNano.Add(gasFeeNano)
-
-	// Check if balance is sufficient
-	if balanceDecimal.LessThan(totalCostNano) {
-		errorMsg := fmt.Sprintf("Insufficient balance. Required: %s nanoTHRYLOS (%.7f THRYLOS), Available: %s nanoTHRYLOS (%.7f THRYLOS)",
-			totalCostNano.String(), totalCostNano.Div(decimal.NewFromInt(NanoThrylosPerThrylos)).InexactFloat64(),
-			balanceDecimal.String(), balanceDecimal.Div(decimal.NewFromInt(NanoThrylosPerThrylos)).InexactFloat64())
-		log.Printf(errorMsg)
-		http.Error(w, errorMsg, http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Total Cost: %s nanoTHRYLOS (%.7f THRYLOS)",
-		totalCostNano.String(),
-		totalCostNano.Div(decimal.NewFromInt(NanoThrylosPerThrylos)).InexactFloat64())
-
-	// Estimate the gas
-	var gasEstimate int32
-	if transactionData.GasFee == 0 {
-		estimate, err := n.FetchGasEstimate(len(transactionData.EncryptedInputs)+len(transactionData.EncryptedOutputs), balance)
-		if err != nil {
-			http.Error(w, "Failed to fetch gas estimate: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		gasEstimate = int32(estimate)
-	} else {
-		gasEstimate = int32(transactionData.GasFee)
-	}
-
-	// Calculate total output amount (in whole THRYLOS)
-	totalOutputAmount := int64(0)
-	for _, output := range transactionData.Outputs {
-		totalOutputAmount += output.Amount // Assuming Amount is in whole THRYLOS
-	}
-
-	if totalOutputAmount < MinTransactionAmount {
-		sendJSONErrorResponse(w, fmt.Sprintf("Transaction amount too low. Minimum is %d THRYLOS", MinTransactionAmount), http.StatusBadRequest)
-		return
-	}
-
-	// Convert gas fee to THRYLOS for calculations
-	gasFeeInThrylos := float64(transactionData.GasFee) / 1e7
-
-	// Calculate total cost in THRYLOS
-	totalCost := float64(totalOutputAmount) + gasFeeInThrylos
-
-	log.Printf("Transaction details - Outputs: %d THRYLOS, Gas Fee: %d nanoTHRYLOS (%.7f THRYLOS), Total Cost: %.7f THRYLOS",
-		totalOutputAmount, transactionData.GasFee, gasFeeInThrylos, totalCost)
-
-	// Check if balance is sufficient
-	if float64(balance) < totalCost {
-		errorMsg := fmt.Sprintf("Insufficient balance. Required: %.7f THRYLOS, Available: %d THRYLOS, Transaction Amount: %d THRYLOS, Gas Fee: %.7f THRYLOS",
-			totalCost, balance, totalOutputAmount, gasFeeInThrylos)
-		log.Printf(errorMsg)
-		http.Error(w, errorMsg, http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Total Cost (Output Amount + Gas Fee): %d + %d = %d", totalOutputAmount, gasEstimate, int64(totalCost))
-
-	// Validate the transaction
 	if err := shared.ValidateAndConvertTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
 		log.Printf("Failed to validate transaction: %v", err)
-		http.Error(w, fmt.Sprintf("Failed to validate transaction: %v", err), http.StatusBadRequest)
+		sendJSONErrorResponse(w, fmt.Sprintf("Failed to validate transaction: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	// Add to pending transactions
 	if err := n.AddPendingTransaction(thrylosTx); err != nil {
 		log.Printf("Failed to add transaction to pending transactions: %v", err)
-		http.Error(w, "Failed to add transaction to pending pool: "+err.Error(), http.StatusInternalServerError)
+		sendJSONErrorResponse(w, "Failed to add transaction to pending pool: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Queue balance updates with retry mechanism
+	// Collect addresses for balance updates
 	addresses := make(map[string]bool)
 	addresses[transactionData.Sender] = true
 	for _, output := range transactionData.Outputs {
 		addresses[output.OwnerAddress] = true
 	}
 
+	// Queue initial balance updates and notifications
 	for address := range addresses {
 		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
 			Address: address,
@@ -1582,47 +1561,74 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// Schedule delayed balance check to ensure transaction processing is complete
+	time.AfterFunc(2*time.Second, func() {
+		for address := range addresses {
+			balance, err := n.GetBalance(address)
+			if err != nil {
+				log.Printf("Error getting delayed balance for %s: %v", address, err)
+				continue
+			}
+			n.notifyBalanceUpdate(address, balance)
+		}
+	})
+
 	if err := n.BroadcastTransaction(thrylosTx); err != nil {
 		log.Printf("Failed to broadcast transaction: %v", err)
 		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	time.AfterFunc(2*time.Second, func() {
-		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-			Address: transactionData.Sender,
-			Retries: 3,
-		}
-		for _, output := range transactionData.Outputs {
-			n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-				Address: output.OwnerAddress,
-				Retries: 3,
-			}
-		}
+	sendResponseProcess(w, map[string]string{
+		"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID),
 	})
+}
 
-	// Update the balance for the sender
-	go n.UpdateBalanceAsync(transactionData.Sender)
+func (n *Node) processBalanceUpdateQueue() {
+	for request := range n.balanceUpdateQueue.queue {
+		balance, err := n.GetBalance(request.Address)
+		if err != nil {
+			log.Printf("Error processing balance update for %s: %v", request.Address, err)
+			continue
+		}
 
-	// Update the balance for each output address
-	for _, output := range transactionData.Outputs {
-		go n.UpdateBalanceAsync(output.OwnerAddress)
+		n.notifyBalanceUpdate(request.Address, balance)
+	}
+}
+
+func (n *Node) validateTransactionAddresses(tx *shared.Transaction) error {
+	// Validate sender
+	_, err := n.Database.RetrievePublicKeyFromAddress(tx.Sender)
+	if err != nil {
+		log.Printf("Invalid sender address %s: %v", tx.Sender, err)
+		return fmt.Errorf("invalid sender address: %v", err)
 	}
 
-	// Instead of sending immediate updates, add addresses to a queue for later updating
-	n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-		Address: transactionData.Sender,
-		Retries: 3,
-	}
-	for _, output := range transactionData.Outputs {
-		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-			Address: output.OwnerAddress,
-			Retries: 3,
+	// Validate all output addresses
+	for _, output := range tx.Outputs {
+		_, err := n.Database.RetrievePublicKeyFromAddress(output.OwnerAddress)
+		if err != nil {
+			log.Printf("Invalid output address %s: %v", output.OwnerAddress, err)
+			return fmt.Errorf("invalid output address %s: %v", output.OwnerAddress, err)
 		}
 	}
 
-	sendResponseProcess(w, map[string]string{"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID)})
+	return nil
+}
 
+func (node *Node) validateRecipientAddress(address string) error {
+	if address == "" {
+		return fmt.Errorf("empty recipient address")
+	}
+
+	// Only validate that the address exists in the system
+	_, err := node.Database.RetrievePublicKeyFromAddress(address)
+	if err != nil {
+		return fmt.Errorf("recipient not registered: %v", err)
+	}
+
+	// Remove WebSocket connection check - recipients don't need to be connected
+	return nil
 }
 
 func (n *Node) updateBalances(tx *thrylos.Transaction) error {
@@ -1645,17 +1651,35 @@ func (n *Node) updateBalances(tx *thrylos.Transaction) error {
 	return nil
 }
 
-func (node *Node) notifyBalanceUpdates(tx *thrylos.Transaction) {
-	addresses := make(map[string]bool)
-	addresses[tx.Sender] = true
-	for _, output := range tx.Outputs {
-		addresses[output.OwnerAddress] = true
+func (node *Node) notifyBalanceUpdate(address string, balance int64) {
+	node.WebSocketMutex.RLock()
+	conn, exists := node.WebSocketConnections[address]
+	node.WebSocketMutex.RUnlock()
+
+	if !exists || conn == nil {
+		log.Printf("Address %s is offline - balance update will be received when they reconnect", address)
+		return
 	}
 
-	for address := range addresses {
-		if err := node.SendBalanceUpdate(address); err != nil {
-			log.Printf("Failed to send balance update for %s: %v", address, err)
-		}
+	// Use the protobuf-generated message type
+	balanceMsg := &thrylos.BalanceMessage{
+		BlockchainAddress: address,
+		Balance:           balance,
+		BalanceThrylos:    float64(balance) / 1e7,
+	}
+
+	msgBytes, err := json.Marshal(balanceMsg)
+	if err != nil {
+		log.Printf("Error marshaling balance message for %s: %v", address, err)
+		return
+	}
+
+	select {
+	case conn.send <- msgBytes:
+		log.Printf("Successfully sent balance update for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+			address, balance, balanceMsg.BalanceThrylos)
+	default:
+		log.Printf("Channel full or closed for %s - balance update skipped", address)
 	}
 }
 

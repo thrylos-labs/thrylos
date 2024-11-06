@@ -281,38 +281,78 @@ func HashData(data []byte) []byte {
 }
 
 func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
-	// Decode the Base64 signature
-	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
-	if err != nil {
-		log.Fatalf("Failed to decode signature: %v", err)
-		// Handle error appropriately
-	}
-
 	if tx == nil {
+		log.Printf("SharedToThrylos received nil transaction")
 		return nil
 	}
 
-	return &thrylos.Transaction{
+	log.Printf("Converting transaction - Sender before: %s", tx.Sender)
+
+	signatureBytes, err := base64.StdEncoding.DecodeString(tx.Signature)
+	if err != nil {
+		log.Printf("Failed to decode signature: %v", err)
+		return nil
+	}
+
+	thrylosTx := &thrylos.Transaction{
 		Id:            tx.ID,
+		Sender:        tx.Sender,
 		Timestamp:     tx.Timestamp,
 		Inputs:        SharedToThrylosInputs(tx.Inputs),
 		Outputs:       SharedToThrylosOutputs(tx.Outputs),
 		Signature:     signatureBytes,
 		PreviousTxIds: tx.PreviousTxIds,
-		GasFee:        int32(tx.GasFee), // Convert int to int32
+		GasFee:        int32(tx.GasFee),
 	}
+
+	log.Printf("Converting transaction - Sender after: %s", thrylosTx.Sender)
+
+	return thrylosTx
 }
 
 func SharedToThrylosInputs(inputs []UTXO) []*thrylos.UTXO {
+	if len(inputs) == 0 {
+		log.Printf("WARNING: No inputs provided to SharedToThrylosInputs")
+		return nil
+	}
+
+	log.Printf("Converting %d inputs to Thrylos format", len(inputs))
 	thrylosInputs := make([]*thrylos.UTXO, len(inputs))
+
 	for i, input := range inputs {
+		// Detailed input logging
+		log.Printf("Input %d details:", i)
+		log.Printf("- TransactionID: %s", input.TransactionID)
+		log.Printf("- Index: %d", input.Index)
+		log.Printf("- OwnerAddress: %s", input.OwnerAddress)
+		log.Printf("- Amount: %d", input.Amount)
+		log.Printf("- IsSpent: %v", input.IsSpent)
+
+		// Validate input before conversion
+		if input.OwnerAddress == "" {
+			log.Printf("WARNING: Empty owner address for input %d", i)
+		}
+		if err := input.ValidateUTXO(); err != nil {
+			log.Printf("WARNING: Invalid UTXO for input %d: %v", i, err)
+		}
+
 		thrylosInputs[i] = &thrylos.UTXO{
 			TransactionId: input.TransactionID,
-			Index:         int32(input.Index), // Assuming thrylos.UTXO expects an int32 for Index
+			Index:         int32(input.Index),
 			OwnerAddress:  input.OwnerAddress,
-			Amount:        int64(input.Amount), // Assuming thrylos.UTXO expects an int64 for Amount
+			Amount:        input.Amount,
+			IsSpent:       input.IsSpent,
 		}
+
+		// Verify conversion
+		log.Printf("Converted UTXO %d details:", i)
+		log.Printf("- TransactionId: %s", thrylosInputs[i].TransactionId)
+		log.Printf("- Index: %d", thrylosInputs[i].Index)
+		log.Printf("- OwnerAddress: %s", thrylosInputs[i].OwnerAddress)
+		log.Printf("- Amount: %d", thrylosInputs[i].Amount)
+		log.Printf("- IsSpent: %v", thrylosInputs[i].IsSpent)
 	}
+
 	return thrylosInputs
 }
 
@@ -463,7 +503,12 @@ func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Trans
 }
 
 // ConvertThrylosTransactionToLocal converts a thrylos.Transaction back to your local Transaction type
+// Updated
 func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, error) {
+	if tx.Sender == "" {
+		return Transaction{}, fmt.Errorf("transaction sender is empty")
+	}
+
 	localInputs := make([]UTXO, len(tx.Inputs))
 	for i, input := range tx.Inputs {
 		localInputs[i] = UTXO{
@@ -488,12 +533,13 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 
 	return Transaction{
 		ID:            tx.Id,
+		Sender:        tx.Sender,
 		Inputs:        localInputs,
 		Outputs:       localOutputs,
 		Timestamp:     tx.Timestamp,
-		Signature:     signatureEncoded, // Encode signature to base64 string
-		PreviousTxIds: tx.PreviousTxIds, // Match this with the Protobuf field
-		GasFee:        int(tx.GasFee),   // Convert the gas fee
+		Signature:     signatureEncoded,
+		PreviousTxIds: tx.PreviousTxIds,
+		GasFee:        int(tx.GasFee),
 	}, nil
 }
 
@@ -995,6 +1041,28 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 		return fmt.Errorf("gas estimator is nil")
 	}
 
+	// Add address validation before conversion
+	if tx.Sender == "" {
+		return fmt.Errorf("transaction sender is empty")
+	}
+
+	// Validate sender exists in system
+	_, err := db.RetrievePublicKeyFromAddress(tx.Sender)
+	if err != nil {
+		return fmt.Errorf("invalid sender address: %v", err)
+	}
+
+	// Validate output addresses exist (but don't require WebSocket connection)
+	for _, output := range tx.Outputs {
+		if output.OwnerAddress == "" {
+			return fmt.Errorf("output address is empty")
+		}
+		_, err := db.RetrievePublicKeyFromAddress(output.OwnerAddress)
+		if err != nil {
+			return fmt.Errorf("invalid output address %s: %v", output.OwnerAddress, err)
+		}
+	}
+
 	// Select tips (previous transactions) to link this transaction
 	tips, err := selectTips()
 	if err != nil {
@@ -1220,11 +1288,23 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 }
 
 func validateInputsAndOutputs(tx *Transaction) error {
+	if tx.Sender == "" {
+		return fmt.Errorf("transaction sender is empty")
+	}
+
 	if len(tx.Inputs) == 0 {
 		return fmt.Errorf("transaction has no inputs")
 	}
 	if len(tx.Outputs) == 0 {
 		return fmt.Errorf("transaction has no outputs")
+	}
+
+	// Validate that all inputs belong to sender
+	for _, input := range tx.Inputs {
+		if input.OwnerAddress != tx.Sender {
+			return fmt.Errorf("input address %s does not match sender %s",
+				input.OwnerAddress, tx.Sender)
+		}
 	}
 
 	var inputSum, outputSum int64
