@@ -15,7 +15,7 @@ message Transaction {
   repeated string previous_tx_ids = 8; // Consider if large, split loading.
   bytes encrypted_aes_key = 9; // Keep as bytes, ensure encryption keys are not logged or misused.
   string sender = 10;
-  int32 gas_fee = 11; // Added gas fee field
+  int32 gasfee = 11; // Added gas fee field
   string status = 12; // New field for transaction status
   bytes block_hash = 13; // Changed from string to bytes
 }

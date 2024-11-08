@@ -666,16 +666,24 @@ func (bdb *BlockchainDB) GetBalance(address string, utxos map[string][]shared.UT
 	var balance int64
 	userUTXOs, ok := utxos[address]
 	if !ok {
+		log.Printf("No UTXOs found for address: %s", address)
 		return 0, nil
 	}
-	for _, utxo := range userUTXOs {
+
+	log.Printf("Processing UTXOs for address %s:", address)
+	for i, utxo := range userUTXOs {
+		utxoKey := generateUTXOKey(address, utxo.TransactionID, utxo.Index)
 		if !utxo.IsSpent {
-			balance += utxo.Amount // Assuming Amount is already in nanoTHRYLOS
-			log.Printf("Adding UTXO to balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-				address, utxo.Amount, float64(utxo.Amount)/1e7)
+			balance += utxo.Amount
+			log.Printf("UTXO %d [%s]: Amount=%d nanoTHRYLOS (%.7f THRYLOS) IsSpent=%v",
+				i, utxoKey, utxo.Amount, float64(utxo.Amount)/1e7, utxo.IsSpent)
+		} else {
+			log.Printf("Skipping spent UTXO %d [%s]: Amount=%d IsSpent=%v",
+				i, utxoKey, utxo.Amount, utxo.IsSpent)
 		}
 	}
-	log.Printf("Final calculated balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
+
+	log.Printf("Final balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
 		address, balance, float64(balance)/1e7)
 	return balance, nil
 }
@@ -986,14 +994,32 @@ func (bdb *BlockchainDB) UpdateUTXOs(inputs []shared.UTXO, outputs []shared.UTXO
 }
 
 // MarkUTXOAsSpent marks a UTXO as spent in the database.
-func (bdb *BlockchainDB) MarkUTXOAsSpent(txn *shared.TransactionContext, utxo shared.UTXO) error {
-	key := []byte(fmt.Sprintf("utxo-%s-%d", utxo.TransactionID, utxo.Index))
-	utxo.IsSpent = true
-	utxoData, err := json.Marshal(utxo)
-	if err != nil {
-		return err
+func generateUTXOKey(address string, transactionID string, index int) string {
+	if transactionID == "" {
+		// For genesis or initial UTXOs, use a special format
+		return fmt.Sprintf("utxo-%s-%d", address, index)
 	}
-	return txn.Txn.Set(key, utxoData)
+	return fmt.Sprintf("utxo-%s-%s-%d", address, transactionID, index)
+}
+
+func (bdb *BlockchainDB) MarkUTXOAsSpent(txn *shared.TransactionContext, utxo shared.UTXO) error {
+	utxoKey := generateUTXOKey(utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
+	log.Printf("Marking UTXO as spent - Key: %s, Amount: %d, Owner: %s",
+		utxoKey, utxo.Amount, utxo.OwnerAddress)
+
+	// Update in-memory map
+	if utxos, exists := txn.UTXOs[utxo.OwnerAddress]; exists {
+		for i := range utxos {
+			if utxos[i].TransactionID == utxo.TransactionID &&
+				utxos[i].Index == utxo.Index {
+				utxos[i].IsSpent = true
+				log.Printf("Successfully marked UTXO as spent: %s", utxoKey)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("UTXO not found: %s", utxoKey)
 }
 
 func (bdb *BlockchainDB) AddNewUTXO(txn *shared.TransactionContext, utxo shared.UTXO) error {

@@ -14,14 +14,12 @@ import (
 	"os"
 	"regexp"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ed25519"
 
 	"github.com/btcsuite/btcutil/bech32"
-	"github.com/golang-jwt/jwt/v4"
 	"github.com/supabase-community/supabase-go"
 
 	"github.com/gorilla/mux"
@@ -268,13 +266,32 @@ func CalculateGas(dataSize int, balance int64) int {
 
 func (node *Node) RetrievePublicKey(address string) (ed25519.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
+
+	// Try RetrievePublicKeyFromAddress first
 	pubKey, err := node.Blockchain.Database.RetrievePublicKeyFromAddress(address)
-	if err != nil {
-		log.Printf("Public key not found for address: %s, error: %v", address, err)
-		return nil, fmt.Errorf("public key not found for address: %s, error: %v", address, err)
+	if err == nil {
+		log.Printf("Public key retrieved using RetrievePublicKeyFromAddress for address: %s", address)
+		return pubKey, nil
 	}
-	log.Printf("Public key retrieved for address: %s", address)
-	return pubKey, nil
+	log.Printf("RetrievePublicKeyFromAddress failed for %s: %v, trying RetrieveEd25519PublicKey", address, err)
+
+	// If that fails, try RetrieveEd25519PublicKey
+	pubKey, err = node.Blockchain.Database.RetrieveEd25519PublicKey(address)
+	if err == nil {
+		log.Printf("Public key retrieved using RetrieveEd25519PublicKey for address: %s", address)
+
+		// Optionally migrate the key to the new format
+		if migrateErr := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(address, pubKey); migrateErr != nil {
+			log.Printf("Warning: Failed to migrate public key format for %s: %v", address, migrateErr)
+			// Don't return error here as we still have the key
+		}
+
+		return pubKey, nil
+	}
+
+	// If both methods fail, return the error
+	log.Printf("Failed to retrieve public key using both methods for address: %s, errors: %v", address, err)
+	return nil, fmt.Errorf("public key not found for address: %s using either retrieval method", address)
 }
 
 func (node *Node) StorePublicKey(address string, publicKey ed25519.PublicKey) {
@@ -1011,7 +1028,7 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	// Log transaction details
 	log.Printf("Transaction Details:")
 	log.Printf("- Sender: %s", tx.Sender)
-	log.Printf("- Gas Fee: %d nanoTHRYLOS (%.7f THRYLOS)", tx.GasFee, float64(tx.GasFee)/1e7)
+	log.Printf("- Gas Fee: %d nanoTHRYLOS (%.7f THRYLOS)", tx.Gasfee, float64(tx.Gasfee)/1e7)
 	log.Printf("- Timestamp: %d", tx.Timestamp)
 
 	// Log inputs
@@ -1036,7 +1053,7 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	log.Printf("Total Input: %d nanoTHRYLOS (%.7f THRYLOS)", totalInput, float64(totalInput)/1e7)
 	log.Printf("Total Output: %d nanoTHRYLOS (%.7f THRYLOS)", totalOutput, float64(totalOutput)/1e7)
 	log.Printf("Total with Gas: %d nanoTHRYLOS (%.7f THRYLOS)",
-		totalOutput+int64(tx.GasFee), float64(totalOutput+int64(tx.GasFee))/1e7)
+		totalOutput+int64(tx.Gasfee), float64(totalOutput+int64(tx.Gasfee))/1e7)
 
 	node.Blockchain.Mu.Lock()
 	defer node.Blockchain.Mu.Unlock()
@@ -1403,38 +1420,20 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if n.Database == nil {
-		log.Printf("Error: Database interface is nil in ProcessSignedTransactionHandler")
-		sendJSONErrorResponse(w, "Internal server error: Database not initialized", http.StatusInternalServerError)
-		return
-	}
-	log.Printf("Database is initialized in ProcessSignedTransactionHandler")
-
 	var requestData struct {
-		Token string `json:"token"`
+		Payload   map[string]interface{} `json:"payload"`
+		Signature string                 `json:"signature"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
 		sendJSONErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Parse the JWT without verifying
-	token, _, err := new(jwt.Parser).ParseUnverified(requestData.Token, jwt.MapClaims{})
-	if err != nil {
-		sendJSONErrorResponse(w, "Invalid token format: "+err.Error(), http.StatusUnauthorized)
-		return
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
+	// Extract the sender from the payload
+	sender, ok := requestData.Payload["sender"].(string)
 	if !ok {
-		sendJSONErrorResponse(w, "Invalid token claims", http.StatusBadRequest)
-		return
-	}
-
-	// Extract the sender from the claims
-	sender, ok := claims["sender"].(string)
-	if !ok {
-		sendJSONErrorResponse(w, "Invalid sender in token", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid sender in payload", http.StatusBadRequest)
 		return
 	}
 
@@ -1445,49 +1444,58 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Verify the JWT signature
-	parts := strings.Split(requestData.Token, ".")
-	if len(parts) != 3 {
-		sendJSONErrorResponse(w, "Invalid token format", http.StatusBadRequest)
+	// Ensure the payload is exactly as received from frontend
+	messageBytes, err := json.Marshal(requestData.Payload)
+	if err != nil {
+		sendJSONErrorResponse(w, "Failed to marshal payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	signatureBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	// Decode signature
+	signatureBytes, err := base64.StdEncoding.DecodeString(requestData.Signature)
 	if err != nil {
 		sendJSONErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	message := []byte(parts[0] + "." + parts[1])
-	if !ed25519.Verify(publicKey, message, signatureBytes) {
-		log.Printf("JWT signature verification failed for sender: %s", sender)
+	// Debug logs
+	log.Printf("=== Signature Verification Debug ===")
+	log.Printf("1. Received payload: %+v", requestData.Payload)
+	log.Printf("2. Message bytes (hex): %x", messageBytes)
+	log.Printf("3. Signature (hex): %x", signatureBytes)
+	log.Printf("4. Public key (hex): %x", publicKey)
+
+	// Verify signature with exact same payload
+	if !ed25519.Verify(publicKey, messageBytes, signatureBytes) {
+		log.Printf("❌ Signature verification failed")
 		sendJSONErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	}
+	log.Printf("✅ Signature verification succeeded")
 
-	// Parse transaction data from claims
+	// Parse transaction data from payload
 	var transactionData shared.Transaction
-	transactionData.ID = claims["id"].(string)
-	transactionData.Sender = claims["sender"].(string)
+	transactionData.ID = requestData.Payload["id"].(string)
+	transactionData.Sender = sender
 
-	if gasFeeFloat, ok := claims["gasfee"].(float64); ok {
+	if gasFeeFloat, ok := requestData.Payload["gasfee"].(float64); ok {
 		transactionData.GasFee = int(gasFeeFloat)
 	} else {
-		sendJSONErrorResponse(w, "Invalid gasfee in token", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid gasfee in payload", http.StatusBadRequest)
 		return
 	}
 
-	if timestampFloat, ok := claims["timestamp"].(float64); ok {
+	if timestampFloat, ok := requestData.Payload["timestamp"].(float64); ok {
 		transactionData.Timestamp = int64(timestampFloat)
 	} else {
-		sendJSONErrorResponse(w, "Invalid timestamp in token", http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid timestamp in payload", http.StatusBadRequest)
 		return
 	}
 
 	// Parse inputs and outputs
-	inputsJSON, err := json.Marshal(claims["inputs"])
+	inputsJSON, err := json.Marshal(requestData.Payload["inputs"])
 	if err != nil {
-		sendJSONErrorResponse(w, "Invalid inputs in token: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid inputs in payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
@@ -1495,9 +1503,9 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	outputsJSON, err := json.Marshal(claims["outputs"])
+	outputsJSON, err := json.Marshal(requestData.Payload["outputs"])
 	if err != nil {
-		sendJSONErrorResponse(w, "Invalid outputs in token: "+err.Error(), http.StatusBadRequest)
+		sendJSONErrorResponse(w, "Invalid outputs in payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
@@ -1505,27 +1513,17 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	log.Printf("Transaction inputs before conversion:")
-	for i, input := range transactionData.Inputs {
-		log.Printf("Input %d: OwnerAddress=%s, Amount=%d", i, input.OwnerAddress, input.Amount)
-	}
-
+	// Convert to thrylos transaction
 	thrylosTx := shared.SharedToThrylos(&transactionData)
 	if thrylosTx == nil {
 		sendJSONErrorResponse(w, "Failed to convert transaction data", http.StatusInternalServerError)
 		return
 	}
 
-	// Add these logs after conversion
-	log.Printf("Transaction inputs after conversion:")
-	for i, input := range thrylosTx.Inputs {
-		log.Printf("Input %d: OwnerAddress=%s, Amount=%d", i, input.OwnerAddress, input.Amount)
-	}
+	// Add the verified signature
+	thrylosTx.Signature = signatureBytes
 
-	log.Printf("Transaction data before conversion - Sender: %s", transactionData.Sender)
-	log.Printf("Transaction after conversion - Sender: %s", thrylosTx.Sender)
-
-	// Validate balance and transaction (this includes address validation)
+	// Get balance for validation
 	balance, err := n.GetBalance(transactionData.Sender)
 	if err != nil {
 		log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
@@ -1533,6 +1531,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Validate without re-verifying signature
 	if err := shared.ValidateAndConvertTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
 		log.Printf("Failed to validate transaction: %v", err)
 		sendJSONErrorResponse(w, fmt.Sprintf("Failed to validate transaction: %v", err), http.StatusBadRequest)
@@ -1561,7 +1560,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	// Schedule delayed balance check to ensure transaction processing is complete
+	// Schedule delayed balance check
 	time.AfterFunc(2*time.Second, func() {
 		for address := range addresses {
 			balance, err := n.GetBalance(address)
@@ -1898,7 +1897,7 @@ func (node *Node) GasEstimateHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Prepare the response
 	response := struct {
-		GasFee     int    `json:"gasFee"`
+		GasFee     int    `json:"gasfee"`
 		GasFeeUnit string `json:"gasFeeUnit"`
 	}{
 		GasFee:     gas,
@@ -1978,8 +1977,12 @@ func (node *Node) GetUTXOsForAddressHandler(w http.ResponseWriter, r *http.Reque
 		log.Printf("No UTXOs found for address: %s", address)
 		http.Error(w, "No UTXOs found", http.StatusNotFound)
 		return
-	} else {
-		log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
+	}
+
+	// Log UTXOs before serialization
+	for i, utxo := range utxos {
+		log.Printf("UTXO %d for address %s: {ID: %s, TransactionID: %s, Index: %d, Amount: %d, IsSpent: %v}",
+			i, address, utxo.ID, utxo.TransactionID, utxo.Index, utxo.Amount, utxo.IsSpent)
 	}
 
 	response, err := json.Marshal(utxos)
@@ -1988,6 +1991,9 @@ func (node *Node) GetUTXOsForAddressHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
 		return
 	}
+
+	// Log the final JSON response
+	log.Printf("Response JSON for %s: %s", address, string(response))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(response)

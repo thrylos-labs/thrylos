@@ -77,7 +77,10 @@ func cachedHashData(data []byte) []byte {
 
 // TransactionContext wraps a BadgerDB transaction to manage its lifecycle.
 type TransactionContext struct {
-	Txn *badger.Txn
+	Txn      *badger.Txn
+	UTXOs    map[string][]UTXO // Map of address to UTXOs
+	Modified map[string]bool   // Track which addresses have modified UTXOs
+	mu       sync.RWMutex      // Mutex for thread-safe access
 }
 
 // GasEstimator defines an interface for fetching gas estimates.
@@ -87,7 +90,25 @@ type GasEstimator interface {
 
 // NewTransactionContext creates a new context for a database transaction.
 func NewTransactionContext(txn *badger.Txn) *TransactionContext {
-	return &TransactionContext{Txn: txn}
+	return &TransactionContext{
+		Txn:      txn,
+		UTXOs:    make(map[string][]UTXO),
+		Modified: make(map[string]bool),
+	}
+}
+
+// GetUTXOs retrieves UTXOs for a specific address from the transaction context
+func (tc *TransactionContext) GetUTXOs(address string) []UTXO {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.UTXOs[address]
+}
+
+// MarkModified marks an address as having modified UTXOs
+func (tc *TransactionContext) MarkModified(address string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.Modified[address] = true
 }
 
 var blake2bHasher, _ = blake2b.New256(nil)
@@ -221,6 +242,81 @@ func computeAddressFromPublicKey(pubKey ed25519.PublicKey) string {
 	return hex.EncodeToString(pubKey) // Simplified
 }
 
+// DebugSignatureVerification wraps the verification process with detailed logging
+func DebugSignatureVerification(tx *thrylos.Transaction, publicKey ed25519.PublicKey) error {
+	// Log the transaction details before serialization
+	log.Printf("=== Transaction Verification Debug ===")
+	log.Printf("Transaction ID: %s", tx.GetId())
+	log.Printf("Sender: %s", tx.GetSender())
+	log.Printf("Timestamp: %d", tx.GetTimestamp())
+
+	// Create a copy for verification
+	txCopy := proto.Clone(tx).(*thrylos.Transaction)
+
+	// Store original signature
+	originalSig := tx.GetSignature()
+	log.Printf("Original signature length: %d bytes", len(originalSig))
+
+	// Clear signature for serialization
+	txCopy.Signature = nil
+
+	// Serialize the transaction
+	txBytes, err := proto.Marshal(txCopy)
+	if err != nil {
+		return fmt.Errorf("serialization error: %v", err)
+	}
+	log.Printf("Serialized transaction length: %d bytes", len(txBytes))
+
+	// Log the hash that will be verified
+	hasher := blake2b.Sum256(txBytes)
+	log.Printf("Transaction hash to verify: %x", hasher[:])
+
+	// Verify signature
+	valid := ed25519.Verify(publicKey, txBytes, originalSig)
+	log.Printf("Signature verification result: %v", valid)
+
+	if !valid {
+		// Additional debugging info for failed verification
+		log.Printf("Public key used: %x", publicKey)
+		return errors.New("transaction signature verification failed")
+	}
+
+	log.Printf("=== End Transaction Verification Debug ===")
+	return nil
+}
+
+// DebugSignTransaction wraps the signing process with detailed logging
+func DebugSignTransaction(tx *thrylos.Transaction, privateKey ed25519.PrivateKey) error {
+	log.Printf("=== Transaction Signing Debug ===")
+	log.Printf("Transaction ID: %s", tx.GetId())
+	log.Printf("Sender: %s", tx.GetSender())
+
+	// Clear any existing signature
+	tx.Signature = nil
+
+	// Serialize transaction
+	txBytes, err := proto.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("serialization error: %v", err)
+	}
+	log.Printf("Serialized transaction length: %d bytes", len(txBytes))
+
+	// Generate signature
+	signature := ed25519.Sign(privateKey, txBytes)
+	log.Printf("Generated signature length: %d bytes", len(signature))
+
+	// Store signature in transaction
+	tx.Signature = signature
+
+	// Verify immediately after signing
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	valid := ed25519.Verify(publicKey, txBytes, signature)
+	log.Printf("Immediate verification result: %v", valid)
+
+	log.Printf("=== End Transaction Signing Debug ===")
+	return nil
+}
+
 // GenerateEd25519Keys generates a new Ed25519 public/private key pair derived from a mnemonic seed phrase.
 func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, string, error) {
 	// Generate a new mnemonic
@@ -302,7 +398,7 @@ func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
 		Outputs:       SharedToThrylosOutputs(tx.Outputs),
 		Signature:     signatureBytes,
 		PreviousTxIds: tx.PreviousTxIds,
-		GasFee:        int32(tx.GasFee),
+		Gasfee:        int32(tx.GasFee),
 	}
 
 	log.Printf("Converting transaction - Sender after: %s", thrylosTx.Sender)
@@ -497,7 +593,7 @@ func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Trans
 		Outputs:       thrylosOutputs,
 		Timestamp:     tx.Timestamp,
 		PreviousTxIds: tx.PreviousTxIds, // Ensure this matches your local struct field
-		GasFee:        int32(tx.GasFee), // Convert the gas fee
+		Gasfee:        int32(tx.GasFee), // Convert the gas fee
 		// Signature is left out to be filled during signing
 	}, nil
 }
@@ -539,7 +635,7 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (Transaction, err
 		Timestamp:     tx.Timestamp,
 		Signature:     signatureEncoded,
 		PreviousTxIds: tx.PreviousTxIds,
-		GasFee:        int(tx.GasFee),
+		GasFee:        int(tx.Gasfee),
 	}, nil
 }
 
@@ -1030,7 +1126,7 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 // Process batched transactions
 
 func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
-	// Nil checks
+	// Initial checks
 	if tx == nil {
 		return fmt.Errorf("transaction is nil")
 	}
@@ -1041,25 +1137,23 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 		return fmt.Errorf("gas estimator is nil")
 	}
 
-	// Add address validation before conversion
+	// Skip signature verification as it was already done in ProcessSignedTransactionHandler
+
+	// Validate sender exists in system
 	if tx.Sender == "" {
 		return fmt.Errorf("transaction sender is empty")
 	}
 
-	// Validate sender exists in system
+	// Only validate sender's public key
 	_, err := db.RetrievePublicKeyFromAddress(tx.Sender)
 	if err != nil {
 		return fmt.Errorf("invalid sender address: %v", err)
 	}
 
-	// Validate output addresses exist (but don't require WebSocket connection)
+	// Validate that output addresses are well-formed
 	for _, output := range tx.Outputs {
 		if output.OwnerAddress == "" {
 			return fmt.Errorf("output address is empty")
-		}
-		_, err := db.RetrievePublicKeyFromAddress(output.OwnerAddress)
-		if err != nil {
-			return fmt.Errorf("invalid output address %s: %v", output.OwnerAddress, err)
 		}
 	}
 
@@ -1080,6 +1174,100 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 	}
 
 	return nil
+}
+
+func createExactCanonicalForm(tx *thrylos.Transaction) map[string]interface{} {
+	inputs := make([]map[string]interface{}, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		inputs[i] = map[string]interface{}{
+			"amount": input.Amount,
+			"index":  input.Index,
+		}
+	}
+
+	outputs := make([]map[string]interface{}, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		outputs[i] = map[string]interface{}{
+			"amount": output.Amount,
+			"index":  output.Index,
+		}
+	}
+
+	return map[string]interface{}{
+		"gasfee":          tx.Gasfee,
+		"id":              tx.Id,
+		"inputs":          inputs,
+		"outputs":         outputs,
+		"previous_tx_ids": tx.PreviousTxIds,
+		"sender":          tx.Sender,
+		"status":          "pending",
+		"timestamp":       tx.Timestamp,
+	}
+}
+
+// // Helper function to canonicalize UTXOs for signature verification
+// func canonicalizeForSignature(utxos []*thrylos.UTXO) []map[string]interface{} {
+// 	result := make([]map[string]interface{}, len(utxos))
+// 	for i, utxo := range utxos {
+// 		// Only include amount and index to match frontend
+// 		result[i] = map[string]interface{}{
+// 			"amount": utxo.Amount,
+// 			"index":  utxo.Index,
+// 		}
+// 	}
+// 	return result
+// }
+
+// // Helper function to ensure consistent JSON ordering recursively
+// func sortMapRecursively(m map[string]interface{}) map[string]interface{} {
+// 	sorted := make(map[string]interface{})
+// 	keys := make([]string, 0, len(m))
+
+// 	for k := range m {
+// 		keys = append(keys, k)
+// 	}
+// 	sort.Strings(keys)
+
+// 	for _, k := range keys {
+// 		v := m[k]
+// 		switch val := v.(type) {
+// 		case map[string]interface{}:
+// 			sorted[k] = sortMapRecursively(val)
+// 		case []interface{}:
+// 			sorted[k] = sortSliceRecursively(val)
+// 		default:
+// 			sorted[k] = v
+// 		}
+// 	}
+// 	return sorted
+// }
+
+// func sortSliceRecursively(s []interface{}) []interface{} {
+// 	for i, v := range s {
+// 		if m, ok := v.(map[string]interface{}); ok {
+// 			s[i] = sortMapRecursively(m)
+// 		}
+// 	}
+// 	return s
+// }
+
+// Additional helper functions for converting between types
+func UTXOToMap(utxo *UTXO) map[string]interface{} {
+	return map[string]interface{}{
+		"TransactionID": utxo.TransactionID,
+		"Index":         utxo.Index,
+		"OwnerAddress":  utxo.OwnerAddress,
+		"Amount":        utxo.Amount,
+		"IsSpent":       utxo.IsSpent,
+	}
+}
+
+func UTXOsToMapSlice(utxos []*UTXO) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(utxos))
+	for i, utxo := range utxos {
+		result[i] = UTXOToMap(utxo)
+	}
+	return result
 }
 
 func ProcessTransactionsBatch(transactions []*Transaction, db BlockchainDBInterface) error {
