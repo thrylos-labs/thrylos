@@ -1015,25 +1015,25 @@ func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 	getEd25519PublicKeyFunc := func(address string) (xEd25519.PublicKey, error) {
 		pubKey, err := bc.Database.RetrievePublicKeyFromAddress(address)
 		if err != nil {
-			return xEd25519.PublicKey{}, err // Return the zero value for ed25519.PublicKey in case of error
+			return xEd25519.PublicKey{}, err
 		}
 		return pubKey, nil
 	}
 
-	// Assuming you've made necessary adjustments to the rest of your code to handle the protobuf and shared.UTXO types correctly
+	// Convert UTXOs to proto format if needed
 	protoUTXOs := make(map[string][]*thrylos.UTXO)
 	for key, utxos := range bc.UTXOs {
-		protoUTXOs[key] = utxos // Adjust according to your actual type conversion if necessary
+		protoUTXOs[key] = utxos
 	}
 
-	// Verify the transaction using the converted UTXOs and both public key types
-	isValid, err := shared.VerifyTransaction(tx, protoUTXOs, getEd25519PublicKeyFunc)
+	// Verify only the transaction data (not signature)
+	isValid, err := shared.VerifyTransactionData(tx, protoUTXOs, getEd25519PublicKeyFunc) // New function
 	if err != nil {
-		fmt.Printf("Error during transaction verification: %v\n", err)
+		fmt.Printf("Error during transaction data verification: %v\n", err)
 		return false, err
 	}
 	if !isValid {
-		fmt.Println("Signature verification failed or transaction is invalid")
+		fmt.Println("Transaction data validation failed")
 		return false, nil
 	}
 	return true, nil
@@ -1163,29 +1163,46 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	return signedBlock, nil
 }
 
+// First, ensure when creating transaction inputs we set the original transaction ID
 func (bc *Blockchain) processTransactionInBlock(txContext *shared.TransactionContext, tx *thrylos.Transaction) error {
 	// Mark input UTXOs as spent
 	for _, input := range tx.Inputs {
+		// Validate input fields
+		if input.TransactionId == "" {
+			return fmt.Errorf("input UTXO has no transaction_id field set")
+		}
+
 		utxo := shared.UTXO{
-			TransactionID: input.TransactionId,
+			TransactionID: input.TransactionId, // This must be the genesis or previous transaction ID
 			Index:         int(input.Index),
 			OwnerAddress:  input.OwnerAddress,
 			Amount:        int64(input.Amount),
+			IsSpent:       false,
 		}
+
+		// Debug logging
+		log.Printf("Processing input UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
+			utxo.TransactionID, utxo.Index, utxo.OwnerAddress, utxo.Amount)
+
 		if err := bc.Database.MarkUTXOAsSpent(txContext, utxo); err != nil {
 			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
 		}
 	}
 
-	// Create new UTXOs for outputs
+	// Create new UTXOs for outputs with the current transaction ID
 	for i, output := range tx.Outputs {
 		newUTXO := shared.UTXO{
-			TransactionID: tx.Id,
+			TransactionID: tx.Id, // Use current transaction's ID for new UTXOs
 			Index:         i,
 			OwnerAddress:  output.OwnerAddress,
 			Amount:        int64(output.Amount),
 			IsSpent:       false,
 		}
+
+		// Debug logging
+		log.Printf("Creating new UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
+			newUTXO.TransactionID, newUTXO.Index, newUTXO.OwnerAddress, newUTXO.Amount)
+
 		if err := bc.Database.AddNewUTXO(txContext, newUTXO); err != nil {
 			return fmt.Errorf("failed to create new UTXO: %v", err)
 		}

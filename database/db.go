@@ -1016,7 +1016,7 @@ func (bdb *BlockchainDB) MarkUTXOAsSpent(txContext *shared.TransactionContext, u
 		return fmt.Errorf("transaction ID is required")
 	}
 
-	// Construct the key using the full format
+	// Construct the key using the transaction ID from the input
 	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
 	log.Printf("Marking UTXO as spent - Key: %s, TransactionID: %s, Amount: %d, Owner: %s",
 		key, utxo.TransactionID, utxo.Amount, utxo.OwnerAddress)

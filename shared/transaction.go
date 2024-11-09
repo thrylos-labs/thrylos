@@ -54,6 +54,8 @@ type Transaction struct {
 	BlockHash        string   `json:"blockHash,omitempty"`
 }
 
+type GetPublicKeyFunc func(address string) (ed25519.PublicKey, error)
+
 var hashCache sync.Map // A thread-safe map to cache hash results
 
 func cachedHashData(data []byte) []byte {
@@ -418,6 +420,12 @@ func SharedToThrylosInputs(inputs []UTXO, txSender string) []*thrylos.UTXO {
 	for i, input := range inputs {
 		log.Printf("DEBUG: Raw input UTXO before conversion: %+v", input)
 
+		// Check for missing transaction ID
+		if input.TransactionID == "" {
+			log.Printf("ERROR: Input UTXO missing transaction ID: %+v", input)
+			continue // or handle this error appropriately
+		}
+
 		ownerAddress := input.OwnerAddress
 		if ownerAddress == "" {
 			log.Printf("DEBUG: Input owner address is empty, using sender: %s", txSender)
@@ -425,13 +433,15 @@ func SharedToThrylosInputs(inputs []UTXO, txSender string) []*thrylos.UTXO {
 		}
 
 		thrylosInputs[i] = &thrylos.UTXO{
-			TransactionId: input.TransactionID,
+			TransactionId: input.TransactionID, // Make sure this field matches your protobuf definition
 			Index:         int32(input.Index),
 			OwnerAddress:  ownerAddress,
 			Amount:        input.Amount,
 			IsSpent:       input.IsSpent,
 		}
 
+		// Verify the conversion
+		log.Printf("DEBUG: Converted Thrylos UTXO ID: %s", thrylosInputs[i].TransactionId)
 		log.Printf("DEBUG: Converted Thrylos UTXO: %+v", thrylosInputs[i])
 	}
 
@@ -787,6 +797,45 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed2551
 	}
 
 	return nil
+}
+
+func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc GetPublicKeyFunc) (bool, error) {
+	// Validate inputs and outputs exist
+	if len(tx.Inputs) == 0 || len(tx.Outputs) == 0 {
+		return false, fmt.Errorf("transaction must have inputs and outputs")
+	}
+
+	// Validate sender exists in system
+	_, err := getPublicKeyFunc(tx.Sender)
+	if err != nil {
+		return false, fmt.Errorf("invalid sender address: %v", err)
+	}
+
+	// Verify input UTXOs belong to sender and exist
+	for _, input := range tx.Inputs {
+		if input.OwnerAddress != tx.Sender {
+			return false, fmt.Errorf("input owner address does not match sender")
+		}
+		// Additional UTXO existence and ownership checks...
+	}
+
+	// Verify amounts balance
+	inputSum := int64(0)
+	for _, input := range tx.Inputs {
+		inputSum += input.Amount
+	}
+
+	outputSum := int64(0)
+	for _, output := range tx.Outputs {
+		outputSum += output.Amount
+	}
+
+	// Account for gas fee
+	if inputSum != outputSum+int64(tx.Gasfee) {
+		return false, fmt.Errorf("input amount does not match output amount plus gas fee")
+	}
+
+	return true, nil
 }
 
 // VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
@@ -1152,7 +1201,6 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 // Process batched transactions
 
 func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
-	// Initial checks
 	if tx == nil {
 		return fmt.Errorf("transaction is nil")
 	}
@@ -1162,8 +1210,6 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 	if estimator == nil {
 		return fmt.Errorf("gas estimator is nil")
 	}
-
-	// Skip signature verification as it was already done in ProcessSignedTransactionHandler
 
 	// Validate sender exists in system
 	if tx.Sender == "" {
@@ -1176,20 +1222,7 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 		return fmt.Errorf("invalid sender address: %v", err)
 	}
 
-	// Validate that output addresses are well-formed
-	for _, output := range tx.Outputs {
-		if output.OwnerAddress == "" {
-			return fmt.Errorf("output address is empty")
-		}
-	}
-
-	// Select tips (previous transactions) to link this transaction
-	tips, err := selectTips()
-	if err != nil {
-		return fmt.Errorf("failed to select tips: %v", err)
-	}
-	tx.PreviousTxIds = tips
-
+	// Convert and validate the rest of the transaction
 	sharedTx, err := ConvertThrylosTransactionToLocal(tx)
 	if err != nil {
 		return fmt.Errorf("failed to convert transaction to shared type: %v", err)

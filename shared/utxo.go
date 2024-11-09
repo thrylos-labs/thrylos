@@ -16,9 +16,9 @@ import (
 // to understanding a user's balance within the blockchain.
 type UTXO struct {
 	ID            string `json:"id,omitempty"`
-	TransactionID string `json:"transactionid" validate:"required,hexadecimal,len=64"`
+	TransactionID string `json:"transaction_id" validate:"required,hexadecimal,len=64"`
 	Index         int    `json:"index" validate:"gte=0"`
-	OwnerAddress  string `json:"owner_address" validate:"required,bech32"` // Changed from owneraddress to owner_address
+	OwnerAddress  string `json:"owner_address" validate:"required,bech32"`
 	Amount        int64  `json:"amount" validate:"gt=0"`
 	IsSpent       bool   `json:"isspent"`
 }

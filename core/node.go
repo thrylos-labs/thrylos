@@ -1445,32 +1445,33 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	// Ensure the payload is exactly as received from frontend
+	// In ProcessSignedTransactionHandler, modify the verification part:
 	messageBytes, err := json.Marshal(requestData.Payload)
 	if err != nil {
 		sendJSONErrorResponse(w, "Failed to marshal payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Decode signature
+	// Before verifying, print exact message being verified
+	log.Printf("Message to verify (string): %s", string(messageBytes))
+
+	// Decode base64 signature
 	signatureBytes, err := base64.StdEncoding.DecodeString(requestData.Signature)
 	if err != nil {
 		sendJSONErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Debug logs
-	log.Printf("=== Signature Verification Debug ===")
-	log.Printf("1. Received payload: %+v", requestData.Payload)
-	log.Printf("2. Message bytes (hex): %x", messageBytes)
-	log.Printf("3. Signature (hex): %x", signatureBytes)
-	log.Printf("4. Public key (hex): %x", publicKey)
-
 	// Verify signature with exact same payload
 	if !ed25519.Verify(publicKey, messageBytes, signatureBytes) {
 		log.Printf("❌ Signature verification failed")
+		log.Printf("Message bytes (hex): %x", messageBytes)
+		log.Printf("Signature (hex): %x", signatureBytes)
+		log.Printf("Public key (hex): %x", publicKey)
 		sendJSONErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
 		return
 	}
+
 	log.Printf("✅ Signature verification succeeded")
 
 	// Parse transaction data from payload
