@@ -1040,10 +1040,40 @@ func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 }
 
 // AddPendingTransaction adds a new transaction to the pool of pending transactions.
-func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) {
+func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
+	// Start a database transaction
+	txn, err := bc.Database.BeginTransaction()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer bc.Database.RollbackTransaction(txn)
+
+	// Store the transaction with initial "pending" status
+	txKey := []byte("transaction-" + tx.Id)
+	tx.Status = "pending"
+	txJSON, err := json.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("error marshaling transaction: %v", err)
+	}
+
+	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
+		return fmt.Errorf("error storing transaction: %v", err)
+	}
+
+	// Add to pending transactions
 	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
 	bc.PendingTransactions = append(bc.PendingTransactions, tx)
+	bc.Mu.Unlock()
+
+	// Commit the database transaction
+	if err := bc.Database.CommitTransaction(txn); err != nil {
+		return fmt.Errorf("error committing transaction: %v", err)
+	}
+
+	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
+		tx.Id, len(bc.PendingTransactions))
+
+	return nil
 }
 
 // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
@@ -1144,14 +1174,6 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		if bc.OnTransactionProcessed != nil {
 			bc.OnTransactionProcessed(tx)
 		}
-	}
-
-	// Update transaction statuses and notify balance updates
-	for _, tx := range signedBlock.Transactions {
-		if err := bc.UpdateTransactionStatus(tx.Id, "included", signedBlock.Hash); err != nil {
-			log.Printf("Error updating transaction status: %v", err)
-		}
-		log.Printf("Transaction %s included in block %x", tx.Id, signedBlock.Hash)
 
 		// Notify balance updates
 		bc.notifyBalanceUpdates(tx)
@@ -1296,36 +1318,48 @@ func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockH
 	if err != nil {
 		return fmt.Errorf("failed to begin database transaction: %v", err)
 	}
-	defer bc.Database.RollbackTransaction(txn) // Rollback in case of error
+	defer bc.Database.RollbackTransaction(txn)
 
 	// Retrieve the existing transaction
 	txKey := []byte("transaction-" + txID)
 	txItem, err := txn.Txn.Get(txKey)
 	if err != nil {
-		return fmt.Errorf("error retrieving transaction: %v", err)
-	}
+		// If transaction doesn't exist, create a new one
+		tx := &thrylos.Transaction{
+			Id:        txID,
+			Status:    status,
+			BlockHash: blockHash,
+			// Set other required fields that you have available
+		}
+		txJSON, err := json.Marshal(tx)
+		if err != nil {
+			return fmt.Errorf("error marshaling new transaction: %v", err)
+		}
+		if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
+			return fmt.Errorf("error storing new transaction: %v", err)
+		}
+	} else {
+		// Update existing transaction
+		var tx thrylos.Transaction
+		err = txItem.Value(func(val []byte) error {
+			return json.Unmarshal(val, &tx)
+		})
+		if err != nil {
+			return fmt.Errorf("error unmarshaling transaction: %v", err)
+		}
 
-	var tx thrylos.Transaction
-	err = txItem.Value(func(val []byte) error {
-		return json.Unmarshal(val, &tx)
-	})
-	if err != nil {
-		return fmt.Errorf("error unmarshaling transaction: %v", err)
-	}
+		// Update the transaction status
+		tx.Status = status
+		tx.BlockHash = blockHash
 
-	// Update the transaction status
-	tx.Status = status
-	tx.BlockHash = blockHash
-
-	// Serialize the updated transaction
-	updatedTxJSON, err := json.Marshal(tx)
-	if err != nil {
-		return fmt.Errorf("error marshaling updated transaction: %v", err)
-	}
-
-	// Store the updated transaction
-	if err := bc.Database.SetTransaction(txn, txKey, updatedTxJSON); err != nil {
-		return fmt.Errorf("error updating transaction: %v", err)
+		// Serialize and store the updated transaction
+		updatedTxJSON, err := json.Marshal(tx)
+		if err != nil {
+			return fmt.Errorf("error marshaling updated transaction: %v", err)
+		}
+		if err := bc.Database.SetTransaction(txn, txKey, updatedTxJSON); err != nil {
+			return fmt.Errorf("error updating transaction: %v", err)
+		}
 	}
 
 	// Commit the transaction
@@ -1333,7 +1367,7 @@ func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockH
 		return fmt.Errorf("error committing transaction update: %v", err)
 	}
 
-	log.Printf("Transaction %s status updated to %s in block %s", txID, status, blockHash)
+	log.Printf("Transaction %s status updated to %s in block %x", txID, status, blockHash)
 	return nil
 }
 
