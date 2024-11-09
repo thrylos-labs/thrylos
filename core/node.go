@@ -1498,20 +1498,26 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		sendJSONErrorResponse(w, "Invalid inputs in payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("DEBUG: Raw inputs JSON: %s", string(inputsJSON))
+
 	if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
 		sendJSONErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("DEBUG: Parsed inputs: %+v", transactionData.Inputs)
 
 	outputsJSON, err := json.Marshal(requestData.Payload["outputs"])
 	if err != nil {
 		sendJSONErrorResponse(w, "Invalid outputs in payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("DEBUG: Raw outputs JSON: %s", string(outputsJSON))
+
 	if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
 		sendJSONErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("DEBUG: Parsed outputs: %+v", transactionData.Outputs)
 
 	// Convert to thrylos transaction
 	thrylosTx := shared.SharedToThrylos(&transactionData)
@@ -2104,9 +2110,12 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 	node.Blockchain.Stakeholders[bech32Address] = initialBalanceNano
 
 	// Create initial UTXO for the account
+	// In RegisterWalletHandler
 	utxo := shared.UTXO{
-		OwnerAddress: bech32Address,
-		Amount:       initialBalanceNano,
+		TransactionID: fmt.Sprintf("genesis-%s", bech32Address),
+		OwnerAddress:  bech32Address,
+		Amount:        initialBalanceNano,
+		IsSpent:       false,
 	}
 	if err := node.Blockchain.addUTXO(utxo); err != nil {
 		http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)

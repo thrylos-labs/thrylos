@@ -181,6 +181,11 @@ func (bdb *BlockchainDB) hashData(data []byte) []byte {
 // AddUTXO adds a UTXO to the BadgerDB database.
 func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
 	return bdb.DB.Update(func(txn *badger.Txn) error {
+		// Ensure we have a TransactionID
+		if utxo.TransactionID == "" {
+			utxo.TransactionID = fmt.Sprintf("genesis-%s", utxo.OwnerAddress)
+		}
+
 		// Retrieve the current index for the address
 		idxKey := fmt.Sprintf("index-%s", utxo.OwnerAddress)
 		item, err := txn.Get([]byte(idxKey))
@@ -200,15 +205,15 @@ func (bdb *BlockchainDB) AddUTXO(utxo shared.UTXO) error {
 
 		// Increment the index for the next UTXO
 		index++
-		utxo.Index = int(index) // Convert int64 to int if your UTXO struct expects an int
+		utxo.Index = int(index)
 		indexBytes := make([]byte, 8)
 		binary.BigEndian.PutUint64(indexBytes, uint64(index))
 		if err := txn.Set([]byte(idxKey), indexBytes); err != nil {
 			return err
 		}
 
-		// Create UTXO with the new index
-		key := fmt.Sprintf("utxo-%s-%d", utxo.OwnerAddress, utxo.Index)
+		// Create UTXO with the new index using the same format as AddNewUTXO
+		key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
 		val, err := json.Marshal(utxo)
 		if err != nil {
 			return err
@@ -1002,33 +1007,77 @@ func generateUTXOKey(address string, transactionID string, index int) string {
 	return fmt.Sprintf("utxo-%s-%s-%d", address, transactionID, index)
 }
 
-func (bdb *BlockchainDB) MarkUTXOAsSpent(txn *shared.TransactionContext, utxo shared.UTXO) error {
-	utxoKey := generateUTXOKey(utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
-	log.Printf("Marking UTXO as spent - Key: %s, Amount: %d, Owner: %s",
-		utxoKey, utxo.Amount, utxo.OwnerAddress)
-
-	// Update in-memory map
-	if utxos, exists := txn.UTXOs[utxo.OwnerAddress]; exists {
-		for i := range utxos {
-			if utxos[i].TransactionID == utxo.TransactionID &&
-				utxos[i].Index == utxo.Index {
-				utxos[i].IsSpent = true
-				log.Printf("Successfully marked UTXO as spent: %s", utxoKey)
-				return nil
-			}
-		}
+func (bdb *BlockchainDB) MarkUTXOAsSpent(txContext *shared.TransactionContext, utxo shared.UTXO) error {
+	// Ensure we have all required fields
+	if utxo.OwnerAddress == "" {
+		return fmt.Errorf("owner address is required")
+	}
+	if utxo.TransactionID == "" {
+		return fmt.Errorf("transaction ID is required")
 	}
 
-	return fmt.Errorf("UTXO not found: %s", utxoKey)
+	// Construct the key using the full format
+	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
+	log.Printf("Marking UTXO as spent - Key: %s, TransactionID: %s, Amount: %d, Owner: %s",
+		key, utxo.TransactionID, utxo.Amount, utxo.OwnerAddress)
+
+	// Get the existing UTXO
+	item, err := txContext.Txn.Get([]byte(key))
+	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return fmt.Errorf("UTXO not found: %s", key)
+		}
+		return fmt.Errorf("error retrieving UTXO: %v", err)
+	}
+
+	var existingUTXO shared.UTXO
+	err = item.Value(func(val []byte) error {
+		return json.Unmarshal(val, &existingUTXO)
+	})
+	if err != nil {
+		return fmt.Errorf("error unmarshaling UTXO: %v", err)
+	}
+
+	// Verify this UTXO isn't already spent
+	if existingUTXO.IsSpent {
+		return fmt.Errorf("UTXO is already spent: %s", key)
+	}
+
+	// Mark as spent
+	existingUTXO.IsSpent = true
+
+	// Save back
+	updatedValue, err := json.Marshal(existingUTXO)
+	if err != nil {
+		return fmt.Errorf("error marshaling updated UTXO: %v", err)
+	}
+
+	err = txContext.Txn.Set([]byte(key), updatedValue)
+	if err != nil {
+		return fmt.Errorf("error saving updated UTXO: %v", err)
+	}
+
+	log.Printf("Successfully marked UTXO as spent - Key: %s", key)
+	return nil
 }
 
-func (bdb *BlockchainDB) AddNewUTXO(txn *shared.TransactionContext, utxo shared.UTXO) error {
-	key := []byte(fmt.Sprintf("utxo-%s-%d", utxo.TransactionID, utxo.Index))
-	utxoData, err := json.Marshal(utxo)
-	if err != nil {
-		return err
+func (bdb *BlockchainDB) AddNewUTXO(txContext *shared.TransactionContext, utxo shared.UTXO) error {
+	// Ensure TransactionID is set
+	if utxo.TransactionID == "" {
+		return fmt.Errorf("cannot add UTXO without TransactionID")
 	}
-	return txn.Txn.Set(key, utxoData)
+
+	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
+	val, err := json.Marshal(utxo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal UTXO: %v", err)
+	}
+
+	return txContext.Txn.Set([]byte(key), val)
+}
+
+func GenerateUTXOKey(ownerAddress string, transactionID string, index int) string {
+	return fmt.Sprintf("utxo-%s-%s-%d", ownerAddress, transactionID, index)
 }
 
 // GetUTXOs retrieves all UTXOs for a specific address.

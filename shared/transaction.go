@@ -394,7 +394,7 @@ func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
 		Id:            tx.ID,
 		Sender:        tx.Sender,
 		Timestamp:     tx.Timestamp,
-		Inputs:        SharedToThrylosInputs(tx.Inputs),
+		Inputs:        SharedToThrylosInputs(tx.Inputs, tx.Sender), // Pass the sender
 		Outputs:       SharedToThrylosOutputs(tx.Outputs),
 		Signature:     signatureBytes,
 		PreviousTxIds: tx.PreviousTxIds,
@@ -406,7 +406,7 @@ func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
 	return thrylosTx
 }
 
-func SharedToThrylosInputs(inputs []UTXO) []*thrylos.UTXO {
+func SharedToThrylosInputs(inputs []UTXO, txSender string) []*thrylos.UTXO {
 	if len(inputs) == 0 {
 		log.Printf("WARNING: No inputs provided to SharedToThrylosInputs")
 		return nil
@@ -416,52 +416,58 @@ func SharedToThrylosInputs(inputs []UTXO) []*thrylos.UTXO {
 	thrylosInputs := make([]*thrylos.UTXO, len(inputs))
 
 	for i, input := range inputs {
-		// Detailed input logging
-		log.Printf("Input %d details:", i)
-		log.Printf("- TransactionID: %s", input.TransactionID)
-		log.Printf("- Index: %d", input.Index)
-		log.Printf("- OwnerAddress: %s", input.OwnerAddress)
-		log.Printf("- Amount: %d", input.Amount)
-		log.Printf("- IsSpent: %v", input.IsSpent)
+		log.Printf("DEBUG: Raw input UTXO before conversion: %+v", input)
 
-		// Validate input before conversion
-		if input.OwnerAddress == "" {
-			log.Printf("WARNING: Empty owner address for input %d", i)
-		}
-		if err := input.ValidateUTXO(); err != nil {
-			log.Printf("WARNING: Invalid UTXO for input %d: %v", i, err)
+		ownerAddress := input.OwnerAddress
+		if ownerAddress == "" {
+			log.Printf("DEBUG: Input owner address is empty, using sender: %s", txSender)
+			ownerAddress = txSender
 		}
 
 		thrylosInputs[i] = &thrylos.UTXO{
 			TransactionId: input.TransactionID,
 			Index:         int32(input.Index),
-			OwnerAddress:  input.OwnerAddress,
+			OwnerAddress:  ownerAddress,
 			Amount:        input.Amount,
 			IsSpent:       input.IsSpent,
 		}
 
-		// Verify conversion
-		log.Printf("Converted UTXO %d details:", i)
-		log.Printf("- TransactionId: %s", thrylosInputs[i].TransactionId)
-		log.Printf("- Index: %d", thrylosInputs[i].Index)
-		log.Printf("- OwnerAddress: %s", thrylosInputs[i].OwnerAddress)
-		log.Printf("- Amount: %d", thrylosInputs[i].Amount)
-		log.Printf("- IsSpent: %v", thrylosInputs[i].IsSpent)
+		log.Printf("DEBUG: Converted Thrylos UTXO: %+v", thrylosInputs[i])
 	}
 
 	return thrylosInputs
 }
 
 func SharedToThrylosOutputs(outputs []UTXO) []*thrylos.UTXO {
+	if len(outputs) == 0 {
+		log.Printf("WARNING: No outputs provided to SharedToThrylosOutputs")
+		return nil
+	}
+
 	thrylosOutputs := make([]*thrylos.UTXO, len(outputs))
 	for i, output := range outputs {
+		// Add validation logging
+		log.Printf("Output %d details:", i)
+		log.Printf("- OwnerAddress: %s", output.OwnerAddress)
+		log.Printf("- Amount: %d", output.Amount)
+
+		if output.OwnerAddress == "" {
+			log.Printf("WARNING: Empty owner address for output %d", i)
+		}
+
 		thrylosOutputs[i] = &thrylos.UTXO{
 			TransactionId: output.TransactionID,
 			Index:         int32(output.Index),
 			OwnerAddress:  output.OwnerAddress,
 			Amount:        int64(output.Amount),
 		}
+
+		// Verify conversion
+		log.Printf("Converted Output %d details:", i)
+		log.Printf("- OwnerAddress: %s", thrylosOutputs[i].OwnerAddress)
+		log.Printf("- Amount: %d", thrylosOutputs[i].Amount)
 	}
+
 	return thrylosOutputs
 }
 
@@ -786,45 +792,65 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed2551
 // VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
 // the existence and ownership of UTXOs in its inputs, and the equality of input and output values.
 func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (ed25519.PublicKey, error)) (bool, error) {
-
-	// Check if there are any inputs in the transaction
-	if len(tx.GetInputs()) == 0 {
-		return false, errors.New("Transaction has no inputs")
+	// Create a JSON payload matching the frontend format EXACTLY
+	payload := map[string]interface{}{
+		"id":              tx.Id,
+		"sender":          tx.Sender,
+		"gasfee":          int(tx.Gasfee),
+		"timestamp":       tx.Timestamp,
+		"inputs":          convertInputsToJSON(tx.Inputs),
+		"outputs":         convertOutputsToJSON(tx.Outputs),
+		"previous_tx_ids": nil, // Always use null to match frontend
+		"status":          "pending",
 	}
 
-	// Assuming all inputs come from the same sender for simplicity
-	senderAddress := tx.Sender // Use the sender field directly
-
-	// Retrieve the Ed25519 public key for the sender
-	ed25519PublicKey, err := getPublicKeyFunc(senderAddress)
-	if err != nil {
-		return false, fmt.Errorf("Error retrieving Ed25519 public key for address %s: %v", senderAddress, err)
-	}
-
-	// Make a copy of the transaction to manipulate for verification
-	txCopy := proto.Clone(tx).(*thrylos.Transaction)
-	txCopy.Signature = []byte("") // Reset signature for serialization
-
-	// Serialize the transaction for verification
-	txBytes, err := proto.Marshal(txCopy)
+	// Marshal to JSON bytes (same as frontend)
+	txBytes, err := json.Marshal(payload)
 	if err != nil {
 		return false, fmt.Errorf("Error serializing transaction for verification: %v", err)
 	}
 
-	// Cache and retrieve the hash of the serialized transaction
-	cachedHash := cachedHashData(txBytes)
+	// Get the sender's public key
+	ed25519PublicKey, err := getPublicKeyFunc(tx.Sender)
+	if err != nil {
+		return false, fmt.Errorf("Error retrieving Ed25519 public key: %v", err)
+	}
 
-	// Log the serialized transaction data without the signature
-	log.Printf("Serialized transaction for verification: %x", txBytes)
-
-	// Verify the transaction signature using the public key and cached hash
-	if !ed25519.Verify(ed25519PublicKey, cachedHash, tx.Signature) {
+	// Verify signature
+	if !ed25519.Verify(ed25519PublicKey, txBytes, tx.Signature) {
+		// Log values for debugging
+		log.Printf("Transaction verification failed:")
+		log.Printf("- Transaction ID: %s", tx.Id)
+		log.Printf("- Signature: %x", tx.Signature)
+		log.Printf("- Verification bytes: %x", txBytes)
 		return false, fmt.Errorf("Transaction signature verification failed")
 	}
 
-	// The remaining logic for UTXO checks and sum validation remains unchanged...
-
 	return true, nil
+}
+
+func convertInputsToJSON(inputs []*thrylos.UTXO) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(inputs))
+	for i, input := range inputs {
+		result[i] = map[string]interface{}{
+			"amount":        input.Amount,
+			"index":         int(input.Index),
+			"owner_address": input.OwnerAddress,
+		}
+	}
+	return result
+}
+
+func convertOutputsToJSON(outputs []*thrylos.UTXO) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(outputs))
+	for i, output := range outputs {
+		result[i] = map[string]interface{}{
+			"amount":        output.Amount,
+			"index":         int(output.Index),
+			"owner_address": output.OwnerAddress,
+		}
+	}
+	return result
 }
 
 // NewTransaction creates a new Transaction instance with the specified ID, inputs, outputs, and records
@@ -1393,13 +1419,13 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		return fmt.Errorf("invalid transaction: %v", err)
 	}
 
-	// Get all UTXOs (this should be optimized in a real-world scenario)
+	// Get all UTXOs
 	allUTXOs, err := db.GetAllUTXOs()
 	if err != nil {
 		return fmt.Errorf("failed to get all UTXOs: %v", err)
 	}
 
-	// Track balance changes and log initial balances
+	// Track initial balances
 	affectedAddresses := make(map[string]bool)
 	for _, input := range tx.Inputs {
 		affectedAddresses[input.OwnerAddress] = true
@@ -1408,6 +1434,7 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		affectedAddresses[output.OwnerAddress] = true
 	}
 
+	// Log initial balances
 	initialBalances := make(map[string]int64)
 	for address := range affectedAddresses {
 		balance, err := db.GetBalance(address, allUTXOs)
@@ -1419,31 +1446,70 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 			address, balance, float64(balance)/1e7)
 	}
 
-	// Mark input UTXOs as spent
+	// Process inputs and mark UTXOs as spent
+	spentUTXOs := make([]*UTXO, 0)
 	for _, input := range tx.Inputs {
-		err := db.MarkUTXOAsSpent(txn, input)
+		utxos := allUTXOs[input.OwnerAddress]
+		var targetUTXO *UTXO
+
+		log.Printf("Looking for UTXO - Address: %s, Index: %d, Amount: %d",
+			input.OwnerAddress, input.Index, input.Amount)
+
+		// Find exact matching UTXO
+		for _, utxo := range utxos {
+			if utxo.Index == input.Index && utxo.Amount == input.Amount && !utxo.IsSpent {
+				// Create a copy of the UTXO to avoid modifying the slice element
+				utxoCopy := utxo
+				targetUTXO = &utxoCopy
+				log.Printf("Found matching UTXO - TransactionID: %s, Index: %d, Amount: %d, Owner: %s",
+					utxo.TransactionID, utxo.Index, utxo.Amount, utxo.OwnerAddress)
+				break
+			}
+		}
+
+		if targetUTXO == nil {
+			return fmt.Errorf("matching unspent UTXO not found for input: address=%s, index=%d, amount=%d",
+				input.OwnerAddress, input.Index, input.Amount)
+		}
+
+		// Keep track of UTXOs being spent
+		spentUTXOs = append(spentUTXOs, targetUTXO)
+	}
+
+	// Mark UTXOs as spent
+	for _, utxo := range spentUTXOs {
+		log.Printf("Marking UTXO as spent - TransactionID: %s, Index: %d, Amount: %d, Owner: %s",
+			utxo.TransactionID, utxo.Index, utxo.Amount, utxo.OwnerAddress)
+
+		err := db.MarkUTXOAsSpent(txn, *utxo)
 		if err != nil {
 			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
 		}
-		log.Printf("Marked UTXO as spent for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			input.OwnerAddress, input.Amount, float64(input.Amount)/1e7)
+
+		log.Printf("Successfully marked UTXO as spent - TransactionID: %s, Index: %d",
+			utxo.TransactionID, utxo.Index)
 	}
 
 	// Create new UTXOs for outputs
 	for i, output := range tx.Outputs {
-		utxo := UTXO{
+		newUTXO := UTXO{
 			TransactionID: tx.ID,
 			Index:         i,
 			Amount:        output.Amount,
 			OwnerAddress:  output.OwnerAddress,
 			IsSpent:       false,
 		}
-		err := db.AddNewUTXO(txn, utxo)
+
+		log.Printf("Creating new UTXO - TransactionID: %s, Index: %d, Amount: %d, Owner: %s",
+			newUTXO.TransactionID, newUTXO.Index, newUTXO.Amount, newUTXO.OwnerAddress)
+
+		err := db.AddNewUTXO(txn, newUTXO)
 		if err != nil {
 			return fmt.Errorf("failed to add new UTXO: %v", err)
 		}
-		log.Printf("Added new UTXO for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			output.OwnerAddress, output.Amount, float64(output.Amount)/1e7)
+
+		log.Printf("Successfully created new UTXO - TransactionID: %s, Index: %d",
+			newUTXO.TransactionID, newUTXO.Index)
 	}
 
 	// Get updated UTXOs and log final balances
@@ -1462,7 +1528,7 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 			address, newBalance, float64(newBalance)/1e7, change, float64(change)/1e7)
 	}
 
-	// Serialize and store the transaction
+	// Store the transaction
 	txJSON, err := json.Marshal(tx)
 	if err != nil {
 		return fmt.Errorf("error serializing transaction: %v", err)
@@ -1472,6 +1538,7 @@ func processSingleTransaction(txn *TransactionContext, tx *Transaction, db Block
 		return fmt.Errorf("error storing transaction: %v", err)
 	}
 
+	log.Printf("Transaction %s processed successfully", tx.ID)
 	return nil
 }
 

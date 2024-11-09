@@ -18,7 +18,7 @@ type UTXO struct {
 	ID            string `json:"id,omitempty"`
 	TransactionID string `json:"transactionid" validate:"required,hexadecimal,len=64"`
 	Index         int    `json:"index" validate:"gte=0"`
-	OwnerAddress  string `json:"owneraddress" validate:"required,bech32"`
+	OwnerAddress  string `json:"owner_address" validate:"required,bech32"` // Changed from owneraddress to owner_address
 	Amount        int64  `json:"amount" validate:"gt=0"`
 	IsSpent       bool   `json:"isspent"`
 }

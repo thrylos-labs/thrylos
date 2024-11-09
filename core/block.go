@@ -235,58 +235,47 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 // hash, ensuring the block is ready to be added to the blockchain.
 func (b *Block) ComputeHash() []byte {
 	if len(b.Hash) > 0 {
-		return b.Hash // Use the cached hash if available
+		return b.Hash
 	}
 
-	// Create a new BLAKE2b-256 hasher
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		log.Printf("Failed to create hasher: %v", err)
 		return nil
 	}
 
-	// Using binary encoding to convert integers directly to bytes
+	// Write block metadata in a fixed order
 	binary.Write(hasher, binary.BigEndian, b.Index)
 	binary.Write(hasher, binary.BigEndian, b.Timestamp)
-	hasher.Write([]byte(b.PrevHash)) // PrevHash is already []byte
+	hasher.Write(b.PrevHash)
 	hasher.Write([]byte(b.Validator))
 
-	// Process transactions concurrently if possible
-	txHashes := make(chan []byte, len(b.Transactions))
-	var wg sync.WaitGroup
-
+	// Process transactions sequentially to ensure deterministic ordering
 	for _, tx := range b.Transactions {
-		wg.Add(1)
-		go func(tx *thrylos.Transaction) {
-			defer wg.Done()
-			txBytes, err := proto.Marshal(tx)
-			if err != nil {
-				log.Printf("Failed to serialize transaction: %v", err)
-				txHashes <- nil
-				return
-			}
-			txHash := blake2b.Sum256(txBytes)
-			txHashes <- txHash[:]
-		}(tx)
-	}
+		// Create a copy of the transaction without signature
+		txCopy := proto.Clone(tx).(*thrylos.Transaction)
+		txCopy.Signature = []byte("") // Reset signature for consistency with verification
 
-	go func() {
-		wg.Wait()
-		close(txHashes)
-	}()
-
-	// Collect hashes from the channel
-	for txHash := range txHashes {
-		if txHash != nil {
-			hasher.Write(txHash)
+		txBytes, err := proto.Marshal(txCopy)
+		if err != nil {
+			log.Printf("Failed to serialize transaction: %v", err)
+			continue
 		}
+
+		// Hash transaction without signature
+		txHash := blake2b.Sum256(txBytes)
+		hasher.Write(txHash[:])
+
+		// Log for debugging
+		log.Printf("Transaction %s serialized bytes: %x", tx.Id, txBytes)
+		log.Printf("Transaction %s hash: %x", tx.Id, txHash)
 	}
 
 	if len(b.VerkleRoot) > 0 {
 		hasher.Write(b.VerkleRoot)
 	}
 
-	// Compute and store the hash
 	b.Hash = hasher.Sum(nil)
+	log.Printf("Final block hash: %x", b.Hash)
 	return b.Hash
 }
