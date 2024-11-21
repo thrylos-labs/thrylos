@@ -63,6 +63,7 @@ type Node struct {
 	WebSocketConnections map[string]*WebSocketConnection
 	WebSocketMutex       sync.RWMutex
 	balanceUpdateQueue   *BalanceUpdateQueue
+	blockProducer        *ModernBlockProducer
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -136,6 +137,10 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
 		WebSocketConnections: make(map[string]*WebSocketConnection),
 	}
+
+	// Initialize block producer after node is set up
+	node.blockProducer = NewBlockProducer(node, bc)
+	node.blockProducer.Start()
 
 	// Set the callback function
 	node.Blockchain.OnNewBlock = node.ProcessConfirmedTransactions
@@ -1015,52 +1020,11 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	log.Printf("=== Starting AddPendingTransaction ===")
 	log.Printf("Transaction ID: %s", tx.Id)
 
-	// Enhanced validation with logging
-	if tx.Id == "" {
-		log.Printf("Error: Transaction ID is empty")
-		return fmt.Errorf("transaction ID cannot be empty")
-	}
-	if tx.Sender == "" {
-		log.Printf("Error: Transaction sender is empty")
-		return fmt.Errorf("transaction sender cannot be empty")
-	}
-
-	// Log transaction details
-	log.Printf("Transaction Details:")
-	log.Printf("- Sender: %s", tx.Sender)
-	log.Printf("- Gas Fee: %d nanoTHRYLOS (%.7f THRYLOS)", tx.Gasfee, float64(tx.Gasfee)/1e7)
-	log.Printf("- Timestamp: %d", tx.Timestamp)
-
-	// Log inputs
-	log.Printf("Inputs:")
-	var totalInput int64
-	for i, input := range tx.Inputs {
-		totalInput += input.Amount
-		log.Printf("  [%d] Address: %s, Amount: %d nanoTHRYLOS (%.7f THRYLOS)",
-			i, input.OwnerAddress, input.Amount, float64(input.Amount)/1e7)
-	}
-
-	// Log outputs
-	log.Printf("Outputs:")
-	var totalOutput int64
-	for i, output := range tx.Outputs {
-		totalOutput += output.Amount
-		log.Printf("  [%d] Address: %s, Amount: %d nanoTHRYLOS (%.7f THRYLOS)",
-			i, output.OwnerAddress, output.Amount, float64(output.Amount)/1e7)
-	}
-
-	// Log totals
-	log.Printf("Total Input: %d nanoTHRYLOS (%.7f THRYLOS)", totalInput, float64(totalInput)/1e7)
-	log.Printf("Total Output: %d nanoTHRYLOS (%.7f THRYLOS)", totalOutput, float64(totalOutput)/1e7)
-	log.Printf("Total with Gas: %d nanoTHRYLOS (%.7f THRYLOS)",
-		totalOutput+int64(tx.Gasfee), float64(totalOutput+int64(tx.Gasfee))/1e7)
-
 	node.Blockchain.Mu.Lock()
-	defer node.Blockchain.Mu.Unlock()
-
-	// Check for duplicates with logging
+	// Check for duplicates
 	for _, pendingTx := range node.Blockchain.PendingTransactions {
 		if pendingTx.Id == tx.Id {
+			node.Blockchain.Mu.Unlock()
 			log.Printf("Warning: Transaction %s already exists in pending pool, skipping", tx.Id)
 			return nil
 		}
@@ -1068,21 +1032,25 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 
 	// Add to pending transactions
 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
+	pendingCount := len(node.Blockchain.PendingTransactions)
+	node.Blockchain.Mu.Unlock()
+
 	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
-		tx.Id, len(node.Blockchain.PendingTransactions))
+		tx.Id, pendingCount)
 
 	// Update transaction status
 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", nil); err != nil {
 		log.Printf("Warning: Error updating transaction status: %v", err)
-	} else {
-		log.Printf("Transaction status updated to 'pending'")
 	}
 
-	// Trigger block creation
-	log.Printf("Triggering block creation for transaction %s", tx.Id)
-	go node.TriggerBlockCreation()
+	return nil
+}
 
-	log.Printf("=== Completed AddPendingTransaction ===")
+func (node *Node) Shutdown() error {
+	if node.blockProducer != nil {
+		node.blockProducer.Stop()
+	}
+	// ... other cleanup ...
 	return nil
 }
 
