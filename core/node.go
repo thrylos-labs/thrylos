@@ -536,22 +536,29 @@ func ThrylosToNanoNode(thrylos float64) int64 {
 }
 
 func (node *Node) GetBalance(address string) (int64, error) {
-	utxos, err := node.Blockchain.Database.GetUTXOsForAddress(address)
+	// First try to get balance from state manager
+	balance, err := node.Blockchain.StateManager.GetBalance(address)
+	if err == nil {
+		return balance, nil
+	}
+
+	// Fall back to traditional balance calculation if needed
+	utxos, err := node.Blockchain.GetUTXOsForAddress(address)
 	if err != nil {
-		log.Printf("Error fetching UTXOs for address %s: %v", address, err)
 		return 0, err
 	}
 
-	balance := int64(0)
-	for i, utxo := range utxos {
+	var total int64
+	for _, utxo := range utxos {
 		if !utxo.IsSpent {
-			balance += utxo.Amount
-			log.Printf("UTXO %d: Amount = %d, TransactionID = %s", i, utxo.Amount, utxo.TransactionID)
+			total += utxo.Amount
 		}
 	}
 
-	log.Printf("Final balance for %s: %s", address, formatBalance(balance))
-	return balance, nil
+	// Update state manager with calculated balance
+	node.Blockchain.StateManager.UpdateState(address, total, nil)
+
+	return total, nil
 }
 
 var upgrader = websocket.Upgrader{

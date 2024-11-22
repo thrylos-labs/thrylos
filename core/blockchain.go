@@ -2,7 +2,10 @@ package core
 
 import (
 	"bytes"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"crypto/aes"
 	"crypto/cipher"
@@ -34,6 +37,7 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/state"
 	// other necessary imports
 )
 
@@ -100,13 +104,14 @@ type Blockchain struct {
 
 	OnNewBlock func(*Block) // Callback function for when a new block is added
 
-	Network      *Network
-	ShardManager *ShardManager
-
 	ValidatorKeys          *ValidatorKeyStore
 	TestMode               bool
 	OnTransactionProcessed func(*thrylos.Transaction)
 	OnBalanceUpdate        func(address string, balance decimal.Decimal)
+
+	StateManager *state.StateManager
+
+	StateNetwork shared.NetworkInterface
 }
 
 // NewTransaction creates a new transaction
@@ -346,7 +351,8 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 
 	genesis.Transactions = []*thrylos.Transaction{genesisTx}
 
-	network := NewNetwork()
+	stateNetwork := shared.NewDefaultNetwork()
+	stateManager := state.NewStateManager(stateNetwork, 4)
 
 	blockchain := &Blockchain{
 		Blocks:              []*Block{genesis},
@@ -360,9 +366,10 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		SupabaseClient:      supabaseClient,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
-		Network:             network,
+		StateNetwork:        stateNetwork,
 		ValidatorKeys:       NewValidatorKeyStore(),
 		TestMode:            testMode,
+		StateManager:        stateManager,
 	}
 
 	// Now store the private key for the genesis account
@@ -386,9 +393,6 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 
 	// When logging the genesis account
 	log.Printf("Genesis account %s initialized with total supply: %d", bech32GenesisAccount, totalSupplyNano)
-
-	// Initialize ShardManager
-	blockchain.ShardManager = NewShardManager(network)
 
 	// Calculate and set the minimum stake for validators
 	minStakePercentage := big.NewFloat(0.001) // 0.1%
@@ -460,11 +464,22 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
-	// Initialize the first shard with the genesis block
-	initialShard := blockchain.ShardManager.Shards[0]
-	initialShard.Blocks = append(initialShard.Blocks, genesis)
-
 	log.Printf("Genesis account %s initialized with total supply: %d", genesisAccount, totalSupplyNano)
+
+	log.Println("NewBlockchain initialization completed successfully")
+
+	// Add after state sync loop start and before return
+	blockchain.StateManager.StartStateSyncLoop()
+	log.Println("State synchronization loop started")
+
+	// Add shutdown handler
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		log.Println("Stopping state synchronization...")
+		blockchain.StateManager.StopStateSyncLoop()
+	}()
 
 	log.Println("NewBlockchain initialization completed successfully")
 	return blockchain, bdb, nil
