@@ -1,4 +1,3 @@
-// In your Go backend
 package core
 
 import (
@@ -97,35 +96,27 @@ func (s *StakingService) CalculateRewards(stake *Stake) int64 {
 	return int64(rewards)
 }
 
-func (s *StakingService) UnstakeTokens(userAddress string, stakeIndex int) error {
+// Update StakingService method to accept int64 for amount
+func (s *StakingService) UnstakeTokens(userAddress string, amount int64) error {
+	// Find the stake with the matching amount
 	userStakes := s.stakes[userAddress]
-	if stakeIndex >= len(userStakes) {
-		return errors.New("invalid stake index")
+	for _, stake := range userStakes {
+		if stake.Amount == amount && stake.IsActive {
+			if time.Now().Unix() < stake.EndTime {
+				return errors.New("tokens are still locked")
+			}
+
+			// Calculate final rewards
+			rewards := s.CalculateRewards(stake)
+
+			// Mark stake as inactive
+			stake.IsActive = false
+			stake.Rewards = rewards
+			s.pool.TotalStaked -= stake.Amount
+
+			return nil
+		}
 	}
 
-	stake := userStakes[stakeIndex]
-	if !stake.IsActive {
-		return errors.New("stake already withdrawn")
-	}
-
-	if time.Now().Unix() < stake.EndTime {
-		return errors.New("tokens are still locked")
-	}
-
-	// Calculate final rewards
-	rewards := s.CalculateRewards(stake)
-
-	// Return staked amount plus rewards
-	// totalReturn := stake.Amount + rewards
-	// err := s.Database.AddBalance(userAddress, totalReturn)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// Update stake status
-	stake.IsActive = false
-	stake.Rewards = rewards
-	s.pool.TotalStaked -= stake.Amount
-
-	return nil
+	return errors.New("no matching active stake found with specified amount")
 }

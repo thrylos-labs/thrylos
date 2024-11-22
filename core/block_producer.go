@@ -44,11 +44,14 @@ func (bp *ModernBlockProducer) Start() {
 
 	ticker := time.NewTicker(bp.config.TargetBlockTime)
 	go func() {
+		lastIdleLog := time.Now()
 		for range ticker.C {
-			if !bp.shouldProduceBlock() {
-				continue
+			if bp.shouldProduceBlock() {
+				bp.tryProduceBlock()
+			} else if time.Since(lastIdleLog) > 5*time.Minute {
+				// Reset idle log timer
+				lastIdleLog = time.Now()
 			}
-			bp.tryProduceBlock()
 		}
 	}()
 }
@@ -66,8 +69,14 @@ func (bp *ModernBlockProducer) shouldProduceBlock() bool {
 	pendingCount := len(bp.blockchain.PendingTransactions)
 	bp.blockchain.Mu.RUnlock()
 
-	log.Printf("Block production check: Time since last block: %v, Pending transactions: %d",
-		timeSinceLastBlock, pendingCount)
+	// Only log when there are pending transactions or on longer intervals
+	if pendingCount > 0 {
+		log.Printf("Block production check: Time since last block: %v, Pending transactions: %d",
+			timeSinceLastBlock, pendingCount)
+	} else if timeSinceLastBlock > 5*time.Minute {
+		// Log only every 5 minutes when idle
+		log.Printf("Block producer idle: No pending transactions for %v", timeSinceLastBlock)
+	}
 
 	return timeSinceLastBlock >= bp.config.TargetBlockTime &&
 		pendingCount >= bp.config.MinTransactions
@@ -93,8 +102,10 @@ func (bp *ModernBlockProducer) tryProduceBlock() {
 		bp.lastBlockTime = time.Now()
 		bp.mu.Unlock()
 
-		log.Printf("Successfully created block at %v with %d transactions",
-			bp.lastBlockTime.Format(time.RFC3339), len(newBlock.Transactions))
+		log.Printf("Successfully created block %d at %v with %d transactions",
+			newBlock.Index,
+			bp.lastBlockTime.Format(time.RFC3339),
+			len(newBlock.Transactions))
 	}
 }
 

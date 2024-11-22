@@ -64,6 +64,7 @@ type Node struct {
 	WebSocketMutex       sync.RWMutex
 	balanceUpdateQueue   *BalanceUpdateQueue
 	blockProducer        *ModernBlockProducer
+	stakingService       *StakingService
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -136,6 +137,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
 		WebSocketConnections: make(map[string]*WebSocketConnection),
+		stakingService:       NewStakingService(&db),
 	}
 
 	// Initialize block producer after node is set up
@@ -2232,6 +2234,238 @@ func (node *Node) TransactionHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserAddress      string `json:"userAddress"`
+		Amount           int64  `json:"amount"`
+		ValidatorAddress string `json:"validatorAddress"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSONErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify validator exists
+	if !node.Blockchain.validatorExists(req.ValidatorAddress) {
+		sendJSONErrorResponse(w, "Invalid validator address", http.StatusBadRequest)
+		return
+	}
+
+	// Create staking transaction
+	stakingTx := &thrylos.Transaction{
+		Id:        fmt.Sprintf("stake-%s-%d", req.UserAddress, time.Now().UnixNano()),
+		Sender:    req.UserAddress,
+		Timestamp: time.Now().Unix(),
+		Status:    "pending", // Use status field instead of type
+		Gasfee:    1000,      // Set appropriate gas fee
+		Outputs: []*thrylos.UTXO{
+			{
+				OwnerAddress:  req.ValidatorAddress,
+				Amount:        req.Amount,
+				Index:         0,  // Set appropriate index
+				TransactionId: "", // Will be set to stakingTx.Id after creation
+			},
+		},
+		PreviousTxIds: []string{}, // Add if there are previous transactions to reference
+	}
+
+	// Create the stake
+	stake, err := node.stakingService.CreateStake(req.UserAddress, req.Amount)
+	if err != nil {
+		sendJSONErrorResponse(w, fmt.Sprintf("Failed to create stake: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Add to pending transactions
+	if err := node.AddPendingTransaction(stakingTx); err != nil {
+		sendJSONErrorResponse(w, fmt.Sprintf("Failed to process staking transaction: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// After transaction is added to pending, update UTXO TransactionId
+	for _, output := range stakingTx.Outputs {
+		output.TransactionId = stakingTx.Id
+	}
+
+	response := map[string]interface{}{
+		"message":       "Stake created successfully",
+		"stake":         stake,
+		"transactionId": stakingTx.Id,
+	}
+	sendResponseProcess(w, response)
+}
+
+func (node *Node) UnstakeTokensHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		UserAddress      string `json:"userAddress"`
+		Amount           int64  `json:"amount"`
+		ValidatorAddress string `json:"validatorAddress"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendJSONErrorResponse(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Verify stake exists and can be unstaked
+	if err := node.stakingService.UnstakeTokens(req.UserAddress, req.Amount); err != nil {
+		sendJSONErrorResponse(w, fmt.Sprintf("Failed to unstake tokens: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Create unstaking transaction
+	unstakeTx := &thrylos.Transaction{
+		Id:        fmt.Sprintf("unstake-%s-%d", req.UserAddress, time.Now().UnixNano()),
+		Sender:    req.ValidatorAddress,
+		Timestamp: time.Now().Unix(),
+		Status:    "pending",
+		Gasfee:    1000,
+		Outputs: []*thrylos.UTXO{
+			{
+				OwnerAddress:  req.UserAddress,
+				Amount:        req.Amount,
+				Index:         0,
+				TransactionId: "", // Will be set after creation
+			},
+		},
+	}
+
+	if err := node.AddPendingTransaction(unstakeTx); err != nil {
+		sendJSONErrorResponse(w, fmt.Sprintf("Failed to process unstaking transaction: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Update UTXO TransactionId
+	for _, output := range unstakeTx.Outputs {
+		output.TransactionId = unstakeTx.Id
+	}
+
+	response := map[string]interface{}{
+		"message":       "Tokens unstaked successfully",
+		"transactionId": unstakeTx.Id,
+	}
+	sendResponseProcess(w, response)
+}
+
+func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Get active validators with their stats
+	validators := make([]map[string]interface{}, 0)
+	for _, validatorAddr := range node.Blockchain.ActiveValidators {
+		stake, exists := node.Blockchain.Stakeholders[validatorAddr]
+		if !exists {
+			continue
+		}
+
+		validators = append(validators, map[string]interface{}{
+			"id":     validatorAddr,
+			"name":   fmt.Sprintf("Validator %s", validatorAddr[:8]),
+			"status": "Active",
+			"stake":  stake,
+			"apr":    node.stakingService.pool.APR,
+		})
+	}
+
+	sendResponseProcess(w, validators)
+}
+
+func (node *Node) GetStakingStatsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userAddress := r.URL.Query().Get("address")
+	if userAddress == "" {
+		sendJSONErrorResponse(w, "Address parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get user's staking stats
+	stakes := node.stakingService.stakes[userAddress]
+
+	totalStaked := int64(0)
+	rewardsEarned := int64(0)
+	pendingRelease := int64(0)
+	availableForWithdrawal := int64(0)
+
+	for _, stake := range stakes {
+		if stake.IsActive {
+			totalStaked += stake.Amount
+			rewardsEarned += node.stakingService.CalculateRewards(stake)
+
+			if time.Now().Unix() >= stake.EndTime {
+				availableForWithdrawal += stake.Amount + node.stakingService.CalculateRewards(stake)
+			} else {
+				pendingRelease += stake.Amount + node.stakingService.CalculateRewards(stake)
+			}
+		}
+	}
+
+	response := map[string]interface{}{
+		"totalStaked":            totalStaked,
+		"rewardsEarned":          rewardsEarned,
+		"pendingRelease":         pendingRelease,
+		"availableForWithdrawal": availableForWithdrawal,
+		"apr":                    node.stakingService.pool.APR,
+		"minStakeAmount":         node.stakingService.pool.MinStakeAmount,
+	}
+
+	sendResponseProcess(w, response)
+}
+
+func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userAddress := r.URL.Query().Get("address")
+	if userAddress == "" {
+		sendJSONErrorResponse(w, "Address parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get user's stakes
+	stakes := node.stakingService.stakes[userAddress]
+
+	// Calculate total staked and rewards
+	var totalStaked, totalRewards int64
+	var activeStakes []*Stake
+	for _, stake := range stakes {
+		if stake.IsActive {
+			totalStaked += stake.Amount
+			rewards := node.stakingService.CalculateRewards(stake)
+			totalRewards += rewards
+			activeStakes = append(activeStakes, stake)
+		}
+	}
+
+	response := map[string]interface{}{
+		"totalStaked":  totalStaked,
+		"totalRewards": totalRewards,
+		"activeStakes": activeStakes,
+		"stakingPool":  node.stakingService.pool,
+	}
+
+	sendResponseProcess(w, response)
+}
+
 func (node *Node) GetBlockchainAddressHandler(w http.ResponseWriter, r *http.Request) {
 	uid := r.URL.Query().Get("userId")
 	if uid == "" {
@@ -2291,6 +2525,10 @@ func (node *Node) SetupRoutes() *mux.Router {
 	r.HandleFunc("/vote", node.VoteHandler).Methods("POST")
 	r.HandleFunc("/pending-transactions", node.PendingTransactionsHandler).Methods("GET")
 	r.HandleFunc("/ws/balance", node.WebSocketBalanceHandler)
+	r.HandleFunc("/validators", node.GetValidatorsHandler).Methods("GET", "OPTIONS")
+	r.HandleFunc("/staking-stats", node.GetStakingStatsHandler).Methods("GET", "OPTIONS")
+	r.HandleFunc("/stake", node.StakeTokensHandler).Methods("POST", "OPTIONS")
+	r.HandleFunc("/unstake", node.UnstakeTokensHandler).Methods("POST", "OPTIONS")
 
 	return r
 }
