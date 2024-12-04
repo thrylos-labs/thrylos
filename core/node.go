@@ -39,13 +39,6 @@ type Vote struct {
 	Stake     int64  // Stake amount of the validator at the time of voting.
 }
 
-type WebSocketMessage struct {
-	Type           string  `json:"type"`
-	Balance        int64   `json:"balance"`
-	BalanceThrylos float64 `json:"balanceThrylos"`
-	Error          string  `json:"error,omitempty"`
-}
-
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
 // the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
@@ -569,8 +562,6 @@ func (node *Node) GetBalance(address string) (int64, error) {
 }
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
 		// Allow requests from specific origins
 		origin := r.Header.Get("Origin")
@@ -709,7 +700,6 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 		node.WebSocketMutex.Lock()
 		delete(node.WebSocketConnections, address)
 		node.WebSocketMutex.Unlock()
-		close(conn.send)
 		conn.ws.Close()
 		log.Printf("WebSocket connection closed for address: %s", address)
 	}()
@@ -723,30 +713,14 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 	})
 
 	for {
-		messageType, message, err := conn.ws.ReadMessage()
+		_, _, err := conn.ws.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket read error for address %s: %v", address, err)
 			}
 			break
 		}
-
-		if messageType == websocket.TextMessage {
-			var request struct {
-				Type string `json:"type"`
-			}
-			if err := json.Unmarshal(message, &request); err != nil {
-				log.Printf("Error parsing message from %s: %v", address, err)
-				continue
-			}
-
-			switch request.Type {
-			case "getBalance":
-				if err := node.SendBalanceUpdate(address); err != nil {
-					log.Printf("Error sending balance update: %v", err)
-				}
-			}
-		}
+		log.Printf("Received message from address: %s", address)
 	}
 }
 
@@ -792,17 +766,23 @@ func (node *Node) AddPendingBalanceUpdate(address string, balance int64) {
 // Sends updates through the websocket
 
 func (node *Node) SendBalanceUpdate(address string) error {
-	balanceInNano, err := node.GetBalance(address)
+	balanceInNano, err := node.GetBalance(address) // This returns nanoTHRYLOS
 	if err != nil {
 		return fmt.Errorf("failed to get balance for %s: %v", address, err)
 	}
 
+	// Convert to THRYLOS
 	balanceInThrylos := float64(balanceInNano) / float64(NANO_THRYLOS_PER_THRYLOS)
 
-	update := WebSocketMessage{
-		Type:           "balance",
-		Balance:        balanceInNano,
-		BalanceThrylos: balanceInThrylos,
+	// Create update message
+	update := struct {
+		Address        string  `json:"blockchainAddress"`
+		Balance        int64   `json:"balance"`        // In THRYLOS
+		BalanceThrylos float64 `json:"balanceThrylos"` // In THRYLOS
+	}{
+		Address:        address,
+		Balance:        balanceInNano,    // Keep original nanoTHRYLOS value
+		BalanceThrylos: balanceInThrylos, // Send converted THRYLOS value
 	}
 
 	jsonUpdate, err := json.Marshal(update)
@@ -822,8 +802,8 @@ func (node *Node) SendBalanceUpdate(address string) error {
 	case conn.send <- jsonUpdate:
 		log.Printf("Balance update sent for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
 			address, balanceInNano, balanceInThrylos)
-	case <-time.After(writeWait):
-		return fmt.Errorf("timeout sending balance update for address: %s", address)
+	default:
+		return fmt.Errorf("WebSocket send buffer full for address: %s", address)
 	}
 
 	return nil
@@ -1578,7 +1558,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	if err := n.BroadcastTransaction(thrylosTx); err != nil {
 		log.Printf("Failed to broadcast transaction: %v", err)
-		sendJSONErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
+		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -1741,14 +1721,10 @@ func (node *Node) UpdateBalanceAsync(address string) {
 	}()
 }
 
-func sendWebSocketError(ws *websocket.Conn, message string) {
-	response := WebSocketMessage{
-		Type:  "error",
-		Error: message,
-	}
-	if data, err := json.Marshal(response); err == nil {
-		ws.WriteMessage(websocket.TextMessage, data)
-	}
+func sendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 // Helper function to send JSON responses
