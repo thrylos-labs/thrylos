@@ -1052,6 +1052,11 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 		log.Printf("Warning: Error updating transaction status: %v", err)
 	}
 
+	// Trigger block creation if this is the first pending transaction
+	if pendingCount == 1 {
+		go node.TriggerBlockCreation()
+	}
+
 	return nil
 }
 
@@ -1071,46 +1076,60 @@ func calculateTotalAmount(outputs []*thrylos.UTXO) int64 {
 	return total
 }
 
-// Add this method to periodically check and create blocks
+// StartBlockCreationTimer monitors for pending transactions and creates blocks
 func (node *Node) StartBlockCreationTimer() {
-	ticker := time.NewTicker(1 * time.Minute) // Adjust time as needed
+	targetBlockTime := 1200 * time.Millisecond       // 1.2 seconds target block time
+	ticker := time.NewTicker(200 * time.Millisecond) // Check more frequently
+
+	var lastBlockTime time.Time
+
 	go func() {
 		for range ticker.C {
-			if len(node.PendingTransactions) > 0 {
-				node.TriggerBlockCreation()
+			now := time.Now()
+			timeSinceLastBlock := now.Sub(lastBlockTime)
+
+			node.Mu.RLock()
+			hasPendingTx := len(node.PendingTransactions) > 0
+			node.Mu.RUnlock()
+
+			// Create block if we have pending transactions and enough time has passed
+			if hasPendingTx && timeSinceLastBlock >= targetBlockTime {
+				if err := node.TriggerBlockCreation(); err != nil {
+					log.Printf("Error creating block: %v", err)
+					continue
+				}
+				lastBlockTime = now
 			}
 		}
 	}()
 }
 
 // Add this method to your Node struct
-func (node *Node) TriggerBlockCreation() {
-	log.Println("Triggering block creation due to full pending transaction pool")
+func (node *Node) TriggerBlockCreation() error {
+	node.Mu.RLock()
+	hasPendingTx := len(node.PendingTransactions) > 0
+	node.Mu.RUnlock()
 
-	node.Mu.Lock()
-	pendingCount := len(node.PendingTransactions)
-	node.Mu.Unlock()
-
-	log.Printf("Current pending transactions before processing: %d", pendingCount)
-
-	validator := node.Blockchain.GetCurrentValidator()
-	log.Printf("Selected validator: %s", validator)
-
-	newBlock, err := node.Blockchain.ProcessPendingTransactions(validator)
-	if err != nil {
-		log.Printf("Error creating new block: %v", err)
-	} else if newBlock != nil {
-		log.Printf("New block created successfully: Index=%d, Hash=%s, Transactions=%d",
-			newBlock.Index, newBlock.Hash, len(newBlock.Transactions))
-	} else {
-		log.Println("No new block created")
+	if !hasPendingTx {
+		return nil
 	}
 
-	node.Mu.Lock()
-	remainingPending := len(node.PendingTransactions)
-	node.Mu.Unlock()
+	validator := node.Blockchain.GetCurrentValidator()
+	if validator == "" {
+		return fmt.Errorf("no validator available")
+	}
 
-	log.Printf("Remaining pending transactions after processing: %d", remainingPending)
+	log.Printf("Processing pending transactions immediately")
+	block, err := node.Blockchain.ProcessPendingTransactions(validator)
+	if err != nil {
+		return fmt.Errorf("failed to process transactions: %w", err)
+	}
+
+	if block != nil {
+		log.Printf("Successfully created block with %d transactions", len(block.Transactions))
+	}
+
+	return nil
 }
 
 func (bc *Blockchain) GetCurrentValidator() string {
@@ -1529,43 +1548,69 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Collect addresses for balance updates
-	addresses := make(map[string]bool)
-	addresses[transactionData.Sender] = true
-	for _, output := range transactionData.Outputs {
-		addresses[output.OwnerAddress] = true
+	// Trigger immediate block creation if this is the first pending transaction
+	go func() {
+		if err := n.TriggerBlockCreation(); err != nil {
+			log.Printf("Error triggering block creation: %v", err)
+		}
+	}()
+
+	// Send immediate response
+	resp := map[string]interface{}{
+		"message": fmt.Sprintf("Transaction %s submitted successfully", transactionData.ID),
+		"status":  "pending",
+		"txId":    transactionData.ID,
 	}
 
-	// Queue initial balance updates and notifications
-	for address := range addresses {
-		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
-			Address: address,
-			Retries: 3,
-		}
-	}
-
-	// Schedule delayed balance check
-	time.AfterFunc(2*time.Second, func() {
-		for address := range addresses {
-			balance, err := n.GetBalance(address)
-			if err != nil {
-				log.Printf("Error getting delayed balance for %s: %v", address, err)
-				continue
-			}
-			n.notifyBalanceUpdate(address, balance)
-		}
-	})
-
-	if err := n.BroadcastTransaction(thrylosTx); err != nil {
-		log.Printf("Failed to broadcast transaction: %v", err)
-		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
+	// Send response before handling balance updates
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Error encoding response: %v", err)
 		return
 	}
+	w.(http.Flusher).Flush()
 
-	sendResponseProcess(w, map[string]string{
-		"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID),
-	})
+	// Handle balance updates asynchronously
+	go func() {
+		// Queue balance updates with debouncing
+		addresses := make(map[string]bool)
+		addresses[transactionData.Sender] = true
+		for _, output := range transactionData.Outputs {
+			addresses[output.OwnerAddress] = true
+		}
+
+		// Add small delay to ensure transaction is processed
+		time.Sleep(200 * time.Millisecond)
+
+		for address := range addresses {
+			if balance, err := n.GetBalance(address); err == nil {
+				n.notifyBalanceUpdate(address, balance)
+			}
+		}
+	}()
 }
+
+// Schedule delayed balance check
+// 	time.AfterFunc(2*time.Second, func() {
+// 		for address := range addresses {
+// 			balance, err := n.GetBalance(address)
+// 			if err != nil {
+// 				log.Printf("Error getting delayed balance for %s: %v", address, err)
+// 				continue
+// 			}
+// 			n.notifyBalanceUpdate(address, balance)
+// 		}
+// 	})
+
+// 	if err := n.BroadcastTransaction(thrylosTx); err != nil {
+// 		log.Printf("Failed to broadcast transaction: %v", err)
+// 		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
+
+// 	sendResponseProcess(w, map[string]string{
+// 		"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID),
+// 	})
+// }
 
 func (n *Node) processBalanceUpdateQueue() {
 	for request := range n.balanceUpdateQueue.queue {
@@ -2541,9 +2586,15 @@ func (node *Node) SetupRoutes() *mux.Router {
 }
 
 func (node *Node) StartBackgroundTasks() {
+	// Initialize our timers
 	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
 	tickerCountVotes := time.NewTicker(1 * time.Minute)
 
+	// Start the block creation timer immediately
+	log.Println("Starting block producer with target block time: 1.2s")
+	node.StartBlockCreationTimer()
+
+	// Continue with other background tasks
 	go func() {
 		for {
 			select {

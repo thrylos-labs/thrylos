@@ -1093,111 +1093,86 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
 
 // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
+	// First, verify validator status before acquiring locks
+	if !bc.IsActiveValidator(validator) {
+		return nil, fmt.Errorf("invalid validator: %s", validator)
+	}
+
+	// Take a snapshot of pending transactions under lock
 	bc.Mu.Lock()
-	log.Printf("Number of pending transactions before processing: %d", len(bc.PendingTransactions))
+	if len(bc.PendingTransactions) == 0 {
+		bc.Mu.Unlock()
+		return nil, nil // Nothing to process
+	}
 	pendingTransactions := make([]*thrylos.Transaction, len(bc.PendingTransactions))
 	copy(pendingTransactions, bc.PendingTransactions)
-	bc.PendingTransactions = make([]*thrylos.Transaction, 0) // Reset pending transactions
 	bc.Mu.Unlock()
 
-	// Update network conditions
-	currentMetrics := NetworkMetrics{
-		TransactionVolume: len(pendingTransactions),
-		NodeCount:         bc.getActiveNodeCount(),
-		AverageLatency:    bc.calculateAverageLatency(),
-	}
-	bc.TOBManager.UpdateNetworkConditions(currentMetrics)
-
-	currentBlockTime := bc.TOBManager.GetCurrentBlockTime()
-
-	log.Printf("Processing %d pending transactions with block time %v", len(pendingTransactions), currentBlockTime)
-
-	successfulTransactions := []*thrylos.Transaction{}
-
-	// Start a database transaction for processing all transactions
+	// Start database transaction
 	txContext, err := bc.Database.BeginTransaction()
 	if err != nil {
-		return nil, fmt.Errorf("failed to begin database transaction: %v", err)
+		return nil, fmt.Errorf("database transaction error: %v", err)
 	}
 	defer bc.Database.RollbackTransaction(txContext)
 
+	// Process transactions in batches
+	successfulTransactions := make([]*thrylos.Transaction, 0, len(pendingTransactions))
 	for _, tx := range pendingTransactions {
-		// Verify transaction
-		isValid, err := bc.VerifyTransaction(tx)
-		if err != nil || !isValid {
-			log.Printf("Invalid transaction %s: %v", tx.Id, err)
+		if err := bc.processTransactionInBlock(txContext, tx); err != nil {
+			log.Printf("Transaction %s failed: %v", tx.Id, err)
 			continue
 		}
-
-		// Process transaction (update UTXOs)
-		err = bc.processTransactionInBlock(txContext, tx)
-		if err != nil {
-			log.Printf("Failed to process transaction %s: %v", tx.Id, err)
-			continue
-		}
-
 		successfulTransactions = append(successfulTransactions, tx)
 	}
 
-	// Commit the database transaction
-	if err := bc.Database.CommitTransaction(txContext); err != nil {
-		return nil, fmt.Errorf("failed to commit transaction: %v", err)
-	}
-
-	log.Printf("%d out of %d transactions processed successfully", len(successfulTransactions), len(pendingTransactions))
-
-	// Select a validator from the active set
-	if len(bc.ActiveValidators) == 0 {
-		return nil, fmt.Errorf("no active validators available")
-	}
-
-	selectedValidator := bc.ActiveValidators[0] // Or however you select your validator
-	if !bc.IsActiveValidator(selectedValidator) {
-		return nil, fmt.Errorf("selected validator is not active: %s", selectedValidator)
-	}
-
-	// Create unsigned block
-	unsignedBlock, err := bc.CreateUnsignedBlock(successfulTransactions, selectedValidator)
+	// Create and sign block
+	unsignedBlock, err := bc.CreateUnsignedBlock(successfulTransactions, validator)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create unsigned block: %v", err)
+		return nil, fmt.Errorf("block creation failed: %v", err)
 	}
 
-	// In a real implementation, you would send this unsigned block to the validator for signing
-	// For now, we'll simulate this by directly signing it (this should be removed in production)
 	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
 	if err != nil {
-		return nil, fmt.Errorf("failed to simulate block signing: %v", err)
+		return nil, fmt.Errorf("block signing failed: %v", err)
 	}
 
-	// Verify the signed block
-	if err := bc.VerifySignedBlock(signedBlock); err != nil {
-		return nil, fmt.Errorf("invalid signed block: %v", err)
+	// Commit database changes
+	if err := bc.Database.CommitTransaction(txContext); err != nil {
+		return nil, fmt.Errorf("commit failed: %v", err)
 	}
 
-	// Add the verified block to the blockchain
+	// Only after successful commit do we update blockchain state
 	bc.Mu.Lock()
 	bc.Blocks = append(bc.Blocks, signedBlock)
+	// Remove processed transactions from pending pool
+	bc.PendingTransactions = bc.PendingTransactions[len(successfulTransactions):]
 	bc.Mu.Unlock()
 
-	for _, tx := range signedBlock.Transactions {
-		if err := bc.UpdateTransactionStatus(tx.Id, "included", signedBlock.Hash); err != nil {
-			log.Printf("Error updating transaction status: %v", err)
+	// Async notifications
+	go func() {
+		for _, tx := range signedBlock.Transactions {
+			bc.UpdateTransactionStatus(tx.Id, "included", signedBlock.Hash)
+			if bc.OnTransactionProcessed != nil {
+				bc.OnTransactionProcessed(tx)
+			}
+			bc.notifyBalanceUpdates(tx)
 		}
-		log.Printf("Transaction %s included in block %x", tx.Id, signedBlock.Hash)
+	}()
 
-		// Notify about processed transaction
-		if bc.OnTransactionProcessed != nil {
-			bc.OnTransactionProcessed(tx)
-		}
-
-		// Notify balance updates
-		bc.notifyBalanceUpdates(tx)
-	}
-
-	// After adding a new block, we might want to update the active validator set
-	bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
+	// Async network metrics update
+	go bc.updateNetworkMetrics()
 
 	return signedBlock, nil
+}
+
+// Separate function for network metrics
+func (bc *Blockchain) updateNetworkMetrics() {
+	metrics := NetworkMetrics{
+		TransactionVolume: len(bc.PendingTransactions),
+		NodeCount:         bc.getActiveNodeCount(),
+		AverageLatency:    bc.calculateAverageLatency(),
+	}
+	bc.TOBManager.UpdateNetworkConditions(metrics)
 }
 
 // First, ensure when creating transaction inputs we set the original transaction ID
@@ -1271,17 +1246,6 @@ func (bc *Blockchain) notifyBalanceUpdates(tx *thrylos.Transaction) {
 
 func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, error) {
 	log.Printf("Simulating block signing for validator: %s", unsignedBlock.Validator)
-
-	// Simulate network delay (between 0 and 1000 milliseconds)
-	maxDelay := big.NewInt(1000)
-	delayInt, err := rand.Int(rand.Reader, maxDelay)
-	if err != nil {
-		log.Printf("Error generating random delay: %v", err)
-		return nil, fmt.Errorf("failed to generate random delay: %v", err)
-	}
-	delay := time.Duration(delayInt.Int64()) * time.Millisecond
-	time.Sleep(delay)
-	log.Printf("Simulated network delay: %v", delay)
 
 	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(unsignedBlock.Validator)
 	if err != nil {
