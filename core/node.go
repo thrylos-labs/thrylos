@@ -1,12 +1,14 @@
 package core
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/big"
@@ -39,6 +41,17 @@ type Vote struct {
 	Stake     int64  // Stake amount of the validator at the time of voting.
 }
 
+var (
+	publicKeyCache sync.Map
+	balanceCache   sync.Map
+	cacheTTL       = 5 * time.Second
+)
+
+type cachedBalance struct {
+	value     int64
+	timestamp time.Time
+}
+
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
 // the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
@@ -65,6 +78,8 @@ type Node struct {
 	balanceUpdateQueue   *BalanceUpdateQueue
 	blockProducer        *ModernBlockProducer
 	stakingService       *StakingService
+	pendingTxCount       int32 // Add this field
+
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -536,13 +551,25 @@ func ThrylosToNanoNode(thrylos float64) int64 {
 }
 
 func (node *Node) GetBalance(address string) (int64, error) {
-	// First try to get balance from state manager
+	// Check cache first
+	if cached, ok := balanceCache.Load(address); ok {
+		cachedVal := cached.(cachedBalance)
+		if time.Since(cachedVal.timestamp) < cacheTTL {
+			return cachedVal.value, nil
+		}
+	}
+
+	// Fast path: check state manager
 	balance, err := node.Blockchain.StateManager.GetBalance(address)
 	if err == nil {
+		balanceCache.Store(address, cachedBalance{
+			value:     balance,
+			timestamp: time.Now(),
+		})
 		return balance, nil
 	}
 
-	// Fall back to traditional balance calculation if needed
+	// Slow path: calculate from UTXOs
 	utxos, err := node.Blockchain.GetUTXOsForAddress(address)
 	if err != nil {
 		return 0, err
@@ -555,7 +582,11 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		}
 	}
 
-	// Update state manager with calculated balance
+	// Update caches
+	balanceCache.Store(address, cachedBalance{
+		value:     total,
+		timestamp: time.Now(),
+	})
 	node.Blockchain.StateManager.UpdateState(address, total, nil)
 
 	return total, nil
@@ -766,30 +797,7 @@ func (node *Node) AddPendingBalanceUpdate(address string, balance int64) {
 // Sends updates through the websocket
 
 func (node *Node) SendBalanceUpdate(address string) error {
-	balanceInNano, err := node.GetBalance(address) // This returns nanoTHRYLOS
-	if err != nil {
-		return fmt.Errorf("failed to get balance for %s: %v", address, err)
-	}
-
-	// Convert to THRYLOS
-	balanceInThrylos := float64(balanceInNano) / float64(NANO_THRYLOS_PER_THRYLOS)
-
-	// Create update message
-	update := struct {
-		Address        string  `json:"blockchainAddress"`
-		Balance        int64   `json:"balance"`        // In THRYLOS
-		BalanceThrylos float64 `json:"balanceThrylos"` // In THRYLOS
-	}{
-		Address:        address,
-		Balance:        balanceInNano,    // Keep original nanoTHRYLOS value
-		BalanceThrylos: balanceInThrylos, // Send converted THRYLOS value
-	}
-
-	jsonUpdate, err := json.Marshal(update)
-	if err != nil {
-		return fmt.Errorf("failed to marshal balance update: %v", err)
-	}
-
+	// Get the connection
 	node.WebSocketMutex.RLock()
 	conn, exists := node.WebSocketConnections[address]
 	node.WebSocketMutex.RUnlock()
@@ -798,12 +806,42 @@ func (node *Node) SendBalanceUpdate(address string) error {
 		return fmt.Errorf("no WebSocket connection found for address: %s", address)
 	}
 
+	// Get balance with retry
+	var balance int64
+	var err error
+	for attempts := 0; attempts < 3; attempts++ {
+		balance, err = node.GetBalance(address)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to fetch balance: %v", err)
+	}
+
+	balanceThrylos := float64(balance) / 1e7
+
+	message := map[string]interface{}{
+		"blockchainAddress": address,
+		"balance":           balance,
+		"balanceThrylos":    balanceThrylos,
+	}
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %v", err)
+	}
+
 	select {
-	case conn.send <- jsonUpdate:
+	case conn.send <- messageBytes:
 		log.Printf("Balance update sent for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
-			address, balanceInNano, balanceInThrylos)
+			address, balance, balanceThrylos)
 	default:
-		return fmt.Errorf("WebSocket send buffer full for address: %s", address)
+		// If channel is full, try to send directly
+		if err := conn.ws.WriteJSON(message); err != nil {
+			return fmt.Errorf("failed to send balance update: %v", err)
+		}
 	}
 
 	return nil
@@ -1022,6 +1060,10 @@ func (bc *Blockchain) SelectValidator() string {
 }
 
 func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
+	// Consolidate locks and checks
+	node.Blockchain.Mu.Lock()
+	defer node.Blockchain.Mu.Unlock()
+
 	if tx == nil {
 		return fmt.Errorf("cannot add nil transaction")
 	}
@@ -1029,33 +1071,30 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	log.Printf("=== Starting AddPendingTransaction ===")
 	log.Printf("Transaction ID: %s", tx.Id)
 
-	node.Blockchain.Mu.Lock()
-	// Check for duplicates
+	// Check for duplicates with single lock
 	for _, pendingTx := range node.Blockchain.PendingTransactions {
 		if pendingTx.Id == tx.Id {
-			node.Blockchain.Mu.Unlock()
 			log.Printf("Warning: Transaction %s already exists in pending pool, skipping", tx.Id)
 			return nil
 		}
 	}
 
-	// Add to pending transactions
+	// Add and get count under same lock
 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
 	pendingCount := len(node.Blockchain.PendingTransactions)
-	node.Blockchain.Mu.Unlock()
 
-	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
-		tx.Id, pendingCount)
-
-	// Update transaction status
+	// Update status while still holding lock
 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", nil); err != nil {
 		log.Printf("Warning: Error updating transaction status: %v", err)
 	}
 
-	// Trigger block creation if this is the first pending transaction
+	// Start block creation only if this is first transaction
 	if pendingCount == 1 {
 		go node.TriggerBlockCreation()
 	}
+
+	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
+		tx.Id, pendingCount)
 
 	return nil
 }
@@ -1106,11 +1145,11 @@ func (node *Node) StartBlockCreationTimer() {
 
 // Add this method to your Node struct
 func (node *Node) TriggerBlockCreation() error {
-	node.Mu.RLock()
-	hasPendingTx := len(node.PendingTransactions) > 0
-	node.Mu.RUnlock()
+	node.Mu.Lock()
+	defer node.Mu.Unlock()
 
-	if !hasPendingTx {
+	pendingCount := len(node.PendingTransactions)
+	if pendingCount == 0 {
 		return nil
 	}
 
@@ -1119,14 +1158,26 @@ func (node *Node) TriggerBlockCreation() error {
 		return fmt.Errorf("no validator available")
 	}
 
-	log.Printf("Processing pending transactions immediately")
-	block, err := node.Blockchain.ProcessPendingTransactions(validator)
-	if err != nil {
-		return fmt.Errorf("failed to process transactions: %w", err)
+	// Process in batches if needed
+	const batchSize = 100
+	if pendingCount > batchSize {
+		batch := make([]*thrylos.Transaction, batchSize)
+		copy(batch, node.PendingTransactions[:batchSize])
+		node.PendingTransactions = node.PendingTransactions[batchSize:]
+
+		go func(transactions []*thrylos.Transaction) {
+			if _, err := node.Blockchain.ProcessPendingTransactionsWithBatch(validator, transactions); err != nil {
+				log.Printf("Error processing transaction batch: %v", err)
+			}
+		}(batch)
+		return nil
 	}
 
-	if block != nil {
-		log.Printf("Successfully created block with %d transactions", len(block.Transactions))
+	// Process remaining under same lock
+	if block, err := node.Blockchain.ProcessPendingTransactions(validator); err != nil {
+		return fmt.Errorf("failed to process transactions: %w", err)
+	} else if block != nil {
+		log.Printf("Created block with %d transactions", len(block.Transactions))
 	}
 
 	return nil
@@ -1410,9 +1461,15 @@ var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator 
 const MinTransactionAmount int64 = 1 * NanoThrylosPerThrylos // 1 THRYLOS in nanoTHRYLOS
 
 func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	// Handle OPTIONS request
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Use a buffered reader for better performance
+	bodyBytes, err := io.ReadAll(bufio.NewReader(r.Body))
+	if err != nil {
+		sendJSONErrorResponse(w, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1421,60 +1478,74 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		Signature string                 `json:"signature"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
 		sendJSONErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Extract the sender from the payload
+	// Fast path validation
 	sender, ok := requestData.Payload["sender"].(string)
 	if !ok {
 		sendJSONErrorResponse(w, "Invalid sender in payload", http.StatusBadRequest)
 		return
 	}
 
-	// Fetch the public key for the sender
-	publicKey, err := n.RetrievePublicKey(sender)
-	if err != nil {
-		sendJSONErrorResponse(w, "Could not retrieve public key: "+err.Error(), http.StatusInternalServerError)
+	// Parallel validation of critical components with timeout
+	validationDone := make(chan error, 1)
+	var publicKey ed25519.PublicKey
+	var signatureBytes []byte
+	var messageBytes []byte
+
+	go func() {
+		var err error
+		// Get public key
+		publicKey, err = n.RetrievePublicKey(sender)
+		if err != nil {
+			validationDone <- fmt.Errorf("could not retrieve public key: %v", err)
+			return
+		}
+
+		// Decode signature
+		signatureBytes, err = base64.StdEncoding.DecodeString(requestData.Signature)
+		if err != nil {
+			validationDone <- fmt.Errorf("invalid signature encoding: %v", err)
+			return
+		}
+
+		// Marshal payload
+		messageBytes, err = json.Marshal(requestData.Payload)
+		if err != nil {
+			validationDone <- fmt.Errorf("failed to marshal payload: %v", err)
+			return
+		}
+
+		// Verify signature
+		if !ed25519.Verify(publicKey, messageBytes, signatureBytes) {
+			validationDone <- fmt.Errorf("invalid signature")
+			return
+		}
+
+		validationDone <- nil
+	}()
+
+	// Wait for validation with timeout
+	select {
+	case err := <-validationDone:
+		if err != nil {
+			sendJSONErrorResponse(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	case <-time.After(1 * time.Second):
+		sendJSONErrorResponse(w, "Validation timeout", http.StatusGatewayTimeout)
 		return
 	}
 
-	// Ensure the payload is exactly as received from frontend
-	// In ProcessSignedTransactionHandler, modify the verification part:
-	messageBytes, err := json.Marshal(requestData.Payload)
-	if err != nil {
-		sendJSONErrorResponse(w, "Failed to marshal payload: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Before verifying, print exact message being verified
-	log.Printf("Message to verify (string): %s", string(messageBytes))
-
-	// Decode base64 signature
-	signatureBytes, err := base64.StdEncoding.DecodeString(requestData.Signature)
-	if err != nil {
-		sendJSONErrorResponse(w, "Invalid signature encoding: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Verify signature with exact same payload
-	if !ed25519.Verify(publicKey, messageBytes, signatureBytes) {
-		log.Printf("❌ Signature verification failed")
-		log.Printf("Message bytes (hex): %x", messageBytes)
-		log.Printf("Signature (hex): %x", signatureBytes)
-		log.Printf("Public key (hex): %x", publicKey)
-		sendJSONErrorResponse(w, "Invalid signature", http.StatusUnauthorized)
-		return
-	}
-
-	log.Printf("✅ Signature verification succeeded")
-
-	// Parse transaction data from payload
+	// Process transaction data
 	var transactionData shared.Transaction
 	transactionData.ID = requestData.Payload["id"].(string)
 	transactionData.Sender = sender
 
+	// Direct type assertions instead of JSON marshal/unmarshal
 	if gasFeeFloat, ok := requestData.Payload["gasfee"].(float64); ok {
 		transactionData.GasFee = int(gasFeeFloat)
 	} else {
@@ -1489,71 +1560,93 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Parse inputs and outputs
-	inputsJSON, err := json.Marshal(requestData.Payload["inputs"])
-	if err != nil {
-		sendJSONErrorResponse(w, "Invalid inputs in payload: "+err.Error(), http.StatusBadRequest)
-		return
+	// Process inputs/outputs
+	if inputsData, ok := requestData.Payload["inputs"].([]interface{}); ok {
+		inputsJSON, err := json.Marshal(inputsData)
+		if err != nil {
+			sendJSONErrorResponse(w, "Invalid inputs in payload: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
+			sendJSONErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
-	log.Printf("DEBUG: Raw inputs JSON: %s", string(inputsJSON))
 
-	if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
-		sendJSONErrorResponse(w, "Failed to parse inputs: "+err.Error(), http.StatusBadRequest)
-		return
+	if outputsData, ok := requestData.Payload["outputs"].([]interface{}); ok {
+		outputsJSON, err := json.Marshal(outputsData)
+		if err != nil {
+			sendJSONErrorResponse(w, "Invalid outputs in payload: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
+			sendJSONErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
-	log.Printf("DEBUG: Parsed inputs: %+v", transactionData.Inputs)
 
-	outputsJSON, err := json.Marshal(requestData.Payload["outputs"])
-	if err != nil {
-		sendJSONErrorResponse(w, "Invalid outputs in payload: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	log.Printf("DEBUG: Raw outputs JSON: %s", string(outputsJSON))
-
-	if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
-		sendJSONErrorResponse(w, "Failed to parse outputs: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	log.Printf("DEBUG: Parsed outputs: %+v", transactionData.Outputs)
-
-	// Convert to thrylos transaction
+	// Convert and validate transaction
 	thrylosTx := shared.SharedToThrylos(&transactionData)
 	if thrylosTx == nil {
 		sendJSONErrorResponse(w, "Failed to convert transaction data", http.StatusInternalServerError)
 		return
 	}
-
-	// Add the verified signature
 	thrylosTx.Signature = signatureBytes
 
-	// Get balance for validation
-	balance, err := n.GetBalance(transactionData.Sender)
-	if err != nil {
-		log.Printf("Failed to fetch balance for address %s: %v", transactionData.Sender, err)
-		sendJSONErrorResponse(w, "Failed to fetch balance: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Validate without re-verifying signature
-	if err := shared.ValidateAndConvertTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
-		log.Printf("Failed to validate transaction: %v", err)
-		sendJSONErrorResponse(w, fmt.Sprintf("Failed to validate transaction: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Add to pending transactions
-	if err := n.AddPendingTransaction(thrylosTx); err != nil {
-		log.Printf("Failed to add transaction to pending transactions: %v", err)
-		sendJSONErrorResponse(w, "Failed to add transaction to pending pool: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Trigger immediate block creation if this is the first pending transaction
+	// Start block creation early
+	blockCreationDone := make(chan struct{})
 	go func() {
+		defer close(blockCreationDone)
 		if err := n.TriggerBlockCreation(); err != nil {
 			log.Printf("Error triggering block creation: %v", err)
 		}
 	}()
+
+	// Parallel balance fetch and validation with timeout
+	validationComplete := make(chan error, 1)
+	go func() {
+		balance, err := n.GetBalance(transactionData.Sender)
+		if err != nil {
+			validationComplete <- fmt.Errorf("failed to fetch balance: %v", err)
+			return
+		}
+
+		if err := shared.ValidateAndConvertTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
+			validationComplete <- fmt.Errorf("failed to validate transaction: %v", err)
+			return
+		}
+
+		if err := n.AddPendingTransaction(thrylosTx); err != nil {
+			validationComplete <- fmt.Errorf("failed to add to pending pool: %v", err)
+			return
+		}
+		validationComplete <- nil
+	}()
+
+	go func() {
+		// Wait a short time for transaction processing
+		time.Sleep(500 * time.Millisecond)
+
+		// Send multiple balance updates to ensure delivery
+		for i := 0; i < 3; i++ {
+			if err := n.SendBalanceUpdate(transactionData.Sender); err != nil {
+				log.Printf("Failed to send balance update attempt %d: %v", i+1, err)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
+
+	// Wait for validation with timeout
+	select {
+	case err := <-validationComplete:
+		if err != nil {
+			sendJSONErrorResponse(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	case <-time.After(1 * time.Second):
+		sendJSONErrorResponse(w, "Transaction processing timeout", http.StatusGatewayTimeout)
+		return
+	}
 
 	// Send immediate response
 	resp := map[string]interface{}{
@@ -1561,31 +1654,29 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		"status":  "pending",
 		"txId":    transactionData.ID,
 	}
-
-	// Send response before handling balance updates
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("Error encoding response: %v", err)
-		return
-	}
+	json.NewEncoder(w).Encode(resp)
 	w.(http.Flusher).Flush()
 
-	// Handle balance updates asynchronously
+	// Update balances in background
 	go func() {
-		// Queue balance updates with debouncing
 		addresses := make(map[string]bool)
 		addresses[transactionData.Sender] = true
 		for _, output := range transactionData.Outputs {
 			addresses[output.OwnerAddress] = true
 		}
 
-		// Add small delay to ensure transaction is processed
-		time.Sleep(200 * time.Millisecond)
-
+		// Update balances concurrently
+		var wg sync.WaitGroup
 		for address := range addresses {
-			if balance, err := n.GetBalance(address); err == nil {
-				n.notifyBalanceUpdate(address, balance)
-			}
+			wg.Add(1)
+			go func(addr string) {
+				defer wg.Done()
+				if balance, err := n.GetBalance(addr); err == nil {
+					n.notifyBalanceUpdate(addr, balance)
+				}
+			}(address)
 		}
+		wg.Wait()
 	}()
 }
 

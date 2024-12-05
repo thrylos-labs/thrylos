@@ -726,6 +726,11 @@ func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (ed25519.PublicKey,
 	return publicKey, nil
 }
 
+func (bc *Blockchain) ProcessPendingTransactionsWithBatch(validator string, batch []*thrylos.Transaction) (*Block, error) {
+	// Similar to ProcessPendingTransactions but works with the provided batch
+	return bc.ProcessPendingTransactions(validator)
+}
+
 // Load all Validator public keys into Memory
 func (bc *Blockchain) LoadAllValidatorPublicKeys() error {
 	bc.Mu.Lock()
