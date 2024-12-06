@@ -1636,6 +1636,12 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	go func() {
+		if err := n.BroadcastTransaction(thrylosTx); err != nil {
+			log.Printf("Warning: Failed to broadcast transaction: %v", err)
+		}
+	}()
+
 	// Send immediate response
 	resp := map[string]interface{}{
 		"message": fmt.Sprintf("Transaction %s submitted successfully", transactionData.ID),
@@ -1667,29 +1673,6 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		wg.Wait()
 	}()
 }
-
-// Schedule delayed balance check
-// 	time.AfterFunc(2*time.Second, func() {
-// 		for address := range addresses {
-// 			balance, err := n.GetBalance(address)
-// 			if err != nil {
-// 				log.Printf("Error getting delayed balance for %s: %v", address, err)
-// 				continue
-// 			}
-// 			n.notifyBalanceUpdate(address, balance)
-// 		}
-// 	})
-
-// 	if err := n.BroadcastTransaction(thrylosTx); err != nil {
-// 		log.Printf("Failed to broadcast transaction: %v", err)
-// 		sendErrorResponse(w, "Failed to broadcast transaction: "+err.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	sendResponseProcess(w, map[string]string{
-// 		"message": fmt.Sprintf("Transaction %s processed successfully", transactionData.ID),
-// 	})
-// }
 
 func (n *Node) processBalanceUpdateQueue() {
 	for request := range n.balanceUpdateQueue.queue {
