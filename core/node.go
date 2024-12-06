@@ -551,25 +551,7 @@ func ThrylosToNanoNode(thrylos float64) int64 {
 }
 
 func (node *Node) GetBalance(address string) (int64, error) {
-	// Check cache first
-	if cached, ok := balanceCache.Load(address); ok {
-		cachedVal := cached.(cachedBalance)
-		if time.Since(cachedVal.timestamp) < cacheTTL {
-			return cachedVal.value, nil
-		}
-	}
-
-	// Fast path: check state manager
-	balance, err := node.Blockchain.StateManager.GetBalance(address)
-	if err == nil {
-		balanceCache.Store(address, cachedBalance{
-			value:     balance,
-			timestamp: time.Now(),
-		})
-		return balance, nil
-	}
-
-	// Slow path: calculate from UTXOs
+	// Always recalculate from UTXOs first
 	utxos, err := node.Blockchain.GetUTXOsForAddress(address)
 	if err != nil {
 		return 0, err
@@ -1095,6 +1077,12 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 
 	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
 		tx.Id, pendingCount)
+
+	// Invalidate cache for all addresses involved
+	balanceCache.Delete(tx.Sender)
+	for _, output := range tx.Outputs {
+		balanceCache.Delete(output.OwnerAddress)
+	}
 
 	return nil
 }
@@ -1803,33 +1791,30 @@ func (node *Node) notifyBalanceUpdate(address string, balance int64) {
 }
 
 func (node *Node) ProcessConfirmedTransactions(block *Block) {
-	log.Printf("Processing confirmed transactions for block %s", block.Hash)
-
-	// Track all addresses that need updates
 	addressesToUpdate := make(map[string]bool)
 
 	for _, tx := range block.Transactions {
-		// Add sender to update list
+		// Clear cache for all involved addresses
+		balanceCache.Delete(tx.Sender)
 		addressesToUpdate[tx.Sender] = true
 
-		// Add all recipients to update list
 		for _, output := range tx.Outputs {
+			balanceCache.Delete(output.OwnerAddress)
 			addressesToUpdate[output.OwnerAddress] = true
 		}
+
+		// Remove spending UTXOs from state manager
+		node.Blockchain.StateManager.UpdateState(tx.Sender, 0, nil) // Reset state with 0 to force recalculation
 	}
 
-	// Send updates for all affected addresses
+	// Force balance recalculation and update
 	for address := range addressesToUpdate {
-		// Try multiple times with exponential backoff
-		go func(addr string) {
-			for i := 0; i < 3; i++ {
-				if err := node.SendBalanceUpdate(addr); err == nil {
-					return
-				}
-				time.Sleep(time.Duration(math.Pow(2, float64(i))) * time.Second)
+		balance, err := node.GetBalance(address) // This will recalculate from UTXOs
+		if err == nil {
+			if err := node.SendBalanceUpdate(address); err == nil {
+				log.Printf("Updated balance for %s to %d", address, balance)
 			}
-			log.Printf("Failed to update balance for address %s after 3 attempts", addr)
-		}(address)
+		}
 	}
 }
 
