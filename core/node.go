@@ -1923,6 +1923,31 @@ func publicKeyToBech32(pubKeyBase64 string) (string, error) {
 	return bech32Address, nil
 }
 
+func GetUsernameByUID(supabaseClient *supabase.Client, userID string) (string, error) {
+	data, _, err := supabaseClient.From("users").
+		Select("username", "exact", false).
+		Eq("id", userID).
+		Single().
+		Execute()
+
+	if err != nil {
+		fmt.Println("Error executing username query:", err)
+		return "", fmt.Errorf("error executing query: %v", err)
+	}
+
+	var result struct {
+		Username string `json:"username"`
+	}
+
+	err = json.Unmarshal(data, &result)
+	if err != nil {
+		fmt.Println("Error unmarshaling username data:", err)
+		return "", fmt.Errorf("username not found for user %s", userID)
+	}
+
+	return result.Username, nil
+}
+
 func GetBlockchainAddressByUID(supabaseClient *supabase.Client, userID string) (string, error) {
 	data, _, err := supabaseClient.From("blockchain_info").
 		Select("blockchain_address", "exact", false).
@@ -2137,15 +2162,50 @@ func ThrylosTo(thrylos float64) int64 {
 	return int64(thrylos)
 }
 
-func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("RegisterWalletHandler request received")
-	var req struct {
-		PublicKey string `json:"publicKey"` // Public key expected to be in base64 format
+func (node *Node) RegisterOrImportWalletHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("RegisterOrImportWalletHandler request received")
+
+	// Check if Supabase client is initialized
+	if node.SupabaseClient == nil {
+		log.Printf("Supabase client not initialized")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
+
+	// Define request structure
+	var req struct {
+		PublicKey string `json:"publicKey"`
+		IsImport  bool   `json:"isImport"`
+		UserID    string `json:"userId,omitempty"`
+	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("Failed to decode request: %v", err)
 		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Add debug logging for received request
+	log.Printf("Received request - PublicKey: %s, IsImport: %v, UserID: %s", req.PublicKey, req.IsImport, req.UserID)
+
+	// Only require UserID for imports
+	if req.IsImport && req.UserID == "" {
+		log.Printf("No user ID provided for import request")
+		http.Error(w, "User ID is required for imports", http.StatusBadRequest)
+		return
+	}
+
+	// Get username only if UserID is provided
+	var username string
+	if req.UserID != "" {
+		var err error
+		log.Printf("Attempting to get username for UserID: %s", req.UserID)
+		username, err = GetUsernameByUID(node.SupabaseClient, req.UserID)
+		if err != nil {
+			log.Printf("Failed to get username: %v", err)
+		} else {
+			log.Printf("Got username from Supabase: %s", username)
+		}
 	}
 
 	// Decode base64 string to bytes
@@ -2155,6 +2215,7 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
 	// Generate Bech32 address from public key
 	bech32Address, err := publicKeyToBech32(req.PublicKey)
 	if err != nil {
@@ -2163,65 +2224,126 @@ func (node *Node) RegisterWalletHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check if the Bech32 address is already registered
-	addressExists, err := node.Blockchain.Database.Bech32AddressExists(bech32Address)
+	log.Printf("Generated Bech32 address: %s", bech32Address)
+
+	// Define response structure once
+	type WalletResponse struct {
+		PublicKey         string        `json:"publicKey"`
+		BlockchainAddress string        `json:"blockchainAddress"`
+		Balance           int64         `json:"balance"`
+		BalanceThrylos    float64       `json:"balanceThrylos"`
+		UTXOs             []shared.UTXO `json:"utxos"`
+		Username          string        `json:"username"` // Make sure this isn't omitempty
+	}
+
+	// Check address existence
+	dbExists, err := node.Blockchain.Database.Bech32AddressExists(bech32Address)
 	if err != nil {
-		log.Printf("Failed to check address existence: %v", err)
+		log.Printf("Failed to check address in database: %v", err)
 		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	_, stakeholderExists := node.Blockchain.Stakeholders[bech32Address]
+
+	node.WebSocketMutex.RLock()
+	_, wsExists := node.WebSocketConnections[bech32Address]
+	node.WebSocketMutex.RUnlock()
+
+	utxos, err := node.Blockchain.GetUTXOsForAddress(bech32Address)
+	if err != nil {
+		log.Printf("Failed to check UTXOs: %v", err)
+		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	addressExists := dbExists || stakeholderExists || wsExists || len(utxos) > 0
+
+	log.Printf("Address existence check results - DB: %v, Stakeholder: %v, WebSocket: %v, UTXOs: %d",
+		dbExists, stakeholderExists, wsExists, len(utxos))
+
+	var response WalletResponse
+
 	if addressExists {
-		log.Printf("Blockchain address already registered: %s", bech32Address)
-		http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
-		return
+		if !req.IsImport {
+			log.Printf("Attempt to register existing address: %s", bech32Address)
+			http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
+			return
+		}
+
+		var totalBalance int64
+		if stakeholderBalance, exists := node.Blockchain.Stakeholders[bech32Address]; exists {
+			totalBalance = stakeholderBalance
+		}
+
+		for _, utxo := range utxos {
+			if !utxo.IsSpent {
+				totalBalance += utxo.Amount
+			}
+		}
+
+		response = WalletResponse{
+			PublicKey:         req.PublicKey,
+			BlockchainAddress: bech32Address,
+			Balance:           totalBalance,
+			BalanceThrylos:    float64(totalBalance) / NanoThrylosPerThrylos,
+			UTXOs:             utxos,
+			Username:          username,
+		}
+	} else {
+		if req.IsImport {
+			log.Printf("Attempt to import non-existent address: %s", bech32Address)
+			http.Error(w, "Blockchain address not found.", http.StatusNotFound)
+			return
+		}
+
+		initialBalanceThrylos := 70.0
+		initialBalanceNano := ThrylosToNanoNode(initialBalanceThrylos)
+
+		currentBalanceNano, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
+		if !genesisExists || currentBalanceNano < initialBalanceNano {
+			log.Printf("Insufficient funds in genesis account")
+			http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
+			return
+		}
+
+		utxo := shared.UTXO{
+			TransactionID: fmt.Sprintf("genesis-%s", bech32Address),
+			OwnerAddress:  bech32Address,
+			Amount:        initialBalanceNano,
+			IsSpent:       false,
+		}
+		if err := node.Blockchain.addUTXO(utxo); err != nil {
+			http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalanceNano
+		node.Blockchain.Stakeholders[bech32Address] = initialBalanceNano
+
+		response = WalletResponse{
+			PublicKey:         req.PublicKey,
+			BlockchainAddress: bech32Address,
+			Balance:           initialBalanceNano,
+			BalanceThrylos:    initialBalanceThrylos,
+			UTXOs:             []shared.UTXO{utxo},
+			Username:          username,
+		}
 	}
 
-	// Ensure there are sufficient funds in the genesis account
-	initialBalanceThrylos := 70.0 // 70 THRYLOS
-	initialBalanceNano := ThrylosToNanoNode(initialBalanceThrylos)
-
-	currentBalanceNano, genesisExists := node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]
-	if !genesisExists || currentBalanceNano < initialBalanceNano {
-		log.Printf("Insufficient funds in genesis account. Required: %d nanoTHRYLOS, Available: %d nanoTHRYLOS", initialBalanceNano, currentBalanceNano)
-		http.Error(w, "Insufficient funds in the genesis account.", http.StatusBadRequest)
-		return
-	}
-
-	// Deduct from genesis and assign to new account
-	node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount] -= initialBalanceNano
-	node.Blockchain.Stakeholders[bech32Address] = initialBalanceNano
-
-	// Create initial UTXO for the account
-	// In RegisterWalletHandler
-	utxo := shared.UTXO{
-		TransactionID: fmt.Sprintf("genesis-%s", bech32Address),
-		OwnerAddress:  bech32Address,
-		Amount:        initialBalanceNano,
-		IsSpent:       false,
-	}
-	if err := node.Blockchain.addUTXO(utxo); err != nil {
-		http.Error(w, "Failed to create initial UTXO: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Save/update public key in database
 	if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
 		http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Created initial UTXO for %s with amount %d nanoTHRYLOS (%.7f THRYLOS)", bech32Address, initialBalanceNano, float64(initialBalanceNano)/NanoThrylosPerThrylos)
-	log.Printf("Blockchain address registered and public key saved to database for %s", bech32Address)
 
-	response := struct {
-		PublicKey         string        `json:"publicKey"`
-		BlockchainAddress string        `json:"blockchainAddress"`
-		Balance           int64         `json:"balance"`        // Balance in nanoTHRYLOS
-		BalanceThrylos    float64       `json:"balanceThrylos"` // Balance in THRYLOS
-		UTXOs             []shared.UTXO `json:"utxos"`
-	}{
-		PublicKey:         req.PublicKey,
-		BlockchainAddress: bech32Address,
-		Balance:           initialBalanceNano,
-		BalanceThrylos:    initialBalanceThrylos,
-		UTXOs:             []shared.UTXO{utxo},
+	// Update blockchain_info in Supabase only if UserID is provided
+	if req.UserID != "" {
+		err = node.Blockchain.UpdateBlockchainInfo(req.UserID, bech32Address)
+		if err != nil {
+			log.Printf("Failed to update blockchain info in Supabase: %v", err)
+			// Continue without failing the request
+		}
 	}
 
 	jsonResponse, err := json.Marshal(response)
@@ -2610,7 +2732,27 @@ func (node *Node) SetupRoutes() *mux.Router {
 
 	r := mux.NewRouter()
 	// Apply the middleware to all routes
-	r.Use(corsMiddleware)
+	// Add CORS middleware
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Println("CORS middleware invoked")
+
+			// Set CORS headers
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, Authorization")
+
+			// Handle preflight
+			if r.Method == "OPTIONS" {
+				log.Println("Preflight request received")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			// Call the next handler
+			next.ServeHTTP(w, r)
+		})
+	})
 	// Define handlers for various endpoints
 	r.HandleFunc("/block", node.BlockHandler).Methods("POST")
 	r.HandleFunc("/blockchain", node.BlockchainHandler).Methods("GET")
@@ -2629,7 +2771,7 @@ func (node *Node) SetupRoutes() *mux.Router {
 	r.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/register-public-key", node.RegisterPublicKeyHandler).Methods("POST")
 	r.HandleFunc("/register-validator", node.RegisterValidatorHandler).Methods("POST")
-	r.HandleFunc("/register-wallet", node.RegisterWalletHandler).Methods("POST", "OPTIONS")
+	r.HandleFunc("/register-wallet", node.RegisterOrImportWalletHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/stats", node.StatsHandler).Methods("GET")
 	r.HandleFunc("/transaction", node.TransactionHandler).Methods("POST")
 	r.HandleFunc("/update-stake", node.UpdateStakeHandler).Methods("POST")

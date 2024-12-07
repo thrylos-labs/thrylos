@@ -584,6 +584,28 @@ func (bc *Blockchain) AddTestUTXOs() {
 	}
 }
 
+func (bc *Blockchain) UpdateBlockchainInfo(userID string, blockchainAddress string) error {
+	data := map[string]interface{}{
+		"user_id":            userID,
+		"blockchain_address": blockchainAddress,
+	}
+
+	_, status, err := bc.SupabaseClient.From("blockchain_info").
+		Upsert(data, "", "user_id", "user_id").
+		Execute()
+
+	if err != nil {
+		fmt.Println("Error updating blockchain info:", err)
+		return fmt.Errorf("error updating blockchain info: %v", err)
+	}
+
+	if status != 200 && status != 201 {
+		return fmt.Errorf("unexpected status code: %d", status)
+	}
+
+	return nil
+}
+
 func (bc *Blockchain) FetchPublicKeyFromSupabase(userID string) (string, error) {
 	data, _, err := bc.SupabaseClient.From("blockchain_info").
 		Select("public_key_base64", "exact", false).
