@@ -585,6 +585,8 @@ func (bc *Blockchain) AddTestUTXOs() {
 }
 
 func (bc *Blockchain) UpdateBlockchainInfo(userID string, blockchainAddress string) error {
+	log.Printf("Updating blockchain info - UserID: %s, Address: %s", userID, blockchainAddress)
+
 	data := map[string]interface{}{
 		"user_id":            userID,
 		"blockchain_address": blockchainAddress,
@@ -595,14 +597,16 @@ func (bc *Blockchain) UpdateBlockchainInfo(userID string, blockchainAddress stri
 		Execute()
 
 	if err != nil {
-		fmt.Println("Error updating blockchain info:", err)
+		log.Printf("Error updating blockchain info: %v", err)
 		return fmt.Errorf("error updating blockchain info: %v", err)
 	}
 
 	if status != 200 && status != 201 {
+		log.Printf("Unexpected status code %d updating blockchain info", status)
 		return fmt.Errorf("unexpected status code: %d", status)
 	}
 
+	log.Printf("Successfully updated blockchain info for user %s", userID)
 	return nil
 }
 

@@ -2174,9 +2174,11 @@ func (node *Node) RegisterOrImportWalletHandler(w http.ResponseWriter, r *http.R
 
 	// Define request structure
 	var req struct {
-		PublicKey string `json:"publicKey"`
-		IsImport  bool   `json:"isImport"`
-		UserID    string `json:"userId,omitempty"`
+		PublicKey         string `json:"publicKey"`
+		IsImport          bool   `json:"isImport"`
+		UserID            string `json:"userId,omitempty"`
+		Username          string `json:"username,omitempty"`
+		BlockchainAddress string `json:"blockchainAddress,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2196,15 +2198,49 @@ func (node *Node) RegisterOrImportWalletHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Get username only if UserID is provided
+	// After the request validation and before the username section, add:
+	// Generate Bech32 address from public key
+	bech32Address, err := publicKeyToBech32(req.PublicKey)
+	if err != nil {
+		log.Printf("Failed to convert public key to Bech32 address: %v", err)
+		http.Error(w, "Failed to generate Bech32 address: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("Generated Bech32 address: %s", bech32Address)
 	var username string
 	if req.UserID != "" {
-		var err error
-		log.Printf("Attempting to get username for UserID: %s", req.UserID)
-		username, err = GetUsernameByUID(node.SupabaseClient, req.UserID)
+		// Get existing blockchain info
+		existingAddress, err := GetBlockchainAddressByUID(node.SupabaseClient, req.UserID)
 		if err != nil {
-			log.Printf("Failed to get username: %v", err)
-		} else {
-			log.Printf("Got username from Supabase: %s", username)
+			log.Printf("Failed to get existing blockchain address: %v", err)
+			// Don't return error, continue with import
+		}
+
+		// If this is an import and the addresses are different, update the blockchain info
+		if req.IsImport && existingAddress != bech32Address {
+			log.Printf("Updating blockchain address for user %s from %s to %s",
+				req.UserID, existingAddress, bech32Address)
+
+			// Use the provided username from the request
+			if req.Username != "" {
+				username = req.Username
+				log.Printf("Using provided username for import: %s", username)
+			}
+
+			// Update blockchain info with new address
+			err = node.Blockchain.UpdateBlockchainInfo(req.UserID, bech32Address)
+			if err != nil {
+				log.Printf("Failed to update blockchain info: %v", err)
+				// Continue without failing the request
+			}
+		} else if !req.IsImport {
+			// For new account creation, get username from UserID
+			username, err = GetUsernameByUID(node.SupabaseClient, req.UserID)
+			if err != nil {
+				log.Printf("Failed to get username: %v", err)
+			} else {
+				log.Printf("Got username for UserID %s: %s", req.UserID, username)
+			}
 		}
 	}
 
@@ -2215,16 +2251,6 @@ func (node *Node) RegisterOrImportWalletHandler(w http.ResponseWriter, r *http.R
 		http.Error(w, "Invalid public key format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	// Generate Bech32 address from public key
-	bech32Address, err := publicKeyToBech32(req.PublicKey)
-	if err != nil {
-		log.Printf("Failed to convert public key to Bech32 address: %v", err)
-		http.Error(w, "Failed to generate Bech32 address: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Generated Bech32 address: %s", bech32Address)
 
 	// Define response structure once
 	type WalletResponse struct {
@@ -2269,6 +2295,15 @@ func (node *Node) RegisterOrImportWalletHandler(w http.ResponseWriter, r *http.R
 			log.Printf("Attempt to register existing address: %s", bech32Address)
 			http.Error(w, "Blockchain address already registered.", http.StatusBadRequest)
 			return
+		}
+
+		// For imports, verify the blockchain address matches
+		if req.IsImport && req.BlockchainAddress != "" {
+			if req.BlockchainAddress != bech32Address {
+				log.Printf("Blockchain address mismatch. Expected: %s, Got: %s", req.BlockchainAddress, bech32Address)
+				http.Error(w, "Blockchain address mismatch", http.StatusBadRequest)
+				return
+			}
 		}
 
 		var totalBalance int64
@@ -2335,15 +2370,6 @@ func (node *Node) RegisterOrImportWalletHandler(w http.ResponseWriter, r *http.R
 	if err := node.Blockchain.Database.InsertOrUpdateEd25519PublicKey(bech32Address, publicKeyBytes); err != nil {
 		http.Error(w, "Failed to save public key to database: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	// Update blockchain_info in Supabase only if UserID is provided
-	if req.UserID != "" {
-		err = node.Blockchain.UpdateBlockchainInfo(req.UserID, bech32Address)
-		if err != nil {
-			log.Printf("Failed to update blockchain info in Supabase: %v", err)
-			// Continue without failing the request
-		}
 	}
 
 	jsonResponse, err := json.Marshal(response)
