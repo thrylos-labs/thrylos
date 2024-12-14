@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ed25519"
 
@@ -141,4 +142,36 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 	bc.OnTransactionProcessed = node.handleProcessedTransaction
 
 	return node
+}
+
+// Lifecycle methods (StartBackgroundTasks, Shutdown)
+
+func (node *Node) Shutdown() error {
+	if node.blockProducer != nil {
+		node.blockProducer.Stop()
+	}
+	// ... other cleanup ...
+	return nil
+}
+
+func (node *Node) StartBackgroundTasks() {
+	// Initialize our timers
+	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
+	tickerCountVotes := time.NewTicker(1 * time.Minute)
+
+	// Start the block creation timer immediately
+	log.Println("Starting block producer with target block time: 1.2s")
+	node.StartBlockCreationTimer()
+
+	// Continue with other background tasks
+	go func() {
+		for {
+			select {
+			case <-tickerDiscoverPeers.C:
+				node.DiscoverPeers()
+			case <-tickerCountVotes.C:
+				node.CountVotes()
+			}
+		}
+	}()
 }

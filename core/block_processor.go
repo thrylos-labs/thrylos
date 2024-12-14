@@ -17,36 +17,6 @@ const (
 	batchSize       = 100                     // Maximum transactions per batch
 )
 
-func (node *Node) Shutdown() error {
-	if node.blockProducer != nil {
-		node.blockProducer.Stop()
-	}
-	// ... other cleanup ...
-	return nil
-}
-
-func (node *Node) StartBackgroundTasks() {
-	// Initialize our timers
-	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
-	tickerCountVotes := time.NewTicker(1 * time.Minute)
-
-	// Start the block creation timer immediately
-	log.Println("Starting block producer with target block time: 1.2s")
-	node.StartBlockCreationTimer()
-
-	// Continue with other background tasks
-	go func() {
-		for {
-			select {
-			case <-tickerDiscoverPeers.C:
-				node.DiscoverPeers()
-			case <-tickerCountVotes.C:
-				node.CountVotes()
-			}
-		}
-	}()
-}
-
 // HasBlock checks whether a block with the specified hash exists in the node's blockchain.
 func (n *Node) HasBlock(blockHash []byte) bool {
 	log.Printf("Searching for block with hash: %s", hex.EncodeToString(blockHash))
