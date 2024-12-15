@@ -29,9 +29,7 @@ GENESIS_ACCOUNT=XXXXXXXXX
 GAS_ESTIMATE_URL=https://localhost:8546/api/gas-estimate
 
 
-4. **Run_Thrylos**: Execute `run_thrylos` in your terminal to run thyrlos testnet in development.
-
-
+4. **Run_Thrylos**: Execute `./run_thrylos.sh` in your terminal to run thyrlos testnet in development.
 
 How to run manaully without using run_thrylos.sh:
 
