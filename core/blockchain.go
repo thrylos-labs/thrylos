@@ -815,6 +815,11 @@ func (bc *Blockchain) CreateUnsignedBlock(transactions []*thrylos.Transaction, v
 		// Hash and Signature fields are left empty
 	}
 
+	// Initialize Verkle tree before computing hash
+	if err := newBlock.InitializeVerkleTree(); err != nil {
+		return nil, fmt.Errorf("failed to initialize Verkle tree: %v", err)
+	}
+
 	// Compute the hash
 	newBlock.Hash = newBlock.ComputeHash()
 
@@ -1072,8 +1077,8 @@ func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 		protoUTXOs[key] = utxos
 	}
 
-	// Verify only the transaction data (not signature)
-	isValid, err := shared.VerifyTransactionData(tx, protoUTXOs, getEd25519PublicKeyFunc) // New function
+	// Only verify transaction data, no proof verification needed
+	isValid, err := shared.VerifyTransactionData(tx, protoUTXOs, getEd25519PublicKeyFunc)
 	if err != nil {
 		fmt.Printf("Error during transaction data verification: %v\n", err)
 		return false, err
@@ -1082,6 +1087,7 @@ func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 		fmt.Println("Transaction data validation failed")
 		return false, nil
 	}
+
 	return true, nil
 }
 

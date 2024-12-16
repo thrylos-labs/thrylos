@@ -7,7 +7,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
@@ -95,34 +94,33 @@ func (b *Block) VerifySignature(publicKey ed25519.PublicKey) bool {
 
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
 func (b *Block) InitializeVerkleTree() error {
-	var txData [][]byte
-	for _, protoTx := range b.Transactions {
-		txByte, err := proto.Marshal(protoTx)
+	if len(b.Transactions) == 0 {
+		return nil
+	}
+
+	// Pre-allocate slice for better memory efficiency
+	txData := make([][]byte, 0, len(b.Transactions))
+
+	// Marshal transactions
+	for _, tx := range b.Transactions {
+		txByte, err := proto.Marshal(tx)
 		if err != nil {
-			b.Error = fmt.Errorf("failed to serialize Protobuf transaction: %v", err)
-			return b.Error
+			return fmt.Errorf("failed to serialize transaction: %v", err)
 		}
 		txData = append(txData, txByte)
 	}
 
-	if len(txData) > 0 {
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var err error
-			b.verkleTree, err = NewVerkleTree(txData)
-			if err != nil {
-				b.Error = fmt.Errorf("failed to create Verkle tree: %v", err)
-			} else {
-				root := b.verkleTree.Commitment().BytesUncompressedTrusted()
-				b.VerkleRoot = make([]byte, len(root))
-				copy(b.VerkleRoot, root[:])
-			}
-		}()
-		wg.Wait()
+	tree, err := NewVerkleTree(txData)
+	if err != nil {
+		return fmt.Errorf("failed to create Verkle tree: %v", err)
 	}
-	return b.Error // return any error that occurred during processing
+
+	// Store tree and root
+	b.verkleTree = tree
+	commitment := tree.Commitment().BytesUncompressedTrusted()
+	b.VerkleRoot = commitment[:]
+
+	return nil
 }
 
 // NewGenesisBlock creates and returns the genesis block for the blockchain. The genesis block
@@ -210,34 +208,10 @@ func ConvertSharedTransactionToProto(tx *shared.Transaction) *thrylos.Transactio
 	}
 }
 
-// func ConvertProtoTransactionToShared(protoTx *thrylos.Transaction) shared.Transaction {
-// 	inputs := make([]shared.UTXO, len(protoTx.GetInputs()))
-// 	for i, protoInput := range protoTx.GetInputs() {
-// 		inputs[i] = ConvertProtoUTXOToShared(protoInput)
-// 	}
-
-// 	outputs := make([]shared.UTXO, len(protoTx.GetOutputs()))
-// 	for i, protoOutput := range protoTx.GetOutputs() {
-// 		outputs[i] = ConvertProtoUTXOToShared(protoOutput)
-// 	}
-
-// 	return shared.Transaction{
-// 		ID:        protoTx.GetId(),
-// 		Timestamp: protoTx.GetTimestamp(),
-// 		Inputs:    inputs,
-// 		Outputs:   outputs,
-// 		Signature: protoTx.GetSignature(), // Directly use []byte
-// 	}
-// }
-
 // NewBlock creates a new block with the specified parameters, including the index, transactions,
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
 func (b *Block) ComputeHash() []byte {
-	if len(b.Hash) > 0 {
-		return b.Hash
-	}
-
 	hasher, err := blake2b.New256(nil)
 	if err != nil {
 		log.Printf("Failed to create hasher: %v", err)
@@ -250,11 +224,10 @@ func (b *Block) ComputeHash() []byte {
 	hasher.Write(b.PrevHash)
 	hasher.Write([]byte(b.Validator))
 
-	// Process transactions sequentially to ensure deterministic ordering
+	// Hash transactions
 	for _, tx := range b.Transactions {
-		// Create a copy of the transaction without signature
 		txCopy := proto.Clone(tx).(*thrylos.Transaction)
-		txCopy.Signature = []byte("") // Reset signature for consistency with verification
+		txCopy.Signature = []byte("") // Reset signature
 
 		txBytes, err := proto.Marshal(txCopy)
 		if err != nil {
@@ -262,20 +235,24 @@ func (b *Block) ComputeHash() []byte {
 			continue
 		}
 
-		// Hash transaction without signature
 		txHash := blake2b.Sum256(txBytes)
 		hasher.Write(txHash[:])
 
-		// Log for debugging
-		log.Printf("Transaction %s serialized bytes: %x", tx.Id, txBytes)
 		log.Printf("Transaction %s hash: %x", tx.Id, txHash)
 	}
 
+	// Always write VerkleRoot if present
 	if len(b.VerkleRoot) > 0 {
 		hasher.Write(b.VerkleRoot)
+		log.Printf("Including Verkle root in hash: %x", b.VerkleRoot)
+	} else {
+		log.Printf("Warning: Block hash computed without Verkle root")
 	}
 
-	b.Hash = hasher.Sum(nil)
-	log.Printf("Final block hash: %x", b.Hash)
+	hash := hasher.Sum(nil)
+	log.Printf("Final block hash: %x", hash)
+
+	// Only cache after complete computation
+	b.Hash = hash
 	return b.Hash
 }
