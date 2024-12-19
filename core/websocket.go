@@ -47,8 +47,22 @@ var upgrader = websocket.Upgrader{
 }
 
 // Event only web socket updates
+// In WebSocketBalanceHandler
 func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received WebSocket connection request for balance updates")
+
+	// Add additional headers for WebSocket
+	upgrader.CheckOrigin = func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		allowedOrigins := []string{"http://localhost:3000", "https://node.thrylos.org"}
+		for _, allowed := range allowedOrigins {
+			if origin == allowed {
+				return true
+			}
+		}
+		return false
+	}
+
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("Failed to upgrade to WebSocket: %v", err)
@@ -63,28 +77,30 @@ func (node *Node) WebSocketBalanceHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Validate the address exists by attempting to retrieve its public key
-	_, err = node.Database.RetrievePublicKeyFromAddress(address)
-	if err != nil {
-		log.Printf("Invalid address %s: %v", address, err)
-		ws.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Invalid or unregistered address: %v", err)))
-		ws.Close()
-		return
+	// Clean up any existing connection for this address
+	node.WebSocketMutex.Lock()
+	if existingConn, exists := node.WebSocketConnections[address]; exists {
+		existingConn.ws.Close()
+		delete(node.WebSocketConnections, address)
 	}
+	node.WebSocketMutex.Unlock()
 
-	log.Printf("WebSocket connection established for address: %s", address)
-
-	conn := &WebSocketConnection{ws: ws, send: make(chan []byte, 256)}
+	// Create new connection
+	conn := &WebSocketConnection{
+		ws:   ws,
+		send: make(chan []byte, 256),
+	}
 
 	node.WebSocketMutex.Lock()
 	node.WebSocketConnections[address] = conn
 	node.WebSocketMutex.Unlock()
 
-	// Send initial balance update once
+	// Send initial balance update
 	if err := node.SendBalanceUpdate(address); err != nil {
 		log.Printf("Error sending initial balance update for address %s: %v", address, err)
 	}
 
+	// Start the read/write pumps in separate goroutines
 	go node.writePump(conn, address)
 	go node.readPump(conn, address)
 }
@@ -94,6 +110,9 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 	defer func() {
 		ticker.Stop()
 		conn.ws.Close()
+		node.WebSocketMutex.Lock()
+		delete(node.WebSocketConnections, address)
+		node.WebSocketMutex.Unlock()
 	}()
 
 	for {
@@ -101,31 +120,25 @@ func (node *Node) writePump(conn *WebSocketConnection, address string) {
 		case message, ok := <-conn.send:
 			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				log.Printf("WebSocket send channel closed for address: %s", address)
 				conn.ws.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
 
 			w, err := conn.ws.NextWriter(websocket.TextMessage)
 			if err != nil {
-				log.Printf("Error getting next writer for address %s: %v", address, err)
 				return
 			}
 			w.Write(message)
 
 			if err := w.Close(); err != nil {
-				log.Printf("Error closing writer for address %s: %v", address, err)
 				return
 			}
-			log.Printf("Successfully sent message to address %s: %s", address, string(message))
 
 		case <-ticker.C:
 			conn.ws.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := conn.ws.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Error sending ping message for address %s: %v", address, err)
 				return
 			}
-			log.Printf("Sent ping message to address: %s", address)
 		}
 	}
 }
@@ -136,26 +149,26 @@ func (node *Node) readPump(conn *WebSocketConnection, address string) {
 		delete(node.WebSocketConnections, address)
 		node.WebSocketMutex.Unlock()
 		conn.ws.Close()
-		log.Printf("WebSocket connection closed for address: %s", address)
 	}()
 
 	conn.ws.SetReadLimit(maxMessageSize)
 	conn.ws.SetReadDeadline(time.Now().Add(pongWait))
 	conn.ws.SetPongHandler(func(string) error {
 		conn.ws.SetReadDeadline(time.Now().Add(pongWait))
-		log.Printf("Received pong from address: %s", address)
 		return nil
 	})
 
 	for {
-		_, _, err := conn.ws.ReadMessage()
+		_, message, err := conn.ws.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket read error for address %s: %v", address, err)
+				log.Printf("WebSocket error: %v", err)
 			}
 			break
 		}
-		log.Printf("Received message from address: %s", address)
+
+		// Process message if needed
+		log.Printf("Received message from %s: %s", address, string(message))
 	}
 }
 

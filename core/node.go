@@ -101,7 +101,14 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		log.Fatalf("error initializing app: %v\n", err)
 	}
 
-	bc, db, err := NewBlockchain(dataDir, aesKey, genesisAccount, true, supabaseClient)
+	bc, db, err := NewBlockchainWithConfig(&BlockchainConfig{
+		DataDir:           dataDir,
+		AESKey:            aesKey,
+		GenesisAccount:    genesisAccount,
+		TestMode:          true,
+		SupabaseClient:    supabaseClient,
+		DisableBackground: false, // Set based on your specific requirements
+	})
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}

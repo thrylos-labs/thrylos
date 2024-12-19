@@ -45,7 +45,14 @@ func TestGenesisBlockCreation(t *testing.T) {
 	}
 
 	// Initialize the blockchain with the temporary directory
-	blockchain, _, err := NewBlockchain(tempDir, aesKey, genesisAccount, true, supabaseClient)
+	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
+		DataDir:           tempDir,
+		AESKey:            aesKey,
+		GenesisAccount:    genesisAccount,
+		TestMode:          true,
+		SupabaseClient:    supabaseClient,
+		DisableBackground: true,
+	})
 	if err != nil {
 		t.Fatalf("Failed to initialize blockchain: %v", err)
 	}

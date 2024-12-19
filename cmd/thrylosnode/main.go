@@ -120,11 +120,17 @@ func main() {
 	// Initialize the blockchain and database with the AES key
 
 	// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
-	blockchain, _, err := core.NewBlockchain(absPath, aesKey, genesisAccount, true, supabaseClient)
+	blockchain, _, err := core.NewBlockchainWithConfig(&core.BlockchainConfig{
+		DataDir:           absPath,
+		AESKey:            aesKey,
+		GenesisAccount:    genesisAccount,
+		TestMode:          true,
+		SupabaseClient:    supabaseClient,
+		DisableBackground: false, // Set based on your requirements
+	})
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
-
 	// Perform an integrity check on the blockchain
 	if !blockchain.CheckChainIntegrity() {
 		log.Fatal("Blockchain integrity check failed.")

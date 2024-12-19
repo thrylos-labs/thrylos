@@ -131,6 +131,16 @@ type ValidatorKeyStore struct {
 	mu   sync.RWMutex
 }
 
+type BlockchainConfig struct {
+	DataDir           string
+	AESKey            []byte
+	GenesisAccount    string
+	TestMode          bool
+	SupabaseClient    *supabase.Client
+	DisableBackground bool
+	StateManager      *state.StateManager
+}
+
 func (vks *ValidatorKeyStore) StoreKey(address string, privKey ed25519.PrivateKey) error {
 	vks.mu.Lock()
 	defer vks.mu.Unlock()
@@ -286,13 +296,13 @@ func ConvertToBech32Address(address string) (string, error) {
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMode bool, supabaseClient *supabase.Client) (*Blockchain, shared.BlockchainDBInterface, error) {
+func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.BlockchainDBInterface, error) {
 	// Initialize the database
-	db, err := database.InitializeDatabase(dataDir)
+	db, err := database.InitializeDatabase(config.DataDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
-	bdb := database.NewBlockchainDB(db, aesKey)
+	bdb := database.NewBlockchainDB(db, config.AESKey)
 	log.Println("BlockchainDB created")
 
 	// Create the genesis block
@@ -306,10 +316,10 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 	totalSupply := big.NewInt(120_000_000) // 120 million tokens
 	totalSupplyNano := ThrylosToNano(float64(totalSupply.Int64()))
 
-	log.Printf("Initializing genesis account: %s", genesisAccount)
+	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
 
 	// Convert the genesis account address to Bech32 format
-	bech32GenesisAccount, err := ConvertToBech32Address(genesisAccount)
+	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to convert genesis account to Bech32: %v", err)
 	}
@@ -338,7 +348,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		Id:        "genesis_tx_" + bech32GenesisAccount,
 		Timestamp: time.Now().Unix(),
 		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: genesisAccount,
+			OwnerAddress: config.GenesisAccount,
 			Amount:       totalSupplyNano,
 		}},
 		Signature: []byte("genesis_signature"),
@@ -363,12 +373,12 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		UTXOs:               utxoMap,
 		Forks:               make([]*Fork, 0),
 		GenesisAccount:      bech32GenesisAccount,
-		SupabaseClient:      supabaseClient,
+		SupabaseClient:      config.SupabaseClient,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
 		StateNetwork:        stateNetwork,
 		ValidatorKeys:       NewValidatorKeyStore(),
-		TestMode:            testMode,
+		TestMode:            config.TestMode,
 		StateManager:        stateManager,
 	}
 
@@ -464,7 +474,7 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
-	log.Printf("Genesis account %s initialized with total supply: %d", genesisAccount, totalSupplyNano)
+	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
 
 	log.Println("NewBlockchain initialization completed successfully")
 
@@ -480,6 +490,31 @@ func NewBlockchain(dataDir string, aesKey []byte, genesisAccount string, testMod
 		log.Println("Stopping state synchronization...")
 		blockchain.StateManager.StopStateSyncLoop()
 	}()
+
+	// Modify background process initialization based on DisableBackground flag
+	if !config.DisableBackground {
+		// Start periodic validator update in a separate goroutine
+		go func() {
+			log.Println("Starting periodic validator update")
+			blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
+		}()
+
+		// Start state synchronization loop
+		blockchain.StateManager.StartStateSyncLoop()
+		log.Println("State synchronization loop started")
+
+		// Add shutdown handler
+		go func() {
+			c := make(chan os.Signal, 1)
+			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+			<-c
+			log.Println("Stopping state synchronization...")
+			blockchain.StateManager.StopStateSyncLoop()
+		}()
+	} else {
+		// In test mode, log that background processes are disabled
+		log.Println("Background processes disabled for testing")
+	}
 
 	log.Println("NewBlockchain initialization completed successfully")
 	return blockchain, bdb, nil
