@@ -77,6 +77,37 @@ func NewStateManager(networkHandler shared.NetworkInterface, numShards int) *Sta
 	return sm
 }
 
+// Add these methods to your StateManager struct
+func (sm *StateManager) GetShardAccessCount(shardID int) int64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	if metrics, exists := sm.metrics.shardMetrics[shardID]; exists {
+		return metrics.AccessCount
+	}
+	return 0
+}
+
+func (sm *StateManager) GetShardModifyCount(shardID int) int64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	if metrics, exists := sm.metrics.shardMetrics[shardID]; exists {
+		return metrics.ModifyCount
+	}
+	return 0
+}
+
+func (sm *StateManager) GetShardLoadFactor(shardID int) float64 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	if metrics, exists := sm.metrics.shardMetrics[shardID]; exists {
+		return metrics.LoadFactor
+	}
+	return 0.0
+}
+
 // GetResponsiblePartition determines which partition handles a given address
 func (sm *StateManager) GetResponsiblePartition(address string) *StatePartition {
 	sm.mu.RLock()

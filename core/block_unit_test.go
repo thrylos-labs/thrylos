@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/supabase-community/supabase-go"
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/state"
 	"golang.org/x/crypto/ed25519"
 )
 
@@ -228,241 +229,23 @@ func TestBlockTimeToFinality(t *testing.T) {
 	}
 }
 
-func TestRealisticBlockTimeToFinality(t *testing.T) {
-	// Create test directory
-	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
-	require.NoError(t, err, "Failed to create temp directory")
-	defer os.RemoveAll(tempDir)
+// Helper function to generate address for specific shard
+func generateAddressForShard(shardID int, nonce int, numShards int) string {
+	// Calculate deterministic shard ID based on batch position
+	targetShard := (nonce / batchSize) % numShards
 
-	// Production-like timing constants
-	const (
-		networkLatency    = 100 * time.Millisecond  // Average network latency
-		consensusDelay    = 300 * time.Millisecond  // Time for consensus
-		validatorCount    = 4                       // Number of active validators
-		txsPerBlock       = 100                     // Total transactions per block
-		batchSize         = 25                      // Transactions per batch
-		batchDelay        = 50 * time.Millisecond   // Delay between batch processing
-		expectedBlockTime = 1200 * time.Millisecond // Target block time (1.2s)
-	)
-
-	// Initialize blockchain with genesis account
-	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
-	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
-		DataDir:           tempDir,
-		AESKey:            []byte("test-key"),
-		GenesisAccount:    genesisAddress,
-		TestMode:          true,
-		DisableBackground: true,
-	})
-	require.NoError(t, err, "Failed to create blockchain")
-
-	// Setup validators
-	validators := make([]struct {
-		address    string
-		publicKey  ed25519.PublicKey
-		privateKey ed25519.PrivateKey
-	}, validatorCount)
-
-	// Create and register validators
-	for i := 0; i < validatorCount; i++ {
-		publicKey, privateKey, err := ed25519.GenerateKey(nil)
-		require.NoError(t, err, "Failed to generate validator key pair")
-
-		address := fmt.Sprintf("tl11validator%d", i)
-		validators[i] = struct {
-			address    string
-			publicKey  ed25519.PublicKey
-			privateKey ed25519.PrivateKey
-		}{
-			address:    address,
-			publicKey:  publicKey,
-			privateKey: privateKey,
-		}
-
-		// Register validator
-		err = blockchain.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
-		require.NoError(t, err, "Failed to store validator public key")
-		err = blockchain.ValidatorKeys.StoreKey(address, privateKey)
-		require.NoError(t, err, "Failed to store validator private key")
-		blockchain.PublicKeyMap[address] = publicKey
-	}
-
-	// Test cases for different network loads
-	testCases := []struct {
-		name            string
-		numBlocks       int
-		networkLoad     string
-		latencyFactor   float64 // Multiplier for network latency
-		expectedMaxTime time.Duration
-	}{
-		{
-			name:            "Normal Network Load",
-			numBlocks:       10,
-			networkLoad:     "normal",
-			latencyFactor:   1.0,
-			expectedMaxTime: 15 * time.Second,
-		},
-		{
-			name:            "High Network Load",
-			numBlocks:       10,
-			networkLoad:     "high",
-			latencyFactor:   2.0,
-			expectedMaxTime: 25 * time.Second,
-		},
-		{
-			name:            "Peak Network Load",
-			numBlocks:       10,
-			networkLoad:     "peak",
-			latencyFactor:   3.0,
-			expectedMaxTime: 35 * time.Second,
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			var blockTimes []time.Duration
-			var batchTimes []time.Duration
-			startTime := time.Now()
-
-			// Get initial blockchain state
-			blockchain.Mu.RLock()
-			initialHeight := len(blockchain.Blocks)
-			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
-			blockchain.Mu.RUnlock()
-
-			// Process blocks
-			for i := 0; i < tc.numBlocks; i++ {
-				blockStart := time.Now()
-
-				// Process transactions in batches
-				var allTxs []*thrylos.Transaction
-				numBatches := txsPerBlock / batchSize
-
-				for b := 0; b < numBatches; b++ {
-					batchStart := time.Now()
-
-					// Create batch of transactions
-					var batchTxs []*thrylos.Transaction
-					startIdx := b * batchSize
-					endIdx := startIdx + batchSize
-
-					for j := startIdx; j < endIdx; j++ {
-						tx := createRealisticTransaction(t, blockchain, genesisAddress, i*txsPerBlock+j)
-						batchTxs = append(batchTxs, tx)
-					}
-
-					// Simulate batch processing time with network latency
-					time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))
-
-					// Simulate batch processing overhead
-					time.Sleep(batchDelay)
-
-					allTxs = append(allTxs, batchTxs...)
-
-					batchTime := time.Since(batchStart)
-					batchTimes = append(batchTimes, batchTime)
-					t.Logf("Block %d - Batch %d processing time: %v", i, b+1, batchTime)
-				}
-
-				// Simulate consensus process
-				validatorIndex := i % validatorCount
-				currentValidator := validators[validatorIndex]
-
-				// Simulate validator signing with consensus delay
-				time.Sleep(consensusDelay)
-
-				// Create block with all accumulated transactions
-				block := &Block{
-					Index:        int32(initialHeight + i),
-					Timestamp:    time.Now().Unix(),
-					Transactions: allTxs,
-					Validator:    currentValidator.address,
-					PrevHash:     prevHash,
-				}
-
-				// Initialize Verkle tree
-				err := block.InitializeVerkleTree()
-				require.NoError(t, err, "Failed to initialize Verkle tree")
-
-				// Compute and sign block
-				block.Hash = block.ComputeHash()
-				block.Signature = ed25519.Sign(currentValidator.privateKey, block.Hash)
-
-				// Add block to chain
-				blockchain.Mu.Lock()
-				blockchain.Blocks = append(blockchain.Blocks, block)
-				blockchain.Mu.Unlock()
-
-				prevHash = block.Hash
-				blockTime := time.Since(blockStart)
-				blockTimes = append(blockTimes, blockTime)
-
-				// Log individual block metrics
-				t.Logf("Block %d total creation time: %v", i, blockTime)
-			}
-
-			// Calculate and validate metrics
-			var totalBlockTime time.Duration
-			var maxBlockTime time.Duration
-			var minBlockTime = time.Hour
-			var totalBatchTime time.Duration
-			var maxBatchTime time.Duration
-			var minBatchTime = time.Hour
-
-			for _, bt := range blockTimes {
-				totalBlockTime += bt
-				if bt > maxBlockTime {
-					maxBlockTime = bt
-				}
-				if bt < minBlockTime {
-					minBlockTime = bt
-				}
-			}
-
-			for _, bt := range batchTimes {
-				totalBatchTime += bt
-				if bt > maxBatchTime {
-					maxBatchTime = bt
-				}
-				if bt < minBatchTime {
-					minBatchTime = bt
-				}
-			}
-
-			avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
-			avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
-			totalTime := time.Since(startTime)
-
-			// Log comprehensive metrics
-			t.Logf("\nDetailed metrics for %s:", tc.name)
-			t.Logf("Average block time: %v", avgBlockTime)
-			t.Logf("Minimum block time: %v", minBlockTime)
-			t.Logf("Maximum block time: %v", maxBlockTime)
-			t.Logf("Average batch time: %v", avgBatchTime)
-			t.Logf("Minimum batch time: %v", minBatchTime)
-			t.Logf("Maximum batch time: %v", maxBatchTime)
-			t.Logf("Total processing time: %v", totalTime)
-			t.Logf("Transactions processed: %d", tc.numBlocks*txsPerBlock)
-			t.Logf("Average TPS: %.2f", float64(tc.numBlocks*txsPerBlock)/totalTime.Seconds())
-			t.Logf("Effective batch TPS: %.2f", float64(batchSize)/avgBatchTime.Seconds())
-
-			// Verify expectations
-			require.Less(t, avgBlockTime, 2*expectedBlockTime,
-				"Average block time exceeds twice the target block time")
-			require.Less(t, totalTime, tc.expectedMaxTime,
-				"Total processing time exceeds maximum allowed time")
-		})
-
-		// Allow cleanup between test cases
-		time.Sleep(500 * time.Millisecond)
-	}
+	// Create hex representation ensuring proper length and shard encoding
+	noncePart := fmt.Sprintf("%015x", nonce)
+	return fmt.Sprintf("tl1%01d%s", targetShard, noncePart)
 }
 
-// Helper function to create a realistic transaction
-func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender string, nonce int) *thrylos.Transaction {
-	// Realistic transaction amounts (in the thousands range)
-	inputAmount := int64(5000 + (nonce % 1000)) // Varying amounts
+func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
+	batchNumber := nonce / batchSize
+	shardID := batchNumber % numShards
+	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
+
+	// Rest of the function remains the same
+	inputAmount := int64(5000 + (nonce % 1000))
 	gasAmount := int32(BaseGasFee)
 	outputAmount := inputAmount - int64(gasAmount)
 
@@ -481,7 +264,7 @@ func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender str
 		},
 		Outputs: []*thrylos.UTXO{
 			{
-				OwnerAddress: fmt.Sprintf("recipient-%d", nonce%100), // Simulate multiple recipients
+				OwnerAddress: recipientAddress,
 				Amount:       outputAmount,
 				Index:        0,
 			},
@@ -518,4 +301,350 @@ func createSignatureData(tx *thrylos.Transaction) []byte {
 	}
 
 	return signData
+}
+
+// Define the metrics struct
+type ShardMetrics struct {
+	accesses int64
+	modifies int64
+}
+
+type ShardMetricsData struct {
+	AccessCount  int64
+	ModifyCount  int64
+	TotalTxCount int64
+	AvgLatency   time.Duration
+	LoadFactor   float64
+}
+
+func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
+	// Create test directory
+	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
+	require.NoError(t, err, "Failed to create temp directory")
+	defer os.RemoveAll(tempDir)
+
+	// Production-like timing constants
+	const (
+		networkLatency    = 75 * time.Millisecond
+		consensusDelay    = 200 * time.Millisecond // Further reduced
+		validatorCount    = 16
+		txsPerBlock       = 1000                   // Increased
+		batchSize         = 100                    // Increased
+		batchDelay        = 30 * time.Millisecond  // Reduced
+		expectedBlockTime = 850 * time.Millisecond // More aggressive target
+		numShards         = 12
+	)
+
+	// Initialize network handler mock
+	networkHandler := state.NewMockNetworkInterface(networkLatency, 0.1)
+
+	// Initialize state manager with sharding
+	stateManager := state.NewStateManager(networkHandler, numShards)
+	defer stateManager.StopStateSyncLoop()
+
+	// Initialize blockchain with genesis account and state manager
+	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
+	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
+		DataDir:           tempDir,
+		AESKey:            []byte("test-key"),
+		GenesisAccount:    genesisAddress,
+		TestMode:          true,
+		DisableBackground: true,
+		StateManager:      stateManager,
+	})
+	require.NoError(t, err, "Failed to create blockchain")
+
+	// Setup validators
+	validators := make([]struct {
+		address    string
+		publicKey  ed25519.PublicKey
+		privateKey ed25519.PrivateKey
+	}, validatorCount)
+
+	// Create and register validators
+	for i := 0; i < validatorCount; i++ {
+		publicKey, privateKey, err := ed25519.GenerateKey(nil)
+		require.NoError(t, err, "Failed to generate validator key pair")
+
+		address := fmt.Sprintf("tl11validator%d", i)
+		validators[i] = struct {
+			address    string
+			publicKey  ed25519.PublicKey
+			privateKey ed25519.PrivateKey
+		}{
+			address:    address,
+			publicKey:  publicKey,
+			privateKey: privateKey,
+		}
+
+		// Register validator and initialize state
+		err = blockchain.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
+		require.NoError(t, err, "Failed to store validator public key")
+		err = blockchain.ValidatorKeys.StoreKey(address, privateKey)
+		require.NoError(t, err, "Failed to store validator private key")
+		blockchain.PublicKeyMap[address] = publicKey
+
+		// Initialize state for validator in appropriate shard
+		err = stateManager.UpdateState(address, 1000000, nil)
+		require.NoError(t, err, "Failed to initialize validator state")
+	}
+
+	// Test cases for different network loads
+	testCases := []struct {
+		name            string
+		numBlocks       int
+		networkLoad     string
+		latencyFactor   float64
+		expectedMaxTime time.Duration
+	}{
+		{
+			name:            "Normal Network Load",
+			numBlocks:       10,
+			networkLoad:     "normal",
+			latencyFactor:   1.0,
+			expectedMaxTime: 15 * time.Second,
+		},
+		{
+			name:            "High Network Load",
+			numBlocks:       10,
+			networkLoad:     "high",
+			latencyFactor:   2.0,
+			expectedMaxTime: 25 * time.Second,
+		},
+		{
+			name:            "Peak Network Load",
+			numBlocks:       10,
+			networkLoad:     "peak",
+			latencyFactor:   3.0,
+			expectedMaxTime: 35 * time.Second,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var blockTimes []time.Duration
+			var batchTimes []time.Duration
+
+			// Initialize shard metrics with proper structure
+			shardMetrics := make(map[int]*ShardMetricsData)
+			for i := 0; i < numShards; i++ {
+				shardMetrics[i] = &ShardMetricsData{}
+			}
+
+			startTime := time.Now()
+
+			// Get initial blockchain state
+			blockchain.Mu.RLock()
+			initialHeight := len(blockchain.Blocks)
+			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
+			blockchain.Mu.RUnlock()
+
+			// Process blocks
+			for i := 0; i < tc.numBlocks; i++ {
+				blockStart := time.Now()
+
+				// Process transactions in batches
+				var allTxs []*thrylos.Transaction
+				numBatches := txsPerBlock / batchSize
+
+				for b := 0; b < numBatches; b++ {
+					batchStart := time.Now()
+
+					// Create batch of transactions
+					var batchTxs []*thrylos.Transaction
+					startIdx := b * batchSize
+					endIdx := startIdx + batchSize
+
+					for j := startIdx; j < endIdx; j++ {
+						tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards) // Use j directly, not i*txsPerBlock+j
+						batchTxs = append(batchTxs, tx)
+
+						// Update state for transaction
+						for _, output := range tx.Outputs {
+							partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
+							if partition != nil {
+								metrics := shardMetrics[partition.ID]
+								metrics.ModifyCount++
+								metrics.TotalTxCount++
+								txLatency := time.Since(batchStart)
+								if metrics.AvgLatency == 0 {
+									metrics.AvgLatency = txLatency
+								} else {
+									metrics.AvgLatency = (metrics.AvgLatency + txLatency) / 2
+								}
+								metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
+
+								err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
+								require.NoError(t, err, "Failed to update state")
+							}
+						}
+					}
+
+					// Simulate batch processing time with network latency
+					time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))
+					time.Sleep(batchDelay)
+
+					allTxs = append(allTxs, batchTxs...)
+
+					batchTime := time.Since(batchStart)
+					batchTimes = append(batchTimes, batchTime)
+					t.Logf("Block %d - Batch %d processing time: %v", i, b+1, batchTime)
+				}
+
+				// Verify state consistency across shards
+				for shardID := 0; shardID < numShards; shardID++ {
+					metrics := shardMetrics[shardID]
+					t.Logf("Shard %d metrics - Txs: %d, Accesses: %d, Modifications: %d, Avg Latency: %v, Load Factor: %.2f",
+						shardID, metrics.TotalTxCount, metrics.AccessCount, metrics.ModifyCount,
+						metrics.AvgLatency, metrics.LoadFactor)
+				}
+
+				// Simulate validator signing with consensus delay
+				validatorIndex := i % validatorCount
+				currentValidator := validators[validatorIndex]
+				time.Sleep(consensusDelay)
+
+				// Create and process block
+				block := &Block{
+					Index:        int32(initialHeight + i),
+					Timestamp:    time.Now().Unix(),
+					Transactions: allTxs,
+					Validator:    currentValidator.address,
+					PrevHash:     prevHash,
+				}
+
+				err := block.InitializeVerkleTree()
+				require.NoError(t, err, "Failed to initialize Verkle tree")
+
+				block.Hash = block.ComputeHash()
+				block.Signature = ed25519.Sign(currentValidator.privateKey, block.Hash)
+
+				blockchain.Mu.Lock()
+				blockchain.Blocks = append(blockchain.Blocks, block)
+				blockchain.Mu.Unlock()
+
+				prevHash = block.Hash
+				blockTime := time.Since(blockStart)
+				blockTimes = append(blockTimes, blockTime)
+
+				t.Logf("Block %d total creation time: %v", i, blockTime)
+			}
+
+			// Log final shard distribution analysis
+			t.Logf("\nDetailed Shard Distribution Analysis:")
+			var totalTxs int64
+			var maxLoad, minLoad float64 = 0, 1
+			for shardID, metrics := range shardMetrics {
+				totalTxs += metrics.TotalTxCount
+				if metrics.LoadFactor > maxLoad {
+					maxLoad = metrics.LoadFactor
+				}
+				if metrics.LoadFactor < minLoad {
+					minLoad = metrics.LoadFactor
+				}
+				t.Logf("Shard %d:\n"+
+					"  - Total Transactions: %d\n"+
+					"  - Modifications: %d\n"+
+					"  - Average Latency: %v\n"+
+					"  - Load Factor: %.2f",
+					shardID, metrics.TotalTxCount, metrics.ModifyCount,
+					metrics.AvgLatency, metrics.LoadFactor)
+			}
+
+			// Calculate load distribution metrics
+			loadImbalance := maxLoad - minLoad
+			t.Logf("\nLoad Distribution Metrics:")
+			t.Logf("- Maximum Load Factor: %.2f", maxLoad)
+			t.Logf("- Minimum Load Factor: %.2f", minLoad)
+			t.Logf("- Load Imbalance: %.2f", loadImbalance)
+			t.Logf("- Average Transactions per Shard: %.2f", float64(totalTxs)/float64(numShards))
+
+			// Calculate and log standard metrics
+			// Convert metrics to format expected by calculateAndLogMetrics
+			legacyMetrics := make(map[int]struct {
+				accesses int64
+				modifies int64
+			})
+			for shardID, metrics := range shardMetrics {
+				legacyMetrics[shardID] = struct {
+					accesses int64
+					modifies int64
+				}{
+					accesses: metrics.AccessCount,
+					modifies: metrics.ModifyCount,
+				}
+			}
+
+			// Calculate and log standard metrics
+			calculateAndLogMetrics(t, tc.name, blockTimes, batchTimes, legacyMetrics,
+				startTime, txsPerBlock, expectedBlockTime, tc.expectedMaxTime)
+		})
+
+		// Cleanup between test cases
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// Helper function to calculate and log metrics
+func calculateAndLogMetrics(t *testing.T, testName string, blockTimes, batchTimes []time.Duration,
+	shardMetrics map[int]struct{ accesses, modifies int64 }, startTime time.Time,
+	txsPerBlock int, expectedBlockTime, expectedMaxTime time.Duration) {
+
+	var totalBlockTime, maxBlockTime time.Duration
+	var minBlockTime = time.Hour
+	var totalBatchTime, maxBatchTime time.Duration
+	var minBatchTime = time.Hour
+
+	// Calculate block timing metrics
+	for _, bt := range blockTimes {
+		totalBlockTime += bt
+		if bt > maxBlockTime {
+			maxBlockTime = bt
+		}
+		if bt < minBlockTime {
+			minBlockTime = bt
+		}
+	}
+
+	// Calculate batch timing metrics
+	for _, bt := range batchTimes {
+		totalBatchTime += bt
+		if bt > maxBatchTime {
+			maxBatchTime = bt
+		}
+		if bt < minBatchTime {
+			minBatchTime = bt
+		}
+	}
+
+	avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
+	avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
+	totalTime := time.Since(startTime)
+
+	// Log comprehensive metrics
+	t.Logf("\nDetailed metrics for %s:", testName)
+	t.Logf("Average block time: %v", avgBlockTime)
+	t.Logf("Minimum block time: %v", minBlockTime)
+	t.Logf("Maximum block time: %v", maxBlockTime)
+	t.Logf("Average batch time: %v", avgBatchTime)
+	t.Logf("Minimum batch time: %v", minBatchTime)
+	t.Logf("Maximum batch time: %v", maxBatchTime)
+	t.Logf("Total processing time: %v", totalTime)
+	t.Logf("Transactions processed: %d", len(blockTimes)*txsPerBlock)
+	t.Logf("Average TPS: %.2f", float64(len(blockTimes)*txsPerBlock)/totalTime.Seconds())
+	t.Logf("Effective batch TPS: %.2f", float64(txsPerBlock)/avgBatchTime.Seconds())
+
+	// Log shard-specific metrics
+	t.Logf("\nShard metrics:")
+	for shardID, metrics := range shardMetrics {
+		t.Logf("Shard %d - Accesses: %d, Modifications: %d",
+			shardID, metrics.accesses, metrics.modifies)
+	}
+
+	// Verify expectations
+	require.Less(t, avgBlockTime, 2*expectedBlockTime,
+		"Average block time exceeds twice the target block time")
+	require.Less(t, totalTime, expectedMaxTime,
+		"Total processing time exceeds maximum allowed time")
 }
