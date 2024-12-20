@@ -239,7 +239,9 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 		networkLatency    = 100 * time.Millisecond  // Average network latency
 		consensusDelay    = 300 * time.Millisecond  // Time for consensus
 		validatorCount    = 4                       // Number of active validators
-		txsPerBlock       = 100                     // Transactions per block
+		txsPerBlock       = 100                     // Total transactions per block
+		batchSize         = 25                      // Transactions per batch
+		batchDelay        = 50 * time.Millisecond   // Delay between batch processing
 		expectedBlockTime = 1200 * time.Millisecond // Target block time (1.2s)
 	)
 
@@ -320,6 +322,7 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			var blockTimes []time.Duration
+			var batchTimes []time.Duration
 			startTime := time.Now()
 
 			// Get initial blockchain state
@@ -332,15 +335,35 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 			for i := 0; i < tc.numBlocks; i++ {
 				blockStart := time.Now()
 
-				// Create batch of transactions
-				var txs []*thrylos.Transaction
-				for j := 0; j < txsPerBlock; j++ {
-					tx := createRealisticTransaction(t, blockchain, genesisAddress, i*txsPerBlock+j)
-					txs = append(txs, tx)
-				}
+				// Process transactions in batches
+				var allTxs []*thrylos.Transaction
+				numBatches := txsPerBlock / batchSize
 
-				// Simulate network latency for transaction propagation
-				time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor))
+				for b := 0; b < numBatches; b++ {
+					batchStart := time.Now()
+
+					// Create batch of transactions
+					var batchTxs []*thrylos.Transaction
+					startIdx := b * batchSize
+					endIdx := startIdx + batchSize
+
+					for j := startIdx; j < endIdx; j++ {
+						tx := createRealisticTransaction(t, blockchain, genesisAddress, i*txsPerBlock+j)
+						batchTxs = append(batchTxs, tx)
+					}
+
+					// Simulate batch processing time with network latency
+					time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))
+
+					// Simulate batch processing overhead
+					time.Sleep(batchDelay)
+
+					allTxs = append(allTxs, batchTxs...)
+
+					batchTime := time.Since(batchStart)
+					batchTimes = append(batchTimes, batchTime)
+					t.Logf("Block %d - Batch %d processing time: %v", i, b+1, batchTime)
+				}
 
 				// Simulate consensus process
 				validatorIndex := i % validatorCount
@@ -349,11 +372,11 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 				// Simulate validator signing with consensus delay
 				time.Sleep(consensusDelay)
 
-				// Create block
+				// Create block with all accumulated transactions
 				block := &Block{
 					Index:        int32(initialHeight + i),
 					Timestamp:    time.Now().Unix(),
-					Transactions: txs,
+					Transactions: allTxs,
 					Validator:    currentValidator.address,
 					PrevHash:     prevHash,
 				}
@@ -376,13 +399,16 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 				blockTimes = append(blockTimes, blockTime)
 
 				// Log individual block metrics
-				t.Logf("Block %d creation time: %v", i, blockTime)
+				t.Logf("Block %d total creation time: %v", i, blockTime)
 			}
 
 			// Calculate and validate metrics
 			var totalBlockTime time.Duration
 			var maxBlockTime time.Duration
 			var minBlockTime = time.Hour
+			var totalBatchTime time.Duration
+			var maxBatchTime time.Duration
+			var minBatchTime = time.Hour
 
 			for _, bt := range blockTimes {
 				totalBlockTime += bt
@@ -394,7 +420,18 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 				}
 			}
 
+			for _, bt := range batchTimes {
+				totalBatchTime += bt
+				if bt > maxBatchTime {
+					maxBatchTime = bt
+				}
+				if bt < minBatchTime {
+					minBatchTime = bt
+				}
+			}
+
 			avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
+			avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
 			totalTime := time.Since(startTime)
 
 			// Log comprehensive metrics
@@ -402,9 +439,13 @@ func TestRealisticBlockTimeToFinality(t *testing.T) {
 			t.Logf("Average block time: %v", avgBlockTime)
 			t.Logf("Minimum block time: %v", minBlockTime)
 			t.Logf("Maximum block time: %v", maxBlockTime)
+			t.Logf("Average batch time: %v", avgBatchTime)
+			t.Logf("Minimum batch time: %v", minBatchTime)
+			t.Logf("Maximum batch time: %v", maxBatchTime)
 			t.Logf("Total processing time: %v", totalTime)
 			t.Logf("Transactions processed: %d", tc.numBlocks*txsPerBlock)
 			t.Logf("Average TPS: %.2f", float64(tc.numBlocks*txsPerBlock)/totalTime.Seconds())
+			t.Logf("Effective batch TPS: %.2f", float64(batchSize)/avgBatchTime.Seconds())
 
 			// Verify expectations
 			require.Less(t, avgBlockTime, 2*expectedBlockTime,
