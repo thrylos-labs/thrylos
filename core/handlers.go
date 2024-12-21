@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,27 +32,45 @@ func (node *Node) SetupRoutes() *mux.Router {
 	// In your SetupRoutes function, update the CORS middleware section
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("Request received: %s %s", r.Method, r.URL.Path)
+			// More comprehensive logging
+			log.Printf("[%s] Request: %s %s from %s",
+				time.Now().Format(time.RFC3339),
+				r.Method,
+				r.URL.Path,
+				r.RemoteAddr,
+			)
 
-			// Allow requests from specific origins
-			allowedOrigins := []string{"http://localhost:3000", "https://node.thrylos.org"}
+			// Enhanced origin checking with more flexible matching
+			allowedOrigins := []string{
+				"http://localhost:3000",
+				"https://node.thrylos.org",
+				"http://localhost:", // Allow all localhost ports
+				"https://www.thrylos.org",
+			}
 			origin := r.Header.Get("Origin")
 
-			// Check if origin is allowed
+			// More robust origin validation
 			originAllowed := false
 			for _, allowedOrigin := range allowedOrigins {
-				if origin == allowedOrigin {
+				if origin == allowedOrigin ||
+					(allowedOrigin == "http://localhost:" && strings.HasPrefix(origin, "http://localhost:")) {
 					originAllowed = true
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					break
 				}
 			}
 
-			// Set comprehensive CORS headers
+			// Set comprehensive and secure CORS headers
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Cache-Control")
+			w.Header().Set("Access-Control-Allow-Headers",
+				"Content-Type, Authorization, X-Requested-With, Accept, Cache-Control, X-CSRF-Token")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
+
+			// Additional security headers
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
 			// Handle preflight requests
 			if r.Method == "OPTIONS" {
@@ -58,7 +78,7 @@ func (node *Node) SetupRoutes() *mux.Router {
 				return
 			}
 
-			// If no allowed origin found and it's not a WebSocket request
+			// Enhanced origin and method validation
 			if !originAllowed && !isWebSocketRequest(r) {
 				if r.Method != "OPTIONS" {
 					log.Printf("Blocked request from unauthorized origin: %s", origin)
@@ -67,70 +87,78 @@ func (node *Node) SetupRoutes() *mux.Router {
 				}
 			}
 
-			// Add cache control headers for balance endpoint
-			if r.URL.Path == "/get-balance" {
+			// Context-specific headers
+			switch r.URL.Path {
+			case "/get-balance", "/ws/balance":
 				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				w.Header().Set("Pragma", "no-cache")
 				w.Header().Set("Expires", "0")
 			}
 
 			// Set content type for non-WebSocket requests
 			if !isWebSocketRequest(r) {
-				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			}
+
+			// Optional: Basic request tracking
+			ctx := context.WithValue(r.Context(), "request_start_time", time.Now())
+			r = r.WithContext(ctx)
 
 			next.ServeHTTP(w, r)
 		})
 	})
 
 	// Balance endpoints
-	balanceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "OPTIONS" {
-			return
-		}
+	// balanceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 	if r.Method == "OPTIONS" {
+	// 		return
+	// 	}
 
-		address := r.URL.Query().Get("address")
-		if address == "" {
-			http.Error(w, "Address parameter is required", http.StatusBadRequest)
-			return
-		}
+	// 	address := r.URL.Query().Get("address")
+	// 	if address == "" {
+	// 		http.Error(w, "Address parameter is required", http.StatusBadRequest)
+	// 		return
+	// 	}
 
-		balance, err := node.GetBalance(address)
-		if err != nil {
-			log.Printf("Error getting balance for address %s: %v", address, err)
-			http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
-			return
-		}
+	// 	balance, err := node.GetBalance(address)
+	// 	if err != nil {
+	// 		log.Printf("Error getting balance for address %s: %v", address, err)
+	// 		http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
+	// 		return
+	// 	}
 
-		response := struct {
-			Balance        int64   `json:"balance"`
-			BalanceThrylos float64 `json:"balanceThrylos"`
-		}{
-			Balance:        balance,
-			BalanceThrylos: float64(balance) / 1e7,
-		}
+	// 	response := struct {
+	// 		Balance        int64   `json:"balance"`
+	// 		BalanceThrylos float64 `json:"balanceThrylos"`
+	// 	}{
+	// 		Balance:        balance,
+	// 		BalanceThrylos: float64(balance) / 1e7,
+	// 	}
 
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
+	// 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	// 	w.Header().Set("Pragma", "no-cache")
+	// 	w.Header().Set("Expires", "0")
 
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Error encoding balance response: %v", err)
-			http.Error(w, "Error encoding response", http.StatusInternalServerError)
-			return
-		}
-	})
+	// 	if err := json.NewEncoder(w).Encode(response); err != nil {
+	// 		log.Printf("Error encoding balance response: %v", err)
+	// 		http.Error(w, "Error encoding response", http.StatusInternalServerError)
+	// 		return
+	// 	}
+	// })
 
-	r.Handle("/get-balance", balanceHandler).Methods("GET", "OPTIONS")
+	// r.Handle("/get-balance", balanceHandler).Methods("GET", "OPTIONS")
 
 	// WebSocket endpoint with specific handling
-	r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
-		if isWebSocketRequest(r) {
-			node.WebSocketBalanceHandler(w, r)
-			return
-		}
-		http.Error(w, "Expected WebSocket connection", http.StatusBadRequest)
-	})
+	// r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
+	// 	if isWebSocketRequest(r) {
+	// 		node.WebSocketBalanceHandler(w, r)
+	// 		return
+	// 	}
+	// 	http.Error(w, "Expected WebSocket connection", http.StatusBadRequest)
+	// })
+	r.HandleFunc("/ws/balance", node.WebSocketBalanceHandler).Methods("GET")
 
+	r.HandleFunc("/ws/status", node.WebSocketStatusHandler).Methods("GET")
 	// Core blockchain endpoints
 	r.HandleFunc("/block", node.BlockHandler).Methods("POST")
 	r.HandleFunc("/blockchain", node.BlockchainHandler).Methods("GET")

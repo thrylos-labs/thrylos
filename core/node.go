@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,7 +45,8 @@ type Node struct {
 	blockProducer        *ModernBlockProducer
 	stakingService       *StakingService
 	pendingTxCount       int32 // Add this field
-
+	serverHost           string
+	useSSL               bool
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -68,12 +70,16 @@ func loadEnv() (map[string]string, error) {
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) *Node {
+	// Default values for WebSocket configuration
+	serverHost := address                            // Use the node's address as default server host
+	useSSL := strings.HasPrefix(address, "https://") // Determine SSL based on address
+
 	envFile, _ := loadEnv() // Dynamically load the correct environment configuration
 
 	// Retrieve the AES key securely from an environment variable, with a fallback for tests
 	aesKeyEncoded := envFile["AES_KEY_ENV_VAR"]
 
-	log.Printf("AES Key from environment: %s", aesKeyEncoded) // Debug output to see what is retrieved
+	log.Printf("AES Key from environment: %s", aesKeyEncoded)
 
 	aesKey, err := base64.StdEncoding.DecodeString(aesKeyEncoded)
 	if err != nil {
@@ -107,7 +113,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		GenesisAccount:    genesisAccount,
 		TestMode:          true,
 		SupabaseClient:    supabaseClient,
-		DisableBackground: false, // Set based on your specific requirements
+		DisableBackground: false,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create new blockchain: %v", err)
@@ -117,14 +123,16 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		Address:              address,
 		Peers:                knownPeers,
 		Blockchain:           bc,
-		Database:             db, // Set the Database field
+		Database:             db,
 		Shard:                shard,
 		SupabaseClient:       supabaseClient,
-		PublicKeyMap:         make(map[string]ed25519.PublicKey), // Initialize the map
+		PublicKeyMap:         make(map[string]ed25519.PublicKey),
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
-		GasEstimateURL:       gasEstimateURL, // Set the URL in the node struct
+		GasEstimateURL:       gasEstimateURL,
 		WebSocketConnections: make(map[string]*WebSocketConnection),
 		stakingService:       NewStakingService(&db),
+		serverHost:           serverHost,
+		useSSL:               useSSL,
 	}
 
 	// Initialize block producer after node is set up

@@ -51,7 +51,6 @@ func TestAssignNodeToShard(t *testing.T) {
 
 	// Update with correct arguments including dataDir
 	node := NewNode("localhost:8080", knownPeers, tempDir, shard)
-
 	if err := shard.AssignNode(node); err != nil {
 		t.Errorf("Failed to assign node to shard: %v", err)
 	}

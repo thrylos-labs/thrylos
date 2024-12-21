@@ -175,13 +175,13 @@ func TestNewNodeInitialization(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Test initialization in a non-test environment
-	node := NewNode("http://localhost:8080", nil, tempDir, nil)
+	node := NewNode("http://localhost:8080", []string{}, tempDir, nil)
 	if node == nil {
 		t.Fatal("Failed to initialize node in non-test environment")
 	}
 
 	// Test initialization in a test environment
-	testNode := NewNode("http://localhost:8080", nil, tempDir, nil)
+	testNode := NewNode("http://localhost:8080", []string{}, tempDir, nil)
 	if testNode == nil {
 		t.Fatal("Failed to initialize node in test environment")
 	}
