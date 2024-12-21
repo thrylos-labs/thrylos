@@ -3,12 +3,12 @@ package core
 import (
 	"fmt"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/shared"
 )
 
 const (
@@ -22,18 +22,26 @@ type BatchProcessor struct {
 	node              *Node
 	batchQueue        chan *thrylos.Transaction
 	processingBatches sync.WaitGroup
-	batchMutex        sync.Mutex
 	currentBatch      []*thrylos.Transaction
-	isProcessing      bool
-	processedTxs      sync.Map // Track processed transaction IDs
+	processedTxs      sync.Map                  // Track processed transaction IDs
+	batchPool         sync.Pool                 // Reuse batch slices
+	workerPool        chan struct{}             // Limit concurrent workers
+	highPriorityQueue chan *thrylos.Transaction // Fast path for high-priority txs
 
 }
 
 func NewBatchProcessor(node *Node) *BatchProcessor {
 	bp := &BatchProcessor{
-		node:         node,
-		batchQueue:   make(chan *thrylos.Transaction, BatchSize*MaxConcurrentBatch),
-		currentBatch: make([]*thrylos.Transaction, 0, BatchSize),
+		node:              node,
+		batchQueue:        make(chan *thrylos.Transaction, BatchSize*MaxConcurrentBatch),
+		currentBatch:      make([]*thrylos.Transaction, 0, BatchSize),
+		highPriorityQueue: make(chan *thrylos.Transaction, BatchSize), // Fast path
+		workerPool:        make(chan struct{}, runtime.NumCPU()),      // Limit concurrent workers
+		batchPool: sync.Pool{
+			New: func() interface{} {
+				return make([]*thrylos.Transaction, 0, BatchSize)
+			},
+		},
 	}
 
 	go bp.batchManager()
@@ -41,36 +49,93 @@ func NewBatchProcessor(node *Node) *BatchProcessor {
 }
 
 func (bp *BatchProcessor) AddTransaction(tx *thrylos.Transaction) error {
+	// Try high-priority queue first
 	select {
-	case bp.batchQueue <- tx:
+	case bp.highPriorityQueue <- tx:
 		return nil
 	default:
-		return fmt.Errorf("batch queue is full")
+		// Fall back to normal queue
+		select {
+		case bp.batchQueue <- tx:
+			return nil
+		default:
+			return fmt.Errorf("batch queue is full")
+		}
 	}
 }
 
 func (bp *BatchProcessor) batchManager() {
-	ticker := time.NewTicker(time.Duration(BatchTimeout) * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond) // More frequent checks
 	defer ticker.Stop()
 
 	for {
 		select {
-		case tx := <-bp.batchQueue:
-			bp.batchMutex.Lock()
-			bp.currentBatch = append(bp.currentBatch, tx)
+		case tx := <-bp.highPriorityQueue:
+			// Fast path for high-priority transactions
+			bp.processSingleTransaction(tx)
 
-			if len(bp.currentBatch) >= BatchSize {
-				bp.processBatch()
+		case tx := <-bp.batchQueue:
+			batch := bp.currentBatch
+			batch = append(batch, tx)
+
+			if len(batch) >= BatchSize {
+				bp.processBatchAsync(batch)
+				bp.currentBatch = bp.batchPool.Get().([]*thrylos.Transaction)
+			} else {
+				bp.currentBatch = batch
 			}
-			bp.batchMutex.Unlock()
 
 		case <-ticker.C:
-			bp.batchMutex.Lock()
 			if len(bp.currentBatch) >= MinBatchSize {
-				bp.processBatch()
+				bp.processBatchAsync(bp.currentBatch)
+				bp.currentBatch = bp.batchPool.Get().([]*thrylos.Transaction)
 			}
-			bp.batchMutex.Unlock()
 		}
+	}
+}
+
+func (bp *BatchProcessor) processBatchAsync(batch []*thrylos.Transaction) {
+	// Get worker slot
+	bp.workerPool <- struct{}{}
+
+	bp.processingBatches.Add(1)
+	go func(transactions []*thrylos.Transaction) {
+		defer func() {
+			bp.processingBatches.Done()
+			<-bp.workerPool                    // Release worker slot
+			bp.batchPool.Put(transactions[:0]) // Return slice to pool
+		}()
+
+		// Process in smaller chunks for better concurrency
+		chunkSize := 20
+		for i := 0; i < len(transactions); i += chunkSize {
+			end := i + chunkSize
+			if end > len(transactions) {
+				end = len(transactions)
+			}
+
+			var wg sync.WaitGroup
+			for _, tx := range transactions[i:end] {
+				wg.Add(1)
+				go func(transaction *thrylos.Transaction) {
+					defer wg.Done()
+					bp.processTransaction(transaction)
+				}(tx)
+			}
+			wg.Wait()
+		}
+	}(batch)
+}
+
+func (bp *BatchProcessor) processSingleTransaction(tx *thrylos.Transaction) {
+	if _, exists := bp.processedTxs.Load(tx.GetId()); exists {
+		return
+	}
+
+	// Fast path processing
+	if err := bp.node.DAGManager.AddTransaction(tx); err == nil {
+		bp.processedTxs.Store(tx.GetId(), true)
+		bp.processTransaction(tx)
 	}
 }
 
@@ -114,32 +179,29 @@ func (bp *BatchProcessor) processBatch() {
 }
 
 func (bp *BatchProcessor) processTransaction(tx *thrylos.Transaction) error {
-	// Verify transaction
+	// Fast check for already processed
+	if _, exists := bp.processedTxs.Load(tx.GetId()); exists {
+		return nil
+	}
+
+	// Optimized validation path
 	if err := bp.node.VerifyAndProcessTransaction(tx); err != nil {
-		return fmt.Errorf("transaction verification failed: %v", err)
+		return err
 	}
 
-	// Validate addresses
-	if err := bp.node.validateTransactionAddresses(&shared.Transaction{
-		Sender:  tx.Sender,
-		Outputs: ConvertProtoOutputs(tx.Outputs),
-	}); err != nil {
-		return fmt.Errorf("address validation failed: %v", err)
-	}
-
-	// Only add to pending if not yet confirmed in DAG
 	confirmed, _ := bp.node.DAGManager.GetConfirmationStatus(tx.GetId())
 	if !confirmed {
 		if err := bp.node.AddPendingTransaction(tx); err != nil {
-			return fmt.Errorf("failed to add to pending transactions: %v", err)
+			return err
 		}
 	}
 
-	// Update balances
+	// Atomic update
 	if err := bp.node.updateBalances(tx); err != nil {
-		return fmt.Errorf("failed to update balances: %v", err)
+		return err
 	}
 
+	bp.processedTxs.Store(tx.GetId(), true)
 	return nil
 }
 
