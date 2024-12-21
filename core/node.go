@@ -47,6 +47,7 @@ type Node struct {
 	pendingTxCount       int32 // Add this field
 	serverHost           string
 	useSSL               bool
+	BatchProcessor       *BatchProcessor
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -134,6 +135,9 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		serverHost:           serverHost,
 		useSSL:               useSSL,
 	}
+
+	// Process batch transactions
+	node.InitializeBatchProcessor()
 
 	// Initialize block producer after node is set up
 	node.blockProducer = NewBlockProducer(node, bc)

@@ -493,8 +493,8 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 			return
 		}
 
-		if err := n.AddPendingTransaction(thrylosTx); err != nil {
-			validationComplete <- fmt.Errorf("failed to add to pending pool: %v", err)
+		if err := n.AddTransactionToBatch(thrylosTx); err != nil {
+			validationComplete <- fmt.Errorf("failed to add to batch processing: %v", err)
 			return
 		}
 		validationComplete <- nil
@@ -1121,7 +1121,7 @@ func (node *Node) UnstakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	if err := node.AddPendingTransaction(unstakeTx); err != nil {
+	if err := node.AddTransactionToBatch(unstakeTx); err != nil {
 		sendJSONErrorResponse(w, fmt.Sprintf("Failed to process unstaking transaction: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -1285,8 +1285,7 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add to pending transactions
-	if err := node.AddPendingTransaction(stakingTx); err != nil {
+	if err := node.AddTransactionToBatch(stakingTx); err != nil {
 		sendJSONErrorResponse(w, fmt.Sprintf("Failed to process staking transaction: %v", err), http.StatusInternalServerError)
 		return
 	}
