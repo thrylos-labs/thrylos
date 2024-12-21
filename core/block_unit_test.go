@@ -359,7 +359,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	node := &Node{
 		Blockchain: blockchain,
 	}
-	node.InitializeBatchProcessor()
+	node.InitializeProcessors()
 
 	// Setup validators (same as before)
 	validators := make([]struct {
@@ -455,6 +455,9 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 				// Process transactions in batches using the batch processor
 				numBatches := txsPerBlock / batchSize
 
+				// In the test, modify the batch processing loop
+				// Modify the test's batch processing
+				// Modify the test's batch processing
 				for b := 0; b < numBatches; b++ {
 					wg.Add(1)
 					batchStart := time.Now()
@@ -466,20 +469,20 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 						startIdx := batchNum * batchSize
 						endIdx := startIdx + batchSize
 
+						// Process transactions sequentially within batch
 						for j := startIdx; j < endIdx; j++ {
 							tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards)
 
-							// Use the batch processor to handle the transaction
-							err := node.AddTransactionToBatch(tx)
-							require.NoError(t, err, "Failed to add transaction to batch")
+							err := node.ProcessIncomingTransaction(tx)
+							require.NoError(t, err, "Failed to process transaction")
 
+							batchMutex.Lock()
 							batchTxs = append(batchTxs, tx)
 
 							// Update metrics
 							for _, output := range tx.Outputs {
 								partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
 								if partition != nil {
-									batchMutex.Lock()
 									metrics := shardMetrics[partition.ID]
 									metrics.ModifyCount++
 									metrics.TotalTxCount++
@@ -490,12 +493,12 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 										metrics.AvgLatency = (metrics.AvgLatency + txLatency) / 2
 									}
 									metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
-									batchMutex.Unlock()
 
 									err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
 									require.NoError(t, err, "Failed to update state")
 								}
 							}
+							batchMutex.Unlock()
 						}
 
 						time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))

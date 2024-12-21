@@ -48,6 +48,7 @@ type Node struct {
 	serverHost           string
 	useSSL               bool
 	BatchProcessor       *BatchProcessor
+	DAGManager           *DAGManager
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -136,8 +137,8 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		useSSL:               useSSL,
 	}
 
-	// Process batch transactions
-	node.InitializeBatchProcessor()
+	// Process batch transactions and dag
+	node.InitializeProcessors()
 
 	// Initialize block producer after node is set up
 	node.blockProducer = NewBlockProducer(node, bc)

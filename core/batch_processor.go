@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,8 @@ type BatchProcessor struct {
 	batchMutex        sync.Mutex
 	currentBatch      []*thrylos.Transaction
 	isProcessing      bool
+	processedTxs      sync.Map // Track processed transaction IDs
+
 }
 
 func NewBatchProcessor(node *Node) *BatchProcessor {
@@ -84,26 +87,29 @@ func (bp *BatchProcessor) processBatch() {
 	go func(transactions []*thrylos.Transaction) {
 		defer bp.processingBatches.Done()
 
-		// Process transactions in parallel with bounded concurrency
-		semaphore := make(chan struct{}, MaxConcurrentBatch)
-		var wg sync.WaitGroup
-
 		for _, tx := range transactions {
-			wg.Add(1)
-			semaphore <- struct{}{} // Acquire semaphore
+			// Check if transaction was already processed
+			if _, exists := bp.processedTxs.Load(tx.GetId()); exists {
+				continue
+			}
 
-			go func(transaction *thrylos.Transaction) {
-				defer wg.Done()
-				defer func() { <-semaphore }() // Release semaphore
-
-				if err := bp.processTransaction(transaction); err != nil {
-					log.Printf("Error processing transaction %s: %v", transaction.GetId(), err)
-					return
+			// Process through DAG first
+			if err := bp.node.DAGManager.AddTransaction(tx); err != nil {
+				if !strings.Contains(err.Error(), "transaction already exists") {
+					log.Printf("DAG processing failed: %v", err)
 				}
-			}(tx)
-		}
+				continue
+			}
 
-		wg.Wait()
+			// Mark as processed
+			bp.processedTxs.Store(tx.GetId(), true)
+
+			// Then process through regular validation
+			if err := bp.processTransaction(tx); err != nil {
+				log.Printf("Transaction processing failed: %v", err)
+				continue
+			}
+		}
 	}(batch)
 }
 
@@ -121,9 +127,12 @@ func (bp *BatchProcessor) processTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("address validation failed: %v", err)
 	}
 
-	// Add to pending transactions
-	if err := bp.node.AddPendingTransaction(tx); err != nil {
-		return fmt.Errorf("failed to add to pending transactions: %v", err)
+	// Only add to pending if not yet confirmed in DAG
+	confirmed, _ := bp.node.DAGManager.GetConfirmationStatus(tx.GetId())
+	if !confirmed {
+		if err := bp.node.AddPendingTransaction(tx); err != nil {
+			return fmt.Errorf("failed to add to pending transactions: %v", err)
+		}
 	}
 
 	// Update balances
@@ -134,9 +143,43 @@ func (bp *BatchProcessor) processTransaction(tx *thrylos.Transaction) error {
 	return nil
 }
 
-// Extend Node struct to include BatchProcessor
-func (n *Node) InitializeBatchProcessor() {
+// Extend Node's transaction handling methods
+func (n *Node) ProcessIncomingTransaction(tx *thrylos.Transaction) error {
+	// Check if already processed
+	if _, exists := n.BatchProcessor.processedTxs.Load(tx.GetId()); exists {
+		return nil // Already processed, not an error
+	}
+
+	// Process through DAG first
+	if err := n.DAGManager.AddTransaction(tx); err != nil {
+		if strings.Contains(err.Error(), "transaction already exists") {
+			return nil // Already in DAG, not an error
+		}
+		return fmt.Errorf("failed to add transaction to DAG: %v", err)
+	}
+
+	// Then add to batch processor
+	return n.AddTransactionToBatch(tx)
+}
+
+func (n *Node) GetTransactionStatus(txID string) (string, error) {
+	// Check DAG confirmation first
+	dagConfirmed, _ := n.DAGManager.GetConfirmationStatus(txID)
+	if dagConfirmed {
+		return "confirmed", nil
+	}
+
+	// Check pending pool
+	if n.HasTransaction(txID) {
+		return "pending", nil
+	}
+
+	return "unknown", fmt.Errorf("transaction not found")
+}
+
+func (n *Node) InitializeProcessors() {
 	n.BatchProcessor = NewBatchProcessor(n)
+	n.DAGManager = NewDAGManager(n)
 }
 
 // Modified AddPendingTransaction to use batch processing
@@ -145,9 +188,14 @@ func (node *Node) AddTransactionToBatch(tx *thrylos.Transaction) error {
 		return fmt.Errorf("cannot add nil transaction")
 	}
 
-	// Check if transaction already exists
+	// Check if transaction already exists in either system
 	if node.HasTransaction(tx.GetId()) {
-		return fmt.Errorf("transaction already exists")
+		return fmt.Errorf("transaction already exists in pending pool")
+	}
+
+	confirmed, _ := node.DAGManager.GetConfirmationStatus(tx.GetId())
+	if confirmed {
+		return fmt.Errorf("transaction already confirmed in DAG")
 	}
 
 	return node.BatchProcessor.AddTransaction(tx)
