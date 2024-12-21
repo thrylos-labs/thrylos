@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -317,7 +318,7 @@ type ShardMetricsData struct {
 	LoadFactor   float64
 }
 
-func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
+func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	// Create test directory
 	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
 	require.NoError(t, err, "Failed to create temp directory")
@@ -326,12 +327,12 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 	// Production-like timing constants
 	const (
 		networkLatency    = 75 * time.Millisecond
-		consensusDelay    = 200 * time.Millisecond // Further reduced
+		consensusDelay    = 200 * time.Millisecond
 		validatorCount    = 16
-		txsPerBlock       = 1000                   // Increased
-		batchSize         = 100                    // Increased
-		batchDelay        = 30 * time.Millisecond  // Reduced
-		expectedBlockTime = 850 * time.Millisecond // More aggressive target
+		txsPerBlock       = 1000
+		batchSize         = 100
+		batchDelay        = 30 * time.Millisecond
+		expectedBlockTime = 850 * time.Millisecond
 		numShards         = 12
 	)
 
@@ -354,7 +355,13 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 	})
 	require.NoError(t, err, "Failed to create blockchain")
 
-	// Setup validators
+	// Initialize batch processor
+	node := &Node{
+		Blockchain: blockchain,
+	}
+	node.InitializeBatchProcessor()
+
+	// Setup validators (same as before)
 	validators := make([]struct {
 		address    string
 		publicKey  ed25519.PublicKey
@@ -377,14 +384,12 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 			privateKey: privateKey,
 		}
 
-		// Register validator and initialize state
 		err = blockchain.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
 		require.NoError(t, err, "Failed to store validator public key")
 		err = blockchain.ValidatorKeys.StoreKey(address, privateKey)
 		require.NoError(t, err, "Failed to store validator private key")
 		blockchain.PublicKeyMap[address] = publicKey
 
-		// Initialize state for validator in appropriate shard
 		err = stateManager.UpdateState(address, 1000000, nil)
 		require.NoError(t, err, "Failed to initialize validator state")
 	}
@@ -426,7 +431,6 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 			var blockTimes []time.Duration
 			var batchTimes []time.Duration
 
-			// Initialize shard metrics with proper structure
 			shardMetrics := make(map[int]*ShardMetricsData)
 			for i := 0; i < numShards; i++ {
 				shardMetrics[i] = &ShardMetricsData{}
@@ -434,7 +438,6 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 
 			startTime := time.Now()
 
-			// Get initial blockchain state
 			blockchain.Mu.RLock()
 			initialHeight := len(blockchain.Blocks)
 			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
@@ -444,55 +447,72 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 			for i := 0; i < tc.numBlocks; i++ {
 				blockStart := time.Now()
 
-				// Process transactions in batches
+				// Wait group for batch processing
+				var wg sync.WaitGroup
+				var batchMutex sync.Mutex
 				var allTxs []*thrylos.Transaction
+
+				// Process transactions in batches using the batch processor
 				numBatches := txsPerBlock / batchSize
 
 				for b := 0; b < numBatches; b++ {
+					wg.Add(1)
 					batchStart := time.Now()
 
-					// Create batch of transactions
-					var batchTxs []*thrylos.Transaction
-					startIdx := b * batchSize
-					endIdx := startIdx + batchSize
+					go func(batchNum int) {
+						defer wg.Done()
 
-					for j := startIdx; j < endIdx; j++ {
-						tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards) // Use j directly, not i*txsPerBlock+j
-						batchTxs = append(batchTxs, tx)
+						var batchTxs []*thrylos.Transaction
+						startIdx := batchNum * batchSize
+						endIdx := startIdx + batchSize
 
-						// Update state for transaction
-						for _, output := range tx.Outputs {
-							partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
-							if partition != nil {
-								metrics := shardMetrics[partition.ID]
-								metrics.ModifyCount++
-								metrics.TotalTxCount++
-								txLatency := time.Since(batchStart)
-								if metrics.AvgLatency == 0 {
-									metrics.AvgLatency = txLatency
-								} else {
-									metrics.AvgLatency = (metrics.AvgLatency + txLatency) / 2
+						for j := startIdx; j < endIdx; j++ {
+							tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards)
+
+							// Use the batch processor to handle the transaction
+							err := node.AddTransactionToBatch(tx)
+							require.NoError(t, err, "Failed to add transaction to batch")
+
+							batchTxs = append(batchTxs, tx)
+
+							// Update metrics
+							for _, output := range tx.Outputs {
+								partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
+								if partition != nil {
+									batchMutex.Lock()
+									metrics := shardMetrics[partition.ID]
+									metrics.ModifyCount++
+									metrics.TotalTxCount++
+									txLatency := time.Since(batchStart)
+									if metrics.AvgLatency == 0 {
+										metrics.AvgLatency = txLatency
+									} else {
+										metrics.AvgLatency = (metrics.AvgLatency + txLatency) / 2
+									}
+									metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
+									batchMutex.Unlock()
+
+									err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
+									require.NoError(t, err, "Failed to update state")
 								}
-								metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
-
-								err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
-								require.NoError(t, err, "Failed to update state")
 							}
 						}
-					}
 
-					// Simulate batch processing time with network latency
-					time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))
-					time.Sleep(batchDelay)
+						time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))
+						time.Sleep(batchDelay)
 
-					allTxs = append(allTxs, batchTxs...)
-
-					batchTime := time.Since(batchStart)
-					batchTimes = append(batchTimes, batchTime)
-					t.Logf("Block %d - Batch %d processing time: %v", i, b+1, batchTime)
+						batchMutex.Lock()
+						allTxs = append(allTxs, batchTxs...)
+						batchTime := time.Since(batchStart)
+						batchTimes = append(batchTimes, batchTime)
+						t.Logf("Block %d - Batch %d processing time: %v", i, batchNum+1, batchTime)
+						batchMutex.Unlock()
+					}(b)
 				}
 
-				// Verify state consistency across shards
+				wg.Wait()
+
+				// Log shard metrics
 				for shardID := 0; shardID < numShards; shardID++ {
 					metrics := shardMetrics[shardID]
 					t.Logf("Shard %d metrics - Txs: %d, Accesses: %d, Modifications: %d, Avg Latency: %v, Load Factor: %.2f",
@@ -500,12 +520,11 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 						metrics.AvgLatency, metrics.LoadFactor)
 				}
 
-				// Simulate validator signing with consensus delay
+				// Create and process block (same as before)
 				validatorIndex := i % validatorCount
 				currentValidator := validators[validatorIndex]
 				time.Sleep(consensusDelay)
 
-				// Create and process block
 				block := &Block{
 					Index:        int32(initialHeight + i),
 					Timestamp:    time.Now().Unix(),
@@ -531,10 +550,11 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 				t.Logf("Block %d total creation time: %v", i, blockTime)
 			}
 
-			// Log final shard distribution analysis
+			// Calculate and log metrics (same as before)
 			t.Logf("\nDetailed Shard Distribution Analysis:")
 			var totalTxs int64
 			var maxLoad, minLoad float64 = 0, 1
+
 			for shardID, metrics := range shardMetrics {
 				totalTxs += metrics.TotalTxCount
 				if metrics.LoadFactor > maxLoad {
@@ -552,7 +572,6 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 					metrics.AvgLatency, metrics.LoadFactor)
 			}
 
-			// Calculate load distribution metrics
 			loadImbalance := maxLoad - minLoad
 			t.Logf("\nLoad Distribution Metrics:")
 			t.Logf("- Maximum Load Factor: %.2f", maxLoad)
@@ -560,8 +579,7 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 			t.Logf("- Load Imbalance: %.2f", loadImbalance)
 			t.Logf("- Average Transactions per Shard: %.2f", float64(totalTxs)/float64(numShards))
 
-			// Calculate and log standard metrics
-			// Convert metrics to format expected by calculateAndLogMetrics
+			// Convert metrics for legacy format
 			legacyMetrics := make(map[int]struct {
 				accesses int64
 				modifies int64
@@ -576,12 +594,10 @@ func TestRealisticBlockTimeToFinalityWithSharding(t *testing.T) {
 				}
 			}
 
-			// Calculate and log standard metrics
 			calculateAndLogMetrics(t, tc.name, blockTimes, batchTimes, legacyMetrics,
 				startTime, txsPerBlock, expectedBlockTime, tc.expectedMaxTime)
 		})
 
-		// Cleanup between test cases
 		time.Sleep(500 * time.Millisecond)
 	}
 }
