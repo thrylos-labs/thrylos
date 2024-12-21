@@ -2,7 +2,8 @@ package core
 
 import (
 	"fmt"
-	"sort"
+	"math/rand"
+	"runtime"
 	"sync"
 	"time"
 
@@ -17,93 +18,148 @@ const (
 	AlphaMCMC             = 0.5  // Alpha parameter for MCMC tip selection
 )
 
-// DAGManager manages the Directed Acyclic Graph structure
-// DAGManager - simplified version
 type DAGManager struct {
 	vertices map[string]*TransactionVertex
 	tips     map[string]*TransactionVertex
-	mutex    sync.RWMutex
-	node     *Node
+	sync.RWMutex
+	node        *Node
+	processChan chan *txProcessRequest
+	workers     int
 }
 
-// NewDAGManager creates a new DAG manager
+type txProcessRequest struct {
+	tx       *thrylos.Transaction
+	respChan chan error
+}
+
 func NewDAGManager(node *Node) *DAGManager {
-	return &DAGManager{
-		vertices: make(map[string]*TransactionVertex),
-		tips:     make(map[string]*TransactionVertex),
-		node:     node,
+	dm := &DAGManager{
+		vertices:    make(map[string]*TransactionVertex),
+		tips:        make(map[string]*TransactionVertex),
+		node:        node,
+		processChan: make(chan *txProcessRequest, 1000),
+	}
+
+	// Start minimal number of workers
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go dm.processWorker()
+	}
+
+	return dm
+}
+
+func (dm *DAGManager) processWorker() {
+	for req := range dm.processChan {
+		req.respChan <- dm.processTransaction(req.tx)
 	}
 }
 
-// AddTransaction adds a new transaction to the DAG
-func (dm *DAGManager) AddTransaction(tx *thrylos.Transaction) error {
-	dm.mutex.Lock()
-	defer dm.mutex.Unlock()
+func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
+	dm.Lock()
+	defer dm.Unlock()
 
-	// Check if transaction already exists
 	if _, exists := dm.vertices[tx.GetId()]; exists {
 		return fmt.Errorf("transaction already exists in DAG")
 	}
 
-	// Create new vertex
 	vertex := &TransactionVertex{
 		Transaction:  tx,
-		References:   make([]string, 0),
+		References:   make([]string, 0, MinReferences),
 		ReferencedBy: make([]string, 0),
 		Timestamp:    time.Now(),
-		Score:        1.0, // Initial score
+		Score:        1.0,
 	}
 
-	// Get all tips
-	tips := make([]*TransactionVertex, 0, len(dm.tips))
+	// Fast tip selection with pre-allocated slice
+	tips := make([]*TransactionVertex, 0, MinReferences)
 	for _, tip := range dm.tips {
-		tips = append(tips, tip)
-	}
-
-	// Select references if we have enough tips
-	if len(tips) > 0 {
-		numRefs := MinReferences
-		if len(tips) < MinReferences {
-			numRefs = len(tips)
-		}
-		if numRefs > MaxReferences {
-			numRefs = MaxReferences
-		}
-
-		// Sort tips by score
-		sort.Slice(tips, func(i, j int) bool {
-			return tips[i].Score > tips[j].Score
-		})
-
-		// Add references
-		for i := 0; i < numRefs; i++ {
-			refTx := tips[i]
-			vertex.References = append(vertex.References, refTx.Transaction.GetId())
-			refTx.ReferencedBy = append(refTx.ReferencedBy, tx.GetId())
-			delete(dm.tips, refTx.Transaction.GetId())
+		if time.Since(tip.Timestamp) < 100*time.Millisecond {
+			tips = append(tips, tip)
+			if len(tips) == MinReferences {
+				break
+			}
 		}
 	}
 
-	// Add to vertices map
+	// Add references
+	for _, tip := range tips {
+		vertex.References = append(vertex.References, tip.Transaction.GetId())
+		tip.ReferencedBy = append(tip.ReferencedBy, tx.GetId())
+		delete(dm.tips, tip.Transaction.GetId())
+	}
+
 	dm.vertices[tx.GetId()] = vertex
 	dm.tips[tx.GetId()] = vertex
 
-	// Update confirmations
-	dm.updateConfirmations(vertex)
+	// Inline confirmation check
+	if len(vertex.ReferencedBy) >= ConfirmationThreshold {
+		vertex.IsConfirmed = true
+		go dm.node.handleProcessedTransaction(vertex.Transaction)
+	}
 
 	return nil
 }
 
-// updateConfirmations updates confirmation status
-func (dm *DAGManager) updateConfirmations(vertex *TransactionVertex) {
-	// Mark as confirmed if it has enough references
+func (dm *DAGManager) updateConfirmationsLocked(vertex *TransactionVertex) {
 	if len(vertex.ReferencedBy) >= ConfirmationThreshold {
 		vertex.IsConfirmed = true
-		// Notify node of confirmation
+		// Safe to call outside lock since handleProcessedTransaction should be thread-safe
+		go dm.node.handleProcessedTransaction(vertex.Transaction)
+	}
+
+	for _, refID := range vertex.References {
+		if ref, exists := dm.vertices[refID]; exists {
+			if len(ref.ReferencedBy) >= ConfirmationThreshold && !ref.IsConfirmed {
+				ref.IsConfirmed = true
+				go dm.node.handleProcessedTransaction(ref.Transaction)
+			}
+		}
+	}
+}
+
+func (dm *DAGManager) AddTransaction(tx *thrylos.Transaction) error {
+	respChan := make(chan error, 1)
+	dm.processChan <- &txProcessRequest{
+		tx:       tx,
+		respChan: respChan,
+	}
+
+	return <-respChan
+}
+
+func (dm *DAGManager) selectTips() []*TransactionVertex {
+	tips := make([]*TransactionVertex, 0, MinReferences)
+	if len(dm.tips) < MinReferences {
+		for _, tip := range dm.tips {
+			tips = append(tips, tip)
+		}
+		return tips
+	}
+
+	// Get recent tips
+	var candidates []*TransactionVertex
+	for _, tip := range dm.tips {
+		if time.Since(tip.Timestamp) < 500*time.Millisecond {
+			candidates = append(candidates, tip)
+		}
+	}
+
+	// Select random tips from candidates
+	for i := 0; i < MinReferences && len(candidates) > 0; i++ {
+		idx := rand.Intn(len(candidates))
+		tips = append(tips, candidates[idx])
+		candidates = append(candidates[:idx], candidates[idx+1:]...)
+	}
+
+	return tips
+}
+
+func (dm *DAGManager) updateConfirmations(vertex *TransactionVertex) {
+	if len(vertex.ReferencedBy) >= ConfirmationThreshold {
+		vertex.IsConfirmed = true
 		dm.node.handleProcessedTransaction(vertex.Transaction)
 	}
 
-	// Check references
 	for _, refID := range vertex.References {
 		if ref, exists := dm.vertices[refID]; exists {
 			if len(ref.ReferencedBy) >= ConfirmationThreshold && !ref.IsConfirmed {
@@ -114,10 +170,9 @@ func (dm *DAGManager) updateConfirmations(vertex *TransactionVertex) {
 	}
 }
 
-// GetConfirmationStatus returns the confirmation status of a transaction
 func (dm *DAGManager) GetConfirmationStatus(txID string) (bool, error) {
-	dm.mutex.RLock()
-	defer dm.mutex.RUnlock()
+	dm.RLock()
+	defer dm.RUnlock()
 
 	if vertex, exists := dm.vertices[txID]; exists {
 		return vertex.IsConfirmed, nil
@@ -125,7 +180,6 @@ func (dm *DAGManager) GetConfirmationStatus(txID string) (bool, error) {
 	return false, fmt.Errorf("transaction not found")
 }
 
-// TransactionVertex represents a transaction in the DAG
 type TransactionVertex struct {
 	Transaction  *thrylos.Transaction
 	References   []string
