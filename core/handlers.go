@@ -109,56 +109,69 @@ func (node *Node) SetupRoutes() *mux.Router {
 	})
 
 	// Balance endpoints
-	// balanceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	// 	if r.Method == "OPTIONS" {
-	// 		return
-	// 	}
+	balanceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "OPTIONS" {
+			return
+		}
 
-	// 	address := r.URL.Query().Get("address")
-	// 	if address == "" {
-	// 		http.Error(w, "Address parameter is required", http.StatusBadRequest)
-	// 		return
-	// 	}
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is required", http.StatusBadRequest)
+			return
+		}
 
-	// 	balance, err := node.GetBalance(address)
-	// 	if err != nil {
-	// 		log.Printf("Error getting balance for address %s: %v", address, err)
-	// 		http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
-	// 		return
-	// 	}
+		balance, err := node.GetBalance(address)
+		if err != nil {
+			log.Printf("Error getting balance for address %s: %v", address, err)
+			http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
+			return
+		}
 
-	// 	response := struct {
-	// 		Balance        int64   `json:"balance"`
-	// 		BalanceThrylos float64 `json:"balanceThrylos"`
-	// 	}{
-	// 		Balance:        balance,
-	// 		BalanceThrylos: float64(balance) / 1e7,
-	// 	}
+		response := struct {
+			Balance        int64   `json:"balance"`
+			BalanceThrylos float64 `json:"balanceThrylos"`
+		}{
+			Balance:        balance,
+			BalanceThrylos: float64(balance) / 1e7,
+		}
 
-	// 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	// 	w.Header().Set("Pragma", "no-cache")
-	// 	w.Header().Set("Expires", "0")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 
-	// 	if err := json.NewEncoder(w).Encode(response); err != nil {
-	// 		log.Printf("Error encoding balance response: %v", err)
-	// 		http.Error(w, "Error encoding response", http.StatusInternalServerError)
-	// 		return
-	// 	}
-	// })
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Error encoding balance response: %v", err)
+			http.Error(w, "Error encoding response", http.StatusInternalServerError)
+			return
+		}
+	})
 
-	// r.Handle("/get-balance", balanceHandler).Methods("GET", "OPTIONS")
+	r.Handle("/get-balance", balanceHandler).Methods("GET", "OPTIONS")
 
 	// WebSocket endpoint with specific handling
-	// r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
-	// 	if isWebSocketRequest(r) {
-	// 		node.WebSocketBalanceHandler(w, r)
-	// 		return
-	// 	}
-	// 	http.Error(w, "Expected WebSocket connection", http.StatusBadRequest)
-	// })
+	r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
+		if isWebSocketRequest(r) {
+			node.WebSocketBalanceHandler(w, r)
+			return
+		}
+		http.Error(w, "Expected WebSocket connection", http.StatusBadRequest)
+	})
 	r.HandleFunc("/ws/balance", node.WebSocketBalanceHandler).Methods("GET")
 
-	r.HandleFunc("/ws/status", node.WebSocketStatusHandler).Methods("GET")
+	// In your SetupRoutes function, update the WebSocket status route
+	r.HandleFunc("/ws/status", func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers specifically for this endpoint
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		node.WebSocketStatusHandler(w, r)
+	}).Methods("GET", "OPTIONS")
 	// Core blockchain endpoints
 	r.HandleFunc("/block", node.BlockHandler).Methods("POST")
 	r.HandleFunc("/blockchain", node.BlockchainHandler).Methods("GET")
@@ -500,16 +513,25 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		validationComplete <- nil
 	}()
 
+	// Update balances in background
 	go func() {
-		// Wait a short time for transaction processing
+		addresses := make(map[string]bool)
+		addresses[transactionData.Sender] = true
+		for _, output := range transactionData.Outputs {
+			addresses[output.OwnerAddress] = true
+		}
+
+		// Add delay to allow transaction to be processed
 		time.Sleep(500 * time.Millisecond)
 
-		// Send multiple balance updates to ensure delivery
+		// Update balances multiple times to ensure delivery
 		for i := 0; i < 3; i++ {
-			if err := n.SendBalanceUpdate(transactionData.Sender); err != nil {
-				log.Printf("Failed to send balance update attempt %d: %v", i+1, err)
+			for address := range addresses {
+				if balance, err := n.GetBalance(address); err == nil {
+					n.notifyBalanceUpdate(address, balance)
+				}
+				time.Sleep(200 * time.Millisecond)
 			}
-			time.Sleep(500 * time.Millisecond)
 		}
 	}()
 

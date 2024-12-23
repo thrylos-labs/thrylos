@@ -483,6 +483,14 @@ func (node *Node) notifyBalanceUpdate(address string, balance int64) {
 // Add the status endpoint handler
 func (node *Node) WebSocketStatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
 	address := r.URL.Query().Get("address")
 	if address == "" {
@@ -497,12 +505,31 @@ func (node *Node) WebSocketStatusHandler(w http.ResponseWriter, r *http.Request)
 	conn, exists := node.WebSocketConnections[address]
 	node.WebSocketMutex.RUnlock()
 
-	status := ConnectionStatus{
+	// Get current balance
+	balance, err := node.GetBalance(address)
+	if err != nil {
+		log.Printf("Error getting balance for %s: %v", address, err)
+		balance = 0
+	}
+
+	balanceThrylos := float64(balance) / 1e7
+
+	status := struct {
+		Connected      bool      `json:"connected"`
+		LastConnected  time.Time `json:"lastConnected"`
+		ReconnectCount int       `json:"reconnectCount"`
+		QueueSize      int       `json:"queueSize"`
+		IsReconnecting bool      `json:"isReconnecting"`
+		Balance        int64     `json:"balance"`
+		BalanceThrylos float64   `json:"balanceThrylos"`
+	}{
 		Connected:      exists && conn != nil && conn.ws != nil,
 		LastConnected:  time.Now(),
 		ReconnectCount: 0,
 		QueueSize:      0,
 		IsReconnecting: false,
+		Balance:        balance,
+		BalanceThrylos: balanceThrylos,
 	}
 
 	if exists && conn != nil {
