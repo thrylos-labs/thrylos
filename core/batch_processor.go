@@ -179,49 +179,61 @@ func (bp *BatchProcessor) processBatch() {
 }
 
 func (bp *BatchProcessor) processTransaction(tx *thrylos.Transaction) error {
-	// Fast check for already processed
+	log.Printf("BatchProcessor processing transaction %s", tx.GetId())
+
 	if _, exists := bp.processedTxs.Load(tx.GetId()); exists {
+		log.Printf("Transaction %s already processed by batch processor", tx.GetId())
 		return nil
 	}
 
-	// Optimized validation path
+	// Verify transaction
 	if err := bp.node.VerifyAndProcessTransaction(tx); err != nil {
+		log.Printf("Transaction verification failed for %s: %v", tx.GetId(), err)
 		return err
 	}
 
-	confirmed, _ := bp.node.DAGManager.GetConfirmationStatus(tx.GetId())
-	if !confirmed {
-		if err := bp.node.AddPendingTransaction(tx); err != nil {
-			return err
-		}
-	}
-
-	// Atomic update
-	if err := bp.node.updateBalances(tx); err != nil {
-		return err
-	}
-
+	// Mark as processed
 	bp.processedTxs.Store(tx.GetId(), true)
+	log.Printf("BatchProcessor completed processing transaction %s", tx.GetId())
 	return nil
 }
 
 // Extend Node's transaction handling methods
 func (n *Node) ProcessIncomingTransaction(tx *thrylos.Transaction) error {
+	log.Printf("Starting ProcessIncomingTransaction for tx %s", tx.GetId())
+
 	// Check if already processed
 	if _, exists := n.BatchProcessor.processedTxs.Load(tx.GetId()); exists {
-		return nil // Already processed, not an error
+		log.Printf("Transaction %s already processed", tx.GetId())
+		return nil
 	}
 
 	// Process through DAG first
+	log.Printf("Adding transaction %s to DAG", tx.GetId())
 	if err := n.DAGManager.AddTransaction(tx); err != nil {
-		if strings.Contains(err.Error(), "transaction already exists") {
-			return nil // Already in DAG, not an error
+		if !strings.Contains(err.Error(), "transaction already exists") {
+			log.Printf("DAG processing failed for tx %s: %v", tx.GetId(), err)
+			return fmt.Errorf("DAG processing failed: %v", err)
 		}
-		return fmt.Errorf("failed to add transaction to DAG: %v", err)
+		log.Printf("Transaction %s already exists in DAG", tx.GetId())
 	}
 
-	// Then add to batch processor
-	return n.AddTransactionToBatch(tx)
+	// Add to batch processor
+	log.Printf("Adding transaction %s to batch processor", tx.GetId())
+	if err := n.BatchProcessor.AddTransaction(tx); err != nil {
+		log.Printf("Batch processing failed for tx %s: %v", tx.GetId(), err)
+		return fmt.Errorf("batch processing failed: %v", err)
+	}
+
+	// Still need direct pending addition for immediate status updates
+	log.Printf("Adding transaction %s to pending pool", tx.GetId())
+	if err := n.AddPendingTransaction(tx); err != nil {
+		log.Printf("Failed to add tx %s to pending pool: %v", tx.GetId(), err)
+		return fmt.Errorf("pending addition failed: %v", err)
+	}
+
+	log.Printf("Successfully processed incoming transaction %s", tx.GetId())
+	return nil
 }
 
 func (n *Node) GetTransactionStatus(txID string) (string, error) {
@@ -240,8 +252,16 @@ func (n *Node) GetTransactionStatus(txID string) (string, error) {
 }
 
 func (n *Node) InitializeProcessors() {
+	log.Printf("Initializing node processors...")
+
 	n.BatchProcessor = NewBatchProcessor(n)
+	log.Printf("Batch processor initialized")
+
 	n.DAGManager = NewDAGManager(n)
+	log.Printf("DAG manager initialized")
+
+	// ProcessIncomingTransaction is a method, doesn't need initialization
+	log.Printf("Node processors initialization complete")
 }
 
 // Modified AddPendingTransaction to use batch processing

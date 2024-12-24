@@ -509,8 +509,8 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		// The transactions need to go through the batch and dag processing
 		// before being added to the Pending Transaction
 		// Directly add to pending pool which will trigger block creation
-		if err := n.AddPendingTransaction(thrylosTx); err != nil {
-			validationComplete <- fmt.Errorf("failed to add transaction: %v", err)
+		if err := n.ProcessIncomingTransaction(thrylosTx); err != nil {
+			validationComplete <- fmt.Errorf("failed to process transaction: %v", err)
 			return
 		}
 		validationComplete <- nil
