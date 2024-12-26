@@ -10,7 +10,6 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -136,7 +135,6 @@ func TestInsertAndRetrieveEd25519PublicKey(t *testing.T) {
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
 		TestMode:          true,
-		SupabaseClient:    &supabase.Client{},
 		DisableBackground: true, // Typically true for tests
 	})
 	if err != nil {

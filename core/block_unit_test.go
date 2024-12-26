@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/supabase-community/supabase-go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/state"
 	"golang.org/x/crypto/ed25519"
@@ -17,9 +16,6 @@ import (
 func TestNewBlockchain1(t *testing.T) {
 	// Use a predefined valid Bech32 address for genesis
 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
-
-	// Other test setup remains the same
-	mockSupabaseClient := &supabase.Client{}
 
 	tempDir, err := os.MkdirTemp("", "blockchain-test-")
 	require.NoError(t, err, "Failed to create temp directory")
@@ -30,7 +26,6 @@ func TestNewBlockchain1(t *testing.T) {
 		AESKey:            []byte("test-key"),
 		GenesisAccount:    genesisAddress,
 		TestMode:          true,
-		SupabaseClient:    mockSupabaseClient,
 		DisableBackground: true,
 	})
 	require.NoError(t, err, "Failed to create blockchain")

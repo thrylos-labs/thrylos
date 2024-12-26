@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
@@ -42,11 +41,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error loading environment variables: %v", err)
 	}
-
-	// Setup Supabase client
-	supabaseURL := envFile["SUPABASE_URL"]
-	supabasePublicKey := envFile["SUPABASE_PUBLIC_KEY"]
-	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
 
 	if err != nil {
 		log.Fatalf("Error creating Supabase client: %v", err)
@@ -125,7 +119,6 @@ func main() {
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
 		TestMode:          true,
-		SupabaseClient:    supabaseClient,
 		DisableBackground: false, // Set based on your requirements
 	})
 	if err != nil {

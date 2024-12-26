@@ -10,8 +10,6 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	"github.com/supabase-community/supabase-go"
-
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 
@@ -35,7 +33,6 @@ type Node struct {
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
 	Database       shared.BlockchainDBInterface // Updated the type to interface
 	GasEstimateURL string                       // New field to store the URL for gas estimation
-	SupabaseClient *supabase.Client
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
 	Mu                   sync.RWMutex
@@ -102,9 +99,6 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
 	}
 
-	supabaseURL := envFile["SUPABASE_URL"]
-	supabasePublicKey := envFile["SUPABASE_PUBLIC_KEY"]
-	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
 	if err != nil {
 		log.Fatalf("error initializing app: %v\n", err)
 	}
@@ -114,7 +108,6 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
 		TestMode:          true,
-		SupabaseClient:    supabaseClient,
 		DisableBackground: false,
 	})
 	if err != nil {
@@ -127,7 +120,6 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		Blockchain:           bc,
 		Database:             db,
 		Shard:                shard,
-		SupabaseClient:       supabaseClient,
 		PublicKeyMap:         make(map[string]ed25519.PublicKey),
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,

@@ -9,7 +9,6 @@ import (
 
 	"golang.org/x/crypto/ed25519"
 
-	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -36,10 +35,6 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
 
-	// Initialize Supabase app
-	supabaseURL := os.Getenv("SUPABASE_URL")
-	supabasePublicKey := os.Getenv("SUPABASE_PUBLIC_KEY")
-	supabaseClient, err := supabase.NewClient(supabaseURL, supabasePublicKey, nil)
 	if err != nil {
 		t.Fatalf("error initializing app: %v\n", err)
 	}
@@ -50,7 +45,6 @@ func TestGenesisBlockCreation(t *testing.T) {
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
 		TestMode:          true,
-		SupabaseClient:    supabaseClient,
 		DisableBackground: true,
 	})
 	if err != nil {

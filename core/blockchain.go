@@ -33,7 +33,6 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/supabase-community/supabase-go"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -91,8 +90,6 @@ type Blockchain struct {
 
 	GenesisAccount string // Add this to store the genesis account address
 
-	SupabaseClient *supabase.Client
-
 	// Manages the preictive modal
 	TOBManager *TOBManager // Add this field
 
@@ -136,7 +133,6 @@ type BlockchainConfig struct {
 	AESKey            []byte
 	GenesisAccount    string
 	TestMode          bool
-	SupabaseClient    *supabase.Client
 	DisableBackground bool
 	StateManager      *state.StateManager
 }
@@ -373,7 +369,6 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		UTXOs:               utxoMap,
 		Forks:               make([]*Fork, 0),
 		GenesisAccount:      bech32GenesisAccount,
-		SupabaseClient:      config.SupabaseClient,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
 		StateNetwork:        stateNetwork,
@@ -617,57 +612,6 @@ func (bc *Blockchain) AddTestUTXOs() {
 			log.Printf("Test UTXO added: Address=%s, Amount=%d", utxo.OwnerAddress, utxo.Amount)
 		}
 	}
-}
-
-func (bc *Blockchain) UpdateBlockchainInfo(userID string, blockchainAddress string) error {
-	log.Printf("Updating blockchain info - UserID: %s, Address: %s", userID, blockchainAddress)
-
-	data := map[string]interface{}{
-		"user_id":            userID,
-		"blockchain_address": blockchainAddress,
-	}
-
-	_, status, err := bc.SupabaseClient.From("blockchain_info").
-		Upsert(data, "", "user_id", "user_id").
-		Execute()
-
-	if err != nil {
-		log.Printf("Error updating blockchain info: %v", err)
-		return fmt.Errorf("error updating blockchain info: %v", err)
-	}
-
-	if status != 200 && status != 201 {
-		log.Printf("Unexpected status code %d updating blockchain info", status)
-		return fmt.Errorf("unexpected status code: %d", status)
-	}
-
-	log.Printf("Successfully updated blockchain info for user %s", userID)
-	return nil
-}
-
-func (bc *Blockchain) FetchPublicKeyFromSupabase(userID string) (string, error) {
-	data, _, err := bc.SupabaseClient.From("blockchain_info").
-		Select("public_key_base64", "exact", false).
-		Eq("user_id", userID).
-		Single().
-		Execute()
-
-	if err != nil {
-		fmt.Println("Error executing query:", err)
-		return "", fmt.Errorf("error executing query: %v", err)
-	}
-
-	var result struct {
-		PublicKeyBase64 string `json:"public_key_base64"`
-	}
-
-	err = json.Unmarshal(data, &result)
-	if err != nil {
-		fmt.Println("Error unmarshaling data:", err)
-		return "", fmt.Errorf("public key not found for user %s", userID)
-	}
-
-	return result.PublicKeyBase64, nil
 }
 
 // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.

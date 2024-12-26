@@ -10,7 +10,6 @@ import (
 	"golang.org/x/crypto/ed25519"
 
 	"github.com/joho/godotenv"
-	"github.com/supabase-community/supabase-go"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -45,7 +44,6 @@ func TestNewBlockchain(t *testing.T) {
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
 		TestMode:          true,
-		SupabaseClient:    &supabase.Client{},
 		DisableBackground: true,
 	})
 	if err != nil {

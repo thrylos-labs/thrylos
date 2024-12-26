@@ -9,7 +9,6 @@ import (
 	"strconv"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
-	"github.com/supabase-community/supabase-go"
 )
 
 func (n *Node) logError(stage string, err error) {
@@ -41,56 +40,6 @@ func publicKeyToBech32(pubKeyBase64 string) (string, error) {
 
 func ThrylosTo(thrylos float64) int64 {
 	return int64(thrylos)
-}
-
-func GetUsernameByUID(supabaseClient *supabase.Client, userID string) (string, error) {
-	data, _, err := supabaseClient.From("users").
-		Select("username", "exact", false).
-		Eq("id", userID).
-		Single().
-		Execute()
-
-	if err != nil {
-		fmt.Println("Error executing username query:", err)
-		return "", fmt.Errorf("error executing query: %v", err)
-	}
-
-	var result struct {
-		Username string `json:"username"`
-	}
-
-	err = json.Unmarshal(data, &result)
-	if err != nil {
-		fmt.Println("Error unmarshaling username data:", err)
-		return "", fmt.Errorf("username not found for user %s", userID)
-	}
-
-	return result.Username, nil
-}
-
-func GetBlockchainAddressByUID(supabaseClient *supabase.Client, userID string) (string, error) {
-	data, _, err := supabaseClient.From("blockchain_info").
-		Select("blockchain_address", "exact", false).
-		Eq("user_id", userID).
-		Single().
-		Execute()
-
-	if err != nil {
-		fmt.Println("Error executing query:", err)
-		return "", fmt.Errorf("error executing query: %v", err)
-	}
-
-	var result struct {
-		PublicKeyBase64 string `json:"blockchain_address"`
-	}
-
-	err = json.Unmarshal(data, &result)
-	if err != nil {
-		fmt.Println("Error unmarshaling data:", err)
-		return "", fmt.Errorf("public key not found for user %s", userID)
-	}
-
-	return result.PublicKeyBase64, nil
 }
 
 // Helper function to fetch gas estimate
