@@ -1070,7 +1070,29 @@ func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
 
 // Process batched transactions
 
-func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInterface, publicKey ed25519.PublicKey, estimator GasEstimator, balance int64) error {
+func deriveAddressFromPublicKey(publicKey []byte) (string, error) {
+	// Convert public key bytes to 5-bit words for bech32 encoding
+	words, err := bech32.ConvertBits(publicKey, 8, 5, true)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
+	}
+
+	// Encode with your tl1 prefix (matching your frontend)
+	address, err := bech32.Encode("tl1", words)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode bech32 address: %v", err)
+	}
+
+	return address, nil
+}
+
+func ValidateAndConvertTransaction(
+	tx *thrylos.Transaction,
+	db BlockchainDBInterface,
+	publicKey ed25519.PublicKey,
+	estimator GasEstimator,
+	balance int64,
+) error {
 	if tx == nil {
 		return fmt.Errorf("transaction is nil")
 	}
@@ -1080,16 +1102,22 @@ func ValidateAndConvertTransaction(tx *thrylos.Transaction, db BlockchainDBInter
 	if estimator == nil {
 		return fmt.Errorf("gas estimator is nil")
 	}
+	if publicKey == nil {
+		return fmt.Errorf("public key is nil")
+	}
 
 	// Validate sender exists in system
 	if tx.Sender == "" {
 		return fmt.Errorf("transaction sender is empty")
 	}
 
-	// Only validate sender's public key
-	_, err := db.RetrievePublicKeyFromAddress(tx.Sender)
+	// Verify the public key matches the sender's address
+	derivedAddress, err := deriveAddressFromPublicKey(publicKey)
 	if err != nil {
-		return fmt.Errorf("invalid sender address: %v", err)
+		return fmt.Errorf("failed to derive address from public key: %v", err)
+	}
+	if derivedAddress != tx.Sender {
+		return fmt.Errorf("public key does not match sender address")
 	}
 
 	// Convert and validate the rest of the transaction

@@ -85,14 +85,15 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		}
 	}
 
-	// If no UTXOs exist, create initial balance of 70 Thrylos
+	// If no UTXOs exist, create initial balance of 70.0 Thrylos
 	if total == 0 {
-		initialBalance := int64(70) // 70 Thrylos in nanoTHR
+		initialBalanceThrylos := 70.0
+		initialBalanceNano := ThrylosToNanoNode(initialBalanceThrylos)
 
 		// Create initial UTXO
 		newUtxo := shared.UTXO{
 			OwnerAddress:  address,
-			Amount:        initialBalance,
+			Amount:        initialBalanceNano,
 			TransactionID: fmt.Sprintf("genesis-%s", address),
 			IsSpent:       false,
 			Index:         0,
@@ -102,7 +103,7 @@ func (node *Node) GetBalance(address string) (int64, error) {
 			return 0, err
 		}
 
-		total = initialBalance
+		total = initialBalanceNano
 	}
 
 	// Update caches

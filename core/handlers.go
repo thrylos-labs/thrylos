@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/gorilla/mux"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -346,6 +347,23 @@ func (node *Node) GetTransactionHandler(w http.ResponseWriter, r *http.Request) 
 	sendResponse(w, txJSON)
 }
 
+// Helper function to derive address from public key
+func deriveAddressFromPublicKey(publicKey []byte) (string, error) {
+	// Convert public key bytes to 5-bit words for bech32 encoding
+	words, err := bech32.ConvertBits(publicKey, 8, 5, true)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
+	}
+
+	// Encode with your tl1 prefix (matching your frontend)
+	address, err := bech32.Encode("tl1", words)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode bech32 address: %v", err)
+	}
+
+	return address, nil
+}
+
 var _ shared.GasEstimator = &Node{} // Ensures Node implements the GasEstimator interface
 
 const MinTransactionAmount int64 = 1 * NanoThrylosPerThrylos // 1 THRYLOS in nanoTHRYLOS
@@ -366,6 +384,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	var requestData struct {
 		Payload   map[string]interface{} `json:"payload"`
 		Signature string                 `json:"signature"`
+		PublicKey string                 `json:"publicKey"`
 	}
 
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
@@ -382,16 +401,30 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 
 	// Parallel validation of critical components with timeout
 	validationDone := make(chan error, 1)
-	var publicKey ed25519.PublicKey
 	var signatureBytes []byte
 	var messageBytes []byte
+	var publicKeyBytes []byte
 
 	go func() {
 		var err error
 		// Get public key
-		publicKey, err = n.RetrievePublicKey(sender)
+		publicKeyBytes, err = base64.StdEncoding.DecodeString(requestData.PublicKey)
 		if err != nil {
-			validationDone <- fmt.Errorf("could not retrieve public key: %v", err)
+			validationDone <- fmt.Errorf("invalid public key encoding: %v", err)
+			return
+		}
+
+		// Verify the public key corresponds to the sender address
+		derivedAddress, err := deriveAddressFromPublicKey(publicKeyBytes)
+		if err != nil {
+			validationDone <- fmt.Errorf("failed to derive address: %v", err)
+			return
+		}
+
+		// Verify the sender address matches the derived address
+		if derivedAddress != sender {
+			validationDone <- fmt.Errorf("public key does not match sender address: derived=%s, claimed=%s",
+				derivedAddress, sender)
 			return
 		}
 
@@ -410,7 +443,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		}
 
 		// Verify signature
-		if !ed25519.Verify(publicKey, messageBytes, signatureBytes) {
+		if !ed25519.Verify(publicKeyBytes, messageBytes, signatureBytes) {
 			validationDone <- fmt.Errorf("invalid signature")
 			return
 		}
@@ -501,7 +534,13 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 			return
 		}
 
-		if err := shared.ValidateAndConvertTransaction(thrylosTx, n.Database, publicKey, n, balance); err != nil {
+		if err := shared.ValidateAndConvertTransaction(
+			thrylosTx,
+			n.Database,
+			ed25519.PublicKey(publicKeyBytes), // Convert to ed25519.PublicKey type
+			n,
+			balance,
+		); err != nil {
 			validationComplete <- fmt.Errorf("failed to validate transaction: %v", err)
 			return
 		}
