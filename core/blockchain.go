@@ -632,6 +632,18 @@ func (bc *Blockchain) Status() string {
 	return fmt.Sprintf("Current blockchain length: %d blocks", len(bc.Blocks))
 }
 
+func (bc *Blockchain) CreateInitialWalletUTXO(address string, initialBalance int64) error {
+	utxo := shared.UTXO{
+		OwnerAddress:  address,
+		Amount:        initialBalance,
+		TransactionID: fmt.Sprintf("genesis-%s", address),
+		IsSpent:       false,
+		Index:         0, // Use 0 for initial UTXO
+	}
+
+	return bc.Database.AddUTXO(utxo)
+}
+
 func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
 	log.Printf("Fetching UTXOs for address: %s", address)
 	utxos, err := bc.Database.GetUTXOsForAddress(address)

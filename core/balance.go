@@ -6,6 +6,8 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 const (
@@ -81,6 +83,26 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		if !utxo.IsSpent {
 			total += utxo.Amount
 		}
+	}
+
+	// If no UTXOs exist, create initial balance of 70 Thrylos
+	if total == 0 {
+		initialBalance := int64(700000000) // 70 Thrylos in nanoTHR
+
+		// Create initial UTXO
+		newUtxo := shared.UTXO{
+			OwnerAddress:  address,
+			Amount:        initialBalance,
+			TransactionID: fmt.Sprintf("genesis-%s", address),
+			IsSpent:       false,
+			Index:         0,
+		}
+
+		if err := node.Blockchain.Database.AddUTXO(newUtxo); err != nil {
+			return 0, err
+		}
+
+		total = initialBalance
 	}
 
 	// Update caches

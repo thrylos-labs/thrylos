@@ -120,11 +120,19 @@ func (node *Node) SetupRoutes() *mux.Router {
 			return
 		}
 
+		// Check if this is a new wallet
 		balance, err := node.GetBalance(address)
 		if err != nil {
 			log.Printf("Error getting balance for address %s: %v", address, err)
-			http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
-			return
+
+			// If it's a new wallet, initialize with 70 Thrylos
+			if strings.Contains(err.Error(), "wallet not found") {
+				balance = 700000000 // 70 Thrylos in nanoTHR
+
+			} else {
+				http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		response := struct {
