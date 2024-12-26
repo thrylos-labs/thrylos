@@ -87,7 +87,7 @@ func (node *Node) GetBalance(address string) (int64, error) {
 
 	// If no UTXOs exist, create initial balance of 70 Thrylos
 	if total == 0 {
-		initialBalance := int64(700000000) // 70 Thrylos in nanoTHR
+		initialBalance := int64(70) // 70 Thrylos in nanoTHR
 
 		// Create initial UTXO
 		newUtxo := shared.UTXO{
