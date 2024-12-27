@@ -108,7 +108,8 @@ type Blockchain struct {
 
 	StateManager *state.StateManager
 
-	StateNetwork shared.NetworkInterface
+	StateNetwork   shared.NetworkInterface
+	StakingService *StakingService
 }
 
 // NewTransaction creates a new transaction
@@ -486,8 +487,25 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		blockchain.StateManager.StopStateSyncLoop()
 	}()
 
+	// Initialize staking service with blockchain reference
+	log.Println("Initializing staking service...")
+	blockchain.StakingService = NewStakingService(blockchain) // Just pass blockchain
+	log.Printf("Staking service initialized with minimum stake: %d THRYLOS",
+		blockchain.StakingService.pool.MinStakeAmount/1e7)
+
 	// Modify background process initialization based on DisableBackground flag
 	if !config.DisableBackground {
+		go func() {
+			log.Println("Starting staking reward distribution process")
+			for {
+				currentBlock := int64(blockchain.GetBlockCount())
+				if err := blockchain.StakingService.DistributeEpochRewards(currentBlock); err != nil {
+					log.Printf("Error distributing staking rewards: %v", err)
+				}
+				time.Sleep(time.Minute) // Check every minute
+			}
+		}()
+
 		// Start periodic validator update in a separate goroutine
 		go func() {
 			log.Println("Starting periodic validator update")

@@ -728,33 +728,52 @@ func (node *Node) GetStakingStatsHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get user's staking stats
-	stakes := node.stakingService.stakes[userAddress]
+	stakes := node.Blockchain.StakingService.stakes[userAddress]
+	currentBlock := int64(node.Blockchain.GetBlockCount())
 
 	totalStaked := int64(0)
 	rewardsEarned := int64(0)
-	pendingRelease := int64(0)
-	availableForWithdrawal := int64(0)
+	activeStakes := int64(0)
 
 	for _, stake := range stakes {
 		if stake.IsActive {
 			totalStaked += stake.Amount
-			rewardsEarned += node.stakingService.CalculateRewards(stake)
+			activeStakes++
 
-			if time.Now().Unix() >= stake.EndTime {
-				availableForWithdrawal += stake.Amount + node.stakingService.CalculateRewards(stake)
-			} else {
-				pendingRelease += stake.Amount + node.stakingService.CalculateRewards(stake)
-			}
+			// Calculate rewards based on our new model
+			currentRewards := node.Blockchain.StakingService.CalculateRewards(stake, currentBlock)
+			rewardsEarned += currentRewards + stake.TotalRewards
 		}
 	}
 
+	// Get actual stake from blockchain's Stakeholders map
+	actualStake := node.Blockchain.Stakeholders[userAddress]
+
+	// Calculate effective APR from staking params
+	stakingPool := node.Blockchain.StakingService.pool
+	effectiveAPR := stakingPool.AnnualInflationRate * 100 // Convert to percentage
+	baseReward := stakingPool.BaseRewardFactor * 100      // Convert to percentage
+
 	response := map[string]interface{}{
-		"totalStaked":            totalStaked,
-		"rewardsEarned":          rewardsEarned,
-		"pendingRelease":         pendingRelease,
-		"availableForWithdrawal": availableForWithdrawal,
-		"apr":                    node.stakingService.pool.APR,
-		"minStakeAmount":         node.stakingService.pool.MinStakeAmount,
+		"address":          userAddress,
+		"totalStaked":      float64(totalStaked) / 1e7,   // In THRYLOS
+		"totalStakedRaw":   totalStaked,                  // In nano
+		"actualStake":      float64(actualStake) / 1e7,   // Current stake in THRYLOS
+		"rewardsEarned":    float64(rewardsEarned) / 1e7, // In THRYLOS
+		"rewardsEarnedRaw": rewardsEarned,                // In nano
+		"activeStakes":     activeStakes,
+		"isValidator":      node.Blockchain.IsActiveValidator(userAddress),
+		"stakingStats": map[string]interface{}{
+			"inflationRate":     effectiveAPR,
+			"baseRewardRate":    baseReward,
+			"minStakeAmount":    float64(stakingPool.MinStakeAmount) / 1e7, // In THRYLOS
+			"epochLength":       stakingPool.EpochLength,
+			"totalNetworkStake": float64(stakingPool.TotalStaked) / 1e7, // In THRYLOS
+		},
+		"epochs": map[string]interface{}{
+			"current":         currentBlock / stakingPool.EpochLength,
+			"blocksUntilNext": stakingPool.EpochLength - (currentBlock % stakingPool.EpochLength),
+		},
 	}
 
 	sendResponseProcess(w, response)
@@ -773,7 +792,8 @@ func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Get user's stakes
-	stakes := node.stakingService.stakes[userAddress]
+	stakes := node.Blockchain.StakingService.stakes[userAddress]
+	currentBlock := int64(node.Blockchain.GetBlockCount())
 
 	// Calculate total staked and rewards
 	var totalStaked, totalRewards int64
@@ -781,17 +801,57 @@ func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) 
 	for _, stake := range stakes {
 		if stake.IsActive {
 			totalStaked += stake.Amount
-			rewards := node.stakingService.CalculateRewards(stake)
-			totalRewards += rewards
+			currentRewards := node.Blockchain.StakingService.CalculateRewards(stake, currentBlock)
+			totalRewards += currentRewards + stake.TotalRewards
 			activeStakes = append(activeStakes, stake)
 		}
 	}
 
+	// Get staking pool info
+	stakingPool := node.Blockchain.StakingService.pool
+
+	// Create detailed staking pool info
+	poolInfo := map[string]interface{}{
+		"minStakeAmount": map[string]interface{}{
+			"thrylos": float64(stakingPool.MinStakeAmount) / 1e7,
+			"nano":    stakingPool.MinStakeAmount,
+		},
+		"totalStaked": map[string]interface{}{
+			"thrylos": float64(stakingPool.TotalStaked) / 1e7,
+			"nano":    stakingPool.TotalStaked,
+		},
+		"epochInfo": map[string]interface{}{
+			"current":         currentBlock / stakingPool.EpochLength,
+			"length":          stakingPool.EpochLength,
+			"blocksUntilNext": stakingPool.EpochLength - (currentBlock % stakingPool.EpochLength),
+			"lastRewardBlock": stakingPool.LastEpochBlock,
+		},
+		"rewardRates": map[string]interface{}{
+			"baseRewardFactor":    stakingPool.BaseRewardFactor * 100,
+			"annualInflationRate": stakingPool.AnnualInflationRate * 100,
+		},
+	}
+
 	response := map[string]interface{}{
-		"totalStaked":  totalStaked,
-		"totalRewards": totalRewards,
-		"activeStakes": activeStakes,
-		"stakingPool":  node.stakingService.pool,
+		"address":     userAddress,
+		"isValidator": node.Blockchain.IsActiveValidator(userAddress),
+		"staking": map[string]interface{}{
+			"totalStaked": map[string]interface{}{
+				"thrylos": float64(totalStaked) / 1e7,
+				"nano":    totalStaked,
+			},
+			"totalRewards": map[string]interface{}{
+				"thrylos": float64(totalRewards) / 1e7,
+				"nano":    totalRewards,
+			},
+			"activeStakesCount": len(activeStakes),
+			"activeStakes":      activeStakes,
+		},
+		"stakingPool": poolInfo,
+		"networkStats": map[string]interface{}{
+			"totalValidators":   len(node.Blockchain.ActiveValidators),
+			"totalStakedAmount": float64(stakingPool.TotalStaked) / 1e7,
+		},
 	}
 
 	sendResponseProcess(w, response)
@@ -951,18 +1011,23 @@ func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Calculate effective APR from the staking service
+		effectiveAPR := node.Blockchain.StakingService.pool.AnnualInflationRate * 100 // Convert to percentage
+
 		validators = append(validators, map[string]interface{}{
-			"id":     validatorAddr,
-			"name":   fmt.Sprintf("Validator %s", validatorAddr[:8]),
-			"status": "Active",
-			"stake":  stake,
-			"apr":    node.stakingService.pool.APR,
+			"id":             validatorAddr,
+			"name":           fmt.Sprintf("Validator %s", validatorAddr[:8]),
+			"status":         "Active",
+			"stake":          float64(stake) / 1e7,                                              // Convert from nano to THRYLOS
+			"stakeRaw":       stake,                                                             // Raw stake amount in nano
+			"inflationRate":  effectiveAPR,                                                      // Annual inflation rate as percentage
+			"minStake":       float64(node.Blockchain.StakingService.pool.MinStakeAmount) / 1e7, // Minimum stake in THRYLOS
+			"baseRewardRate": node.Blockchain.StakingService.pool.BaseRewardFactor * 100,        // Base reward as percentage
 		})
 	}
 
 	sendResponseProcess(w, validators)
 }
-
 func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)

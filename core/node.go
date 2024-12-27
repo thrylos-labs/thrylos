@@ -124,7 +124,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,
 		WebSocketConnections: make(map[string]*WebSocketConnection),
-		stakingService:       NewStakingService(&db),
+		stakingService:       NewStakingService(bc),
 		serverHost:           serverHost,
 		useSSL:               useSSL,
 	}
