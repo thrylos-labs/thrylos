@@ -16,6 +16,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/gorilla/mux"
+	"github.com/shopspring/decimal"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/ed25519"
@@ -733,47 +734,25 @@ func (node *Node) GetStakingStatsHandler(w http.ResponseWriter, r *http.Request)
 
 	totalStaked := int64(0)
 	rewardsEarned := int64(0)
-	activeStakes := int64(0)
+	availableForWithdrawal := int64(0)
 
 	for _, stake := range stakes {
 		if stake.IsActive {
 			totalStaked += stake.Amount
-			activeStakes++
-
-			// Calculate rewards based on our new model
 			currentRewards := node.Blockchain.StakingService.CalculateRewards(stake, currentBlock)
 			rewardsEarned += currentRewards + stake.TotalRewards
+
+			// Calculate available for withdrawal
+			if currentBlock >= stake.LastRewardEpoch+node.Blockchain.StakingService.pool.EpochLength {
+				availableForWithdrawal += stake.Amount + currentRewards
+			}
 		}
 	}
 
-	// Get actual stake from blockchain's Stakeholders map
-	actualStake := node.Blockchain.Stakeholders[userAddress]
-
-	// Calculate effective APR from staking params
-	stakingPool := node.Blockchain.StakingService.pool
-	effectiveAPR := stakingPool.AnnualInflationRate * 100 // Convert to percentage
-	baseReward := stakingPool.BaseRewardFactor * 100      // Convert to percentage
-
 	response := map[string]interface{}{
-		"address":          userAddress,
-		"totalStaked":      float64(totalStaked) / 1e7,   // In THRYLOS
-		"totalStakedRaw":   totalStaked,                  // In nano
-		"actualStake":      float64(actualStake) / 1e7,   // Current stake in THRYLOS
-		"rewardsEarned":    float64(rewardsEarned) / 1e7, // In THRYLOS
-		"rewardsEarnedRaw": rewardsEarned,                // In nano
-		"activeStakes":     activeStakes,
-		"isValidator":      node.Blockchain.IsActiveValidator(userAddress),
-		"stakingStats": map[string]interface{}{
-			"inflationRate":     effectiveAPR,
-			"baseRewardRate":    baseReward,
-			"minStakeAmount":    float64(stakingPool.MinStakeAmount) / 1e7, // In THRYLOS
-			"epochLength":       stakingPool.EpochLength,
-			"totalNetworkStake": float64(stakingPool.TotalStaked) / 1e7, // In THRYLOS
-		},
-		"epochs": map[string]interface{}{
-			"current":         currentBlock / stakingPool.EpochLength,
-			"blocksUntilNext": stakingPool.EpochLength - (currentBlock % stakingPool.EpochLength),
-		},
+		"totalStaked":            decimal.NewFromFloat(float64(totalStaked) / 1e7), // Convert to decimal for frontend
+		"rewardsEarned":          decimal.NewFromFloat(float64(rewardsEarned) / 1e7),
+		"availableForWithdrawal": decimal.NewFromFloat(float64(availableForWithdrawal) / 1e7),
 	}
 
 	sendResponseProcess(w, response)
@@ -998,12 +977,6 @@ func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Get active validators with their stats
 	validators := make([]map[string]interface{}, 0)
 	for _, validatorAddr := range node.Blockchain.ActiveValidators {
 		stake, exists := node.Blockchain.Stakeholders[validatorAddr]
@@ -1011,23 +984,17 @@ func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Calculate effective APR from the staking service
-		effectiveAPR := node.Blockchain.StakingService.pool.AnnualInflationRate * 100 // Convert to percentage
-
 		validators = append(validators, map[string]interface{}{
-			"id":             validatorAddr,
-			"name":           fmt.Sprintf("Validator %s", validatorAddr[:8]),
-			"status":         "Active",
-			"stake":          float64(stake) / 1e7,                                              // Convert from nano to THRYLOS
-			"stakeRaw":       stake,                                                             // Raw stake amount in nano
-			"inflationRate":  effectiveAPR,                                                      // Annual inflation rate as percentage
-			"minStake":       float64(node.Blockchain.StakingService.pool.MinStakeAmount) / 1e7, // Minimum stake in THRYLOS
-			"baseRewardRate": node.Blockchain.StakingService.pool.BaseRewardFactor * 100,        // Base reward as percentage
+			"id":     validatorAddr,
+			"name":   fmt.Sprintf("Validator %s", validatorAddr[:8]),
+			"staked": fmt.Sprintf("%.2f", float64(stake)/1e7), // Changed from stake to staked and to string
+			"apr":    node.Blockchain.StakingService.pool.AnnualInflationRate * 100,
 		})
 	}
 
 	sendResponseProcess(w, validators)
 }
+
 func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1038,6 +1005,7 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		UserAddress      string `json:"userAddress"`
 		Amount           int64  `json:"amount"`
 		ValidatorAddress string `json:"validatorAddress"`
+		Mode             string `json:"mode"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1045,10 +1013,50 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify validator exists
+	// Check minimum stake amount
+	minStake := node.Blockchain.StakingService.pool.MinStakeAmount
+	if req.Amount < minStake {
+		sendJSONErrorResponse(w, fmt.Sprintf("Stake amount must be at least %d THRYLOS", minStake/1e7), http.StatusBadRequest)
+		return
+	}
+
+	// Verify validator exists and is active
 	if !node.Blockchain.validatorExists(req.ValidatorAddress) {
 		sendJSONErrorResponse(w, "Invalid validator address", http.StatusBadRequest)
 		return
+	}
+
+	if !node.Blockchain.IsActiveValidator(req.ValidatorAddress) {
+		sendJSONErrorResponse(w, "Validator is not active", http.StatusBadRequest)
+		return
+	}
+
+	// Check user's balance
+	balance, err := node.GetBalance(req.UserAddress)
+	if err != nil {
+		sendJSONErrorResponse(w, fmt.Sprintf("Failed to get balance: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if balance < req.Amount+1000 { // Including gas fee
+		sendJSONErrorResponse(w, "Insufficient balance for staking", http.StatusBadRequest)
+		return
+	}
+
+	var stakeRecord *Stake
+
+	if req.Mode == "unstake" {
+		if err = node.Blockchain.StakingService.UnstakeTokens(req.UserAddress, req.Amount); err != nil {
+			sendJSONErrorResponse(w, fmt.Sprintf("Failed to unstake: %v", err), http.StatusBadRequest)
+			return
+		}
+	} else {
+		// Create the stake record first
+		stakeRecord, err = node.Blockchain.StakingService.CreateStake(req.UserAddress, req.Amount)
+		if err != nil {
+			sendJSONErrorResponse(w, fmt.Sprintf("Failed to create stake: %v", err), http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Create staking transaction
@@ -1056,42 +1064,83 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		Id:        fmt.Sprintf("stake-%s-%d", req.UserAddress, time.Now().UnixNano()),
 		Sender:    req.UserAddress,
 		Timestamp: time.Now().Unix(),
-		Status:    "pending", // Use status field instead of type
-		Gasfee:    1000,      // Set appropriate gas fee
+		Status:    "pending",
+		Gasfee:    1000,
 		Outputs: []*thrylos.UTXO{
 			{
 				OwnerAddress:  req.ValidatorAddress,
 				Amount:        req.Amount,
-				Index:         0,  // Set appropriate index
-				TransactionId: "", // Will be set to stakingTx.Id after creation
+				Index:         0,
+				TransactionId: "",
 			},
 		},
-		PreviousTxIds: []string{}, // Add if there are previous transactions to reference
+		PreviousTxIds: []string{},
 	}
 
-	// Create the stake
-	stake, err := node.stakingService.CreateStake(req.UserAddress, req.Amount)
-	if err != nil {
-		sendJSONErrorResponse(w, fmt.Sprintf("Failed to create stake: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if err := node.ProcessIncomingTransaction(stakingTx); err != nil {
+	// Process the transaction
+	if err = node.ProcessIncomingTransaction(stakingTx); err != nil {
+		// Rollback stake creation if transaction fails
+		if req.Mode != "unstake" {
+			node.Blockchain.StakingService.UnstakeTokens(req.UserAddress, req.Amount)
+		}
 		sendJSONErrorResponse(w, fmt.Sprintf("Failed to process staking transaction: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// After transaction is added to pending, update UTXO TransactionId
+	// Update UTXO TransactionId
 	for _, output := range stakingTx.Outputs {
 		output.TransactionId = stakingTx.Id
 	}
 
-	response := map[string]interface{}{
-		"message":       "Stake created successfully",
-		"stake":         stake,
-		"transactionId": stakingTx.Id,
+	// Prepare response with additional info
+	var message string
+	if req.Mode == "unstake" {
+		message = "Unstake processed successfully"
+	} else {
+		message = "Stake created successfully"
 	}
+
+	response := map[string]interface{}{
+		"message": message,
+	}
+
+	// Add stake details if this was a staking operation
+	if req.Mode != "unstake" && stakeRecord != nil {
+		response["stake"] = map[string]interface{}{
+			"amount":          float64(stakeRecord.Amount) / 1e7,
+			"amountRaw":       stakeRecord.Amount,
+			"startTime":       stakeRecord.StartTime,
+			"isActive":        stakeRecord.IsActive,
+			"validatorRole":   stakeRecord.ValidatorRole,
+			"lastRewardEpoch": stakeRecord.LastRewardEpoch,
+		}
+	}
+
+	response["transactionId"] = stakingTx.Id
+	response["stakingInfo"] = map[string]interface{}{
+		"currentEpoch":   node.Blockchain.GetBlockCount() / int(node.Blockchain.StakingService.pool.EpochLength),
+		"inflationRate":  node.Blockchain.StakingService.pool.AnnualInflationRate * 100,
+		"baseRewardRate": node.Blockchain.StakingService.pool.BaseRewardFactor * 100,
+		"minStakeAmount": float64(minStake) / 1e7,
+	}
+
 	sendResponseProcess(w, response)
+}
+
+func (node *Node) ValidateStakingAmount(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Amount int64  `json:"amount"`
+		Mode   string `json:"mode"`
+	}
+
+	if req.Mode == "stake" && req.Amount < node.Blockchain.StakingService.pool.MinStakeAmount {
+		sendJSONErrorResponse(w, fmt.Sprintf("Minimum stake is %d THR",
+			node.Blockchain.StakingService.pool.MinStakeAmount/1e7),
+			http.StatusBadRequest)
+		return
+	}
+
+	sendResponseProcess(w, map[string]bool{"valid": true})
 }
 
 // Utility handlers
