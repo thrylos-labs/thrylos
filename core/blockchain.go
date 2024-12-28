@@ -537,12 +537,21 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	return blockchain, bdb, nil
 }
 
-// Add method to track staking reserves
-func (bc *Blockchain) GetStakingReserves() int64 {
-	// Calculate remaining staking reserves in Genesis account
-	totalReserve := int64(4_800_000 * 1e7 * 4) // 19.2M nano
-	usedRewards := totalReserve - bc.Stakeholders[bc.GenesisAccount]
-	return totalReserve - usedRewards
+func (bc *Blockchain) GetTotalSupply() int64 {
+	totalSupply := int64(0)
+	for _, balance := range bc.Stakeholders {
+		totalSupply += balance
+	}
+	return totalSupply
+}
+
+func (bc *Blockchain) GetEffectiveInflationRate() float64 {
+	currentTotalSupply := float64(bc.GetTotalSupply()) / 1e7
+	yearlyReward := 4_800_000.0 // Fixed 4.8M
+
+	// Calculate effective rate (will decrease as total supply grows)
+	effectiveRate := (yearlyReward / currentTotalSupply) * 100
+	return effectiveRate
 }
 
 func contains(slice []string, item string) bool {

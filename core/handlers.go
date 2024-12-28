@@ -758,6 +758,14 @@ func (node *Node) GetStakingStatsHandler(w http.ResponseWriter, r *http.Request)
 	sendResponseProcess(w, response)
 }
 
+func getTotalSupply(node *Node) float64 {
+	totalSupply := int64(0)
+	for _, balance := range node.Blockchain.Stakeholders {
+		totalSupply += balance
+	}
+	return float64(totalSupply) / 1e7
+}
+
 func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		sendJSONErrorResponse(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -789,8 +797,9 @@ func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) 
 	stakingPool := node.Blockchain.StakingService.pool
 
 	// Calculate effective rate based on current supply
-	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
-	yearlyReward := float64(stakingPool.FixedYearlyReward) / 1e7
+
+	currentSupply := getTotalSupply(node)
+	yearlyReward := 4_800_000.0 // Fixed 4.8M
 	effectiveRate := (yearlyReward / currentSupply) * 100
 
 	// Create detailed staking pool info
@@ -929,8 +938,8 @@ func (node *Node) UnstakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Calculate effective rate for response
-	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
-	yearlyReward := float64(node.Blockchain.StakingService.pool.FixedYearlyReward) / 1e7
+	currentSupply := getTotalSupply(node)
+	yearlyReward := 4_800_000.0 // Fixed 4.8M
 	effectiveRate := (yearlyReward / currentSupply) * 100
 
 	response := map[string]interface{}{
@@ -1027,11 +1036,17 @@ func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
 
 func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
 	validators := make([]map[string]interface{}, 0)
-	totalSupply := float64(node.Blockchain.StakingService.pool.FixedYearlyReward) / 1e7 // 4.8M yearly reward
-	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
+	effectiveRate := node.Blockchain.GetEffectiveInflationRate() // Use blockchain method
 
-	// Calculate effective APR (4.8M/current total supply)
-	effectiveAPR := (totalSupply / currentSupply) * 100
+	// Calculate total supply correctly
+	totalSupply := int64(0)
+	for _, balance := range node.Blockchain.Stakeholders {
+		totalSupply += balance
+	}
+
+	// Fixed yearly reward and effective rate calculation
+	yearlyReward := 4_800_000.0 // Fixed 4.8M
+	effectiveAPR := (yearlyReward / (float64(totalSupply) / 1e7)) * 100
 
 	for _, validatorAddr := range node.Blockchain.ActiveValidators {
 		stake, exists := node.Blockchain.Stakeholders[validatorAddr]
@@ -1043,13 +1058,15 @@ func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
 			"id":     validatorAddr,
 			"name":   fmt.Sprintf("Validator %s", validatorAddr[:8]),
 			"staked": fmt.Sprintf("%.2f", float64(stake)/1e7),
-			"apr":    effectiveAPR, // This will naturally decrease as supply grows
+			"apr":    effectiveRate,
 			"status": "Active",
 			"rewardInfo": map[string]interface{}{
 				"yearlyReward":  "4.8M",
 				"effectiveRate": fmt.Sprintf("%.2f%%", effectiveAPR),
+				"totalStaked":   fmt.Sprintf("%.2f", float64(node.Blockchain.StakingService.pool.TotalStaked)/1e7),
 				"nextEpochIn": node.Blockchain.StakingService.pool.EpochLength -
 					(int64(node.Blockchain.GetBlockCount()) % node.Blockchain.StakingService.pool.EpochLength),
+				"currentSupply": fmt.Sprintf("%.2f", float64(totalSupply)/1e7),
 			},
 		})
 	}
@@ -1153,9 +1170,7 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Calculate effective rate based on current supply
-	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
-	yearlyReward := float64(node.Blockchain.StakingService.pool.FixedYearlyReward) / 1e7
-	effectiveRate := (yearlyReward / currentSupply) * 100
+	effectiveRate := node.Blockchain.GetEffectiveInflationRate()
 
 	// Prepare response
 	var message string
