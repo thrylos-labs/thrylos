@@ -96,60 +96,97 @@ func (mp *ModernProcessor) Stop() {
 	mp.cancel()
 }
 
+func (n *Node) InitializeProcessors() {
+	log.Printf("Initializing node processors...")
+
+	// Initialize DAG Manager first
+	n.DAGManager = NewDAGManager(n)
+	log.Printf("DAG manager initialized")
+
+	// Initialize ModernProcessor
+	n.ModernProcessor = NewModernProcessor(n)
+	n.ModernProcessor.Start()
+	log.Printf("Modern processor initialized and started")
+
+	log.Printf("Node processors initialization complete")
+}
+
 func (n *Node) ProcessIncomingTransaction(tx *thrylos.Transaction) error {
 	if tx == nil {
+		log.Printf("ERROR: Received nil transaction")
 		return fmt.Errorf("cannot process nil transaction")
 	}
 
 	txID := tx.GetId()
-	log.Printf("Starting ProcessIncomingTransaction for tx %s", txID)
+	log.Printf("=== BEGIN ProcessIncomingTransaction [%s] ===", txID)
 
-	// Fast path: check if already processed
+	// Fast path: check processed state
 	if _, exists := n.ModernProcessor.processedTxs.Load(txID); exists {
-		log.Printf("Transaction %s already processed", txID)
+		log.Printf("Transaction [%s] already processed, skipping", txID)
 		return nil
 	}
 
-	// Process through DAG first
+	// Process DAG first
+	log.Printf("Processing DAG for transaction [%s]", txID)
 	if err := n.DAGManager.AddTransaction(tx); err != nil {
 		if !strings.Contains(err.Error(), "transaction already exists") {
-			log.Printf("DAG processing failed for tx %s: %v", txID, err)
+			log.Printf("ERROR: DAG processing failed for [%s]: %v", txID, err)
 			return fmt.Errorf("DAG processing failed: %v", err)
 		}
-		log.Printf("Transaction %s already exists in DAG", txID)
+		log.Printf("Transaction [%s] already exists in DAG", txID)
 	}
 
-	// Add to pending pool for immediate status updates
+	// Add to pending pool
+	log.Printf("Adding to pending pool [%s]", txID)
 	if err := n.AddPendingTransaction(tx); err != nil {
-		log.Printf("Failed to add tx %s to pending pool: %v", txID, err)
+		log.Printf("ERROR: Failed to add [%s] to pending pool: %v", txID, err)
 		return fmt.Errorf("pending addition failed: %v", err)
 	}
 
-	// Add to modern processor queues
+	// Process through ModernProcessor
+	log.Printf("Adding to ModernProcessor [%s]", txID)
 	if err := n.ModernProcessor.AddTransaction(tx); err != nil {
-		log.Printf("Modern processing failed for tx %s: %v", txID, err)
-		return fmt.Errorf("processing failed: %v", err)
+		log.Printf("ERROR: ModernProcessor failed for [%s]: %v", txID, err)
+		return fmt.Errorf("modern processing failed: %v", err)
 	}
 
-	log.Printf("Successfully queued transaction %s for processing", txID)
+	log.Printf("=== END ProcessIncomingTransaction [%s] - SUCCESS ===", txID)
 	return nil
 }
 
 func (mp *ModernProcessor) AddTransaction(tx *thrylos.Transaction) error {
-	shardID := mp.getShardID(tx)
+	txID := tx.GetId()
+	log.Printf("[ModernProcessor] Starting transaction processing for %s", txID)
 
-	// Try priority queue first with non-blocking send
-	select {
-	case mp.priorityQueues[shardID] <- tx:
+	if _, exists := mp.processedTxs.Load(txID); exists {
+		log.Printf("[ModernProcessor] Transaction %s already processed", txID)
 		return nil
-	default:
-		// Fall back to regular queue
+	}
+
+	shardID := mp.getShardID(tx)
+	log.Printf("[ModernProcessor] Assigned transaction %s to shard %d", txID, shardID)
+
+	// Try queue with timeout
+	timeoutChan := make(chan bool, 1)
+	successChan := make(chan bool, 1)
+
+	go func() {
 		select {
 		case mp.txQueues[shardID] <- tx:
-			return nil
-		default:
-			return fmt.Errorf("shard %d queues are full", shardID)
+			mp.processedTxs.Store(txID, true)
+			successChan <- true
+		case <-time.After(2 * time.Second):
+			timeoutChan <- true
 		}
+	}()
+
+	select {
+	case <-successChan:
+		log.Printf("[ModernProcessor] Successfully queued transaction %s", txID)
+		return nil
+	case <-timeoutChan:
+		log.Printf("[ModernProcessor] Queue timeout for transaction %s", txID)
+		return fmt.Errorf("queue timeout for shard %d", shardID)
 	}
 }
 

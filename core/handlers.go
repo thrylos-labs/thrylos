@@ -517,6 +517,10 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 	thrylosTx.Signature = signatureBytes
 
+	log.Printf("[TX Handler] Created transaction with ID: %s", thrylosTx.GetId())
+
+	log.Printf("[TX Handler] Starting validation process for tx: %s", thrylosTx.GetId())
+
 	// Start block creation early
 	blockCreationDone := make(chan struct{})
 	go func() {
@@ -529,33 +533,68 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	// Parallel balance fetch and validation with timeout
 	validationComplete := make(chan error, 1)
 	go func() {
+		start := time.Now()
+		log.Printf("[TX Handler] Step 1: Starting balance fetch for tx: %s", thrylosTx.GetId())
 		balance, err := n.GetBalance(transactionData.Sender)
 		if err != nil {
+			log.Printf("[TX Handler] Balance fetch failed: %v", err)
 			validationComplete <- fmt.Errorf("failed to fetch balance: %v", err)
 			return
 		}
+		log.Printf("[TX Handler] Balance fetch completed in %v", time.Since(start))
 
+		// 2. Validate Transaction
 		if err := shared.ValidateAndConvertTransaction(
 			thrylosTx,
 			n.Database,
-			ed25519.PublicKey(publicKeyBytes), // Convert to ed25519.PublicKey type
+			ed25519.PublicKey(publicKeyBytes),
 			n,
 			balance,
 		); err != nil {
+			log.Printf("[TX Handler] Transaction validation failed: %v", err)
 			validationComplete <- fmt.Errorf("failed to validate transaction: %v", err)
 			return
 		}
+		log.Printf("[TX Handler] Transaction validation completed in %v", time.Since(start))
 
-		// The transactions need to go through the batch and dag processing
-		// before being added to the Pending Transaction
-		// Directly add to pending pool which will trigger block creation
+		// 3. Check components
+		if n.DAGManager == nil {
+			log.Printf("[TX Handler] DAGManager not initialized")
+			validationComplete <- fmt.Errorf("DAGManager not initialized")
+			return
+		}
+		if n.ModernProcessor == nil {
+			log.Printf("[TX Handler] ModernProcessor not initialized")
+			validationComplete <- fmt.Errorf("ModernProcessor not initialized")
+			return
+		}
+
+		// 4. Process Transaction
+		log.Printf("[TX Handler] Starting ProcessIncomingTransaction")
 		if err := n.ProcessIncomingTransaction(thrylosTx); err != nil {
+			log.Printf("[TX Handler] ProcessIncomingTransaction failed: %v", err)
 			validationComplete <- fmt.Errorf("failed to process transaction: %v", err)
 			return
 		}
-		validationComplete <- nil
+		log.Printf("[TX Handler] ProcessIncomingTransaction completed in %v", time.Since(start))
 
+		validationComplete <- nil
 	}()
+
+	// Wait for validation or timeout
+	select {
+	case err := <-validationComplete:
+		if err != nil {
+			log.Printf("[TX Handler] Validation failed with error: %v", err)
+			sendJSONErrorResponse(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		log.Printf("[TX Handler] Validation completed successfully")
+	case <-time.After(10 * time.Second): // Increased timeout
+		log.Printf("[TX Handler] Transaction processing timed out")
+		sendJSONErrorResponse(w, "Transaction processing timeout", http.StatusGatewayTimeout)
+		return
+	}
 
 	// Update balances in background
 	go func() {
@@ -578,18 +617,6 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 			}
 		}
 	}()
-
-	// Wait for validation with timeout
-	select {
-	case err := <-validationComplete:
-		if err != nil {
-			sendJSONErrorResponse(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	case <-time.After(1 * time.Second):
-		sendJSONErrorResponse(w, "Transaction processing timeout", http.StatusGatewayTimeout)
-		return
-	}
 
 	go func() {
 		if err := n.BroadcastTransaction(thrylosTx); err != nil {

@@ -131,9 +131,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		BlockTrigger:         make(chan struct{}, 1),
 	}
 
-	// Initialize ModernProcessor instead of BatchProcessor
-	node.ModernProcessor = NewModernProcessor(node)
-	node.ModernProcessor.Start()
+	node.InitializeProcessors()
 
 	// Initialize block producer after node is set up
 	node.blockProducer = NewBlockProducer(node, bc)
