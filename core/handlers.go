@@ -786,8 +786,12 @@ func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Get staking pool info
 	stakingPool := node.Blockchain.StakingService.pool
+
+	// Calculate effective rate based on current supply
+	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
+	yearlyReward := float64(stakingPool.FixedYearlyReward) / 1e7
+	effectiveRate := (yearlyReward / currentSupply) * 100
 
 	// Create detailed staking pool info
 	poolInfo := map[string]interface{}{
@@ -805,9 +809,10 @@ func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) 
 			"blocksUntilNext": stakingPool.EpochLength - (currentBlock % stakingPool.EpochLength),
 			"lastRewardBlock": stakingPool.LastEpochBlock,
 		},
-		"rewardRates": map[string]interface{}{
-			"baseRewardFactor":    stakingPool.BaseRewardFactor * 100,
-			"annualInflationRate": stakingPool.AnnualInflationRate * 100,
+		"rewardInfo": map[string]interface{}{
+			"yearlyReward":     "4.8M",
+			"effectiveRate":    fmt.Sprintf("%.2f%%", effectiveRate),
+			"nextDistribution": stakingPool.EpochLength - (currentBlock % stakingPool.EpochLength),
 		},
 	}
 
@@ -828,8 +833,9 @@ func (node *Node) GetStakingInfoHandler(w http.ResponseWriter, r *http.Request) 
 		},
 		"stakingPool": poolInfo,
 		"networkStats": map[string]interface{}{
-			"totalValidators":   len(node.Blockchain.ActiveValidators),
-			"totalStakedAmount": float64(stakingPool.TotalStaked) / 1e7,
+			"totalValidators":      len(node.Blockchain.ActiveValidators),
+			"totalStakedAmount":    float64(stakingPool.TotalStaked) / 1e7,
+			"currentEffectiveRate": fmt.Sprintf("%.2f%%", effectiveRate),
 		},
 	}
 
@@ -863,8 +869,32 @@ func (node *Node) UnstakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify stake exists and can be unstaked
-	if err := node.stakingService.UnstakeTokens(req.UserAddress, req.Amount); err != nil {
+	// Verify validator exists and is active
+	if !node.Blockchain.validatorExists(req.ValidatorAddress) {
+		sendJSONErrorResponse(w, "Invalid validator address", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the user has enough staked tokens
+	currentStake := node.Blockchain.Stakeholders[req.UserAddress]
+	if currentStake < req.Amount {
+		sendJSONErrorResponse(w, "Insufficient staked amount", http.StatusBadRequest)
+		return
+	}
+
+	// Calculate any pending rewards before unstaking
+	currentBlock := int64(node.Blockchain.GetBlockCount())
+	stakes := node.Blockchain.StakingService.stakes[req.UserAddress]
+	var pendingRewards int64
+	for _, stake := range stakes {
+		if stake.IsActive && stake.Amount == req.Amount {
+			pendingRewards = node.Blockchain.StakingService.CalculateRewards(stake, currentBlock)
+			break
+		}
+	}
+
+	// Process unstaking
+	if err := node.Blockchain.StakingService.UnstakeTokens(req.UserAddress, req.Amount); err != nil {
 		sendJSONErrorResponse(w, fmt.Sprintf("Failed to unstake tokens: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -879,14 +909,16 @@ func (node *Node) UnstakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		Outputs: []*thrylos.UTXO{
 			{
 				OwnerAddress:  req.UserAddress,
-				Amount:        req.Amount,
+				Amount:        req.Amount + pendingRewards, // Include any pending rewards
 				Index:         0,
-				TransactionId: "", // Will be set after creation
+				TransactionId: "",
 			},
 		},
 	}
 
 	if err := node.ProcessIncomingTransaction(unstakeTx); err != nil {
+		// Rollback unstake if transaction fails
+		node.Blockchain.StakingService.CreateStake(req.UserAddress, req.Amount)
 		sendJSONErrorResponse(w, fmt.Sprintf("Failed to process unstaking transaction: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -896,10 +928,27 @@ func (node *Node) UnstakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		output.TransactionId = unstakeTx.Id
 	}
 
+	// Calculate effective rate for response
+	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
+	yearlyReward := float64(node.Blockchain.StakingService.pool.FixedYearlyReward) / 1e7
+	effectiveRate := (yearlyReward / currentSupply) * 100
+
 	response := map[string]interface{}{
 		"message":       "Tokens unstaked successfully",
 		"transactionId": unstakeTx.Id,
+		"unstakeInfo": map[string]interface{}{
+			"amount":         float64(req.Amount) / 1e7,
+			"pendingRewards": float64(pendingRewards) / 1e7,
+			"totalReturn":    float64(req.Amount+pendingRewards) / 1e7,
+		},
+		"stakingInfo": map[string]interface{}{
+			"remainingStake": float64(currentStake-req.Amount) / 1e7,
+			"effectiveRate":  fmt.Sprintf("%.2f%%", effectiveRate),
+			"nextEpochIn": node.Blockchain.StakingService.pool.EpochLength -
+				(currentBlock % node.Blockchain.StakingService.pool.EpochLength),
+		},
 	}
+
 	sendResponseProcess(w, response)
 }
 
@@ -978,6 +1027,12 @@ func (node *Node) DelegateStakeHandler(w http.ResponseWriter, r *http.Request) {
 
 func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
 	validators := make([]map[string]interface{}, 0)
+	totalSupply := float64(node.Blockchain.StakingService.pool.FixedYearlyReward) / 1e7 // 4.8M yearly reward
+	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
+
+	// Calculate effective APR (4.8M/current total supply)
+	effectiveAPR := (totalSupply / currentSupply) * 100
+
 	for _, validatorAddr := range node.Blockchain.ActiveValidators {
 		stake, exists := node.Blockchain.Stakeholders[validatorAddr]
 		if !exists {
@@ -987,8 +1042,15 @@ func (node *Node) GetValidatorsHandler(w http.ResponseWriter, r *http.Request) {
 		validators = append(validators, map[string]interface{}{
 			"id":     validatorAddr,
 			"name":   fmt.Sprintf("Validator %s", validatorAddr[:8]),
-			"staked": fmt.Sprintf("%.2f", float64(stake)/1e7), // Changed from stake to staked and to string
-			"apr":    node.Blockchain.StakingService.pool.AnnualInflationRate * 100,
+			"staked": fmt.Sprintf("%.2f", float64(stake)/1e7),
+			"apr":    effectiveAPR, // This will naturally decrease as supply grows
+			"status": "Active",
+			"rewardInfo": map[string]interface{}{
+				"yearlyReward":  "4.8M",
+				"effectiveRate": fmt.Sprintf("%.2f%%", effectiveAPR),
+				"nextEpochIn": node.Blockchain.StakingService.pool.EpochLength -
+					(int64(node.Blockchain.GetBlockCount()) % node.Blockchain.StakingService.pool.EpochLength),
+			},
 		})
 	}
 
@@ -1051,7 +1113,6 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Create the stake record first
 		stakeRecord, err = node.Blockchain.StakingService.CreateStake(req.UserAddress, req.Amount)
 		if err != nil {
 			sendJSONErrorResponse(w, fmt.Sprintf("Failed to create stake: %v", err), http.StatusBadRequest)
@@ -1079,7 +1140,6 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Process the transaction
 	if err = node.ProcessIncomingTransaction(stakingTx); err != nil {
-		// Rollback stake creation if transaction fails
 		if req.Mode != "unstake" {
 			node.Blockchain.StakingService.UnstakeTokens(req.UserAddress, req.Amount)
 		}
@@ -1092,7 +1152,12 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		output.TransactionId = stakingTx.Id
 	}
 
-	// Prepare response with additional info
+	// Calculate effective rate based on current supply
+	currentSupply := float64(node.Blockchain.Stakeholders[node.Blockchain.GenesisAccount]) / 1e7
+	yearlyReward := float64(node.Blockchain.StakingService.pool.FixedYearlyReward) / 1e7
+	effectiveRate := (yearlyReward / currentSupply) * 100
+
+	// Prepare response
 	var message string
 	if req.Mode == "unstake" {
 		message = "Unstake processed successfully"
@@ -1104,7 +1169,6 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 		"message": message,
 	}
 
-	// Add stake details if this was a staking operation
 	if req.Mode != "unstake" && stakeRecord != nil {
 		response["stake"] = map[string]interface{}{
 			"amount":          float64(stakeRecord.Amount) / 1e7,
@@ -1119,9 +1183,11 @@ func (node *Node) StakeTokensHandler(w http.ResponseWriter, r *http.Request) {
 	response["transactionId"] = stakingTx.Id
 	response["stakingInfo"] = map[string]interface{}{
 		"currentEpoch":   node.Blockchain.GetBlockCount() / int(node.Blockchain.StakingService.pool.EpochLength),
-		"inflationRate":  node.Blockchain.StakingService.pool.AnnualInflationRate * 100,
-		"baseRewardRate": node.Blockchain.StakingService.pool.BaseRewardFactor * 100,
+		"yearlyReward":   "4.8M",
+		"effectiveRate":  fmt.Sprintf("%.2f%%", effectiveRate),
 		"minStakeAmount": float64(minStake) / 1e7,
+		"blocksNextEpoch": node.Blockchain.StakingService.pool.EpochLength -
+			(int64(node.Blockchain.GetBlockCount()) % node.Blockchain.StakingService.pool.EpochLength),
 	}
 
 	sendResponseProcess(w, response)

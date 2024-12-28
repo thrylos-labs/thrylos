@@ -8,17 +8,14 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 )
 
-// First, let's enhance the StakingPool structure to include inflation parameters
 type StakingPool struct {
-	MinStakeAmount      int64   `json:"minStakeAmount"`
-	BaseRewardFactor    float64 `json:"baseRewardFactor"` // Base reward rate
-	TotalStaked         int64   `json:"totalStaked"`
-	AnnualInflationRate float64 `json:"annualInflationRate"` // Annual inflation rate
-	EpochLength         int64   `json:"epochLength"`         // Blocks per epoch
-	LastEpochBlock      int64   `json:"lastEpochBlock"`      // Last block where rewards were distributed
+	MinStakeAmount    int64 `json:"minStakeAmount"`
+	FixedYearlyReward int64 `json:"fixedYearlyReward"` // Always 4.8M (4% of original 120M)
+	TotalStaked       int64 `json:"totalStaked"`
+	EpochLength       int64 `json:"epochLength"`
+	LastEpochBlock    int64 `json:"lastEpochBlock"`
 }
 
-// Modify the Stake structure to track epochs
 type Stake struct {
 	UserAddress     string `json:"userAddress"`
 	Amount          int64  `json:"amount"`
@@ -26,31 +23,78 @@ type Stake struct {
 	LastRewardEpoch int64  `json:"lastRewardEpoch"`
 	TotalRewards    int64  `json:"totalRewards"`
 	IsActive        bool   `json:"isActive"`
-	ValidatorRole   bool   `json:"validatorRole"` // Indicates if stake is for validator
+	ValidatorRole   bool   `json:"validatorRole"`
 }
 
-// Update StakingService to work with the blockchain
 type StakingService struct {
 	pool       *StakingPool
 	stakes     map[string][]*Stake
-	blockchain *Blockchain // Add reference to blockchain
+	blockchain *Blockchain
 }
 
 func NewStakingService(blockchain *Blockchain) *StakingService {
-	minStakeAmount := int64(40 * 1e7) // min stake 40 THRYLOS converted to nano
+	fixedYearlyReward := int64(4_800_000 * 1e7) // Fixed 4.8M (4% of 120M) in nano
 
 	return &StakingService{
 		pool: &StakingPool{
-			MinStakeAmount:      minStakeAmount,
-			BaseRewardFactor:    0.0001,
-			AnnualInflationRate: 0.04,
-			EpochLength:         240,
-			LastEpochBlock:      0,
-			TotalStaked:         0,
+			MinStakeAmount:    int64(40 * 1e7),   // 40 THRYLOS
+			FixedYearlyReward: fixedYearlyReward, // Always 4.8M per year
+			EpochLength:       240,               // Blocks per epoch
+			LastEpochBlock:    0,
+			TotalStaked:       0,
 		},
 		stakes:     make(map[string][]*Stake),
 		blockchain: blockchain,
 	}
+}
+
+// Calculate rewards per epoch (fixed amount)
+func (s *StakingService) calculateEpochRewards() int64 {
+	// Divide fixed yearly reward (4.8M) by number of epochs per year
+	epochReward := s.pool.FixedYearlyReward / (365 * 24 * s.pool.EpochLength)
+	return epochReward
+}
+
+// Add method to get current effective inflation rate
+func (s *StakingService) GetEffectiveInflationRate() float64 {
+	currentTotalSupply := float64(s.getTotalSupply()) / 1e7
+	fixedYearlyReward := float64(s.pool.FixedYearlyReward) / 1e7
+
+	// Calculate effective rate (will decrease as total supply grows)
+	effectiveRate := (fixedYearlyReward / currentTotalSupply) * 100
+	return effectiveRate
+}
+
+func (s *StakingService) getTotalSupply() int64 {
+	totalSupply := int64(0)
+	for _, balance := range s.blockchain.Stakeholders {
+		totalSupply += balance
+	}
+	return totalSupply
+}
+
+func (s *StakingService) CalculateRewards(stake *Stake, currentBlock int64) int64 {
+	if !stake.IsActive {
+		return 0
+	}
+
+	currentEpoch := currentBlock / s.pool.EpochLength
+	if currentEpoch <= stake.LastRewardEpoch {
+		return 0
+	}
+
+	// Get actual stake amount
+	actualStake := s.blockchain.Stakeholders[stake.UserAddress]
+	if actualStake == 0 {
+		return 0
+	}
+
+	// Calculate share of epoch rewards based on stake ratio
+	epochRewards := s.calculateEpochRewards()
+	stakingRatio := float64(actualStake) / float64(s.pool.TotalStaked)
+	reward := int64(float64(epochRewards) * stakingRatio)
+
+	return reward
 }
 
 func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, error) {
@@ -85,55 +129,17 @@ func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, 
 	return stake, nil
 }
 
-// Add method to calculate inflation rewards
-func (s *StakingService) calculateEpochInflation() int64 {
-	totalSupply := s.blockchain.Stakeholders[s.blockchain.GenesisAccount]
-	annualInflation := float64(totalSupply) * s.pool.AnnualInflationRate
-	epochInflation := int64(annualInflation / (365 * 24 * float64(s.pool.EpochLength))) // Per epoch
-	return epochInflation
-}
-
-// Update reward calculation to use inflation model
-func (s *StakingService) CalculateRewards(stake *Stake, currentBlock int64) int64 {
-	if !stake.IsActive {
-		return 0
-	}
-
-	currentEpoch := currentBlock / s.pool.EpochLength
-	if currentEpoch <= stake.LastRewardEpoch {
-		return 0
-	}
-
-	// Use actual stake amount from Stakeholders map
-	actualStake := s.blockchain.Stakeholders[stake.UserAddress]
-	if actualStake == 0 {
-		return 0
-	}
-
-	// Calculate base reward using square root of total stake
-	baseReward := int64(float64(s.pool.TotalStaked) * s.pool.BaseRewardFactor)
-
-	// Calculate participation rate using actual stake
-	participationRate := float64(actualStake) / float64(s.pool.TotalStaked)
-
-	// Calculate epoch inflation share
-	epochInflation := s.calculateEpochInflation()
-	inflationShare := int64(float64(epochInflation) * participationRate)
-
-	totalReward := baseReward + inflationShare
-	return totalReward
-}
-
-// Add method to distribute epoch rewards
 func (s *StakingService) DistributeEpochRewards(currentBlock int64) error {
-	// If no currentBlock provided, get current block count
 	if currentBlock == 0 {
 		currentBlock = int64(s.blockchain.GetBlockCount())
 	}
 
 	if currentBlock <= s.pool.LastEpochBlock+s.pool.EpochLength {
-		return nil // Not time for new epoch rewards yet
+		return nil // Not time for rewards yet
 	}
+
+	epochRewards := s.calculateEpochRewards()
+	rewardsDistributed := int64(0)
 
 	for userAddress, userStakes := range s.stakes {
 		for _, stake := range userStakes {
@@ -143,10 +149,17 @@ func (s *StakingService) DistributeEpochRewards(currentBlock int64) error {
 
 			reward := s.CalculateRewards(stake, currentBlock)
 			if reward > 0 {
-				// Create reward transaction
+				// Ensure we don't exceed fixed epoch rewards
+				if rewardsDistributed+reward > epochRewards {
+					reward = epochRewards - rewardsDistributed
+				}
+				if reward <= 0 {
+					continue
+				}
+
 				rewardTx := &thrylos.Transaction{
 					Id:        fmt.Sprintf("reward-%s-%d", userAddress, time.Now().UnixNano()),
-					Sender:    "network", // Special sender for network rewards
+					Sender:    "network",
 					Timestamp: time.Now().Unix(),
 					Outputs: []*thrylos.UTXO{{
 						OwnerAddress:  userAddress,
@@ -156,13 +169,18 @@ func (s *StakingService) DistributeEpochRewards(currentBlock int64) error {
 					}},
 				}
 
-				// Add to blockchain's pending transactions
 				if err := s.blockchain.AddPendingTransaction(rewardTx); err != nil {
 					return fmt.Errorf("failed to add reward transaction: %v", err)
 				}
 
 				stake.TotalRewards += reward
 				stake.LastRewardEpoch = currentBlock / s.pool.EpochLength
+				rewardsDistributed += reward
+			}
+
+			// Stop if we've distributed all epoch rewards
+			if rewardsDistributed >= epochRewards {
+				break
 			}
 		}
 	}

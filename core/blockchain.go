@@ -313,13 +313,19 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	totalSupply := big.NewInt(120_000_000) // 120 million tokens
 	totalSupplyNano := ThrylosToNano(float64(totalSupply.Int64()))
 
-	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
+	log.Printf("Initializing genesis account with total supply: %d THR", totalSupplyNano/1e7)
 
 	// Convert the genesis account address to Bech32 format
 	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to convert genesis account to Bech32: %v", err)
 	}
+
+	// Use bech32GenesisAccount instead of genesisAccount from here on
+	stakeholdersMap := make(map[string]int64)
+	stakeholdersMap[bech32GenesisAccount] = totalSupplyNano // Genesis holds total supply including staking reserve
+
+	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
 
 	// Generate a new key pair for the genesis account
 	log.Println("Generating key pair for genesis account")
@@ -335,10 +341,6 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
 	}
 	log.Println("Genesis account public key stored successfully")
-
-	// Use bech32GenesisAccount instead of genesisAccount from here on
-	stakeholdersMap := make(map[string]int64)
-	stakeholdersMap[bech32GenesisAccount] = totalSupplyNano
 
 	// Create genesis transaction
 	genesisTx := &thrylos.Transaction{
@@ -487,11 +489,13 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		blockchain.StateManager.StopStateSyncLoop()
 	}()
 
-	// Initialize staking service with blockchain reference
+	// Initialize staking service with proper configuration
 	log.Println("Initializing staking service...")
-	blockchain.StakingService = NewStakingService(blockchain) // Just pass blockchain
-	log.Printf("Staking service initialized with minimum stake: %d THRYLOS",
-		blockchain.StakingService.pool.MinStakeAmount/1e7)
+	blockchain.StakingService = NewStakingService(blockchain)
+	log.Printf("Staking service initialized with:")
+	log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
+	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
+	log.Printf("- Current total supply: 120M THRYLOS")
 
 	// Modify background process initialization based on DisableBackground flag
 	if !config.DisableBackground {
@@ -531,6 +535,14 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 
 	log.Println("NewBlockchain initialization completed successfully")
 	return blockchain, bdb, nil
+}
+
+// Add method to track staking reserves
+func (bc *Blockchain) GetStakingReserves() int64 {
+	// Calculate remaining staking reserves in Genesis account
+	totalReserve := int64(4_800_000 * 1e7 * 4) // 19.2M nano
+	usedRewards := totalReserve - bc.Stakeholders[bc.GenesisAccount]
+	return totalReserve - usedRewards
 }
 
 func contains(slice []string, item string) bool {
@@ -2120,9 +2132,13 @@ func (bc *Blockchain) updateBalancesForBlock(block *Block) {
 
 // RewardValidator rewards the validator with new tokens
 func (bc *Blockchain) RewardValidator(validator string, reward int64) {
-	bc.Mu.Lock() // Lock
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Deduct reward from Genesis account
+	bc.Stakeholders[bc.GenesisAccount] -= reward
+	// Add reward to validator
 	bc.Stakeholders[validator] += reward
-	bc.Mu.Unlock() // Unlock
 }
 
 // VerifyPoSRules verifies the PoS rules for the given block
