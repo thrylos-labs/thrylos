@@ -85,7 +85,7 @@ func (node *Node) GetBalance(address string) (int64, error) {
 		}
 	}
 
-	// If no UTXOs exist, create initial balance of 70.0 Thrylos
+	// If no UTXOs exist, create initial balance of 70.0 Thrylos only include for testnet
 	if total == 0 {
 		initialBalanceThrylos := 70.0
 		initialBalanceNano := ThrylosToNanoNode(initialBalanceThrylos)

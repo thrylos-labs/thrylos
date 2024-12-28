@@ -30,6 +30,7 @@ const (
 	BlockchainService_GetBlockByHash_FullMethodName            = "/thrylos.BlockchainService/GetBlockByHash"
 	BlockchainService_GetBlockByIndex_FullMethodName           = "/thrylos.BlockchainService/GetBlockByIndex"
 	BlockchainService_SubscribeToBalanceUpdates_FullMethodName = "/thrylos.BlockchainService/SubscribeToBalanceUpdates"
+	BlockchainService_StreamBalance_FullMethodName             = "/thrylos.BlockchainService/StreamBalance"
 )
 
 // BlockchainServiceClient is the client API for BlockchainService service.
@@ -47,6 +48,7 @@ type BlockchainServiceClient interface {
 	GetBlockByHash(ctx context.Context, in *GetBlockByHashRequest, opts ...grpc.CallOption) (*BlockResponse, error)
 	GetBlockByIndex(ctx context.Context, in *GetBlockByIndexRequest, opts ...grpc.CallOption) (*BlockResponse, error)
 	SubscribeToBalanceUpdates(ctx context.Context, in *BalanceSubscriptionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BalanceMessage], error)
+	StreamBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BalanceResponse], error)
 }
 
 type blockchainServiceClient struct {
@@ -176,6 +178,25 @@ func (c *blockchainServiceClient) SubscribeToBalanceUpdates(ctx context.Context,
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type BlockchainService_SubscribeToBalanceUpdatesClient = grpc.ServerStreamingClient[BalanceMessage]
 
+func (c *blockchainServiceClient) StreamBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[BalanceResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &BlockchainService_ServiceDesc.Streams[1], BlockchainService_StreamBalance_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GetBalanceRequest, BalanceResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BlockchainService_StreamBalanceClient = grpc.ServerStreamingClient[BalanceResponse]
+
 // BlockchainServiceServer is the server API for BlockchainService service.
 // All implementations must embed UnimplementedBlockchainServiceServer
 // for forward compatibility.
@@ -191,6 +212,7 @@ type BlockchainServiceServer interface {
 	GetBlockByHash(context.Context, *GetBlockByHashRequest) (*BlockResponse, error)
 	GetBlockByIndex(context.Context, *GetBlockByIndexRequest) (*BlockResponse, error)
 	SubscribeToBalanceUpdates(*BalanceSubscriptionRequest, grpc.ServerStreamingServer[BalanceMessage]) error
+	StreamBalance(*GetBalanceRequest, grpc.ServerStreamingServer[BalanceResponse]) error
 	mustEmbedUnimplementedBlockchainServiceServer()
 }
 
@@ -233,6 +255,9 @@ func (UnimplementedBlockchainServiceServer) GetBlockByIndex(context.Context, *Ge
 }
 func (UnimplementedBlockchainServiceServer) SubscribeToBalanceUpdates(*BalanceSubscriptionRequest, grpc.ServerStreamingServer[BalanceMessage]) error {
 	return status.Errorf(codes.Unimplemented, "method SubscribeToBalanceUpdates not implemented")
+}
+func (UnimplementedBlockchainServiceServer) StreamBalance(*GetBalanceRequest, grpc.ServerStreamingServer[BalanceResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method StreamBalance not implemented")
 }
 func (UnimplementedBlockchainServiceServer) mustEmbedUnimplementedBlockchainServiceServer() {}
 func (UnimplementedBlockchainServiceServer) testEmbeddedByValue()                           {}
@@ -446,6 +471,17 @@ func _BlockchainService_SubscribeToBalanceUpdates_Handler(srv interface{}, strea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type BlockchainService_SubscribeToBalanceUpdatesServer = grpc.ServerStreamingServer[BalanceMessage]
 
+func _BlockchainService_StreamBalance_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GetBalanceRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(BlockchainServiceServer).StreamBalance(m, &grpc.GenericServerStream[GetBalanceRequest, BalanceResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BlockchainService_StreamBalanceServer = grpc.ServerStreamingServer[BalanceResponse]
+
 // BlockchainService_ServiceDesc is the grpc.ServiceDesc for BlockchainService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -498,6 +534,11 @@ var BlockchainService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubscribeToBalanceUpdates",
 			Handler:       _BlockchainService_SubscribeToBalanceUpdates_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "StreamBalance",
+			Handler:       _BlockchainService_StreamBalance_Handler,
 			ServerStreams: true,
 		},
 	},

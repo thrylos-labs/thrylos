@@ -111,7 +111,7 @@ func (node *Node) SetupRoutes() *mux.Router {
 		})
 	})
 
-	r.HandleFunc("/get-balance", node.BalanceHandler).Methods("GET", "OPTIONS")
+	r.HandleFunc("/", node.JSONRPCHandler).Methods("POST")
 
 	// WebSocket endpoint with specific handling
 	r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
@@ -139,18 +139,13 @@ func (node *Node) SetupRoutes() *mux.Router {
 	}).Methods("GET", "OPTIONS")
 	// Core blockchain endpoints
 	r.HandleFunc("/block", node.BlockHandler).Methods("POST")
-	r.HandleFunc("/blockchain", node.BlockchainHandler).Methods("GET")
 	r.HandleFunc("/transaction", node.TransactionHandler).Methods("POST")
 	r.HandleFunc("/peers", node.PeersHandler).Methods("GET")
 
 	// Transaction related endpoints
-	r.HandleFunc("/get-transaction", node.GetTransactionHandler).Methods("GET")
 	r.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/pending-transactions", node.PendingTransactionsHandler).Methods("GET")
 	r.HandleFunc("/list-transactions-for-block", node.ListTransactionsForBlockHandler).Methods("GET")
-
-	// Wallet and balance endpoints
-	r.HandleFunc("/get-utxo", node.GetUTXOsForAddressHandler).Methods("GET", "OPTIONS")
 
 	// Staking and validator endpoints
 	r.HandleFunc("/validators", node.GetValidatorsHandler).Methods("GET", "OPTIONS")
@@ -164,56 +159,10 @@ func (node *Node) SetupRoutes() *mux.Router {
 	// Utility endpoints
 	r.HandleFunc("/gas-fee", node.GasEstimateHandler).Methods("GET", "OPTIONS")
 	r.HandleFunc("/network-health", node.NetworkHealthHandler).Methods("GET")
-	r.HandleFunc("/get-block", node.GetBlockHandler).Methods("GET")
 	r.HandleFunc("/consensus-info", node.ConsensusInfoHandler).Methods("GET")
 	r.HandleFunc("/stats", node.StatsHandler).Methods("GET")
 
 	return r
-}
-
-func (node *Node) BalanceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "OPTIONS" {
-		return
-	}
-
-	address := r.URL.Query().Get("address")
-	if address == "" {
-		http.Error(w, "Address parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	// Check if this is a new wallet
-	balance, err := node.GetBalance(address)
-	if err != nil {
-		log.Printf("Error getting balance for address %s: %v", address, err)
-
-		// If it's a new wallet, initialize with 70 Thrylos
-		if strings.Contains(err.Error(), "wallet not found") {
-			balance = 700000000 // 70 Thrylos in nanoTHR
-
-		} else {
-			http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	response := struct {
-		Balance        int64   `json:"balance"`
-		BalanceThrylos float64 `json:"balanceThrylos"`
-	}{
-		Balance:        balance,
-		BalanceThrylos: float64(balance) / 1e7,
-	}
-
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Error encoding balance response: %v", err)
-		http.Error(w, "Error encoding response", http.StatusInternalServerError)
-		return
-	}
 }
 
 // Core blockchain handlers
@@ -253,15 +202,6 @@ func (node *Node) BlockHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (node *Node) BlockchainHandler(w http.ResponseWriter, r *http.Request) {
-	data, err := json.Marshal(node.Blockchain)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Write(data)
-}
-
 func (node *Node) TransactionHandler(w http.ResponseWriter, r *http.Request) {
 	var jsonTx thrylos.TransactionJSON
 	if err := json.NewDecoder(r.Body).Decode(&jsonTx); err != nil {
@@ -282,26 +222,6 @@ func (node *Node) PeersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write(data)
-}
-
-// Transaction related handlers
-func (node *Node) GetTransactionHandler(w http.ResponseWriter, r *http.Request) {
-	txID := r.URL.Query().Get("id")
-	if txID == "" {
-		http.Error(w, "Transaction ID is required", http.StatusBadRequest)
-		return
-	}
-	tx, err := node.Blockchain.GetTransactionByID(txID)
-	if err != nil {
-		http.Error(w, "Transaction not found", http.StatusNotFound)
-		return
-	}
-	txJSON, err := json.Marshal(tx)
-	if err != nil {
-		http.Error(w, "Failed to serialize transaction", http.StatusInternalServerError)
-		return
-	}
-	sendResponse(w, txJSON)
 }
 
 // Helper function to derive address from public key
@@ -655,56 +575,6 @@ func (node *Node) ListTransactionsForBlockHandler(w http.ResponseWriter, r *http
 }
 
 // Wallet and balance handlers
-
-func (node *Node) GetUTXOsForAddressHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("GetUTXOsForAddressHandler called with method: %s", r.Method)
-
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	log.Printf("Request URL: %s", r.URL.String())
-	address := r.URL.Query().Get("address")
-	if address == "" {
-		log.Printf("Address parameter is missing")
-		http.Error(w, "Address parameter is missing", http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Fetching UTXOs for address: %s", address)
-	utxos, err := node.Blockchain.GetUTXOsForAddress(address)
-	if err != nil {
-		log.Printf("Error fetching UTXOs from database for address %s: %v", address, err)
-		http.Error(w, fmt.Sprintf("Error fetching UTXOs: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if len(utxos) == 0 {
-		log.Printf("No UTXOs found for address: %s", address)
-		http.Error(w, "No UTXOs found", http.StatusNotFound)
-		return
-	}
-
-	// Log UTXOs before serialization
-	for i, utxo := range utxos {
-		log.Printf("UTXO %d for address %s: {ID: %s, TransactionID: %s, Index: %d, Amount: %d, IsSpent: %v}",
-			i, address, utxo.ID, utxo.TransactionID, utxo.Index, utxo.Amount, utxo.IsSpent)
-	}
-
-	response, err := json.Marshal(utxos)
-	if err != nil {
-		log.Printf("Failed to serialize UTXOs for address %s: %v", address, err)
-		http.Error(w, "Failed to serialize UTXOs", http.StatusInternalServerError)
-		return
-	}
-
-	// Log the final JSON response
-	log.Printf("Response JSON for %s: %s", address, string(response))
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(response)
-}
 
 // Staking and validator handlers
 
@@ -1284,37 +1154,6 @@ func (node *Node) NetworkHealthHandler(w http.ResponseWriter, r *http.Request) {
 		healthInfo.Status = "WARNING"
 		healthInfo.Message = "Node is not connected to any peers"
 	}
-}
-
-// GetBlockHandler retrieves a specific block by ID.
-func (node *Node) GetBlockHandler(w http.ResponseWriter, r *http.Request) {
-	blockID := r.URL.Query().Get("id")
-	if blockID == "" {
-		http.Error(w, "Block ID is required", http.StatusBadRequest)
-		return
-	}
-
-	block, err := node.Blockchain.GetBlockByID(blockID)
-	if err != nil {
-		http.Error(w, "Block not found", http.StatusNotFound)
-		return
-	}
-
-	// Check if the block transactions are not null
-	if block.Transactions == nil {
-		log.Printf("No transactions found in block %s", blockID)
-	}
-
-	blockJSON, err := json.Marshal(block)
-	if err != nil {
-		log.Printf("Error serializing block: %v", err)
-		http.Error(w, "Failed to serialize block", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Sending block data: %s", string(blockJSON))
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(blockJSON)
 }
 
 // This handler could expose details about validators, their stakes, the votes they've cast for the most recent blocks, and potentially their historical performance or participation rates.

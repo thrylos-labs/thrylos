@@ -50,6 +50,7 @@ service BlockchainService {
   rpc GetBlockByHash(GetBlockByHashRequest) returns (BlockResponse);
   rpc GetBlockByIndex(GetBlockByIndexRequest) returns (BlockResponse);
   rpc SubscribeToBalanceUpdates(BalanceSubscriptionRequest) returns (stream BalanceMessage);
+  rpc StreamBalance(GetBalanceRequest) returns (stream BalanceResponse);
 }
 
 message BalanceSubscriptionRequest {

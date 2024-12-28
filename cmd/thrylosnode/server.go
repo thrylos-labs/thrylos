@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 
 	"golang.org/x/crypto/ed25519"
 
@@ -34,6 +35,87 @@ func NewServer(db *database.BlockchainDB) *server {
 		db:           db,
 		PublicKeyMap: make(map[string]ed25519.PublicKey),
 		hasherPool:   pool,
+	}
+}
+
+// server.go
+// server.go
+func (s *server) GetBalance(ctx context.Context, req *thrylos.GetBalanceRequest) (*thrylos.BalanceResponse, error) {
+	if req.Address == "" {
+		return nil, status.Error(codes.InvalidArgument, "Address is required")
+	}
+
+	// Create empty UTXO map for the GetBalance call
+	utxoMap := make(map[string][]shared.UTXO)
+
+	// Get balance using the existing GetBalance method with UTXO map
+	balance, err := s.db.GetBalance(req.Address, utxoMap)
+	if err != nil {
+		// Handle new wallet case
+		if strings.Contains(err.Error(), "wallet not found") {
+			balance = 700000000 // 70 Thrylos in nanoTHR
+		} else {
+			return nil, status.Errorf(codes.Internal, "Failed to get balance: %v", err)
+		}
+	}
+
+	// Calculate Thrylos balance
+	balanceThrylos := float64(balance) / 1e7
+
+	return &thrylos.BalanceResponse{
+		Balance:           balance,
+		BalanceThrylos:    balanceThrylos,
+		BlockchainAddress: req.Address,
+	}, nil
+}
+
+// The streaming version also needs to be updated
+func (s *server) StreamBalance(req *thrylos.GetBalanceRequest, stream thrylos.BlockchainService_StreamBalanceServer) error {
+	if req.Address == "" {
+		return status.Error(codes.InvalidArgument, "Address is required")
+	}
+
+	// Create empty UTXO map for the GetBalance call
+	utxoMap := make(map[string][]shared.UTXO)
+
+	// Send initial balance
+	balance, err := s.db.GetBalance(req.Address, utxoMap)
+	if err != nil {
+		if strings.Contains(err.Error(), "wallet not found") {
+			balance = 700000000 // 70 Thrylos in nanoTHR
+		} else {
+			return status.Errorf(codes.Internal, "Failed to get initial balance: %v", err)
+		}
+	}
+
+	balanceResponse := &thrylos.BalanceResponse{
+		Balance:           balance,
+		BalanceThrylos:    float64(balance) / 1e7,
+		BlockchainAddress: req.Address,
+	}
+
+	if err := stream.Send(balanceResponse); err != nil {
+		return status.Errorf(codes.Internal, "Failed to send initial balance: %v", err)
+	}
+
+	// Set up channel for balance updates
+	updateChan := make(chan int64, 10)
+	defer close(updateChan)
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case newBalance := <-updateChan:
+			response := &thrylos.BalanceResponse{
+				Balance:           newBalance,
+				BalanceThrylos:    float64(newBalance) / 1e7,
+				BlockchainAddress: req.Address,
+			}
+			if err := stream.Send(response); err != nil {
+				return status.Errorf(codes.Internal, "Failed to send balance update: %v", err)
+			}
+		}
 	}
 }
 

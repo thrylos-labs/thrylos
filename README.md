@@ -12,8 +12,6 @@ Jump into action with these simple steps:
 
 3. **Create a .env file**: in the .env file it needs to have the following:
 
-SUPABASE_PUBLIC_KEY=XXXXXXXXX
-SUPABASE_URL=XXXXXXXXX
 ENV=development
 HTTP_NODE_ADDRESS=localhost:8546
 GRPC_NODE_ADDRESS=localhost:50051
