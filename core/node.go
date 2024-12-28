@@ -44,7 +44,8 @@ type Node struct {
 	pendingTxCount       int32 // Add this field
 	serverHost           string
 	useSSL               bool
-	BatchProcessor       *BatchProcessor
+	ModernProcessor      *ModernProcessor
+	BlockTrigger         chan struct{}
 	DAGManager           *DAGManager
 }
 
@@ -127,10 +128,12 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		stakingService:       NewStakingService(bc),
 		serverHost:           serverHost,
 		useSSL:               useSSL,
+		BlockTrigger:         make(chan struct{}, 1),
 	}
 
-	// Process batch transactions and dag
-	node.InitializeProcessors()
+	// Initialize ModernProcessor instead of BatchProcessor
+	node.ModernProcessor = NewModernProcessor(node)
+	node.ModernProcessor.Start()
 
 	// Initialize block producer after node is set up
 	node.blockProducer = NewBlockProducer(node, bc)

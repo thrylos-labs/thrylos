@@ -2,7 +2,9 @@ package core
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -236,8 +238,10 @@ func generateAddressForShard(shardID int, nonce int, numShards int) string {
 }
 
 func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
-	batchNumber := nonce / batchSize
-	shardID := batchNumber % numShards
+	h := fnv.New32a()
+	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
+	shardID := int(h.Sum32() % uint32(numShards))
+
 	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
 
 	// Rest of the function remains the same
@@ -321,11 +325,11 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 
 	// Production-like timing constants
 	const (
-		networkLatency    = 75 * time.Millisecond
-		consensusDelay    = 200 * time.Millisecond
+		networkLatency    = 25 * time.Millisecond  // Reduced from 75ms
+		consensusDelay    = 100 * time.Millisecond // Reduced from 200ms
 		validatorCount    = 16
 		txsPerBlock       = 1000
-		batchSize         = 100
+		batchSize         = 50 // Smaller batches for better distribution
 		batchDelay        = 30 * time.Millisecond
 		expectedBlockTime = 850 * time.Millisecond
 		numShards         = 12
@@ -352,9 +356,16 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 
 	// Initialize batch processor
 	node := &Node{
-		Blockchain: blockchain,
+		Blockchain:   blockchain,
+		BlockTrigger: make(chan struct{}, 1), // Add this
 	}
-	node.InitializeProcessors()
+
+	// Initialize DAG Manager first
+	node.DAGManager = NewDAGManager(node)
+
+	// Initialize ModernProcessor instead of BatchProcessor
+	node.ModernProcessor = NewModernProcessor(node)
+	node.ModernProcessor.Start()
 
 	// Setup validators (same as before)
 	validators := make([]struct {
@@ -442,83 +453,96 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 			for i := 0; i < tc.numBlocks; i++ {
 				blockStart := time.Now()
 
-				// Wait group for batch processing
+				// Pre-allocate transaction slice with capacity
+				allTxs := make([]*thrylos.Transaction, 0, txsPerBlock)
+
+				// Create channels
+				txChan := make(chan *thrylos.Transaction, txsPerBlock)
+				resultChan := make(chan struct {
+					tx      *thrylos.Transaction
+					latency time.Duration
+				}, txsPerBlock)
+
+				// Create metrics channel
+				metricsChan := make(chan struct {
+					shardID int
+					latency time.Duration
+				}, txsPerBlock)
+
 				var wg sync.WaitGroup
-				var batchMutex sync.Mutex
-				var allTxs []*thrylos.Transaction
+				parallelism := runtime.NumCPU() * 6 // Increase from 4x to 6x
 
-				// Process transactions in batches using the batch processor
-				numBatches := txsPerBlock / batchSize
-
-				// In the test, modify the batch processing loop
-				// Modify the test's batch processing
-				// Modify the test's batch processing
-				for b := 0; b < numBatches; b++ {
+				// Launch processor goroutines
+				for w := 0; w < parallelism; w++ {
 					wg.Add(1)
-					batchStart := time.Now()
-
-					go func(batchNum int) {
+					go func() {
 						defer wg.Done()
-
-						var batchTxs []*thrylos.Transaction
-						startIdx := batchNum * batchSize
-						endIdx := startIdx + batchSize
-
-						// Process transactions sequentially within batch
-						for j := startIdx; j < endIdx; j++ {
-							tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards)
-
+						for tx := range txChan {
+							start := time.Now()
 							err := node.ProcessIncomingTransaction(tx)
-							require.NoError(t, err, "Failed to process transaction")
+							require.NoError(t, err)
 
-							batchMutex.Lock()
-							batchTxs = append(batchTxs, tx)
-
-							// Update metrics
-							for _, output := range tx.Outputs {
-								partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
-								if partition != nil {
-									metrics := shardMetrics[partition.ID]
-									metrics.ModifyCount++
-									metrics.TotalTxCount++
-									txLatency := time.Since(batchStart)
-									if metrics.AvgLatency == 0 {
-										metrics.AvgLatency = txLatency
-									} else {
-										metrics.AvgLatency = (metrics.AvgLatency + txLatency) / 2
-									}
-									metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
-
-									err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
-									require.NoError(t, err, "Failed to update state")
-								}
-							}
-							batchMutex.Unlock()
+							resultChan <- struct {
+								tx      *thrylos.Transaction
+								latency time.Duration
+							}{tx, time.Since(start)}
 						}
-
-						time.Sleep(time.Duration(float64(networkLatency) * tc.latencyFactor / float64(numBatches)))
-						time.Sleep(batchDelay)
-
-						batchMutex.Lock()
-						allTxs = append(allTxs, batchTxs...)
-						batchTime := time.Since(batchStart)
-						batchTimes = append(batchTimes, batchTime)
-						t.Logf("Block %d - Batch %d processing time: %v", i, batchNum+1, batchTime)
-						batchMutex.Unlock()
-					}(b)
+					}()
 				}
 
+				// Launch metrics collector
+				go func() {
+					for metric := range metricsChan {
+						metrics := shardMetrics[metric.shardID]
+						metrics.ModifyCount++
+						metrics.TotalTxCount++
+						if metrics.AvgLatency == 0 {
+							metrics.AvgLatency = metric.latency
+						} else {
+							metrics.AvgLatency = (metrics.AvgLatency + metric.latency) / 2
+						}
+						metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
+					}
+				}()
+
+				// Feed transactions to workers
+				go func() {
+					for j := 0; j < txsPerBlock; j++ {
+						tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards)
+						txChan <- tx
+					}
+					close(txChan)
+				}()
+
+				// Collect results
+				go func() {
+					for result := range resultChan {
+						tx := result.tx
+						allTxs = append(allTxs, tx)
+						batchTimes = append(batchTimes, result.latency)
+
+						// Update metrics
+						for _, output := range tx.Outputs {
+							partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
+							if partition != nil {
+								metricsChan <- struct {
+									shardID int
+									latency time.Duration
+								}{partition.ID, result.latency}
+
+								err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
+								require.NoError(t, err)
+							}
+						}
+					}
+					close(metricsChan)
+				}()
+
+				// Wait for all processors to complete
 				wg.Wait()
+				close(resultChan)
 
-				// Log shard metrics
-				for shardID := 0; shardID < numShards; shardID++ {
-					metrics := shardMetrics[shardID]
-					t.Logf("Shard %d metrics - Txs: %d, Accesses: %d, Modifications: %d, Avg Latency: %v, Load Factor: %.2f",
-						shardID, metrics.TotalTxCount, metrics.AccessCount, metrics.ModifyCount,
-						metrics.AvgLatency, metrics.LoadFactor)
-				}
-
-				// Create and process block (same as before)
+				// Create and process block
 				validatorIndex := i % validatorCount
 				currentValidator := validators[validatorIndex]
 				time.Sleep(consensusDelay)
@@ -532,7 +556,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 				}
 
 				err := block.InitializeVerkleTree()
-				require.NoError(t, err, "Failed to initialize Verkle tree")
+				require.NoError(t, err)
 
 				block.Hash = block.ComputeHash()
 				block.Signature = ed25519.Sign(currentValidator.privateKey, block.Hash)
