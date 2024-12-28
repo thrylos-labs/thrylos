@@ -22,6 +22,7 @@ import (
 	"golang.org/x/crypto/ed25519"
 )
 
+// Apply CORS middleware to setup the handlers
 func (node *Node) SetupRoutes() *mux.Router {
 	r := mux.NewRouter()
 
@@ -110,53 +111,7 @@ func (node *Node) SetupRoutes() *mux.Router {
 		})
 	})
 
-	// Balance endpoints
-	balanceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "OPTIONS" {
-			return
-		}
-
-		address := r.URL.Query().Get("address")
-		if address == "" {
-			http.Error(w, "Address parameter is required", http.StatusBadRequest)
-			return
-		}
-
-		// Check if this is a new wallet
-		balance, err := node.GetBalance(address)
-		if err != nil {
-			log.Printf("Error getting balance for address %s: %v", address, err)
-
-			// If it's a new wallet, initialize with 70 Thrylos
-			if strings.Contains(err.Error(), "wallet not found") {
-				balance = 700000000 // 70 Thrylos in nanoTHR
-
-			} else {
-				http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
-				return
-			}
-		}
-
-		response := struct {
-			Balance        int64   `json:"balance"`
-			BalanceThrylos float64 `json:"balanceThrylos"`
-		}{
-			Balance:        balance,
-			BalanceThrylos: float64(balance) / 1e7,
-		}
-
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Pragma", "no-cache")
-		w.Header().Set("Expires", "0")
-
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Error encoding balance response: %v", err)
-			http.Error(w, "Error encoding response", http.StatusInternalServerError)
-			return
-		}
-	})
-
-	r.Handle("/get-balance", balanceHandler).Methods("GET", "OPTIONS")
+	r.HandleFunc("/get-balance", node.BalanceHandler).Methods("GET", "OPTIONS")
 
 	// WebSocket endpoint with specific handling
 	r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
@@ -189,7 +144,6 @@ func (node *Node) SetupRoutes() *mux.Router {
 	r.HandleFunc("/peers", node.PeersHandler).Methods("GET")
 
 	// Transaction related endpoints
-	r.HandleFunc("/vote", node.VoteHandler).Methods("POST")
 	r.HandleFunc("/get-transaction", node.GetTransactionHandler).Methods("GET")
 	r.HandleFunc("/process-transaction", node.ProcessSignedTransactionHandler).Methods("POST", "OPTIONS")
 	r.HandleFunc("/pending-transactions", node.PendingTransactionsHandler).Methods("GET")
@@ -217,8 +171,10 @@ func (node *Node) SetupRoutes() *mux.Router {
 	return r
 }
 
-func (node *Node) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("GetBalanceHandler invoked")
+func (node *Node) BalanceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "OPTIONS" {
+		return
+	}
 
 	address := r.URL.Query().Get("address")
 	if address == "" {
@@ -226,11 +182,19 @@ func (node *Node) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is a new wallet
 	balance, err := node.GetBalance(address)
 	if err != nil {
 		log.Printf("Error getting balance for address %s: %v", address, err)
-		http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
-		return
+
+		// If it's a new wallet, initialize with 70 Thrylos
+		if strings.Contains(err.Error(), "wallet not found") {
+			balance = 700000000 // 70 Thrylos in nanoTHR
+
+		} else {
+			http.Error(w, fmt.Sprintf("Error getting balance: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	response := struct {
@@ -241,8 +205,9 @@ func (node *Node) GetBalanceHandler(w http.ResponseWriter, r *http.Request) {
 		BalanceThrylos: float64(balance) / 1e7,
 	}
 
-	// Add additional logging
-	log.Printf("Sending balance response for address %s: %+v", address, response)
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		log.Printf("Error encoding balance response: %v", err)
@@ -319,15 +284,6 @@ func (node *Node) PeersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-func (node *Node) VoteHandler(w http.ResponseWriter, r *http.Request) {
-	var vote Vote
-	if err := json.NewDecoder(r.Body).Decode(&vote); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	node.Votes = append(node.Votes, vote)
-}
-
 // Transaction related handlers
 func (node *Node) GetTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	txID := r.URL.Query().Get("id")
@@ -375,12 +331,15 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	log.Printf("processing transaction...")
+
 	// Use a buffered reader for better performance
 	bodyBytes, err := io.ReadAll(bufio.NewReader(r.Body))
 	if err != nil {
 		sendJSONErrorResponse(w, "Failed to read request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("Request body read successfully")
 
 	var requestData struct {
 		Payload   map[string]interface{} `json:"payload"`
@@ -389,17 +348,21 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+		log.Printf("Failed to unmarshal request: %v", err)
 		sendJSONErrorResponse(w, "Invalid request format: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	log.Printf("Request unmarshaled successfully")
 
 	// Fast path validation
+	log.Printf("Validating sender...")
 	sender, ok := requestData.Payload["sender"].(string)
 	if !ok {
 		sendJSONErrorResponse(w, "Invalid sender in payload", http.StatusBadRequest)
 		return
 	}
 
+	log.Printf("Starting critical validation...")
 	// Parallel validation of critical components with timeout
 	validationDone := make(chan error, 1)
 	var signatureBytes []byte
@@ -464,6 +427,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	log.Printf("Creating transaction data...")
 	// Process transaction data
 	var transactionData shared.Transaction
 	transactionData.ID = requestData.Payload["id"].(string)
@@ -569,6 +533,7 @@ func (n *Node) ProcessSignedTransactionHandler(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		log.Printf("Starting ProcessIncomingTransaction...")
 		// 4. Process Transaction
 		log.Printf("[TX Handler] Starting ProcessIncomingTransaction")
 		if err := n.ProcessIncomingTransaction(thrylosTx); err != nil {
@@ -1404,10 +1369,4 @@ func sendResponseProcess(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(data)
-}
-
-func enableCors(w *http.ResponseWriter) {
-	(*w).Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
-	(*w).Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	(*w).Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 }
