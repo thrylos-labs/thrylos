@@ -577,35 +577,36 @@ func (node *Node) HandleBlockchainEvent(address string) {
 }
 
 // SendBalanceUpdate sends a balance update through the websocket
+// In your Go backend, modify SendBalanceUpdate:
 func (node *Node) SendBalanceUpdate(address string) error {
-	node.WebSocketMutex.RLock()
-	conn, exists := node.WebSocketConnections[address]
-	node.WebSocketMutex.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("no WebSocket connection found for address: %s", address)
-	}
-
 	balance, err := node.GetBalance(address)
 	if err != nil {
-		return fmt.Errorf("failed to fetch balance: %v", err)
+		return err
 	}
 
-	balanceThrylos := float64(balance) / 1e7
-
-	message := map[string]interface{}{
-		"blockchainAddress": address,
-		"balance":           balance,
-		"balanceThrylos":    balanceThrylos,
+	// Convert to JSON-RPC notification format
+	notification := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "subscription",
+		"params": map[string]interface{}{
+			"subscription": "balance",
+			"result": map[string]interface{}{
+				"balance":        balance,
+				"balanceThrylos": float64(balance) / 1e7,
+			},
+		},
 	}
 
-	messageBytes, err := json.Marshal(message)
+	messageBytes, err := json.Marshal(notification)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %v", err)
 	}
 
-	conn.enqueueMessage(messageBytes)
-	return conn.processQueue()
+	// Send through WebSocket
+	if conn, exists := node.WebSocketConnections[address]; exists {
+		return conn.ws.WriteMessage(websocket.TextMessage, messageBytes)
+	}
+	return fmt.Errorf("no WebSocket connection found for address: %s", address)
 }
 
 func (node *Node) notifyBalanceUpdate(address string, balance int64) {

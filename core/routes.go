@@ -1,13 +1,13 @@
 package core
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 )
 
 // Helper function to check if request is WebSocket
@@ -15,11 +15,94 @@ func isWebSocketRequest(r *http.Request) bool {
 	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
 }
 
-// Middleware handler function
+func (node *Node) SetupRoutes() *mux.Router {
+	r := mux.NewRouter()
+
+	// Apply middleware for CORS, logging, etc.
+	r.Use(node.middlewareHandler())
+
+	// JSON-RPC endpoint
+	r.HandleFunc("/", node.JSONRPCHandler).Methods("POST", "OPTIONS")
+
+	// Separate WebSocket endpoint
+	r.HandleFunc("/ws/balance", func(w http.ResponseWriter, r *http.Request) {
+		// Add cors headers specifically for WebSocket
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			http.Error(w, "Address parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		// Check if it's a WebSocket request
+		if !isWebSocketRequest(r) {
+			http.Error(w, "Expected WebSocket connection", http.StatusBadRequest)
+			return
+		}
+
+		node.handleWebSocketConnection(w, r)
+	}).Methods("GET", "OPTIONS")
+
+	return r
+}
+
+func (node *Node) handleWebSocketConnection(w http.ResponseWriter, r *http.Request) {
+	address := r.URL.Query().Get("address")
+
+	// Configure the upgrader with more permissive settings
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			// Add more comprehensive origin checking if needed
+			return true
+		},
+	}
+
+	// Upgrade the connection
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+
+	log.Printf("WebSocket connection established for address: %s", address)
+
+	// Create new connection with explicit configuration
+	conn := NewWebSocketConnection(ws)
+
+	// Store connection safely
+	node.WebSocketMutex.Lock()
+	// Clean up existing connection if it exists
+	if existingConn, exists := node.WebSocketConnections[address]; exists {
+		existingConn.close()
+	}
+	node.WebSocketConnections[address] = conn
+	node.WebSocketMutex.Unlock()
+
+	// Send initial balance
+	if err := node.SendBalanceUpdate(address); err != nil {
+		log.Printf("Error sending initial balance: %v", err)
+	}
+
+	// Start handlers
+	go node.readPump(conn, address)
+	go node.writePump(conn, address)
+}
+
+// Update the middleware to better handle WebSocket requests
 func (node *Node) middlewareHandler() mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Request logging
+			// Log incoming request
 			log.Printf("[%s] Request: %s %s from %s",
 				time.Now().Format(time.RFC3339),
 				r.Method,
@@ -27,7 +110,15 @@ func (node *Node) middlewareHandler() mux.MiddlewareFunc {
 				r.RemoteAddr,
 			)
 
-			// CORS configuration
+			// Different handling for WebSocket and regular requests
+			if isWebSocketRequest(r) {
+				// Minimal headers for WebSocket
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Regular request handling with CORS
 			allowedOrigins := []string{
 				"http://localhost:3000",
 				"https://node.thrylos.org",
@@ -47,86 +138,28 @@ func (node *Node) middlewareHandler() mux.MiddlewareFunc {
 				}
 			}
 
-			// Security headers
+			// Set comprehensive headers for regular requests
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+			// Security headers
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-Frame-Options", "DENY")
 			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
-			// Handle preflight
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
 
-			// Origin validation for non-WebSocket requests
-			if !originAllowed && !isWebSocketRequest(r) {
-				if r.Method != "OPTIONS" {
-					log.Printf("Blocked request from unauthorized origin: %s", origin)
-					http.Error(w, "Unauthorized origin", http.StatusForbidden)
-					return
-				}
+			if !originAllowed {
+				http.Error(w, "Unauthorized origin", http.StatusForbidden)
+				return
 			}
 
-			// Set content type
-			if !isWebSocketRequest(r) {
-				w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			}
-
-			// Request tracking
-			ctx := context.WithValue(r.Context(), "request_start_time", time.Now())
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-func (node *Node) SetupRoutes() *mux.Router {
-	r := mux.NewRouter()
-
-	// Apply middleware for CORS, logging, etc.
-	r.Use(node.middlewareHandler())
-
-	// Main WebSocket + JSON-RPC endpoint
-	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Handle both WebSocket and HTTP requests
-		if isWebSocketRequest(r) {
-			node.handleWebSocketConnection(w, r)
-			return
-		}
-		// Handle regular JSON-RPC requests
-		node.JSONRPCHandler(w, r)
-	})
-
-	return r
-}
-
-func (node *Node) handleWebSocketConnection(w http.ResponseWriter, r *http.Request) {
-	// Get address from query params
-	address := r.URL.Query().Get("address")
-	if address == "" {
-		log.Println("Blockchain address is required")
-		http.Error(w, "Blockchain address is required", http.StatusBadRequest)
-		return
-	}
-
-	// Upgrade to WebSocket
-	ws, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
-		return
-	}
-
-	// Create new connection
-	conn := NewWebSocketConnection(ws)
-
-	// Store connection in node's connections map
-	node.WebSocketMutex.Lock()
-	node.WebSocketConnections[address] = conn
-	node.WebSocketMutex.Unlock()
-
-	// Start message handlers
-	go node.readPump(conn, address)
-	go node.writePump(conn, address)
 }
