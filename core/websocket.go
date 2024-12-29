@@ -45,6 +45,12 @@ type MessageItem struct {
 	created time.Time
 }
 
+type Subscription struct {
+	Type      string                 `json:"type"`
+	Addresses []string               `json:"addresses,omitempty"`
+	Options   map[string]interface{} `json:"options,omitempty"`
+}
+
 // Add ConnectionStatus struct
 type ConnectionStatus struct {
 	Address         string    `json:"address"`
@@ -54,6 +60,45 @@ type ConnectionStatus struct {
 	QueueSize       int       `json:"queueSize"`
 	IsReconnecting  bool      `json:"isReconnecting"`
 	LastMessageSent time.Time `json:"lastMessageSent"`
+}
+
+func (node *Node) handleWebSocketSubscription(w http.ResponseWriter, r *http.Request, params []interface{}) {
+	if len(params) < 1 {
+		return
+	}
+
+	subData, ok := params[0].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	sub := &Subscription{}
+	subBytes, _ := json.Marshal(subData)
+	if err := json.Unmarshal(subBytes, sub); err != nil {
+		return
+	}
+
+	switch sub.Type {
+	case "balance":
+		node.subscribeToBalance(sub)
+	case "transactions":
+		node.subscribeToTransactions(sub)
+	case "blocks":
+		node.subscribeToBlocks(sub)
+	}
+}
+
+func (node *Node) subscribeToBalance(sub *Subscription) {
+	for _, address := range sub.Addresses {
+		node.WebSocketMutex.Lock()
+		if conn, exists := node.WebSocketConnections[address]; exists {
+			// Set up balance subscription
+			conn.subscriptions = append(conn.subscriptions, sub)
+			// Send initial balance
+			node.SendBalanceUpdate(address)
+		}
+		node.WebSocketMutex.Unlock()
+	}
 }
 
 // Add a proper close handler
@@ -103,6 +148,9 @@ type WebSocketConnection struct {
 	lastConnectTime time.Time
 	isReconnecting  bool
 	done            chan struct{}
+	subscriptions   []*Subscription
+	subscriptionID  int64
+	mutex           sync.RWMutex
 }
 
 func (conn *WebSocketConnection) enqueueMessage(data []byte) {
@@ -154,6 +202,114 @@ func (conn *WebSocketConnection) processQueue() error {
 	return nil
 }
 
+func (node *Node) handleWebSocketUnsubscription(w http.ResponseWriter, r *http.Request, params []interface{}) {
+	if len(params) < 1 {
+		return
+	}
+
+	unsubData, ok := params[0].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	// Unsubscribe request format
+	type UnsubscribeRequest struct {
+		Type      string   `json:"type"`
+		Addresses []string `json:"addresses,omitempty"`
+	}
+
+	unsub := &UnsubscribeRequest{}
+	unsubBytes, _ := json.Marshal(unsubData)
+	if err := json.Unmarshal(unsubBytes, unsub); err != nil {
+		return
+	}
+
+	switch unsub.Type {
+	case "balance":
+		node.unsubscribeFromBalance(unsub.Addresses)
+	case "transactions":
+		node.unsubscribeFromTransactions(unsub.Addresses)
+	case "blocks":
+		node.unsubscribeFromBlocks(unsub.Addresses)
+	}
+}
+
+func (node *Node) unsubscribeFromBalance(addresses []string) {
+	for _, address := range addresses {
+		node.WebSocketMutex.Lock()
+		if conn, exists := node.WebSocketConnections[address]; exists {
+			// Remove balance subscriptions
+			var remainingSubs []*Subscription
+			for _, sub := range conn.subscriptions {
+				if sub.Type != "balance" {
+					remainingSubs = append(remainingSubs, sub)
+				}
+			}
+			conn.subscriptions = remainingSubs
+		}
+		node.WebSocketMutex.Unlock()
+	}
+}
+
+func (node *Node) unsubscribeFromTransactions(addresses []string) {
+	// Implementation similar to unsubscribeFromBalance
+	for _, address := range addresses {
+		node.WebSocketMutex.Lock()
+		if conn, exists := node.WebSocketConnections[address]; exists {
+			var remainingSubs []*Subscription
+			for _, sub := range conn.subscriptions {
+				if sub.Type != "transactions" {
+					remainingSubs = append(remainingSubs, sub)
+				}
+			}
+			conn.subscriptions = remainingSubs
+		}
+		node.WebSocketMutex.Unlock()
+	}
+}
+
+func (node *Node) unsubscribeFromBlocks(addresses []string) {
+	// Implementation similar to unsubscribeFromBalance
+	for _, address := range addresses {
+		node.WebSocketMutex.Lock()
+		if conn, exists := node.WebSocketConnections[address]; exists {
+			var remainingSubs []*Subscription
+			for _, sub := range conn.subscriptions {
+				if sub.Type != "blocks" {
+					remainingSubs = append(remainingSubs, sub)
+				}
+			}
+			conn.subscriptions = remainingSubs
+		}
+		node.WebSocketMutex.Unlock()
+	}
+}
+
+// Add placeholder implementations for these methods
+func (node *Node) subscribeToTransactions(sub *Subscription) {
+	// Implementation for transaction subscriptions
+	for _, address := range sub.Addresses {
+		node.WebSocketMutex.Lock()
+		if conn, exists := node.WebSocketConnections[address]; exists {
+			conn.subscriptions = append(conn.subscriptions, sub)
+			// Initialize transaction monitoring for this address
+		}
+		node.WebSocketMutex.Unlock()
+	}
+}
+
+func (node *Node) subscribeToBlocks(sub *Subscription) {
+	// Implementation for block subscriptions
+	for _, address := range sub.Addresses {
+		node.WebSocketMutex.Lock()
+		if conn, exists := node.WebSocketConnections[address]; exists {
+			conn.subscriptions = append(conn.subscriptions, sub)
+			// Initialize block monitoring for this address
+		}
+		node.WebSocketMutex.Unlock()
+	}
+}
+
 func NewWebSocketConnection(ws *websocket.Conn) *WebSocketConnection {
 	return &WebSocketConnection{
 		ws:              ws,
@@ -162,6 +318,9 @@ func NewWebSocketConnection(ws *websocket.Conn) *WebSocketConnection {
 		lastConnectTime: time.Now(),
 		isReconnecting:  false,
 		done:            make(chan struct{}),
+		subscriptions:   make([]*Subscription, 0),
+		subscriptionID:  0,
+		messageQueue:    make([]*MessageItem, 0),
 	}
 }
 
