@@ -40,7 +40,6 @@ type Node struct {
 	balanceUpdateQueue   *BalanceUpdateQueue
 	blockProducer        *ModernBlockProducer
 	stakingService       *StakingService
-	pendingTxCount       int32 // Add this field
 	serverHost           string
 	useSSL               bool
 	ModernProcessor      *ModernProcessor
