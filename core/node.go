@@ -12,6 +12,7 @@ import (
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/state"
 
 	"github.com/joho/godotenv"
 )
@@ -20,9 +21,9 @@ import (
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
 // the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
 type Node struct {
-	Address             string      // Network address of the node.
-	Blockchain          *Blockchain // The blockchain maintained by this node.
-	Shard               *Shard      // Reference to the shard this node is part of, if sharding is implemented.
+	Address             string              // Network address of the node.
+	Blockchain          *Blockchain         // The blockchain maintained by this node.
+	StateManager        *state.StateManager // Replace Shard field
 	PendingTransactions []*thrylos.Transaction
 	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
 	chainID             string
@@ -71,7 +72,7 @@ func loadEnv() (map[string]string, error) {
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
-func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) *Node {
+func NewNode(address string, knownPeers []string, dataDir string, stateManager *state.StateManager) *Node {
 	// Default values for WebSocket configuration
 	serverHost := address                            // Use the node's address as default server host
 	useSSL := strings.HasPrefix(address, "https://") // Determine SSL based on address
@@ -122,7 +123,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		Peers:                make(map[string]*PeerConnection),
 		Blockchain:           bc,
 		Database:             db,
-		Shard:                shard,
+		StateManager:         stateManager,
 		PublicKeyMap:         make(map[string]ed25519.PublicKey),
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,
@@ -157,11 +158,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 	// Start the balance update worker goroutine
 	go node.balanceUpdateQueue.balanceUpdateWorker()
 
-	if shard != nil {
-		shard.AssignNode(node)
-	}
-
-	node.DiscoverPeers() // Skip this during tests
+	node.DiscoverPeers()
 
 	bc.OnTransactionProcessed = node.handleProcessedTransaction
 
