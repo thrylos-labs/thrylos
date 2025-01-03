@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bytes"
+	"fmt"
 	"log"
 	"math/big"
 	"time"
@@ -15,9 +17,10 @@ const (
 )
 
 type ConsensusManager struct {
-	Blockchain       *Blockchain
-	CurrentBlockTime time.Duration
-	PredictionModel  *PredictionModel
+	Blockchain        *Blockchain
+	CurrentBlockTime  time.Duration
+	PredictionModel   *PredictionModel
+	maliciousDetector *MaliciousDetector
 }
 
 type PredictionModel struct {
@@ -25,11 +28,116 @@ type PredictionModel struct {
 	ExpectedNodeCount         int
 }
 
+type ValidatorBehavior struct {
+	DoubleSignings    int
+	MissedBlocks      int
+	InvalidBlocks     int
+	LastActiveBlock   int32
+	ConsecutiveMisses int
+}
+
+type MaliciousDetector struct {
+	behaviors        map[string]*ValidatorBehavior
+	consensusManager *ConsensusManager
+	signatures       map[string][]byte // Add this field
+	thresholds       struct {
+		doubleSignings    int
+		missedBlocks      int
+		invalidBlocks     int
+		consecutiveMisses int
+	}
+}
+
+func (cm *ConsensusManager) DetectMaliciousActivity(block *Block) {
+	detector := cm.maliciousDetector
+	totalStake := cm.Blockchain.GetTotalSupply()
+
+	// Double signing detection
+	if detector.checkDoubleSigningAtHeight(block.Index, block.Validator, block.Signature) {
+		cm.Blockchain.SlashMaliciousValidator(block.Validator, calculateSlashAmount("double_signing", totalStake))
+	}
+
+	// Invalid block proposal
+	if !cm.ValidateBlock(block) {
+		detector.behaviors[block.Validator].InvalidBlocks++
+		if detector.behaviors[block.Validator].InvalidBlocks >= detector.thresholds.invalidBlocks {
+			cm.Blockchain.SlashMaliciousValidator(block.Validator, calculateSlashAmount("invalid_blocks", totalStake))
+		}
+	}
+
+	// Missed blocks tracking
+	detector.updateMissedBlocks(block)
+}
+
+func (md *MaliciousDetector) checkDoubleSigningAtHeight(height int32, validator string, signature []byte) bool {
+	// Store signatures per height and validator
+	key := fmt.Sprintf("%d:%s", height, validator)
+	previousSignature := md.signatures[key]
+	if previousSignature != nil && !bytes.Equal(previousSignature, signature) {
+		return true
+	}
+	md.signatures[key] = signature
+	return false
+}
+
+func calculateSlashAmount(violation string, totalStake int64) int64 {
+	slashAmounts := map[string]float64{
+		"double_signing": 0.05,
+		"invalid_blocks": 0.02,
+		"missed_blocks":  0.01,
+	}
+	return int64(slashAmounts[violation] * float64(totalStake))
+}
+
 func NewConsensusManager(blockchain *Blockchain) *ConsensusManager {
-	return &ConsensusManager{
-		Blockchain:       blockchain,
-		CurrentBlockTime: BaseBlockTime,
-		PredictionModel:  &PredictionModel{},
+	md := &MaliciousDetector{
+		behaviors: make(map[string]*ValidatorBehavior),
+		thresholds: struct {
+			doubleSignings    int
+			missedBlocks      int
+			invalidBlocks     int
+			consecutiveMisses int
+		}{
+			doubleSignings:    1,  // Immediate slash for double signing
+			missedBlocks:      50, // Allow 50 missed blocks
+			invalidBlocks:     10, // Allow 10 invalid blocks
+			consecutiveMisses: 20, // Allow 20 consecutive misses
+		},
+	}
+
+	cm := &ConsensusManager{
+		Blockchain:        blockchain,
+		CurrentBlockTime:  BaseBlockTime,
+		PredictionModel:   &PredictionModel{},
+		maliciousDetector: md,
+	}
+	md.consensusManager = cm
+	return cm
+}
+
+// Add this helper method
+func (md *MaliciousDetector) updateMissedBlocks(block *Block) {
+	behavior := md.behaviors[block.Validator]
+	if behavior == nil {
+		behavior = &ValidatorBehavior{}
+		md.behaviors[block.Validator] = behavior
+	}
+
+	if block.Index-behavior.LastActiveBlock > 1 {
+		behavior.MissedBlocks++
+		behavior.ConsecutiveMisses++
+	} else {
+		behavior.ConsecutiveMisses = 0
+	}
+	behavior.LastActiveBlock = block.Index
+
+	if behavior.MissedBlocks >= md.thresholds.missedBlocks ||
+		behavior.ConsecutiveMisses >= md.thresholds.consecutiveMisses {
+		totalStake := md.consensusManager.Blockchain.GetTotalSupply()
+		md.consensusManager.Blockchain.SlashMaliciousValidator(
+			block.Validator,
+			calculateSlashAmount("missed_blocks", totalStake),
+		)
 	}
 }
 
