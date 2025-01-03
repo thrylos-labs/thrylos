@@ -18,7 +18,7 @@ type Vote struct {
 	Stake     int64  // Stake amount of the validator at the time of voting
 }
 
-const minStakeRequirement = 1000 // Minimum stake required to become a validator
+const minStakeRequirement = 40 * 1e7 // 40 THRYLOS in nanoTHRYLOS
 
 // VoteForBlock allows a node to cast a vote for a specific block
 func (node *Node) VoteForBlock(block *Block) {
