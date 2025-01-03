@@ -219,11 +219,11 @@ func (node *Node) BroadcastBlock(block *Block) {
 	for _, peer := range node.Peers {
 		resp, err := http.Post(peer.Address+"/block", "application/json", bytes.NewBuffer(blockData))
 		if err != nil {
-			fmt.Printf("Failed to post block to peer %s: %v\n", peer, err)
+			fmt.Printf("Failed to post block to peer %s: %v\n", peer.Address, err)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
-			fmt.Printf("Received non-OK response when broadcasting block to peer %s: %s\n", peer, resp.Status)
+			fmt.Printf("Received non-OK response when broadcasting block to peer %s: %s\n", peer.Address, resp.Status)
 		}
 		resp.Body.Close()
 	}
@@ -247,8 +247,8 @@ func (node *Node) BroadcastTransaction(tx *thrylos.Transaction) error {
 			continue
 		}
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-			fmt.Printf("Received non-OK response when broadcasting transaction to peer: %s, Status: %s\n", peer, resp.Status)
-			broadcastErr = fmt.Errorf("failed to broadcast to peer %s, received status %s", peer, resp.Status)
+			fmt.Printf("Received non-OK response when broadcasting transaction to peer: %s, Status: %s\n", peer.Address, resp.Status)
+			broadcastErr = fmt.Errorf("failed to broadcast to peer %s, received status %s", peer.Address, resp.Status)
 		}
 		resp.Body.Close()
 	}
@@ -265,12 +265,12 @@ func (node *Node) PingPeers() {
 	for _, peer := range node.Peers {
 		resp, err := http.Get(peer.Address + "/ping")
 		if err != nil {
-			log.Printf("Failed to ping peer %s: %v", peer, err)
+			log.Printf("Failed to ping peer %s: %v", peer.Address, err)
 			continue
 		}
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("Unhealthy peer %s with status: %d", peer, resp.StatusCode)
+			log.Printf("Unhealthy peer %s with status: %d", peer.Address, resp.StatusCode)
 		}
 	}
 }
