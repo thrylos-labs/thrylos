@@ -90,9 +90,6 @@ type Blockchain struct {
 
 	GenesisAccount string // Add this to store the genesis account address
 
-	// Manages the preictive modal
-	TOBManager *TOBManager // Add this field
-
 	ConsensusManager *ConsensusManager
 
 	ActiveValidators []string
@@ -412,9 +409,6 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 
 	// Initialize ConsensusManager
 	blockchain.ConsensusManager = NewConsensusManager(blockchain)
-
-	// Initialize TOBManager
-	blockchain.TOBManager = NewTOBManager(0.3, blockchain.ConsensusManager)
 
 	log.Println("Generating and storing validator keys")
 	validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
@@ -1234,20 +1228,7 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 		}
 	}()
 
-	// Async network metrics update
-	go bc.updateNetworkMetrics()
-
 	return signedBlock, nil
-}
-
-// Separate function for network metrics
-func (bc *Blockchain) updateNetworkMetrics() {
-	metrics := NetworkMetrics{
-		TransactionVolume: len(bc.PendingTransactions),
-		NodeCount:         bc.getActiveNodeCount(),
-		AverageLatency:    bc.calculateAverageLatency(),
-	}
-	bc.TOBManager.UpdateNetworkConditions(metrics)
 }
 
 // First, ensure when creating transaction inputs we set the original transaction ID
