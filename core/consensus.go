@@ -35,7 +35,7 @@ func (node *Node) VoteForBlock(block *Block) {
 	}
 
 	for _, peer := range node.Peers {
-		http.Post(peer+"/vote", "application/json", bytes.NewBuffer(voteData))
+		http.Post(peer.Address+"/vote", "application/json", bytes.NewBuffer(voteData))
 	}
 }
 

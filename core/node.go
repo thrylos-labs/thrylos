@@ -21,7 +21,6 @@ import (
 // the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
 type Node struct {
 	Address             string      // Network address of the node.
-	Peers               []string    // Addresses of peer nodes for communication within the network.
 	Blockchain          *Blockchain // The blockchain maintained by this node.
 	Votes               []Vote      // Collection of votes for blocks from validators.
 	Shard               *Shard      // Reference to the shard this node is part of, if sharding is implemented.
@@ -47,6 +46,10 @@ type Node struct {
 	ModernProcessor      *ModernProcessor
 	BlockTrigger         chan struct{}
 	DAGManager           *DAGManager
+	Peers                map[string]*PeerConnection
+	PeerMu               sync.RWMutex
+	MaxInbound           int
+	MaxOutbound          int
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -117,7 +120,7 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 
 	node := &Node{
 		Address:              address,
-		Peers:                knownPeers,
+		Peers:                make(map[string]*PeerConnection),
 		Blockchain:           bc,
 		Database:             db,
 		Shard:                shard,
@@ -129,9 +132,18 @@ func NewNode(address string, knownPeers []string, dataDir string, shard *Shard) 
 		serverHost:           serverHost,
 		useSSL:               useSSL,
 		BlockTrigger:         make(chan struct{}, 1),
+		MaxInbound:           30,
+		MaxOutbound:          20,
 	}
 
 	node.InitializeProcessors()
+
+	// Add known peers as outbound connections
+	for _, peer := range knownPeers {
+		if err := node.AddPeer(peer, false); err != nil {
+			log.Printf("Failed to add known peer %s: %v", peer, err)
+		}
+	}
 
 	// Initialize block producer after node is set up
 	node.blockProducer = NewBlockProducer(node, bc)

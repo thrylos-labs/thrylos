@@ -388,7 +388,7 @@ func (node *Node) handleGetPeers(params []interface{}) (interface{}, error) {
 		Peers []string `json:"peers"`
 		Count int      `json:"count"`
 	}{
-		Peers: node.Peers,
+		Peers: node.GetPeerAddresses(),
 		Count: len(node.Peers),
 	}, nil
 }
