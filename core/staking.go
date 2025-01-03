@@ -60,7 +60,31 @@ func NewStakingService(blockchain *Blockchain) *StakingService {
 	}
 }
 
+func (s *StakingService) getLastDelegationTime(delegator string) int64 {
+	delegations := s.delegations[delegator]
+	if len(delegations) == 0 {
+		return 0
+	}
+	return delegations[len(delegations)-1].StartTime
+}
+
 func (s *StakingService) DelegateTokens(delegator, validator string, amount int64) error {
+	// Minimum delegation amount (1 THRYLOS)
+	if amount < 1e7 {
+		return errors.New("minimum delegation amount is 1 THRYLOS")
+	}
+
+	// Check rate limiting
+	lastDelegation := s.getLastDelegationTime(delegator)
+	if time.Since(time.Unix(lastDelegation, 0)) < time.Hour {
+		return errors.New("please wait 1 hour between delegations")
+	}
+
+	// Handle slashing
+	if s.blockchain.IsSlashed(validator) {
+		return errors.New("validator is currently slashed")
+	}
+
 	if !s.blockchain.IsActiveValidator(validator) {
 		return errors.New("target is not an active validator")
 	}

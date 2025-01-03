@@ -975,6 +975,14 @@ func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmou
 	}
 }
 
+func (bc *Blockchain) IsSlashed(validator string) bool {
+	// Check if validator is in slashed state
+	if stake, exists := bc.Stakeholders[validator]; exists {
+		return stake < bc.MinStakeForValidator.Int64() // Validator is slashed if below min stake
+	}
+	return false
+}
+
 func (bc *Blockchain) GetChainID() string {
 	return "0x1" // Mainnet (adjust as per your chain)
 }
