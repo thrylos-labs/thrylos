@@ -22,7 +22,6 @@ import (
 type Node struct {
 	Address             string      // Network address of the node.
 	Blockchain          *Blockchain // The blockchain maintained by this node.
-	Votes               []Vote      // Collection of votes for blocks from validators.
 	Shard               *Shard      // Reference to the shard this node is part of, if sharding is implemented.
 	PendingTransactions []*thrylos.Transaction
 	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
@@ -180,22 +179,12 @@ func (node *Node) Shutdown() error {
 }
 
 func (node *Node) StartBackgroundTasks() {
-	// Initialize our timers
 	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
-	tickerCountVotes := time.NewTicker(1 * time.Minute)
-
-	// Start the block creation timer immediately
-	log.Println("Starting block producer with target block time: 1.2s")
-	node.StartBlockCreationTimer()
-
-	// Continue with other background tasks
 	go func() {
 		for {
 			select {
 			case <-tickerDiscoverPeers.C:
 				node.DiscoverPeers()
-			case <-tickerCountVotes.C:
-				node.CountVotes()
 			}
 		}
 	}()

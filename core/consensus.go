@@ -1,71 +1,10 @@
 package core
 
 import (
-	"bytes"
 	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"log"
 	"math/big"
-	"net/http"
 )
-
-// Vote represents a vote cast by a validator for a specific block
-type Vote struct {
-	BlockHash []byte // Hash of the block being voted for
-	Validator string // Address of the validator casting the vote
-	Stake     int64  // Stake amount of the validator at the time of voting
-}
-
-const minStakeRequirement = 40 * 1e7 // 40 THRYLOS in nanoTHRYLOS
-
-// VoteForBlock allows a node to cast a vote for a specific block
-func (node *Node) VoteForBlock(block *Block) {
-	stake, exists := node.Blockchain.Stakeholders[node.Address]
-	if !exists || stake < minStakeRequirement {
-		return // This node doesn't have enough stake to vote
-	}
-
-	vote := Vote{BlockHash: block.Hash, Validator: node.Address, Stake: stake}
-	voteData, err := json.Marshal(vote)
-	if err != nil {
-		fmt.Println("Failed to serialize vote:", err)
-		return
-	}
-
-	for _, peer := range node.Peers {
-		http.Post(peer.Address+"/vote", "application/json", bytes.NewBuffer(voteData))
-	}
-}
-
-// CountVotes tallies the votes for blocks from validators
-func (node *Node) CountVotes() {
-	majorityStake := node.Blockchain.TotalStake()/2 + 1
-	voteStakes := make(map[string]int64)
-
-	for _, vote := range node.Votes {
-		hashStr := hex.EncodeToString(vote.BlockHash)
-		voteStakes[hashStr] += vote.Stake
-		if voteStakes[hashStr] >= majorityStake {
-			var majorityBlock *Block
-			for _, block := range node.Blockchain.Blocks {
-				if bytes.Equal(block.Hash, vote.BlockHash) {
-					majorityBlock = block
-					break
-				}
-			}
-
-			if majorityBlock != nil {
-				node.BroadcastBlock(majorityBlock)
-				node.Votes = []Vote{} // Clear votes
-				break
-			} else {
-				log.Printf("Majority block with hash %x not found", vote.BlockHash)
-			}
-		}
-	}
-}
 
 // TotalStake calculates the total stake from all stakeholders
 func (bc *Blockchain) TotalStake() int64 {
