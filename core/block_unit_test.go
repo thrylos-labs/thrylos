@@ -229,12 +229,9 @@ func TestBlockTimeToFinality(t *testing.T) {
 
 // Helper function to generate address for specific shard
 func generateAddressForShard(shardID int, nonce int, numShards int) string {
-	// Calculate deterministic shard ID based on batch position
-	targetShard := (nonce / batchSize) % numShards
-
-	// Create hex representation ensuring proper length and shard encoding
-	noncePart := fmt.Sprintf("%015x", nonce)
-	return fmt.Sprintf("tl1%01d%s", targetShard, noncePart)
+	// Use shardID instead of batch calculation
+	// Ensures addresses match partition ranges
+	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
 }
 
 func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {

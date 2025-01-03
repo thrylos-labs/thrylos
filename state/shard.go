@@ -252,18 +252,17 @@ func (sm *StateManager) GetUTXOs(address string) ([]shared.UTXO, error) {
 
 // Helper functions
 func calculatePartitionStart(partitionID, totalPartitions int) string {
-	// Adjust for Bech32 address format starting with "tl1"
 	if partitionID == 0 {
 		return "tl1"
 	}
-	return fmt.Sprintf("tl1%d", partitionID)
+	return fmt.Sprintf("tl1%02d", partitionID) // Add zero padding
 }
 
 func calculatePartitionEnd(partitionID, totalPartitions int) string {
 	if partitionID == totalPartitions-1 {
 		return "tl1zzzzzzzzzzzz"
 	}
-	return fmt.Sprintf("tl1%d", partitionID+1)
+	return fmt.Sprintf("tl1%02d", partitionID+1) // Add zero padding
 }
 
 func isAddressInPartition(address, start, end string) bool {
