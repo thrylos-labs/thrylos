@@ -615,6 +615,21 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 
 			calculateAndLogMetrics(t, tc.name, blockTimes, batchTimes, legacyMetrics,
 				startTime, txsPerBlock, expectedBlockTime, tc.expectedMaxTime)
+
+			t.Logf("\nPredictive Scaling Metrics:")
+			for shardID := range shardMetrics {
+				history := stateManager.Predictive.HistoricalLoad[shardID]
+				if history != nil {
+					prediction := stateManager.Predictive.CalculateTrend(history)
+					currentLoad := shardMetrics[shardID].LoadFactor
+					scalingNeeded := prediction > stateManager.Predictive.ScalingThreshold
+					t.Logf("Shard %d:\n"+
+						"  - Current Load: %.2f\n"+
+						"  - Predicted Load: %.2f\n"+
+						"  - Scaling Needed: %v",
+						shardID, currentLoad, prediction, scalingNeeded)
+				}
+			}
 		})
 
 		time.Sleep(500 * time.Millisecond)

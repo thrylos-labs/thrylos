@@ -37,7 +37,7 @@ type StateManager struct {
 	stopChan    chan struct{}
 	metrics     *StateMetrics
 	consensus   *AdaptiveConsensus
-	predictive  *PredictiveScaling
+	Predictive  *PredictiveScaling
 }
 
 func (sm *StateManager) StopStateSyncLoop() {
@@ -58,7 +58,7 @@ func NewStateManager(networkHandler shared.NetworkInterface, numShards int) *Sta
 		stopChan:    make(chan struct{}),
 		metrics:     metrics, // Use the already created metrics
 		consensus:   NewAdaptiveConsensus(metrics),
-		predictive:  NewPredictiveScaling(),
+		Predictive:  NewPredictiveScaling(),
 	}
 
 	// Rest of initialization remains the same
@@ -73,7 +73,7 @@ func NewStateManager(networkHandler shared.NetworkInterface, numShards int) *Sta
 		}
 	}
 
-	sm.predictive.StartMonitoring(sm)
+	sm.Predictive.StartMonitoring(sm)
 
 	sm.StartRelocationMonitor()
 	sm.consensus.Start() // Start consensus monitoring

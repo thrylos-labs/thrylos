@@ -3,28 +3,29 @@ package state
 
 import (
 	"log"
+	"math"
 	"sync"
 	"time"
 )
 
 type PredictiveScaling struct {
-	historicalLoad   map[int][]float64
-	predictionWindow time.Duration
-	scalingThreshold float64
+	HistoricalLoad   map[int][]float64
+	PredictionWindow time.Duration
+	ScalingThreshold float64
 	mu               sync.RWMutex
 }
 
 func NewPredictiveScaling() *PredictiveScaling {
 	return &PredictiveScaling{
-		historicalLoad:   make(map[int][]float64),
-		predictionWindow: time.Minute * 10,
-		scalingThreshold: 0.7,
+		HistoricalLoad:   make(map[int][]float64),
+		PredictionWindow: time.Minute * 10,
+		ScalingThreshold: 0.7,
 	}
 }
 
 func (ps *PredictiveScaling) StartMonitoring(sm *StateManager) {
 	go func() {
-		ticker := time.NewTicker(time.Minute)
+		ticker := time.NewTicker(100 * time.Millisecond) // Faster for testing
 		defer ticker.Stop()
 
 		for {
@@ -44,30 +45,32 @@ func (ps *PredictiveScaling) predictAndScale(sm *StateManager) {
 
 	for shardID, metrics := range sm.metrics.shardMetrics {
 		currentLoad := metrics.LoadFactor
-		history := ps.historicalLoad[shardID]
+		history := ps.HistoricalLoad[shardID]
 
 		history = append(history, currentLoad)
 		if len(history) > 60 {
 			history = history[1:]
 		}
-		ps.historicalLoad[shardID] = history
+		ps.HistoricalLoad[shardID] = history
 
-		if prediction := ps.calculateTrend(history); prediction > ps.scalingThreshold {
+		if prediction := ps.CalculateTrend(history); prediction > ps.ScalingThreshold {
 			ps.allocateAdditionalResources(sm, shardID)
 		}
 	}
 }
 
-func (ps *PredictiveScaling) calculateTrend(history []float64) float64 {
+func (ps *PredictiveScaling) CalculateTrend(history []float64) float64 {
 	if len(history) < 2 {
-		return 0
+		return history[0]
 	}
 
-	sum := 0.0
-	for _, v := range history[len(history)/2:] {
-		sum += v
-	}
-	return sum / float64(len(history)/2)
+	// Weighted moving average with linear regression
+	recentLoad := history[len(history)-1]
+	slope := (history[len(history)-1] - history[0]) / float64(len(history)-1)
+	prediction := recentLoad + (slope * 5) // Project 5 intervals ahead
+
+	// Apply bounds
+	return math.Max(0.5, math.Min(1.5, prediction))
 }
 
 func (ps *PredictiveScaling) allocateAdditionalResources(sm *StateManager, shardID int) {
