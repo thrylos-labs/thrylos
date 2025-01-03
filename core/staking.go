@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shopspring/decimal"
 	thrylos "github.com/thrylos-labs/thrylos"
 )
 
@@ -26,26 +27,88 @@ type Stake struct {
 	ValidatorRole   bool   `json:"validatorRole"`
 }
 
+type Delegation struct {
+	DelegatorAddress string
+	ValidatorAddress string
+	Amount           int64
+	StartTime        int64
+	LastRewardEpoch  int64
+	TotalRewards     int64
+	IsActive         bool
+}
+
 type StakingService struct {
-	pool       *StakingPool
-	stakes     map[string][]*Stake
-	blockchain *Blockchain
+	pool        *StakingPool
+	stakes      map[string][]*Stake
+	delegations map[string][]*Delegation // delegator -> delegations
+	blockchain  *Blockchain
 }
 
 func NewStakingService(blockchain *Blockchain) *StakingService {
-	fixedYearlyReward := int64(4_800_000 * 1e7) // Fixed 4.8M (4% of 120M) in nano
-
+	fixedYearlyReward := int64(4_800_000 * 1e7)
 	return &StakingService{
 		pool: &StakingPool{
-			MinStakeAmount:    int64(40 * 1e7),   // 40 THRYLOS
-			FixedYearlyReward: fixedYearlyReward, // Always 4.8M per year
-			EpochLength:       240,               // Blocks per epoch
+			MinStakeAmount:    int64(40 * 1e7),
+			FixedYearlyReward: fixedYearlyReward,
+			EpochLength:       240,
 			LastEpochBlock:    0,
 			TotalStaked:       0,
 		},
-		stakes:     make(map[string][]*Stake),
-		blockchain: blockchain,
+		stakes:      make(map[string][]*Stake),
+		delegations: make(map[string][]*Delegation),
+		blockchain:  blockchain,
 	}
+}
+
+func (s *StakingService) DelegateTokens(delegator, validator string, amount int64) error {
+	if !s.blockchain.IsActiveValidator(validator) {
+		return errors.New("target is not an active validator")
+	}
+
+	balance, err := s.blockchain.GetBalance(delegator)
+	if err != nil {
+		return fmt.Errorf("failed to get delegator balance: %v", err)
+	}
+
+	if balance.LessThan(decimal.NewFromInt(amount)) {
+		return errors.New("insufficient balance")
+	}
+
+	delegation := &Delegation{
+		DelegatorAddress: delegator,
+		ValidatorAddress: validator,
+		Amount:           amount,
+		StartTime:        time.Now().Unix(),
+		LastRewardEpoch:  int64(s.blockchain.GetBlockCount()) / s.pool.EpochLength,
+		IsActive:         true,
+	}
+
+	// Lock tokens
+	if err := s.blockchain.TransferFunds(delegator, validator, amount); err != nil {
+		return fmt.Errorf("failed to lock delegation tokens: %v", err)
+	}
+
+	s.delegations[delegator] = append(s.delegations[delegator], delegation)
+	s.pool.TotalStaked += amount
+
+	return nil
+}
+
+func (s *StakingService) CalculateDelegatorRewards(delegation *Delegation, currentBlock int64) int64 {
+	if !delegation.IsActive {
+		return 0
+	}
+
+	currentEpoch := currentBlock / s.pool.EpochLength
+	if currentEpoch <= delegation.LastRewardEpoch {
+		return 0
+	}
+
+	validatorStake := s.blockchain.Stakeholders[delegation.ValidatorAddress]
+	delegationRatio := float64(delegation.Amount) / float64(validatorStake)
+	validatorReward := s.CalculateRewards(&Stake{UserAddress: delegation.ValidatorAddress}, currentBlock)
+
+	return int64(float64(validatorReward) * delegationRatio * 0.9) // Validator keeps 10%
 }
 
 // Calculate rewards per epoch (fixed amount)
@@ -186,7 +249,50 @@ func (s *StakingService) DistributeEpochRewards(currentBlock int64) error {
 	}
 
 	s.pool.LastEpochBlock = currentBlock
+
+	// Add delegator rewards distribution
+	for delegator, userDelegations := range s.delegations {
+		for _, delegation := range userDelegations {
+			if !delegation.IsActive {
+				continue
+			}
+
+			reward := s.CalculateDelegatorRewards(delegation, currentBlock)
+			if reward <= 0 {
+				continue
+			}
+
+			rewardTx := &thrylos.Transaction{
+				Id:      fmt.Sprintf("delegation-reward-%s-%d", delegator, time.Now().UnixNano()),
+				Sender:  "network",
+				Outputs: []*thrylos.UTXO{{OwnerAddress: delegator, Amount: reward}},
+			}
+
+			if err := s.blockchain.AddPendingTransaction(rewardTx); err != nil {
+				return fmt.Errorf("failed to add delegator reward transaction: %v", err)
+			}
+
+			delegation.TotalRewards += reward
+			delegation.LastRewardEpoch = currentBlock / s.pool.EpochLength
+		}
+	}
 	return nil
+}
+
+func (s *StakingService) WithdrawDelegation(delegator, validator string) error {
+	for i, delegation := range s.delegations[delegator] {
+		if delegation.ValidatorAddress == validator && delegation.IsActive {
+			if err := s.blockchain.TransferFunds(validator, delegator, delegation.Amount); err != nil {
+				return fmt.Errorf("failed to return delegated tokens: %v", err)
+			}
+
+			delegation.IsActive = false
+			s.delegations[delegator][i] = delegation
+			s.pool.TotalStaked -= delegation.Amount
+			return nil
+		}
+	}
+	return errors.New("no active delegation found")
 }
 
 // Update StakingService method to accept int64 for amount
