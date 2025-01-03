@@ -17,21 +17,29 @@ import (
 // Peer Discovery: Nodes discover new peers by requesting peer lists from known peers and integrating the discovered peers into their own peer list.
 // Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network.
 
+const MaxPeers = 50 // Can be adjusted, based on node capacity
+
 // AddPeer adds a new peer to the node's list of peers if it is not already present.
-func (node *Node) AddPeer(peerAddress string) {
+func (node *Node) AddPeer(peerAddress string) error {
+	if len(node.Peers) >= MaxPeers {
+		return fmt.Errorf("max peer limit (%d) reached", MaxPeers)
+	}
+
 	// Ensure the peer address includes the http:// scheme
 	if !strings.HasPrefix(peerAddress, "http://") && !strings.HasPrefix(peerAddress, "https://") {
-		peerAddress = "http://" + peerAddress // Defaulting to HTTP for simplicity
+		peerAddress = "http://" + peerAddress
 	}
 
 	// Check for duplicates
 	for _, peer := range node.Peers {
 		if peer == peerAddress {
-			return // Peer is already in the list
+			return nil // Peer already exists
 		}
 	}
+
 	node.Peers = append(node.Peers, peerAddress)
-	fmt.Println("Peer added:", peerAddress)
+	fmt.Printf("Peer added: %s (Total: %d/%d)\n", peerAddress, len(node.Peers), MaxPeers)
+	return nil
 }
 
 // DiscoverPeers attempts to discover new peers from the current peer list
