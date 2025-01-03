@@ -407,7 +407,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	blockchain.MinStakeForValidator = new(big.Int)
 	minStake.Int(blockchain.MinStakeForValidator) // Convert big.Float to big.Int
 
-	// Initialize ConsensusManager
+	// Initialize ConsensusManager which provides sufficient consensus management
 	blockchain.ConsensusManager = NewConsensusManager(blockchain)
 
 	log.Println("Generating and storing validator keys")
