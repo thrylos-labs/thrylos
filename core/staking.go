@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shopspring/decimal"
 	thrylos "github.com/thrylos-labs/thrylos"
 )
 
@@ -94,7 +93,7 @@ func (s *StakingService) DelegateTokens(delegator, validator string, amount int6
 		return fmt.Errorf("failed to get delegator balance: %v", err)
 	}
 
-	if balance.LessThan(decimal.NewFromInt(amount)) {
+	if balance < amount {
 		return errors.New("insufficient balance")
 	}
 

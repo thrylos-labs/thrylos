@@ -239,14 +239,14 @@ func (n *Node) updateBalances(tx *thrylos.Transaction) error {
 	if err != nil {
 		return fmt.Errorf("failed to get sender balance: %v", err)
 	}
-	log.Printf("Updated sender (%s) balance: %s", tx.Sender, senderBalance.String())
+	log.Printf("Updated sender (%s) balance: %d nanoTHRYLOS", tx.Sender, senderBalance)
 
 	for _, output := range tx.Outputs {
 		recipientBalance, err := n.Blockchain.GetBalance(output.OwnerAddress)
 		if err != nil {
 			return fmt.Errorf("failed to get recipient balance: %v", err)
 		}
-		log.Printf("Updated recipient (%s) balance: %s", output.OwnerAddress, recipientBalance.String())
+		log.Printf("Updated recipient (%s) balance: %d nanoTHRYLOS", output.OwnerAddress, recipientBalance)
 	}
 
 	return nil
