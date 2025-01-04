@@ -494,13 +494,14 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	// Modify background process initialization based on DisableBackground flag
 	if !config.DisableBackground {
 		go func() {
-			log.Println("Starting staking reward distribution process")
+			log.Println("Starting daily staking reward distribution process")
 			for {
-				currentBlock := int64(blockchain.GetBlockCount())
-				if err := blockchain.StakingService.DistributeEpochRewards(currentBlock); err != nil {
+				if err := blockchain.StakingService.DistributeRewards(); err != nil {
 					log.Printf("Error distributing staking rewards: %v", err)
 				}
-				time.Sleep(time.Minute) // Check every minute
+				// Sleep for 1 hour instead of 1 minute since we only need to check daily
+				// This reduces unnecessary checks while ensuring we don't miss the 24-hour mark
+				time.Sleep(time.Hour)
 			}
 		}()
 
