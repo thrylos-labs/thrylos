@@ -314,6 +314,16 @@ type ShardMetricsData struct {
 	LoadFactor   float64
 }
 
+func getScalingAction(needsSplit, needsMerge bool) string {
+	if needsSplit {
+		return "Split"
+	}
+	if needsMerge {
+		return "Merge"
+	}
+	return "None"
+}
+
 func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	// Create test directory
 	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
@@ -616,19 +626,22 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 			calculateAndLogMetrics(t, tc.name, blockTimes, batchTimes, legacyMetrics,
 				startTime, txsPerBlock, expectedBlockTime, tc.expectedMaxTime)
 
-			t.Logf("\nPredictive Scaling Metrics:")
+			t.Logf("\nShard Scaling Metrics:")
 			for shardID := range shardMetrics {
-				history := stateManager.Predictive.HistoricalLoad[shardID]
-				if history != nil {
-					prediction := stateManager.Predictive.CalculateTrend(history)
-					currentLoad := shardMetrics[shardID].LoadFactor
-					scalingNeeded := prediction > stateManager.Predictive.ScalingThreshold
-					t.Logf("Shard %d:\n"+
-						"  - Current Load: %.2f\n"+
-						"  - Predicted Load: %.2f\n"+
-						"  - Scaling Needed: %v",
-						shardID, currentLoad, prediction, scalingNeeded)
-				}
+				currentLoad := shardMetrics[shardID].LoadFactor
+				needsSplit := currentLoad > stateManager.Scaling.LoadThresholds.Split
+				needsMerge := currentLoad < stateManager.Scaling.LoadThresholds.Merge
+
+				t.Logf("Shard %d:\n"+
+					"  - Current Load: %.2f\n"+
+					"  - Split Threshold: %.2f\n"+
+					"  - Merge Threshold: %.2f\n"+
+					"  - Action Needed: %s",
+					shardID,
+					currentLoad,
+					stateManager.Scaling.LoadThresholds.Split,
+					stateManager.Scaling.LoadThresholds.Merge,
+					getScalingAction(needsSplit, needsMerge))
 			}
 		})
 
