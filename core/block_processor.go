@@ -12,9 +12,8 @@ import (
 
 // Constants for block creation
 const (
-	targetBlockTime = 1200 * time.Millisecond // 1.2 seconds target block time
-	checkInterval   = 200 * time.Millisecond  // Check more frequently
-	batchSize       = 100                     // Maximum transactions per batch
+	checkInterval = 200 * time.Millisecond // Check more frequently
+	batchSize     = 100                    // Maximum transactions per batch
 )
 
 // HasBlock checks whether a block with the specified hash exists in the node's blockchain.
@@ -39,6 +38,9 @@ func (node *Node) StartBlockCreationTimer() {
 		for range ticker.C {
 			now := time.Now()
 			timeSinceLastBlock := now.Sub(lastBlockTime)
+
+			// Get current block time from the blockchain's consensus manager
+			targetBlockTime := node.Blockchain.ConsensusManager.GetCurrentBlockTime()
 
 			node.Mu.RLock()
 			hasPendingTx := len(node.PendingTransactions) > 0
