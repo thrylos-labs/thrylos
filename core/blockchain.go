@@ -101,7 +101,7 @@ type Blockchain struct {
 	ValidatorKeys          *ValidatorKeyStore
 	TestMode               bool
 	OnTransactionProcessed func(*thrylos.Transaction)
-	OnBalanceUpdate        func(address string, balance decimal.Decimal)
+	OnBalanceUpdate        func(address string, balance int64)
 
 	StateManager *state.StateManager
 
@@ -696,25 +696,20 @@ func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
 	return bc.Database.GetUTXOsForUser(address)
 }
 
-func (bc *Blockchain) GetBalance(address string) (decimal.Decimal, error) {
-	balance := decimal.Zero
+// Always deals with nanoTHRYLOS as int64
+func (bc *Blockchain) GetBalance(address string) (int64, error) {
+	var balance int64 = 0
 	utxos, err := bc.Database.GetUTXOsForAddress(address)
 	if err != nil {
-		return decimal.Zero, err
+		return 0, err
 	}
 
 	for _, utxo := range utxos {
 		if !utxo.IsSpent {
-			balance = balance.Add(decimal.NewFromInt(utxo.Amount))
+			balance += utxo.Amount
 		}
 	}
-
-	// Assuming utxo.Amount is in nanoTHRYLOS, convert to THRYLOS
-	balanceThrylos := balance.Div(decimal.NewFromInt(NANO_THRYLOS_PER_THRYLOS))
-
-	log.Printf("Calculated balance for %s: %s THRYLOS", address, balanceThrylos.String())
-
-	return balanceThrylos, nil
+	return balance, nil
 }
 
 // ConvertToThrylos converts nanoTHRYLOS to THRYLOS
@@ -2118,12 +2113,12 @@ func (bc *Blockchain) updateBalancesForBlock(block *Block) {
 	for _, tx := range block.Transactions {
 		// Update sender's balance
 		senderBalance, _ := bc.GetBalance(tx.Sender)
-		bc.Stakeholders[tx.Sender] = senderBalance.IntPart()
+		bc.Stakeholders[tx.Sender] = senderBalance // directly use int64 value
 
 		// Update recipients' balances
 		for _, output := range tx.Outputs {
 			recipientBalance, _ := bc.GetBalance(output.OwnerAddress)
-			bc.Stakeholders[output.OwnerAddress] = recipientBalance.IntPart()
+			bc.Stakeholders[output.OwnerAddress] = recipientBalance // directly use int64 value
 		}
 	}
 }
