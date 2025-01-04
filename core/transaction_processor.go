@@ -181,7 +181,16 @@ func ConvertProtoOutputs(outputs []*thrylos.UTXO) []shared.UTXO {
 	return sharedOutputs
 }
 
-// Pending transaction management
+const (
+	// Transaction statuses
+	TxStatusPending    = "pending"    // Transaction is in the pending pool
+	TxStatusConfirmed  = "confirmed"  // Transaction is confirmed in a block
+	TxStatusFailed     = "failed"     // Transaction failed to process
+	TxStatusRejected   = "rejected"   // Transaction was rejected (invalid)
+	TxStatusProcessing = "processing" // Transaction is being processed
+)
+
+// Then update the AddPendingTransaction function to use the constant:
 func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	node.Blockchain.Mu.Lock()
 	defer node.Blockchain.Mu.Unlock()
@@ -203,7 +212,8 @@ func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
 	pendingCount := len(node.Blockchain.PendingTransactions)
 
-	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, "pending", nil); err != nil {
+	// Use the constant instead of string literal
+	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, TxStatusPending, nil); err != nil {
 		log.Printf("Warning: Error updating transaction status: %v", err)
 	}
 
