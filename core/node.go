@@ -49,6 +49,7 @@ type Node struct {
 	PeerMu               sync.RWMutex
 	MaxInbound           int
 	MaxOutbound          int
+	txStatusMap          sync.Map
 }
 
 // Hold the chain ID and then proviude a method to set it

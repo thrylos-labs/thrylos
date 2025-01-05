@@ -58,7 +58,8 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 	dm.Lock()
 	defer dm.Unlock()
 
-	if _, exists := dm.vertices[tx.GetId()]; exists {
+	txID := tx.GetId()
+	if _, exists := dm.vertices[txID]; exists {
 		return fmt.Errorf("transaction already exists in DAG")
 	}
 
@@ -84,37 +85,31 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 	// Add references
 	for _, tip := range tips {
 		vertex.References = append(vertex.References, tip.Transaction.GetId())
-		tip.ReferencedBy = append(tip.ReferencedBy, tx.GetId())
+		tip.ReferencedBy = append(tip.ReferencedBy, txID)
+
+		// Check if this reference confirms the tip
+		if len(tip.ReferencedBy) >= ConfirmationThreshold {
+			tip.IsConfirmed = true
+			statusIface, _ := dm.node.txStatusMap.LoadOrStore(tip.Transaction.GetId(), &TransactionStatus{})
+			tipStatus := statusIface.(*TransactionStatus)
+
+			tipStatus.Lock()
+			if !tipStatus.ConfirmedByDAG {
+				tipStatus.ConfirmedByDAG = true
+				if tipStatus.ProcessedByModern {
+					go dm.node.handleProcessedTransaction(tip.Transaction)
+				}
+			}
+			tipStatus.Unlock()
+		}
+
 		delete(dm.tips, tip.Transaction.GetId())
 	}
 
-	dm.vertices[tx.GetId()] = vertex
-	dm.tips[tx.GetId()] = vertex
-
-	// Inline confirmation check
-	if len(vertex.ReferencedBy) >= ConfirmationThreshold {
-		vertex.IsConfirmed = true
-		go dm.node.handleProcessedTransaction(vertex.Transaction)
-	}
+	dm.vertices[txID] = vertex
+	dm.tips[txID] = vertex
 
 	return nil
-}
-
-func (dm *DAGManager) updateConfirmationsLocked(vertex *TransactionVertex) {
-	if len(vertex.ReferencedBy) >= ConfirmationThreshold {
-		vertex.IsConfirmed = true
-		// Safe to call outside lock since handleProcessedTransaction should be thread-safe
-		go dm.node.handleProcessedTransaction(vertex.Transaction)
-	}
-
-	for _, refID := range vertex.References {
-		if ref, exists := dm.vertices[refID]; exists {
-			if len(ref.ReferencedBy) >= ConfirmationThreshold && !ref.IsConfirmed {
-				ref.IsConfirmed = true
-				go dm.node.handleProcessedTransaction(ref.Transaction)
-			}
-		}
-	}
 }
 
 func (dm *DAGManager) AddTransaction(tx *thrylos.Transaction) error {
@@ -152,22 +147,6 @@ func (dm *DAGManager) selectTips() []*TransactionVertex {
 	}
 
 	return tips
-}
-
-func (dm *DAGManager) updateConfirmations(vertex *TransactionVertex) {
-	if len(vertex.ReferencedBy) >= ConfirmationThreshold {
-		vertex.IsConfirmed = true
-		dm.node.handleProcessedTransaction(vertex.Transaction)
-	}
-
-	for _, refID := range vertex.References {
-		if ref, exists := dm.vertices[refID]; exists {
-			if len(ref.ReferencedBy) >= ConfirmationThreshold && !ref.IsConfirmed {
-				ref.IsConfirmed = true
-				dm.node.handleProcessedTransaction(ref.Transaction)
-			}
-		}
-	}
 }
 
 func (dm *DAGManager) GetConfirmationStatus(txID string) (bool, error) {

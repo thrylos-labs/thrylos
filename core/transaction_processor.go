@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"sync"
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -16,18 +17,51 @@ const (
 	MaxGasFee  = 10000 // Maximum gas fee in microTHRYLOS (0.01 THRYLOS)
 )
 
+type TransactionStatus struct {
+	ProcessedByModern bool
+	ConfirmedByDAG    bool
+	sync.Mutex
+}
+
 func (n *Node) handleProcessedTransaction(tx *thrylos.Transaction) {
+	txID := tx.GetId()
+	log.Printf("Starting final processing for transaction %s", txID)
+
+	// Get transaction status
+	statusIface, exists := n.txStatusMap.Load(txID)
+	if !exists {
+		log.Printf("Warning: Transaction status not found for %s", txID)
+		return
+	}
+
+	status := statusIface.(*TransactionStatus)
+	status.Lock()
+	defer status.Unlock()
+
+	// Only process if both conditions are met
+	if !status.ProcessedByModern || !status.ConfirmedByDAG {
+		return
+	}
+
+	// Collect affected addresses
 	addresses := make(map[string]bool)
 	addresses[tx.Sender] = true
 	for _, output := range tx.Outputs {
 		addresses[output.OwnerAddress] = true
 	}
 
+	// Queue balance updates with retries
 	for address := range addresses {
-		if err := n.SendBalanceUpdate(address); err != nil {
-			log.Printf("Failed to send balance update for %s: %v", address, err)
+		// Use the existing queue channel
+		n.balanceUpdateQueue.queue <- BalanceUpdateRequest{
+			Address: address,
+			Retries: 5, // Use same retry count as UpdateBalanceAsync
 		}
 	}
+
+	// Clear transaction status after queuing updates
+	n.txStatusMap.Delete(txID)
+	log.Printf("Completed processing transaction %s", txID)
 }
 
 // HasTransaction checks whether a transaction with the specified ID exists in the node's pool of pending transactions.

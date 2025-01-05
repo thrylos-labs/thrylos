@@ -216,38 +216,42 @@ func (w *txWorker) start() {
 
 func (w *txWorker) processTx(tx *thrylos.Transaction, isPriority bool) {
 	start := time.Now()
+	txID := tx.GetId()
 
-	// Mark as being processed
-	if _, exists := w.processor.processedTxs.LoadOrStore(tx.GetId(), true); exists {
+	// Get or create status
+	statusIface, _ := w.processor.node.txStatusMap.LoadOrStore(txID, &TransactionStatus{})
+	status := statusIface.(*TransactionStatus)
+
+	status.Lock()
+	if status.ProcessedByModern {
+		status.Unlock()
 		return
 	}
 
-	// Get worker slot
-	w.processor.workerPool <- struct{}{}
-	defer func() { <-w.processor.workerPool }()
-
-	// Verify and process transaction
+	// Verify before marking as processed
 	if err := w.processor.node.VerifyAndProcessTransaction(tx); err != nil {
+		status.Unlock()
 		log.Printf("Transaction processing failed: %v", err)
-		w.processor.processedTxs.Delete(tx.GetId())
+		w.processor.processedTxs.Delete(txID)
+		// Clean up status on failure
+		w.processor.node.txStatusMap.Delete(txID)
 		return
+	}
+
+	status.ProcessedByModern = true
+
+	// If DAG has confirmed, trigger processing
+	if status.ConfirmedByDAG {
+		status.Unlock()
+		w.processor.node.handleProcessedTransaction(tx)
+	} else {
+		status.Unlock()
 	}
 
 	// Update metrics
 	latency := time.Since(start)
 	w.metrics.processedTxs.Add(1)
 	w.metrics.totalLatency.Add(int64(latency))
-
-	// Handle processed transaction updates
-	w.processor.node.handleProcessedTransaction(tx)
-
-	if isPriority {
-		// Trigger block creation for priority transactions
-		select {
-		case w.processor.node.BlockTrigger <- struct{}{}:
-		default:
-		}
-	}
 }
 
 func (mp *ModernProcessor) getShardID(tx *thrylos.Transaction) int {
