@@ -76,26 +76,38 @@ Dive deeper into the core components that power our blockchain:
 - **Overview**: An abstraction over Badger, tailored for blockchain operations.
 - **Capabilities**: Handles transaction additions, UTXO retrieval, and UTXO set updates, streamlining database interactions.
 
-## How transactions are handled
+## How transactions flow through the system
 
 Entry Point:
 
-Client submits transaction
-handleSubmitSignedTransaction performs initial validation
+Transaction Entry:
+Client submits a signed transaction
+System performs basic validation (signature, format, etc.)
 
 Parallel Processing:
-DAG: Waits for 5+ references to confirm transaction
-ModernProcessor: Verifies transaction validity
+DAG Manager: Needs 5+ references to confirm transaction
+Modern Processor: Verifies transaction validity and details
+Both must complete before proceeding
 
-Coordination:
-Uses txStatusMap to track both conditions:
-ConfirmedByDAG: Set by DAG when enough references
-ProcessedByModern: Set by ModernProcessor after verification
+State Management:
+System determines which shard handles the addresses (using tl1 prefix)
+Updates state in the correct partition
+Manages balances and UTXOs for that address range
 
-Final Processing:
-Only happens when both conditions are met
-Updates balances through queue system
+Block Creation:
+Validated transactions go to pending pool
+Creates blocks when:
+
+100 transactions are ready (batch size), or
+Every 200ms if transactions are pending
+Processes transactions in batches
+
+Final Updates:
+Updates balances in the appropriate shards
 Cleans up transaction state
+Notifies relevant parts of the system
+
+The key innovation is that each step knows which shard to interact with based on the address prefix (tl1), allowing the system to scale horizontally.
 
 ## Interfacing with the Blockchain
 
