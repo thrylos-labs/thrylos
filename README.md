@@ -109,6 +109,24 @@ Notifies relevant parts of the system
 
 The key innovation is that each step knows which shard to interact with based on the address prefix (tl1), allowing the system to scale horizontally.
 
+## When are blocks created
+
+blocks are only created when there are pending transactions (hasPendingTx := len(node.PendingTransactions) > 0) and enough time has passed since the last block (timeSinceLastBlock >= targetBlockTime)
+
+The system checks these conditions every 200ms (checkInterval).
+Two ways blocks get triggered:
+
+Timer based: If pending transactions exist and block time requirement is met
+Batch based: When pending transactions reach batch size (100 transactions)
+
+If no transactions are being sent through the system:
+
+No blocks will be created
+The timer will keep checking but take no action
+System remains idle until new transactions arrive
+
+This is efficient because we're not creating empty blocks unnecessarily - blocks are only created when there's actual work to be done.
+
 ## Interfacing with the Blockchain
 
 ### HTTP Server
