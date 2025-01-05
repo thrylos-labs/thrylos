@@ -76,6 +76,27 @@ Dive deeper into the core components that power our blockchain:
 - **Overview**: An abstraction over Badger, tailored for blockchain operations.
 - **Capabilities**: Handles transaction additions, UTXO retrieval, and UTXO set updates, streamlining database interactions.
 
+## How transactions are handled
+
+Entry Point:
+
+Client submits transaction
+handleSubmitSignedTransaction performs initial validation
+
+Parallel Processing:
+DAG: Waits for 5+ references to confirm transaction
+ModernProcessor: Verifies transaction validity
+
+Coordination:
+Uses txStatusMap to track both conditions:
+ConfirmedByDAG: Set by DAG when enough references
+ProcessedByModern: Set by ModernProcessor after verification
+
+Final Processing:
+Only happens when both conditions are met
+Updates balances through queue system
+Cleans up transaction state
+
 ## Interfacing with the Blockchain
 
 ### HTTP Server
