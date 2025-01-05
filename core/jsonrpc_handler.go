@@ -78,8 +78,6 @@ func (node *Node) JSONRPCHandler(w http.ResponseWriter, r *http.Request) {
 		result, err = node.handleGetBlockchainInfo(req.Params)
 	case "submitBlock":
 		result, err = node.handleSubmitBlock(req.Params)
-	case "submitTransaction":
-		result, err = node.handleSubmitTransaction(req.Params)
 	case "getPeers":
 		result, err = node.handleGetPeers(req.Params)
 	case "submitSignedTransaction":
@@ -343,50 +341,6 @@ func (node *Node) handleSubmitBlock(params []interface{}) (interface{}, error) {
 	}{
 		Success: true,
 		Message: "Block successfully added",
-	}, nil
-}
-
-func (node *Node) handleSubmitTransaction(params []interface{}) (interface{}, error) {
-	// Check if params exist
-	if len(params) < 1 {
-		return nil, fmt.Errorf("transaction parameter required")
-	}
-
-	// Convert params[0] to TransactionJSON struct
-	txData, ok := params[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid transaction parameter format")
-	}
-
-	// Convert the map to JSON then to TransactionJSON struct
-	txJSON, err := json.Marshal(txData)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling transaction data: %v", err)
-	}
-
-	var jsonTx thrylos.TransactionJSON
-	if err := json.Unmarshal(txJSON, &jsonTx); err != nil {
-		return nil, fmt.Errorf("error unmarshaling transaction: %v", err)
-	}
-
-	// Convert JSON to Proto
-	tx := ConvertJSONToProto(jsonTx)
-
-	// Add to pending transactions
-	node.AddPendingTransaction(tx)
-
-	// Log and return success
-	fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.GetId())
-
-	// Return success response with transaction ID
-	return struct {
-		Success       bool   `json:"success"`
-		Message       string `json:"message"`
-		TransactionId string `json:"transactionId"`
-	}{
-		Success:       true,
-		Message:       "Transaction successfully added to pending transactions",
-		TransactionId: tx.GetId(),
 	}, nil
 }
 
