@@ -702,37 +702,10 @@ func (node *Node) handleGetStakingStats(params []interface{}) (interface{}, erro
 
 	// Get user's staking stats
 	stakes := node.Blockchain.StakingService.stakes[userAddress]
-	currentTime := time.Now().Unix()
 
-	totalStaked := int64(0)
-	rewardsEarned := int64(0)
+	totalStaked := stakes.Amount
+	rewardsEarned := stakes.TotalRewards
 	availableForWithdrawal := int64(0)
-
-	for _, stake := range stakes {
-		if stake.IsActive {
-			totalStaked += stake.Amount
-			rewardsEarned += stake.TotalRewards
-
-			// Calculate available for withdrawal
-			// Allow withdrawal if at least 24 hours have passed since last reward
-			if currentTime >= stake.LastRewardTime+24*3600 {
-				availableForWithdrawal += stake.Amount
-			}
-
-			// Add any pending rewards to available amount
-			if node.Blockchain.IsActiveValidator(userAddress) {
-				// Only add pending rewards for active validators
-				timeSinceLastReward := currentTime - stake.LastRewardTime
-				if timeSinceLastReward > 24*3600 {
-					// Calculate pending rewards since last distribution
-					dailyReward := node.Blockchain.StakingService.calculateRewardPerValidator()
-					pendingDays := timeSinceLastReward / (24 * 3600)
-					pendingRewards := dailyReward * pendingDays
-					availableForWithdrawal += pendingRewards
-				}
-			}
-		}
-	}
 
 	// Return formatted response
 	return map[string]interface{}{
@@ -751,7 +724,7 @@ func (node *Node) handleGetStakingStats(params []interface{}) (interface{}, erro
 				"nano":    availableForWithdrawal,
 			},
 			"isActiveValidator": node.Blockchain.IsActiveValidator(userAddress),
-			"lastRewardTime":    stakes[len(stakes)-1].LastRewardTime,
+			"lastRewardTime":    node.stakingService.pool.LastRewardTime,
 		},
 	}, nil
 }
@@ -832,7 +805,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	}
 
 	// Create stake record
-	stakeRecord, err := node.Blockchain.StakingService.CreateStake(userAddress, amount)
+	stakeRecord, err := node.Blockchain.StakingService.CreateStake(userAddress, amount, time.Now().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stake: %v", err)
 	}
@@ -858,7 +831,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	// Process the transaction
 	if err = node.ProcessIncomingTransaction(stakingTx); err != nil {
 		// Rollback stake if transaction fails
-		node.Blockchain.StakingService.UnstakeTokens(userAddress, amount)
+		node.Blockchain.StakingService.UnstakeTokens(userAddress, amount, time.Now().Unix())
 		return nil, fmt.Errorf("failed to process staking transaction: %v", err)
 	}
 
@@ -870,7 +843,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	effectiveRate := node.Blockchain.GetEffectiveInflationRate()
 
 	// Calculate next reward time
-	nextRewardTime := time.Unix(stakeRecord.LastRewardTime, 0).Add(24 * time.Hour)
+	nextRewardTime := time.Unix(node.stakingService.pool.LastRewardTime, 0).Add(24 * time.Hour)
 
 	return map[string]interface{}{
 		"message": "Stake created successfully",
@@ -880,7 +853,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 			"startTime":      stakeRecord.StartTime,
 			"isActive":       stakeRecord.IsActive,
 			"validatorRole":  stakeRecord.ValidatorRole,
-			"lastRewardTime": stakeRecord.LastRewardTime,
+			"lastRewardTime": node.stakingService.pool.LastRewardTime,
 		},
 		"transactionId": stakingTx.Id,
 		"stakingInfo": map[string]interface{}{
@@ -891,7 +864,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 			"rewardInterval":   "24h",
 			"activeValidators": len(node.Blockchain.ActiveValidators),
 			// Calculate estimated daily reward per validator
-			"estimatedDailyReward": float64(node.Blockchain.StakingService.calculateDailyReward()) /
+			"estimatedDailyReward": float64(DailyStakeReward) /
 				float64(len(node.Blockchain.ActiveValidators)) / 1e7,
 		},
 	}, nil
@@ -929,32 +902,32 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 
 	// Calculate any pending rewards before unstaking
 	currentTime := time.Now().Unix()
-	stakes := node.Blockchain.StakingService.stakes[userAddress]
+	//stakes := node.Blockchain.StakingService.stakes[userAddress]
 	var pendingRewards int64
 
-	for _, stake := range stakes {
-		if stake.IsActive && stake.Amount == amount {
-			// Calculate time-based pending rewards
-			if node.Blockchain.IsActiveValidator(userAddress) {
-				timeSinceLastReward := currentTime - stake.LastRewardTime
-				if timeSinceLastReward > 0 {
-					// Calculate partial day rewards if applicable
-					dailyReward := node.Blockchain.StakingService.calculateRewardPerValidator()
-					hoursElapsed := float64(timeSinceLastReward) / 3600
-					if hoursElapsed >= 24 {
-						pendingRewards = dailyReward
-					} else {
-						// Pro-rate the rewards for partial day
-						pendingRewards = int64(float64(dailyReward) * (hoursElapsed / 24))
-					}
-				}
-			}
-			break
-		}
-	}
+	// for _, stake := range stakes {
+	// 	if stake.IsActive && stake.Amount == amount {
+	// 		// Calculate time-based pending rewards
+	// 		if node.Blockchain.IsActiveValidator(userAddress) {
+	// 			timeSinceLastReward := currentTime - stake.LastRewardTime
+	// 			if timeSinceLastReward > 0 {
+	// 				// Calculate partial day rewards if applicable
+	// 				dailyReward := node.Blockchain.StakingService.calculateRewardPerValidator()
+	// 				hoursElapsed := float64(timeSinceLastReward) / 3600
+	// 				if hoursElapsed >= 24 {
+	// 					pendingRewards = dailyReward
+	// 				} else {
+	// 					// Pro-rate the rewards for partial day
+	// 					pendingRewards = int64(float64(dailyReward) * (hoursElapsed / 24))
+	// 				}
+	// 			}
+	// 		}
+	// 		break
+	// 	}
+	// }
 
 	// Process unstaking
-	if err := node.Blockchain.StakingService.UnstakeTokens(userAddress, amount); err != nil {
+	if err := node.Blockchain.StakingService.UnstakeTokens(userAddress, amount, time.Now().Unix()); err != nil {
 		return nil, fmt.Errorf("failed to unstake tokens: %v", err)
 	}
 
@@ -977,7 +950,7 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 
 	if err := node.ProcessIncomingTransaction(unstakeTx); err != nil {
 		// Rollback unstake if transaction fails
-		node.Blockchain.StakingService.CreateStake(userAddress, amount)
+		node.Blockchain.StakingService.CreateStake(userAddress, amount, time.Now().Unix())
 		return nil, fmt.Errorf("failed to process unstaking transaction: %v", err)
 	}
 
@@ -992,16 +965,16 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 	effectiveRate := (yearlyReward / currentSupply) * 100
 
 	// Get next reward time for any remaining stakes
-	var nextRewardTime int64
-	remainingStakes := node.Blockchain.StakingService.stakes[userAddress]
-	for _, stake := range remainingStakes {
-		if stake.IsActive {
-			nextReward := stake.LastRewardTime + (24 * 3600)
-			if nextRewardTime == 0 || nextReward < nextRewardTime {
-				nextRewardTime = nextReward
-			}
-		}
-	}
+	nextRewardTime := node.Blockchain.StakingService.pool.LastRewardTime + (24 * 3600)
+	// remainingStakes := node.Blockchain.StakingService.stakes[userAddress]
+	// for _, stake := range remainingStakes {
+	// 	if stake.IsActive {
+	// 		nextReward := stake.LastRewardTime + (24 * 3600)
+	// 		if nextRewardTime == 0 || nextReward < nextRewardTime {
+	// 			nextRewardTime = nextReward
+	// 		}
+	// 	}
+	// }
 
 	return map[string]interface{}{
 		"message":       "Tokens unstaked successfully",
@@ -1121,38 +1094,13 @@ func (node *Node) handleGetStakingInfo(params []interface{}) (interface{}, error
 	currentTime := time.Now().Unix()
 
 	// Calculate total staked and rewards
-	var totalStaked, totalRewards int64
-	var activeStakes []*Stake
-	var nextRewardTime int64
+	// var totalStaked, totalRewards int64
+	// var activeStakes []*Stake
+	// var nextRewardTime int64
 
-	for _, stake := range stakes {
-		if stake.IsActive {
-			totalStaked += stake.Amount
-			totalRewards += stake.TotalRewards
-
-			// Calculate pending rewards if active validator
-			if node.Blockchain.IsActiveValidator(userAddress) {
-				timeSinceLastReward := currentTime - stake.LastRewardTime
-				if timeSinceLastReward > 0 {
-					dailyReward := node.Blockchain.StakingService.calculateRewardPerValidator()
-					hoursElapsed := float64(timeSinceLastReward) / 3600
-					if hoursElapsed >= 24 {
-						totalRewards += dailyReward
-					} else {
-						totalRewards += int64(float64(dailyReward) * (hoursElapsed / 24))
-					}
-				}
-			}
-
-			// Track next reward time
-			stakeNextReward := stake.LastRewardTime + (24 * 3600)
-			if nextRewardTime == 0 || stakeNextReward < nextRewardTime {
-				nextRewardTime = stakeNextReward
-			}
-
-			activeStakes = append(activeStakes, stake)
-		}
-	}
+	totalStaked := node.Blockchain.StakingService.stakes[userAddress].Amount
+	totalRewards := node.Blockchain.StakingService.stakes[userAddress].TotalRewards
+	nextRewardTime := node.Blockchain.StakingService.pool.LastRewardTime + (24 * 3600)
 
 	stakingPool := node.Blockchain.StakingService.pool
 
@@ -1180,8 +1128,8 @@ func (node *Node) handleGetStakingInfo(params []interface{}) (interface{}, error
 				"thrylos": float64(totalRewards) / 1e7,
 				"nano":    totalRewards,
 			},
-			"activeStakesCount": len(activeStakes),
-			"activeStakes":      activeStakes,
+			"activeStakesCount": 1,                //len(activeStakes), //TODO: we need to get these
+			"activeStakes":      []*Stake{stakes}, //activeStakes, //TODO: we do not need this.
 			"nextRewardTime":    nextRewardTime,
 		},
 		"stakingPool": map[string]interface{}{
@@ -1198,7 +1146,7 @@ func (node *Node) handleGetStakingInfo(params []interface{}) (interface{}, error
 				"lastRewardTime":      stakingPool.LastRewardTime,
 				"nextRewardTime":      nextRewardTime,
 				"timeUntilNextReward": timeUntilNextReward,
-				"estimatedDailyReward": float64(node.Blockchain.StakingService.calculateDailyReward()) /
+				"estimatedDailyReward": float64(DailyStakeReward) /
 					float64(len(node.Blockchain.ActiveValidators)) / 1e7,
 			},
 			"rewardInfo": map[string]interface{}{
@@ -1245,8 +1193,10 @@ func (node *Node) handleGetValidators(params []interface{}) (interface{}, error)
 	effectiveAPR := (yearlyReward / (float64(totalSupply) / 1e7)) * 100
 
 	// Calculate daily reward per validator
-	dailyRewardPerValidator := node.Blockchain.StakingService.calculateDailyReward() /
-		int64(len(node.Blockchain.ActiveValidators))
+	// dailyRewardPerValidator := node.Blockchain.StakingService.calculateDailyReward() /
+	// 	int64(len(node.Blockchain.ActiveValidators))
+
+	dailyRewardPerValidator := 0 //TODO: we need to get this fixed
 
 	currentTime := time.Now().Unix()
 	stakingPool := node.Blockchain.StakingService.pool
@@ -1257,18 +1207,8 @@ func (node *Node) handleGetValidators(params []interface{}) (interface{}, error)
 		if !exists {
 			continue
 		}
-
 		// Get validator's next reward time
-		var nextRewardTime int64
-		stakes := node.Blockchain.StakingService.stakes[validatorAddr]
-		for _, stake := range stakes {
-			if stake.IsActive {
-				stakeNextReward := stake.LastRewardTime + (24 * 3600)
-				if nextRewardTime == 0 || stakeNextReward < nextRewardTime {
-					nextRewardTime = stakeNextReward
-				}
-			}
-		}
+		nextRewardTime := node.stakingService.pool.LastRewardTime + (24 * 3600)
 
 		timeUntilNextReward := nextRewardTime - currentTime
 		if timeUntilNextReward < 0 {
@@ -1314,7 +1254,7 @@ func (node *Node) handleGetValidators(params []interface{}) (interface{}, error)
 				"nextRewardTime":    nextNetworkReward,
 				"timeUntilReward":   timeUntilNextNetworkReward,
 				"lastNetworkReward": stakingPool.LastRewardTime,
-				"dailyRewardPool":   fmt.Sprintf("%.2f", float64(node.Blockchain.StakingService.calculateDailyReward())/1e7),
+				"dailyRewardPool":   fmt.Sprintf("%.2f", float64(DailyStakeReward)/1e7),
 				"validatorsCount":   len(node.Blockchain.ActiveValidators),
 			},
 		},
