@@ -88,6 +88,14 @@ func (node *Node) JSONRPCHandler(w http.ResponseWriter, r *http.Request) {
 		result, err = node.handleEstimateGas(req.Params)
 	case "stake":
 		result, err = node.handleStaking(req.Params)
+	case "delegate":
+		result, err = node.handlePoolDelegation(req.Params)
+	case "undelegate":
+		result, err = node.handlePoolUndelegation(req.Params)
+	case "getPoolStats":
+		result, err = node.handleGetPoolStats(req.Params)
+	case "getDelegatorInfo":
+		result, err = node.handleGetDelegatorInfo(req.Params)
 	case "getStakingInfo":
 		result, err = node.handleGetStakingInfo(req.Params)
 	case "getNetworkHealth":
