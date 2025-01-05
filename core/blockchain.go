@@ -107,6 +107,7 @@ type Blockchain struct {
 
 	StateNetwork   shared.NetworkInterface
 	StakingService *StakingService
+	DelegationPool *DelegationPool
 }
 
 // NewTransaction creates a new transaction
@@ -375,6 +376,13 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		ValidatorKeys:       NewValidatorKeyStore(),
 		TestMode:            config.TestMode,
 		StateManager:        stateManager,
+		DelegationPool: &DelegationPool{
+			TotalDelegated:    0,
+			MinDelegation:     int64(1 * 1e7),         // 1 THRYLOS minimum
+			FixedYearlyReward: int64(4_800_000 * 1e7), // 4.8 mill each year
+			LastRewardTime:    time.Now().Unix(),      // rewarded last time
+			RewardInterval:    24 * 3600,              // 24 hours in seconds
+		},
 	}
 
 	// Now store the private key for the genesis account
@@ -484,8 +492,9 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	}()
 
 	// Initialize staking service with proper configuration
-	log.Println("Initializing staking service...")
+	log.Println("Initialize staking service...")
 	blockchain.StakingService = NewStakingService(blockchain)
+
 	log.Printf("Staking service initialized with:")
 	log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
 	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
@@ -538,6 +547,21 @@ func (bc *Blockchain) GetTotalSupply() int64 {
 		totalSupply += balance
 	}
 	return totalSupply
+}
+
+func (bc *Blockchain) DistributePoolRewards() error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	return bc.StakingService.DistributeRewards()
+}
+
+func (bc *Blockchain) DelegateToPool(delegator string, amount int64) error {
+	return bc.StakingService.DelegateToPool(delegator, amount)
+}
+
+func (bc *Blockchain) UndelegateFromPool(delegator string, amount int64) error {
+	return bc.StakingService.UndelegateFromPool(delegator, amount)
 }
 
 func (bc *Blockchain) GetEffectiveInflationRate() float64 {
@@ -1128,7 +1152,7 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
 	}
 	defer bc.Database.RollbackTransaction(txn)
 
-	// Store the transaction with initial "pending" status
+	// Prepare transaction data
 	txKey := []byte("transaction-" + tx.Id)
 	tx.Status = "pending"
 	txJSON, err := json.Marshal(tx)
@@ -1136,22 +1160,24 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("error marshaling transaction: %v", err)
 	}
 
+	// Store in database
 	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
 		return fmt.Errorf("error storing transaction: %v", err)
 	}
-
-	// Add to pending transactions
-	bc.Mu.Lock()
-	bc.PendingTransactions = append(bc.PendingTransactions, tx)
-	bc.Mu.Unlock()
 
 	// Commit the database transaction
 	if err := bc.Database.CommitTransaction(txn); err != nil {
 		return fmt.Errorf("error committing transaction: %v", err)
 	}
 
+	// Only lock for the in-memory update
+	bc.Mu.Lock()
+	bc.PendingTransactions = append(bc.PendingTransactions, tx)
+	totalPending := len(bc.PendingTransactions)
+	bc.Mu.Unlock()
+
 	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
-		tx.Id, len(bc.PendingTransactions))
+		tx.Id, totalPending)
 
 	return nil
 }
@@ -1827,46 +1853,123 @@ type Validator struct {
 	RegistrationTime time.Time
 }
 
-func (bc *Blockchain) UpdateActiveValidators(count int) error {
+func (bc *Blockchain) UpdateActiveValidators(count int) {
 	bc.Mu.Lock()
 	defer bc.Mu.Unlock()
 
-	if count < 1 {
-		count = 1
+	// Sort stakeholders by stake amount
+	type validatorStake struct {
+		address string
+		amount  int64
+	}
+	validators := make([]validatorStake, 0)
+
+	minValidatorStake := int64(40 * 1e7) // 40 THRYLOS minimum for validators
+
+	for addr, stake := range bc.Stakeholders {
+		if stake >= minValidatorStake { // Using fixed minimum validator stake
+			validators = append(validators, validatorStake{addr, stake})
+		}
 	}
 
-	// Sort stakeholders by stake
-	stakeholders := make([]struct {
-		address string
-		stake   int64
-	}, 0, len(bc.Stakeholders))
-	for address, stake := range bc.Stakeholders {
-		stakeholders = append(stakeholders, struct {
-			address string
-			stake   int64
-		}{address, stake})
-	}
-	sort.Slice(stakeholders, func(i, j int) bool {
-		return stakeholders[i].stake > stakeholders[j].stake
+	// Sort by stake amount (descending)
+	sort.Slice(validators, func(i, j int) bool {
+		return validators[i].amount > validators[j].amount
 	})
 
-	// Select top 'count' stakeholders as active validators
-	bc.ActiveValidators = make([]string, 0, count)
-	for i := 0; i < count && i < len(stakeholders); i++ {
-		bc.ActiveValidators = append(bc.ActiveValidators, stakeholders[i].address)
+	// Update active validators list
+	bc.ActiveValidators = make([]string, 0)
+	for i := 0; i < min(count, len(validators)); i++ {
+		bc.ActiveValidators = append(bc.ActiveValidators, validators[i].address)
+	}
+}
+
+func SharedToThrylos(tx *shared.Transaction) *thrylos.Transaction {
+	if tx == nil {
+		return nil
 	}
 
-	// If we don't have enough validators, generate new ones
-	for len(bc.ActiveValidators) < count {
-		newAddress, err := bc.GenerateAndStoreValidatorKey()
-		if err != nil {
-			return fmt.Errorf("failed to generate new validator: %v", err)
+	signatureBytes, _ := base64.StdEncoding.DecodeString(tx.Signature)
+
+	return &thrylos.Transaction{
+		Id:            tx.ID,
+		Timestamp:     tx.Timestamp,
+		Inputs:        ConvertSharedInputs(tx.Inputs),
+		Outputs:       ConvertSharedOutputs(tx.Outputs),
+		Signature:     signatureBytes,
+		PreviousTxIds: tx.PreviousTxIds,
+		Sender:        tx.Sender,
+		Status:        tx.Status,
+		Gasfee:        int32(tx.GasFee), // No conversion needed since both are int64
+	}
+}
+
+func ConvertSharedOutputs(outputs []shared.UTXO) []*thrylos.UTXO {
+	result := make([]*thrylos.UTXO, len(outputs))
+	for i, output := range outputs {
+		result[i] = &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        output.Amount,
+			IsSpent:       output.IsSpent,
 		}
-		bc.ActiveValidators = append(bc.ActiveValidators, newAddress)
+	}
+	return result
+}
+
+func ConvertSharedInputs(inputs []shared.UTXO) []*thrylos.UTXO {
+	return ConvertSharedOutputs(inputs) // Same conversion process
+}
+
+// Now we can update ProcessPoolTransaction to use these conversion functions
+func (bc *Blockchain) ProcessPoolTransaction(tx *shared.Transaction) error {
+	bc.Mu.Lock()
+	defer bc.Mu.Unlock()
+
+	// Convert shared.Transaction to thrylos.Transaction
+	thrylosTx := SharedToThrylos(tx)
+
+	// Verify pool-related transaction
+	if tx.Sender == "delegation_pool" || tx.Outputs[0].OwnerAddress == "delegation_pool" {
+		// Use original shared.Transaction for validation
+		if err := bc.validatePoolTransaction(tx); err != nil {
+			return err
+		}
 	}
 
-	log.Printf("Updated active validators. Total: %d", len(bc.ActiveValidators))
+	return bc.AddPendingTransaction(thrylosTx)
+}
+
+func (bc *Blockchain) validatePoolTransaction(tx *shared.Transaction) error {
+	// Implement pool-specific transaction validation
+	if tx.Sender == "delegation_pool" {
+		// Validate undelegation
+		delegator := tx.Outputs[0].OwnerAddress
+		amount := tx.Outputs[0].Amount
+
+		// Check if undelegation amount is valid
+		totalDelegated := int64(0)
+		for _, stake := range bc.StakingService.stakes[delegator] {
+			if stake.IsActive {
+				totalDelegated += stake.Amount
+			}
+		}
+
+		if totalDelegated < amount {
+			return errors.New("invalid undelegation amount")
+		}
+	}
+
 	return nil
+}
+
+// Helper function to get delegation pool stats
+func (bc *Blockchain) GetPoolStats() map[string]interface{} {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+
+	return bc.StakingService.GetPoolStats()
 }
 
 func GenerateValidatorAddress() (string, error) {
