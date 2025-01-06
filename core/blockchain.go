@@ -1949,13 +1949,7 @@ func (bc *Blockchain) validatePoolTransaction(tx *shared.Transaction) error {
 		amount := tx.Outputs[0].Amount
 
 		// Check if undelegation amount is valid
-		totalDelegated := int64(0)
-		for _, stake := range bc.StakingService.stakes[delegator] {
-			if stake.IsActive {
-				totalDelegated += stake.Amount
-			}
-		}
-
+		totalDelegated := bc.StakingService.stakes[delegator].Amount
 		if totalDelegated < amount {
 			return errors.New("invalid undelegation amount")
 		}
