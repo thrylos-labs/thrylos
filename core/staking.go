@@ -70,6 +70,11 @@ func NewStakingService(blockchain *Blockchain) *StakingService {
 
 // calculateRewardPerValidator distributes daily reward equally among active validators
 func (s *StakingService) calculateRewardPerValidator(rewardDistributionTime int64) map[string]float64 {
+	// Add validation for time parameters
+	if rewardDistributionTime <= s.pool.LastRewardTime {
+		return nil
+	}
+
 	// finalise stake period before reward distribution
 	totalStateTimeAverage := float64(0)
 	for _, stake := range s.stakes {
@@ -94,23 +99,27 @@ func (s *StakingService) calculateRewardPerValidator(rewardDistributionTime int6
 	return rewards
 }
 
-func (s *StakingService) estimateValidatorReward(validatorAddress string, currentTimeStamp int64) float64 {
-	// finalise stake period before reward distribution
+func (s *StakingService) estimateValidatorReward(targetValidator string, currentTimeStamp int64) float64 {
 	totalStateTimeAverage := float64(0)
-	validatorStakeTimeAvarege := float64(0)
-	for validatorAddress, stake := range s.stakes {
+	validatorStakeTimeAverage := float64(0)
+
+	for addr, stake := range s.stakes {
 		if stake.LastStakeUpdateTime < currentTimeStamp {
 			stakeTime := stake.Amount * (currentTimeStamp - stake.LastStakeUpdateTime)
 			stakeTimeSum := stake.StakeTimeSum + float64(stakeTime)
 			stakeTimeAverage := stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
 			totalStateTimeAverage += stakeTimeAverage
 
-			if validatorAddress == validatorAddress {
-				validatorStakeTimeAvarege = stakeTimeAverage
+			if addr == targetValidator {
+				validatorStakeTimeAverage = stakeTimeAverage
 			}
 		}
 	}
-	return (validatorStakeTimeAvarege / float64(totalStateTimeAverage)) * float64(DailyStakeReward)
+
+	if totalStateTimeAverage == 0 {
+		return 0
+	}
+	return (validatorStakeTimeAverage / totalStateTimeAverage) * float64(DailyStakeReward)
 }
 
 // Add this method to your StakingService struct
