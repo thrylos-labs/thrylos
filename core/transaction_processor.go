@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strings"
 	"sync"
 
 	thrylos "github.com/thrylos-labs/thrylos"
@@ -15,6 +16,12 @@ import (
 const (
 	BaseGasFee = 1000  // Base fee in microTHRYLOS (0.001 THRYLOS)
 	MaxGasFee  = 10000 // Maximum gas fee in microTHRYLOS (0.01 THRYLOS)
+)
+
+// Staking transaction types
+const (
+	TxTypeStake   = "stake"
+	TxTypeUnstake = "unstake"
 )
 
 type TransactionStatus struct {
@@ -76,6 +83,11 @@ func (node *Node) HasTransaction(txID string) bool {
 
 // Transaction verification and processing
 func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
+	// Check if this is a staking transaction
+	if isStakingTransaction(tx) {
+		return node.processStakingTransaction(tx)
+	}
+
 	if len(tx.Inputs) == 0 {
 		return fmt.Errorf("transaction has no inputs")
 	}
@@ -104,6 +116,79 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 	}
 
 	return nil
+}
+
+// In transaction processor code
+func (node *Node) processStakingTransaction(tx *thrylos.Transaction) error {
+	txType := getStakingTransactionType(tx)
+	log.Printf("Processing %s transaction: %s", txType, tx.Id)
+
+	switch txType {
+	case TxTypeStake:
+		if tx.Outputs[0].OwnerAddress != "staking_pool" {
+			return fmt.Errorf("invalid staking transaction: incorrect recipient")
+		}
+
+		// Only update the staking service state
+		// Database transaction will be handled by the normal transaction flow
+		stake := &Stake{
+			UserAddress:         tx.Sender,
+			Amount:              tx.Outputs[0].Amount,
+			StartTime:           tx.Timestamp,
+			LastStakeUpdateTime: tx.Timestamp,
+			IsActive:            true,
+			ValidatorRole:       true,
+		}
+
+		// Update staking service state
+		node.stakingService.stakes[tx.Sender] = stake
+		node.stakingService.pool.TotalStaked += tx.Outputs[0].Amount
+
+	case TxTypeUnstake:
+		if tx.Sender != "staking_pool" {
+			return fmt.Errorf("invalid unstaking transaction: incorrect sender")
+		}
+
+		stakeholder := tx.Outputs[0].OwnerAddress
+		unstakeAmount := tx.Outputs[0].Amount
+
+		// Verify stake exists in staking service
+		if stake := node.stakingService.stakes[stakeholder]; stake != nil {
+			if stake.Amount < unstakeAmount {
+				return fmt.Errorf("insufficient stake for unstaking")
+			}
+
+			// Update stake record
+			stake.Amount -= unstakeAmount
+			stake.LastStakeUpdateTime = tx.Timestamp
+			if stake.Amount == 0 {
+				stake.IsActive = false
+			}
+			node.stakingService.pool.TotalStaked -= unstakeAmount
+		} else {
+			return fmt.Errorf("no active stake found for %s", stakeholder)
+		}
+
+	default:
+		return fmt.Errorf("unknown staking transaction type: %s", txType)
+	}
+
+	log.Printf("Successfully processed %s transaction: %s", txType, tx.Id)
+	return nil
+}
+
+func isStakingTransaction(tx *thrylos.Transaction) bool {
+	return strings.HasPrefix(tx.Id, "stake-") || strings.HasPrefix(tx.Id, "unstake-")
+}
+
+func getStakingTransactionType(tx *thrylos.Transaction) string {
+	if strings.HasPrefix(tx.Id, "stake-") {
+		return TxTypeStake
+	}
+	if strings.HasPrefix(tx.Id, "unstake-") {
+		return TxTypeUnstake
+	}
+	return "unknown"
 }
 
 // Transaction input collection

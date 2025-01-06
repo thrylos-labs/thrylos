@@ -175,18 +175,38 @@ func (s *StakingService) GetPoolStats() map[string]interface{} {
 func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.createStakeInternal(userAddress, amount, time.Now().Unix())
+
+	// Create staking transaction
+	stakingTx := &thrylos.Transaction{
+		Id:        fmt.Sprintf("stake-%s-%d", userAddress, time.Now().UnixNano()),
+		Sender:    userAddress,
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress:  "staking_pool",
+			Amount:        amount,
+			Index:         0,
+			TransactionId: "", // Will be set when added to blockchain
+		}},
+	}
+
+	// Add transaction to pending pool
+	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
+		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
+	}
+
+	// Use existing internal logic with the transaction timestamp
+	return s.createStakeInternal(userAddress, amount, stakingTx.Timestamp)
 }
 
-// TODO: Timestamp is needed for testing puproses. Remove it after testing
-func (s *StakingService) createStakeInternal(userAddress string, amount int64, timestap int64) (*Stake, error) {
+// Keep internal function for testing
+func (s *StakingService) createStakeInternal(userAddress string, amount int64, timestamp int64) (*Stake, error) {
+	// Existing validation
 	if amount < s.pool.MinStakeAmount {
 		return nil, fmt.Errorf("minimum stake amount is %d THRYLOS", s.pool.MinStakeAmount/1e7)
 	}
-	//now := time.Now().Unix()
-	now := timestap
+
+	now := timestamp
 	if _, ok := s.blockchain.Stakeholders[userAddress]; !ok {
-		// Create new stake record
 		stake := &Stake{
 			UserAddress:         userAddress,
 			Amount:              0,
@@ -196,19 +216,18 @@ func (s *StakingService) createStakeInternal(userAddress string, amount int64, t
 			IsActive:            true,
 			ValidatorRole:       true,
 		}
-		s.stakes[userAddress] = stake // we have assumed that if the address is not in the list of stakeholders, then it does not have any stake.
+		s.stakes[userAddress] = stake
 		s.blockchain.Stakeholders[userAddress] = 0
 	}
 
-	// Update blockchain's Stakeholders map
+	// Update stakes
 	currentStake := s.blockchain.Stakeholders[userAddress]
 	s.blockchain.Stakeholders[userAddress] = currentStake + amount
 	s.pool.TotalStaked += amount
 
-	// Update stake record
-	// Finalize the previous stake period
+	// Update stake record with time calculations
 	duration := now - s.stakes[userAddress].LastStakeUpdateTime
-	totalDuration := now - s.pool.LastRewardTime // total duration since last reward
+	totalDuration := now - s.pool.LastRewardTime
 	stakeTime := s.stakes[userAddress].Amount * duration
 	s.stakes[userAddress].Amount += amount
 	s.stakes[userAddress].StakeTimeSum += float64(stakeTime)
@@ -261,7 +280,27 @@ func (s *StakingService) DistributeRewards() error {
 func (s *StakingService) UnstakeTokens(userAddress string, amount int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.unstakeTokensInternal(userAddress, amount, time.Now().Unix())
+
+	// Create unstaking transaction
+	unstakingTx := &thrylos.Transaction{
+		Id:        fmt.Sprintf("unstake-%s-%d", userAddress, time.Now().UnixNano()),
+		Sender:    "staking_pool",
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress:  userAddress,
+			Amount:        amount,
+			Index:         0,
+			TransactionId: "", // Will be set when added to blockchain
+		}},
+	}
+
+	// Add transaction to pending pool
+	if err := s.blockchain.AddPendingTransaction(unstakingTx); err != nil {
+		return fmt.Errorf("failed to create unstaking transaction: %v", err)
+	}
+
+	// Use internal unstaking logic with transaction timestamp
+	return s.unstakeTokensInternal(userAddress, amount, unstakingTx.Timestamp)
 }
 
 func (s *StakingService) unstakeTokensInternal(userAddress string, amount int64, timestamp int64) error {
@@ -279,7 +318,6 @@ func (s *StakingService) unstakeTokensInternal(userAddress string, amount int64,
 
 	s.pool.TotalStaked -= amount
 
-	//now := time.Now().Unix()
 	now := timestamp
 
 	// Update stake record
