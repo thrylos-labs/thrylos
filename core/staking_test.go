@@ -55,14 +55,14 @@ func TestRewardDistribution(t *testing.T) {
 
 	// Validate rewards
 	for id, expected := range expectedRewards {
-		if actual := rewards[id]; abs(float64(actual)-expected) > 0.1 {
+		if actual := rewards[id]; absFloat(float64(actual)-expected) > 0.1 {
 			t.Errorf("Reward for %s: expected %.2f, got %.2f", id, expected, float64(actual))
 		}
 	}
 }
 
 // Helper function to calculate absolute difference
-func abs(a float64) float64 {
+func absFloat(a float64) float64 {
 	if a < 0 {
 		return -a
 	}

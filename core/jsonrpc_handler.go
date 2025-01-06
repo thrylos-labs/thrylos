@@ -78,8 +78,6 @@ func (node *Node) JSONRPCHandler(w http.ResponseWriter, r *http.Request) {
 		result, err = node.handleGetBlockchainInfo(req.Params)
 	case "submitBlock":
 		result, err = node.handleSubmitBlock(req.Params)
-	case "submitTransaction":
-		result, err = node.handleSubmitTransaction(req.Params)
 	case "getPeers":
 		result, err = node.handleGetPeers(req.Params)
 	case "submitSignedTransaction":
@@ -88,6 +86,14 @@ func (node *Node) JSONRPCHandler(w http.ResponseWriter, r *http.Request) {
 		result, err = node.handleEstimateGas(req.Params)
 	case "stake":
 		result, err = node.handleStaking(req.Params)
+	case "delegate":
+		result, err = node.handlePoolDelegation(req.Params)
+	case "undelegate":
+		result, err = node.handlePoolUndelegation(req.Params)
+	case "getPoolStats":
+		result, err = node.handleGetPoolStats(req.Params)
+	case "getDelegatorInfo":
+		result, err = node.handleGetDelegatorInfo(req.Params)
 	case "getStakingInfo":
 		result, err = node.handleGetStakingInfo(req.Params)
 	case "getNetworkHealth":
@@ -335,50 +341,6 @@ func (node *Node) handleSubmitBlock(params []interface{}) (interface{}, error) {
 	}{
 		Success: true,
 		Message: "Block successfully added",
-	}, nil
-}
-
-func (node *Node) handleSubmitTransaction(params []interface{}) (interface{}, error) {
-	// Check if params exist
-	if len(params) < 1 {
-		return nil, fmt.Errorf("transaction parameter required")
-	}
-
-	// Convert params[0] to TransactionJSON struct
-	txData, ok := params[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid transaction parameter format")
-	}
-
-	// Convert the map to JSON then to TransactionJSON struct
-	txJSON, err := json.Marshal(txData)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling transaction data: %v", err)
-	}
-
-	var jsonTx thrylos.TransactionJSON
-	if err := json.Unmarshal(txJSON, &jsonTx); err != nil {
-		return nil, fmt.Errorf("error unmarshaling transaction: %v", err)
-	}
-
-	// Convert JSON to Proto
-	tx := ConvertJSONToProto(jsonTx)
-
-	// Add to pending transactions
-	node.AddPendingTransaction(tx)
-
-	// Log and return success
-	fmt.Printf("Verified and added transaction %s to pending transactions\n", tx.GetId())
-
-	// Return success response with transaction ID
-	return struct {
-		Success       bool   `json:"success"`
-		Message       string `json:"message"`
-		TransactionId string `json:"transactionId"`
-	}{
-		Success:       true,
-		Message:       "Transaction successfully added to pending transactions",
-		TransactionId: tx.GetId(),
 	}, nil
 }
 
@@ -1347,4 +1309,165 @@ func (node *Node) handleGetStats(params []interface{}) (interface{}, error) {
 
 	// No need to manually marshal to JSON as the JSON-RPC handler will handle that
 	return stats, nil
+}
+
+// Handler for delegation to pool
+func (node *Node) handlePoolDelegation(params []interface{}) (interface{}, error) {
+	if len(params) < 1 {
+		return nil, fmt.Errorf("parameters required")
+	}
+
+	reqData, ok := params[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid request format")
+	}
+
+	// Extract parameters
+	delegator, ok := reqData["delegator"].(string)
+	if !ok {
+		return nil, fmt.Errorf("delegator address required")
+	}
+
+	amountFloat, ok := reqData["amount"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("amount required")
+	}
+	amount := int64(amountFloat)
+
+	// Process delegation
+	if err := node.Blockchain.DelegateToPool(delegator, amount); err != nil {
+		return nil, fmt.Errorf("delegation failed: %v", err)
+	}
+
+	// Get updated pool stats
+	poolStats := node.Blockchain.GetPoolStats()
+
+	return map[string]interface{}{
+		"status":    "success",
+		"message":   "Successfully delegated to pool",
+		"amount":    float64(amount) / 1e7,
+		"delegator": delegator,
+		"poolStats": poolStats,
+		"timestamp": time.Now().Unix(),
+	}, nil
+}
+
+// Handler for getting pool statistics
+func (node *Node) handleGetPoolStats(params []interface{}) (interface{}, error) {
+	poolStats := node.Blockchain.GetPoolStats()
+
+	// Get active validators info
+	validators := make([]map[string]interface{}, 0)
+	for _, validatorAddr := range node.Blockchain.ActiveValidators {
+		stake := node.Blockchain.Stakeholders[validatorAddr]
+		validators = append(validators, map[string]interface{}{
+			"address": validatorAddr,
+			"stake":   float64(stake) / 1e7,
+			"status":  "Active",
+		})
+	}
+
+	return map[string]interface{}{
+		"poolInfo": poolStats,
+		"validators": map[string]interface{}{
+			"active":   validators,
+			"count":    len(validators),
+			"minStake": float64(node.Blockchain.StakingService.pool.MinDelegation*40) / 1e7,
+		},
+		"delegatorInfo": map[string]interface{}{
+			"minDelegation": float64(node.Blockchain.StakingService.pool.MinDelegation) / 1e7,
+			"count":         len(node.Blockchain.StakingService.stakes),
+		},
+	}, nil
+}
+
+// Handler for getting delegator information
+func (node *Node) handleGetDelegatorInfo(params []interface{}) (interface{}, error) {
+	if len(params) < 1 {
+		return nil, fmt.Errorf("address parameter required")
+	}
+
+	reqData, ok := params[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid request format")
+	}
+
+	delegator, ok := reqData["address"].(string)
+	if !ok {
+		return nil, fmt.Errorf("address required")
+	}
+
+	// Get delegator's stakes
+	stake := node.Blockchain.StakingService.stakes[delegator]
+
+	activeDelegations := make([]map[string]interface{}, 0)
+	totalDelegated := int64(0)
+	totalRewards := int64(0)
+
+	if stake.IsActive {
+		activeDelegations = append(activeDelegations, map[string]interface{}{
+			"amount":         float64(stake.Amount) / 1e7,
+			"startTime":      stake.StartTime,
+			"lastRewardTime": node.stakingService.pool.LastRewardTime,
+			"totalRewards":   float64(stake.TotalRewards) / 1e7,
+		})
+	}
+
+	// Calculate next reward time (24 hours after last reward)
+	currentTime := time.Now().Unix()
+	lastRewardTime := node.Blockchain.StakingService.pool.LastRewardTime
+	nextRewardTime := lastRewardTime + (24 * 3600) // 24 hours in seconds
+
+	// Calculate estimated daily reward
+	dailyReward := node.Blockchain.StakingService.estimateValidatorReward(stake.UserAddress, currentTime)
+
+	return map[string]interface{}{
+		"address": delegator,
+		"delegations": map[string]interface{}{
+			"active":         activeDelegations,
+			"totalDelegated": float64(totalDelegated) / 1e7,
+			"totalRewards":   float64(totalRewards) / 1e7,
+		},
+		"rewardInfo": map[string]interface{}{
+			"nextRewardTime":       nextRewardTime,
+			"timeUntilReward":      nextRewardTime - currentTime,
+			"estimatedDailyReward": dailyReward / 1e7,
+		},
+	}, nil
+}
+
+// Handler for undelegation from pool
+func (node *Node) handlePoolUndelegation(params []interface{}) (interface{}, error) {
+	if len(params) < 1 {
+		return nil, fmt.Errorf("parameters required")
+	}
+
+	reqData, ok := params[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid request format")
+	}
+
+	delegator, ok := reqData["delegator"].(string)
+	if !ok {
+		return nil, fmt.Errorf("delegator address required")
+	}
+
+	amountFloat, ok := reqData["amount"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("amount required")
+	}
+	amount := int64(amountFloat)
+
+	// Process undelegation
+	if err := node.Blockchain.UndelegateFromPool(delegator, amount); err != nil {
+		return nil, fmt.Errorf("undelegation failed: %v", err)
+	}
+
+	return map[string]interface{}{
+		"status":    "success",
+		"message":   "Successfully undelegated from pool",
+		"amount":    float64(amount) / 1e7,
+		"delegator": delegator,
+		"timestamp": time.Now().Unix(),
+	}, nil
 }

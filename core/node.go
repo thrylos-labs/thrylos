@@ -182,6 +182,12 @@ func (node *Node) StartBackgroundTasks() {
 			case <-tickerDiscoverPeers.C:
 				node.DiscoverPeers()
 			}
+			for {
+				if err := node.Blockchain.DistributePoolRewards(); err != nil {
+					log.Printf("Error distributing pool rewards: %v", err)
+				}
+				time.Sleep(time.Hour) // Check every hour
+			}
 		}
 	}()
 }
