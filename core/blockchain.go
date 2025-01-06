@@ -549,21 +549,6 @@ func (bc *Blockchain) GetTotalSupply() int64 {
 	return totalSupply
 }
 
-func (bc *Blockchain) DistributePoolRewards() error {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
-
-	return bc.StakingService.DistributeRewards()
-}
-
-func (bc *Blockchain) DelegateToPool(delegator string, amount int64) error {
-	return bc.StakingService.DelegateToPool(delegator, amount)
-}
-
-func (bc *Blockchain) UndelegateFromPool(delegator string, amount int64) error {
-	return bc.StakingService.UndelegateFromPool(delegator, amount)
-}
-
 func (bc *Blockchain) GetEffectiveInflationRate() float64 {
 	currentTotalSupply := float64(bc.GetTotalSupply()) / 1e7
 	yearlyReward := 4_800_000.0 // Fixed 4.8M

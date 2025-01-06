@@ -4,10 +4,22 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
 )
+
+type StakingManager interface {
+	GetPoolStats() map[string]interface{}
+	CreateStake(userAddress string, amount int64) (*Stake, error)
+	UnstakeTokens(userAddress string, amount int64) error
+	DelegateToPool(delegator string, amount int64) error
+	UndelegateFromPool(delegator string, amount int64) error
+	DistributeRewards() error
+	GetTotalStaked() int64
+	GetEffectiveInflationRate() float64
+}
 
 type StakingPool struct {
 	MinStakeAmount    int64 `json:"minStakeAmount"`
@@ -40,6 +52,7 @@ type Delegation struct {
 }
 
 type StakingService struct {
+	mu          sync.RWMutex
 	pool        *StakingPool
 	stakes      map[string]*Stake
 	delegations map[string][]*Delegation
@@ -124,6 +137,9 @@ func (s *StakingService) estimateValidatorReward(targetValidator string, current
 
 // Add this method to your StakingService struct
 func (s *StakingService) GetPoolStats() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	currentTime := time.Now().Unix()
 	lastRewardTime := s.pool.LastRewardTime // Changed from LastEpochBlock to LastRewardTime
 
@@ -156,8 +172,14 @@ func (s *StakingService) GetPoolStats() map[string]interface{} {
 	}
 }
 
+func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.createStakeInternal(userAddress, amount, time.Now().Unix())
+}
+
 // TODO: Timestamp is needed for testing puproses. Remove it after testing
-func (s *StakingService) CreateStake(userAddress string, amount int64, timestap int64) (*Stake, error) {
+func (s *StakingService) createStakeInternal(userAddress string, amount int64, timestap int64) (*Stake, error) {
 	if amount < s.pool.MinStakeAmount {
 		return nil, fmt.Errorf("minimum stake amount is %d THRYLOS", s.pool.MinStakeAmount/1e7)
 	}
@@ -197,6 +219,9 @@ func (s *StakingService) CreateStake(userAddress string, amount int64, timestap 
 }
 
 func (s *StakingService) DistributeRewards() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	currentTime := time.Now().Unix()
 
 	// Check if 24 hours have passed
@@ -233,7 +258,13 @@ func (s *StakingService) DistributeRewards() error {
 	return nil
 }
 
-func (s *StakingService) UnstakeTokens(userAddress string, amount int64, timestamp int64) error {
+func (s *StakingService) UnstakeTokens(userAddress string, amount int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unstakeTokensInternal(userAddress, amount, time.Now().Unix())
+}
+
+func (s *StakingService) unstakeTokensInternal(userAddress string, amount int64, timestamp int64) error {
 	currentStake := s.blockchain.Stakeholders[userAddress]
 	if currentStake < amount {
 		return errors.New("insufficient staked amount")
@@ -265,16 +296,22 @@ func (s *StakingService) UnstakeTokens(userAddress string, amount int64, timesta
 
 // Support methods for compatibility
 func (s *StakingService) GetTotalStaked() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.pool.TotalStaked
 }
 
 func (s *StakingService) GetEffectiveInflationRate() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	currentTotalSupply := float64(s.getTotalSupply()) / 1e7
 	fixedYearlyReward := float64(s.pool.FixedYearlyReward) / 1e7
 	return (fixedYearlyReward / currentTotalSupply) * 100
 }
 
 func (s *StakingService) getTotalSupply() int64 {
+	// No need for additional locking as this is called from locked methods
 	totalSupply := int64(0)
 	for _, balance := range s.blockchain.Stakeholders {
 		totalSupply += balance
@@ -285,6 +322,9 @@ func (s *StakingService) getTotalSupply() int64 {
 // Add these methods to your StakingService struct
 
 func (s *StakingService) DelegateToPool(delegator string, amount int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Add debug logging
 	log.Printf("DelegateToPool - Starting delegation for %s with amount %d", delegator, amount)
 	log.Printf("DelegateToPool - Current total staked: %d", s.pool.TotalStaked)
@@ -347,6 +387,9 @@ func (s *StakingService) DelegateToPool(delegator string, amount int64) error {
 }
 
 func (s *StakingService) UndelegateFromPool(delegator string, amount int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	log.Printf("UndelegateFromPool - Starting undelegation for %s with amount %d", delegator, amount)
 	log.Printf("UndelegateFromPool - Current total staked: %d", s.pool.TotalStaked)
 

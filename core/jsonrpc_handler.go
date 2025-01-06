@@ -767,7 +767,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	}
 
 	// Create stake record
-	stakeRecord, err := node.Blockchain.StakingService.CreateStake(userAddress, amount, time.Now().Unix())
+	stakeRecord, err := node.CreateStake(userAddress, amount)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stake: %v", err)
 	}
@@ -793,7 +793,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	// Process the transaction
 	if err = node.ProcessIncomingTransaction(stakingTx); err != nil {
 		// Rollback stake if transaction fails
-		node.Blockchain.StakingService.UnstakeTokens(userAddress, amount, time.Now().Unix())
+		node.Blockchain.StakingService.UnstakeTokens(userAddress, amount)
 		return nil, fmt.Errorf("failed to process staking transaction: %v", err)
 	}
 
@@ -889,7 +889,7 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 	// }
 
 	// Process unstaking
-	if err := node.Blockchain.StakingService.UnstakeTokens(userAddress, amount, time.Now().Unix()); err != nil {
+	if err := node.Blockchain.StakingService.UnstakeTokens(userAddress, amount); err != nil {
 		return nil, fmt.Errorf("failed to unstake tokens: %v", err)
 	}
 
@@ -912,7 +912,7 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 
 	if err := node.ProcessIncomingTransaction(unstakeTx); err != nil {
 		// Rollback unstake if transaction fails
-		node.Blockchain.StakingService.CreateStake(userAddress, amount, time.Now().Unix())
+		node.Blockchain.StakingService.CreateStake(userAddress, amount)
 		return nil, fmt.Errorf("failed to process unstaking transaction: %v", err)
 	}
 
@@ -1335,7 +1335,7 @@ func (node *Node) handlePoolDelegation(params []interface{}) (interface{}, error
 	amount := int64(amountFloat)
 
 	// Process delegation
-	if err := node.Blockchain.DelegateToPool(delegator, amount); err != nil {
+	if err := node.stakingService.DelegateToPool(delegator, amount); err != nil {
 		return nil, fmt.Errorf("delegation failed: %v", err)
 	}
 
@@ -1459,7 +1459,7 @@ func (node *Node) handlePoolUndelegation(params []interface{}) (interface{}, err
 	amount := int64(amountFloat)
 
 	// Process undelegation
-	if err := node.Blockchain.UndelegateFromPool(delegator, amount); err != nil {
+	if err := node.stakingService.UndelegateFromPool(delegator, amount); err != nil {
 		return nil, fmt.Errorf("undelegation failed: %v", err)
 	}
 

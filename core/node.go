@@ -118,6 +118,9 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		log.Fatalf("Failed to create new blockchain: %v", err)
 	}
 
+	// Initialize staking service with the blockchain
+	stakingService := NewStakingService(bc)
+
 	node := &Node{
 		Address:              address,
 		Peers:                make(map[string]*PeerConnection),
@@ -128,7 +131,7 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,
 		WebSocketConnections: make(map[string]*WebSocketConnection),
-		stakingService:       NewStakingService(bc),
+		stakingService:       stakingService,
 		serverHost:           serverHost,
 		useSSL:               useSSL,
 		BlockTrigger:         make(chan struct{}, 1),
@@ -162,6 +165,8 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 
 	bc.OnTransactionProcessed = node.handleProcessedTransaction
 
+	go node.startStakingTasks()
+
 	return node
 }
 
@@ -183,12 +188,39 @@ func (node *Node) StartBackgroundTasks() {
 			case <-tickerDiscoverPeers.C:
 				node.DiscoverPeers()
 			}
-			for {
-				if err := node.Blockchain.DistributePoolRewards(); err != nil {
-					log.Printf("Error distributing pool rewards: %v", err)
-				}
-				time.Sleep(time.Hour) // Check every hour
-			}
 		}
 	}()
+}
+
+func (node *Node) startStakingTasks() {
+	ticker := time.NewTicker(24 * time.Hour)
+	for {
+		select {
+		case <-ticker.C:
+			if err := node.stakingService.DistributeRewards(); err != nil {
+				log.Printf("Error distributing staking rewards: %v", err)
+			}
+		}
+	}
+}
+
+// Proxy methods to access the staking service
+func (node *Node) GetStakingStats() map[string]interface{} {
+	return node.stakingService.GetPoolStats()
+}
+
+func (node *Node) CreateStake(userAddress string, amount int64) (*Stake, error) {
+	return node.stakingService.CreateStake(userAddress, amount)
+}
+
+func (node *Node) UnstakeTokens(userAddress string, amount int64) error {
+	return node.stakingService.UnstakeTokens(userAddress, amount)
+}
+
+func (node *Node) DelegateToPool(delegator string, amount int64) error {
+	return node.stakingService.DelegateToPool(delegator, amount)
+}
+
+func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
+	return node.stakingService.UndelegateFromPool(delegator, amount)
 }
