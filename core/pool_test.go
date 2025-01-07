@@ -28,13 +28,6 @@ func NewTestNode(address string, knownPeers []string, dataDir string, blockchain
 	return node
 }
 
-func abs(n int64) int64 {
-	if n < 0 {
-		return -n
-	}
-	return n
-}
-
 func TestPoolStaking(t *testing.T) {
 	// Use a predefined valid Bech32 address for genesis
 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
@@ -88,7 +81,7 @@ func TestPoolStaking(t *testing.T) {
 		node.Blockchain.Mu.Unlock()
 
 		// Try delegation
-		err = node.DelegateToPool(delegator, amount)
+		_, err = node.DelegateToPool(delegator, true, amount)
 		require.NoError(t, err, "Failed to delegate to pool")
 
 		// Verify delegation was recorded
@@ -122,7 +115,7 @@ func TestPoolStaking(t *testing.T) {
 		t.Logf("Before delegation - Total staked: %d", node.stakingService.pool.TotalStaked)
 
 		// Delegate first
-		err = node.DelegateToPool(delegator, initialAmount)
+		_, err = node.DelegateToPool(delegator, true, initialAmount)
 		require.NoError(t, err, "Failed to delegate to pool")
 
 		// Log initial stakes for debugging
@@ -131,7 +124,7 @@ func TestPoolStaking(t *testing.T) {
 		t.Logf("Stakes before undelegation: %+v", node.stakingService.stakes[delegator])
 
 		// Then undelegate
-		err = node.UndelegateFromPool(delegator, undelegateAmount)
+		err = node.UndelegateFromPool(delegator, true, undelegateAmount)
 		require.NoError(t, err, "Failed to undelegate")
 
 		t.Logf("Stakes after undelegation: %+v", node.stakingService.stakes[delegator])
@@ -195,7 +188,7 @@ func TestPoolStaking(t *testing.T) {
 
 		// Calculate rewards
 		currentTime := time.Now().Unix()
-		rewards := node.stakingService.calculateRewardPerValidator(currentTime)
+		rewards := node.stakingService.calculateStakeReward(currentTime)
 		require.NotNil(t, rewards, "Rewards should not be nil")
 		require.Len(t, rewards, 2, "Should have rewards for both validators")
 
@@ -235,7 +228,7 @@ func TestPoolStaking(t *testing.T) {
 
 		node.Blockchain.Stakeholders[delegator] = amount * 2 // Ensure enough balance
 
-		err := node.DelegateToPool(delegator, amount)
+		_, err := node.DelegateToPool(delegator, true, amount)
 		require.Error(t, err, "Should error for delegation below minimum amount")
 	})
 }
