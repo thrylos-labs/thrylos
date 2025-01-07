@@ -1908,7 +1908,7 @@ func (bc *Blockchain) ProcessPoolTransaction(tx *shared.Transaction) error {
 	thrylosTx := SharedToThrylos(tx)
 
 	// Verify pool-related transaction
-	if tx.Sender == "delegation_pool" || tx.Outputs[0].OwnerAddress == "delegation_pool" {
+	if tx.Sender == "staking_pool" || tx.Outputs[0].OwnerAddress == "staking_pool" {
 		// Use original shared.Transaction for validation
 		if err := bc.validatePoolTransaction(tx); err != nil {
 			return err
@@ -1920,7 +1920,7 @@ func (bc *Blockchain) ProcessPoolTransaction(tx *shared.Transaction) error {
 
 func (bc *Blockchain) validatePoolTransaction(tx *shared.Transaction) error {
 	// Implement pool-specific transaction validation
-	if tx.Sender == "delegation_pool" {
+	if tx.Sender == "staking-pool" {
 		// Validate undelegation
 		delegator := tx.Outputs[0].OwnerAddress
 		amount := tx.Outputs[0].Amount
