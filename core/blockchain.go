@@ -107,7 +107,6 @@ type Blockchain struct {
 
 	StateNetwork   shared.NetworkInterface
 	StakingService *StakingService
-	DelegationPool *DelegationPool
 }
 
 // NewTransaction creates a new transaction
@@ -376,13 +375,6 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		ValidatorKeys:       NewValidatorKeyStore(),
 		TestMode:            config.TestMode,
 		StateManager:        stateManager,
-		DelegationPool: &DelegationPool{
-			TotalDelegated:    0,
-			MinDelegation:     int64(1 * 1e7),         // 1 THRYLOS minimum
-			FixedYearlyReward: int64(4_800_000 * 1e7), // 4.8 mill each year
-			LastRewardTime:    time.Now().Unix(),      // rewarded last time
-			RewardInterval:    24 * 3600,              // 24 hours in seconds
-		},
 	}
 
 	// Now store the private key for the genesis account

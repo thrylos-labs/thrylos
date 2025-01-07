@@ -209,18 +209,18 @@ func (node *Node) GetStakingStats() map[string]interface{} {
 	return node.stakingService.GetPoolStats()
 }
 
-func (node *Node) CreateStake(userAddress string, amount int64) (*Stake, error) {
-	return node.stakingService.CreateStake(userAddress, amount)
+func (node *Node) CreateStake(userAddress string, isDelegator bool, amount int64) (*Stake, error) {
+	return node.stakingService.CreateStake(userAddress, isDelegator, amount)
 }
 
-func (node *Node) UnstakeTokens(userAddress string, amount int64) error {
-	return node.stakingService.UnstakeTokens(userAddress, amount)
+func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
+	return node.stakingService.UnstakeTokens(userAddress, isDelegator, amount)
 }
 
-func (node *Node) DelegateToPool(delegator string, amount int64) error {
-	return node.stakingService.DelegateToPool(delegator, amount)
+func (node *Node) DelegateToPool(delegator string, isDelegator bool, amount int64) (*Stake, error) {
+	return node.stakingService.CreateStake(delegator, isDelegator, amount)
 }
 
-func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
-	return node.stakingService.UndelegateFromPool(delegator, amount)
+func (node *Node) UndelegateFromPool(delegator string, isDelegator bool, amount int64) error {
+	return node.stakingService.UnstakeTokens(delegator, isDelegator, amount)
 }
