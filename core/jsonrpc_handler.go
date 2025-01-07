@@ -793,7 +793,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	// Process the transaction
 	if err = node.ProcessIncomingTransaction(stakingTx); err != nil {
 		// Rollback stake if transaction fails
-		node.Blockchain.StakingService.UnstakeTokens(userAddress, false, amount)
+		node.UnstakeTokens(userAddress, false, amount)
 		return nil, fmt.Errorf("failed to process staking transaction: %v", err)
 	}
 
@@ -868,7 +868,7 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 	var pendingRewards int64
 
 	// Process unstaking
-	if err := node.Blockchain.StakingService.UnstakeTokens(userAddress, false, amount); err != nil {
+	if err := node.UnstakeTokens(userAddress, false, amount); err != nil {
 		return nil, fmt.Errorf("failed to unstake tokens: %v", err)
 	}
 

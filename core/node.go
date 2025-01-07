@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/base64"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -214,13 +215,40 @@ func (node *Node) CreateStake(userAddress string, isDelegator bool, amount int64
 }
 
 func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
-	return node.stakingService.UnstakeTokens(userAddress, isDelegator, amount)
+	// Create the transaction and pass its timestamp
+	txID := fmt.Sprintf("unstake-%s-%d", userAddress, time.Now().UnixNano())
+	if isDelegator {
+		txID = fmt.Sprintf("undelegate-%s-%d", userAddress, time.Now().UnixNano())
+	}
+
+	// Create unstaking transaction
+	timestamp := time.Now().Unix()
+	unstakingTx := &thrylos.Transaction{
+		Id:        txID,
+		Sender:    "staking_pool",
+		Timestamp: timestamp,
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress:  userAddress,
+			Amount:        amount,
+			Index:         0,
+			TransactionId: "",
+		}},
+	}
+
+	// Add transaction to pending pool
+	if err := node.Blockchain.AddPendingTransaction(unstakingTx); err != nil {
+		return fmt.Errorf("failed to create unstaking transaction: %v", err)
+	}
+
+	return node.stakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
 }
 
-func (node *Node) DelegateToPool(delegator string, isDelegator bool, amount int64) (*Stake, error) {
-	return node.stakingService.CreateStake(delegator, isDelegator, amount)
+func (node *Node) DelegateToPool(delegator string, amount int64) (*Stake, error) {
+	// Always true for delegation
+	return node.stakingService.CreateStake(delegator, true, amount)
 }
 
-func (node *Node) UndelegateFromPool(delegator string, isDelegator bool, amount int64) error {
-	return node.stakingService.UnstakeTokens(delegator, isDelegator, amount)
+func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
+	// Always true for undelegation
+	return node.UnstakeTokens(delegator, true, amount)
 }

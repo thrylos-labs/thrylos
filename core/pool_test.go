@@ -67,6 +67,7 @@ func TestPoolStaking(t *testing.T) {
 	})
 
 	// Test delegation to pool
+	// In pool_test.go, modify the "Delegate to Pool" test case:
 	t.Run("Delegate to Pool", func(t *testing.T) {
 		delegator := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 		amount := int64(100 * 1e7)
@@ -75,27 +76,34 @@ func TestPoolStaking(t *testing.T) {
 		err := node.Blockchain.CreateInitialWalletUTXO(delegator, amount*2)
 		require.NoError(t, err, "Failed to create initial UTXO for delegator")
 
+		// Initialize Stakeholders map if not already initialized
+		if node.Blockchain.Stakeholders == nil {
+			node.Blockchain.Stakeholders = make(map[string]int64)
+		}
+
 		// Ensure the balance is set in Stakeholders map
-		node.Blockchain.Mu.Lock()
 		node.Blockchain.Stakeholders[delegator] = amount * 2
-		node.Blockchain.Mu.Unlock()
 
-		// Try delegation
-		_, err = node.DelegateToPool(delegator, true, amount)
+		// Try delegation - Note: removed isDelegator parameter
+		stake, err := node.DelegateToPool(delegator, amount)
 		require.NoError(t, err, "Failed to delegate to pool")
-
-		// Verify delegation was recorded
-		stake := node.stakingService.stakes[delegator]
 		require.NotNil(t, stake, "Stake should not be nil")
-		require.True(t, stake.IsActive, "Stake should be active")
+
+		// Verify stake was created correctly
 		require.Equal(t, amount, stake.Amount, "Stake amount mismatch")
-		require.Equal(t, amount, node.stakingService.pool.TotalStaked, "Total staked amount mismatch")
+		require.Equal(t, delegator, stake.UserAddress, "Stake address mismatch")
+		require.True(t, stake.IsActive, "Stake should be active")
+
+		// Verify pool state
+		require.Equal(t, amount, node.stakingService.GetTotalDelegated(), "Total delegated amount mismatch")
 	})
 
 	// Test undelegation from pool
+	// Modify the "Undelegate from Pool" test case
 	t.Run("Undelegate from Pool", func(t *testing.T) {
 		// Reset the staking pool state before test
 		node.stakingService.pool.TotalStaked = 0
+		node.stakingService.pool.TotalDelegated = 0
 		node.stakingService.stakes = make(map[string]*Stake)
 
 		delegator := "delegator1"
@@ -108,35 +116,23 @@ func TestPoolStaking(t *testing.T) {
 		require.NoError(t, err, "Failed to create initial UTXO for delegator")
 
 		// Ensure the balance is set in Stakeholders map
-		node.Blockchain.Mu.Lock()
 		node.Blockchain.Stakeholders[delegator] = initialAmount * 2
-		node.Blockchain.Mu.Unlock()
 
-		t.Logf("Before delegation - Total staked: %d", node.stakingService.pool.TotalStaked)
+		t.Logf("Before delegation - Total delegated: %d", node.stakingService.GetTotalDelegated())
 
-		// Delegate first
-		_, err = node.DelegateToPool(delegator, true, initialAmount)
+		// Delegate first - removed isDelegator parameter
+		stake, err := node.DelegateToPool(delegator, initialAmount)
 		require.NoError(t, err, "Failed to delegate to pool")
+		require.Equal(t, initialAmount, node.stakingService.GetTotalDelegated(), "Initial delegation amount mismatch")
 
-		// Log initial stakes for debugging
-		t.Logf("Stakes after delegation: %+v", node.stakingService.stakes[delegator])
-		t.Logf("Initial total staked: %d", node.stakingService.pool.TotalStaked)
-		t.Logf("Stakes before undelegation: %+v", node.stakingService.stakes[delegator])
-
-		// Then undelegate
-		err = node.UndelegateFromPool(delegator, true, undelegateAmount)
+		// Then undelegate - removed isDelegator parameter
+		err = node.UndelegateFromPool(delegator, undelegateAmount)
 		require.NoError(t, err, "Failed to undelegate")
-
-		t.Logf("Stakes after undelegation: %+v", node.stakingService.stakes[delegator])
-		t.Logf("Final total staked: %d", node.stakingService.pool.TotalStaked)
-
-		// Check stake records
-		stake := node.stakingService.stakes[delegator]
-		require.NotNil(t, stake, "Stake should not be nil")
 
 		// Verify the remaining stake
 		require.Equal(t, expectedRemainingStake, stake.Amount, "Incorrect remaining stake amount")
-		require.Equal(t, expectedRemainingStake, node.stakingService.pool.TotalStaked, "Incorrect total staked amount")
+		require.Equal(t, expectedRemainingStake, node.stakingService.GetTotalDelegated(),
+			"Incorrect total delegated amount")
 	})
 
 	// Test reward distribution
@@ -228,7 +224,10 @@ func TestPoolStaking(t *testing.T) {
 
 		node.Blockchain.Stakeholders[delegator] = amount * 2 // Ensure enough balance
 
-		_, err := node.DelegateToPool(delegator, true, amount)
+		// Removed isDelegator parameter
+		_, err := node.DelegateToPool(delegator, amount)
 		require.Error(t, err, "Should error for delegation below minimum amount")
+		require.Contains(t, err.Error(), "minimum amount required",
+			"Error should mention minimum amount requirement")
 	})
 }
