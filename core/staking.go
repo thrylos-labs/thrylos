@@ -182,11 +182,28 @@ func (s *StakingService) GetPoolStats() map[string]interface{} {
 	}
 }
 
-func (s *StakingService) CreateStake(userAddress string, isDelegator bool, amount int64) (*Stake, error) {
+func (s *StakingService) isValidator(address string) bool {
+	// First check ActiveValidators list (fastest check)
+	for _, validator := range s.blockchain.ActiveValidators {
+		if validator == address {
+			return true
+		}
+	}
+
+	// If not in active validators, assume it's a delegator
+	// This simplifies testing and matches common use case
+	return false
+}
+
+func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Validate minimum stake amount
+	// Automatically determine if address is a validator
+	isValidator := s.isValidator(userAddress)
+	isDelegator := !isValidator // isDelegator is opposite of isValidator
+
+	// Use appropriate minimum based on status
 	minRequired := s.pool.MinStakeAmount
 	if isDelegator {
 		minRequired = s.pool.MinDelegation
@@ -196,16 +213,10 @@ func (s *StakingService) CreateStake(userAddress string, isDelegator bool, amoun
 		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
 	}
 
-	if s.blockchain.Stakeholders == nil {
-		s.blockchain.Stakeholders = make(map[string]int64)
-	}
-
-	// Create transaction and add to pending pool
-	var txType string
+	// Create transaction based on type
+	txType := "stake"
 	if isDelegator {
 		txType = "delegate"
-	} else {
-		txType = "stake"
 	}
 	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
 
@@ -221,16 +232,12 @@ func (s *StakingService) CreateStake(userAddress string, isDelegator bool, amoun
 		}},
 	}
 
+	// Create the stake transaction
 	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
 		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
 	}
 
-	stake, err := s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
-	if err != nil {
-		return nil, err
-	}
-
-	return stake, nil
+	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
 }
 
 // Keep internal function for testing

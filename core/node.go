@@ -205,24 +205,29 @@ func (node *Node) startStakingTasks() {
 	}
 }
 
-// Proxy methods to access the staking service
+// These methods are correct as they simply proxy the calls
 func (node *Node) GetStakingStats() map[string]interface{} {
 	return node.stakingService.GetPoolStats()
 }
 
-func (node *Node) CreateStake(userAddress string, isDelegator bool, amount int64) (*Stake, error) {
-	return node.stakingService.CreateStake(userAddress, isDelegator, amount)
+func (node *Node) CreateStake(userAddress string, amount int64) (*Stake, error) {
+	return node.stakingService.CreateStake(userAddress, amount)
 }
 
+// This method should be aligned with how we're handling stake determinations
 func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
-	// Create the transaction and pass its timestamp
-	txID := fmt.Sprintf("unstake-%s-%d", userAddress, time.Now().UnixNano())
+	// We should determine if it's a delegator by checking validator status
+	isValidator := node.stakingService.isValidator(userAddress)
+	isDelegator = !isValidator
+
+	txType := "unstake"
 	if isDelegator {
-		txID = fmt.Sprintf("undelegate-%s-%d", userAddress, time.Now().UnixNano())
+		txType = "undelegate"
 	}
 
-	// Create unstaking transaction
+	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
 	timestamp := time.Now().Unix()
+
 	unstakingTx := &thrylos.Transaction{
 		Id:        txID,
 		Sender:    "staking_pool",
@@ -235,7 +240,6 @@ func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int
 		}},
 	}
 
-	// Add transaction to pending pool
 	if err := node.Blockchain.AddPendingTransaction(unstakingTx); err != nil {
 		return fmt.Errorf("failed to create unstaking transaction: %v", err)
 	}
@@ -243,12 +247,11 @@ func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int
 	return node.stakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
 }
 
+// These delegation-specific methods are correct
 func (node *Node) DelegateToPool(delegator string, amount int64) (*Stake, error) {
-	// Always true for delegation
-	return node.stakingService.CreateStake(delegator, true, amount)
+	return node.stakingService.CreateStake(delegator, amount)
 }
 
 func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
-	// Always true for undelegation
 	return node.UnstakeTokens(delegator, true, amount)
 }

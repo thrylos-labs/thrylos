@@ -767,7 +767,7 @@ func (node *Node) handleStakeOperation(reqData map[string]interface{}) (interfac
 	}
 
 	// Create stake record
-	stakeRecord, err := node.CreateStake(userAddress, false, amount)
+	stakeRecord, err := node.CreateStake(userAddress, amount)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stake: %v", err)
 	}
@@ -891,7 +891,7 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 
 	if err := node.ProcessIncomingTransaction(unstakeTx); err != nil {
 		// Rollback unstake if transaction fails
-		node.Blockchain.StakingService.CreateStake(userAddress, false, amount)
+		node.Blockchain.StakingService.CreateStake(userAddress, amount)
 		return nil, fmt.Errorf("failed to process unstaking transaction: %v", err)
 	}
 
@@ -1305,7 +1305,7 @@ func (node *Node) handlePoolDelegation(params []interface{}) (interface{}, error
 	amount := int64(amountFloat)
 
 	// Process delegation
-	_, err := node.stakingService.CreateStake(delegator, true, amount)
+	_, err := node.stakingService.CreateStake(delegator, amount)
 	if err != nil {
 		return nil, fmt.Errorf("delegation failed: %v", err)
 	}

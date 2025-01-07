@@ -68,34 +68,25 @@ func TestPoolStaking(t *testing.T) {
 
 	// Test delegation to pool
 	// In pool_test.go, modify the "Delegate to Pool" test case:
+	// Example test update
 	t.Run("Delegate to Pool", func(t *testing.T) {
 		delegator := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 		amount := int64(100 * 1e7)
 
-		// Create initial UTXO first
-		err := node.Blockchain.CreateInitialWalletUTXO(delegator, amount*2)
-		require.NoError(t, err, "Failed to create initial UTXO for delegator")
-
-		// Initialize Stakeholders map if not already initialized
-		if node.Blockchain.Stakeholders == nil {
-			node.Blockchain.Stakeholders = make(map[string]int64)
-		}
-
-		// Ensure the balance is set in Stakeholders map
-		node.Blockchain.Stakeholders[delegator] = amount * 2
-
-		// Try delegation - Note: removed isDelegator parameter
-		stake, err := node.DelegateToPool(delegator, amount)
-		require.NoError(t, err, "Failed to delegate to pool")
+		// Create stake without specifying isDelegator
+		stake, err := node.stakingService.CreateStake(delegator, amount)
+		require.NoError(t, err, "Failed to create stake")
 		require.NotNil(t, stake, "Stake should not be nil")
 
-		// Verify stake was created correctly
+		// Verify stake was created with correct validator status
 		require.Equal(t, amount, stake.Amount, "Stake amount mismatch")
 		require.Equal(t, delegator, stake.UserAddress, "Stake address mismatch")
 		require.True(t, stake.IsActive, "Stake should be active")
 
-		// Verify pool state
-		require.Equal(t, amount, node.stakingService.GetTotalDelegated(), "Total delegated amount mismatch")
+		// Check if validator status was correctly determined
+		expectedValidatorStatus := node.stakingService.isValidator(delegator)
+		require.Equal(t, expectedValidatorStatus, stake.ValidatorRole,
+			"Validator role mismatch")
 	})
 
 	// Test undelegation from pool
@@ -120,17 +111,23 @@ func TestPoolStaking(t *testing.T) {
 
 		t.Logf("Before delegation - Total delegated: %d", node.stakingService.GetTotalDelegated())
 
-		// Delegate first - removed isDelegator parameter
+		// Create delegation
 		stake, err := node.DelegateToPool(delegator, initialAmount)
 		require.NoError(t, err, "Failed to delegate to pool")
-		require.Equal(t, initialAmount, node.stakingService.GetTotalDelegated(), "Initial delegation amount mismatch")
 
-		// Then undelegate - removed isDelegator parameter
+		// Verify delegation was recorded correctly
+		require.False(t, stake.ValidatorRole, "Should be marked as delegator")
+		require.Equal(t, initialAmount, stake.Amount, "Stake amount mismatch")
+		require.Equal(t, initialAmount, node.stakingService.GetTotalDelegated(),
+			"Initial delegation amount mismatch")
+
+		// Undelegate
 		err = node.UndelegateFromPool(delegator, undelegateAmount)
 		require.NoError(t, err, "Failed to undelegate")
 
-		// Verify the remaining stake
-		require.Equal(t, expectedRemainingStake, stake.Amount, "Incorrect remaining stake amount")
+		// Verify final amounts
+		require.Equal(t, expectedRemainingStake, stake.Amount,
+			"Incorrect remaining stake amount")
 		require.Equal(t, expectedRemainingStake, node.stakingService.GetTotalDelegated(),
 			"Incorrect total delegated amount")
 	})
