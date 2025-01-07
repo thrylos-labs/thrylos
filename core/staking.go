@@ -158,9 +158,6 @@ func (s *StakingService) GetPoolStats() map[string]interface{} {
 	nextRewardTime := lastRewardTime + (24 * 3600)
 	timeUntilReward := nextRewardTime - currentTime
 
-	// Calculate daily reward from yearly reward
-	dailyReward := s.pool.FixedYearlyReward / 365
-
 	return map[string]interface{}{
 		"totalStaked": map[string]interface{}{
 			"thrylos": float64(s.pool.TotalStaked) / 1e7,
@@ -172,7 +169,7 @@ func (s *StakingService) GetPoolStats() map[string]interface{} {
 			"timeUntilReward": timeUntilReward,
 			"lastRewardTime":  lastRewardTime, // Using LastRewardTime consistently
 			"rewardInterval":  "24h",
-			"dailyRewardPool": float64(dailyReward) / 1e7,
+			"dailyRewardPool": DailyStakeReward / 1e7,
 			"validatorShare":  "50%",
 			"delegatorShare":  "50%",
 		},

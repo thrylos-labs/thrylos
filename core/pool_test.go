@@ -28,13 +28,6 @@ func NewTestNode(address string, knownPeers []string, dataDir string, blockchain
 	return node
 }
 
-func abs(n int64) int64 {
-	if n < 0 {
-		return -n
-	}
-	return n
-}
-
 func TestPoolStaking(t *testing.T) {
 	// Use a predefined valid Bech32 address for genesis
 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
