@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"time"
 
-	"golang.org/x/crypto/ed25519"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 )
 
 const (
@@ -210,7 +210,8 @@ func (cm *ConsensusManager) ValidateBlock(block *Block) bool {
 		return false
 	}
 
-	if !ed25519.Verify(publicKey, blockData, block.Signature) {
+	// Note: passing nil as the context parameter since we're not using a context in block signing
+	if !mldsa44.Verify(publicKey, blockData, nil, block.Signature) {
 		log.Printf("Block signature verification failed for validator: %s", block.Validator)
 		return false
 	}
@@ -231,21 +232,25 @@ func (cm *ConsensusManager) verifyStake(validator string) bool {
 func (cm *ConsensusManager) verifyBlockSignature(block *Block) bool {
 	log.Printf("Attempting to verify block signature for validator: %s", block.Validator)
 
-	pubKey, err := cm.Blockchain.RetrievePublicKey(block.Validator)
+	mldsaPubKey, err := cm.Blockchain.RetrievePublicKey(block.Validator)
 	if err != nil {
 		log.Printf("Failed to retrieve public key for validator %s: %v", block.Validator, err)
 		return false
 	}
 	log.Printf("Successfully retrieved public key for validator: %s", block.Validator)
 
-	isValid := ed25519.Verify(pubKey, []byte(block.Hash), block.Signature)
-	if !isValid {
+	// Use an empty context (as per ML-DSA-44 signature scheme requirements)
+	context := []byte{}
+
+	// Verify the block signature using the mldsa44.Verify function
+	signatureValid := mldsa44.Verify(mldsaPubKey, []byte(block.Hash), context, block.Signature)
+	if !signatureValid {
 		log.Printf("Signature verification failed for validator: %s", block.Validator)
-	} else {
-		log.Printf("Signature verified successfully for validator: %s", block.Validator)
+		return false
 	}
 
-	return isValid
+	log.Printf("Signature verified successfully for validator: %s", block.Validator)
+	return true
 }
 
 func (cm *ConsensusManager) UpdatePredictions(transactionVolume, nodeCount int) {

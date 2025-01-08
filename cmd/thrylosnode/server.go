@@ -9,7 +9,7 @@ import (
 	"log"
 	"strings"
 
-	"golang.org/x/crypto/ed25519"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core"
@@ -22,9 +22,9 @@ import (
 
 type server struct {
 	thrylos.UnimplementedBlockchainServiceServer
-	db           *database.BlockchainDB       // Include a pointer to BlockchainDB
-	PublicKeyMap map[string]ed25519.PublicKey // Maps sender addresses to their public keys
-	hasherPool   *XOFPool                     // Add the hasher pool here
+	db           *database.BlockchainDB        // Include a pointer to BlockchainDB
+	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
+	hasherPool   *XOFPool                      // Add the hasher pool here
 
 }
 
@@ -33,7 +33,7 @@ func NewServer(db *database.BlockchainDB) *server {
 
 	return &server{
 		db:           db,
-		PublicKeyMap: make(map[string]ed25519.PublicKey),
+		PublicKeyMap: make(map[string]*mldsa44.PublicKey),
 		hasherPool:   pool,
 	}
 }
@@ -246,14 +246,23 @@ func (s *server) validateTransaction(tx *shared.Transaction) bool {
 		return false
 	}
 
-	// Validate the transaction signature
-	if !ed25519.Verify(publicKey, serializedTx, signatureBytes) {
+	// Extract salt and signature from the combined signature bytes
+	// ML-DSA44 salt is 32 bytes
+	if len(signatureBytes) < 32 {
+		log.Printf("Signature too short for transaction ID: %s", tx.ID)
+		return false
+	}
+	salt := signatureBytes[:32]
+	signature := signatureBytes[32:]
+
+	// Validate the transaction signature using ML-DSA44
+	if !mldsa44.Verify(publicKey, serializedTx, signature, salt) {
 		log.Printf("Invalid signature for transaction ID: %s", tx.ID)
 		return false
 	}
 
-	// Retrieve UTXOs required to verify inputs and calculate input sum
-	var totalInputs int64 // Use int64 to match UTXO amount type
+	// The rest of the validation logic remains the same
+	var totalInputs int64
 	for _, input := range tx.Inputs {
 		utxo, err := shared.GetUTXO(input.TransactionID, input.Index)
 		if err != nil || utxo == nil {
@@ -267,8 +276,7 @@ func (s *server) validateTransaction(tx *shared.Transaction) bool {
 		totalInputs += utxo.Amount
 	}
 
-	// Calculate the total outputs and ensure it matches inputs (conservation of value)
-	var totalOutputs int64 // Use int64 to match output amount type
+	var totalOutputs int64
 	for _, output := range tx.Outputs {
 		totalOutputs += output.Amount
 	}
@@ -281,7 +289,7 @@ func (s *server) validateTransaction(tx *shared.Transaction) bool {
 	return true
 }
 
-func (s *server) addPublicKey(sender string, pubKey ed25519.PublicKey) {
+func (s *server) addPublicKey(sender string, pubKey *mldsa44.PublicKey) {
 	s.PublicKeyMap[sender] = pubKey
 }
 

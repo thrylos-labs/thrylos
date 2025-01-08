@@ -1,14 +1,13 @@
 package core
 
 import (
-	"crypto/rand"
+	"crypto"
 	"io/ioutil"
 	"log"
 	"os"
 	"testing"
 
-	"golang.org/x/crypto/ed25519"
-
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/joho/godotenv"
 	"github.com/thrylos-labs/thrylos/shared"
 )
@@ -22,7 +21,8 @@ func loadEnvTest() {
 func TestNewBlockchain(t *testing.T) {
 	loadEnvTest() // Ensure environment variables are loaded before any Supabase operations
 
-	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value") // Load this from .env for consistency
+	// Use a valid tl1 prefix address for testing
+	os.Setenv("GENESIS_ACCOUNT", "tl11test0genesis0account0value00000000000000")
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
 	tempDir, err := ioutil.TempDir("", "blockchain_test")
@@ -58,10 +58,11 @@ func TestNewBlockchain(t *testing.T) {
 	}
 }
 
-func TestEd25519Signature(t *testing.T) {
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+func TestMLDSA44Signature(t *testing.T) {
+	// Generate a new key pair
+	publicKey, privateKey, err := mldsa44.GenerateKey(nil)
 	if err != nil {
-		t.Fatalf("Ed25519 key generation failed: %v", err)
+		t.Fatalf("MLDSA44 key generation failed: %v", err)
 	}
 
 	// Create a mock transaction (simplified representation)
@@ -69,12 +70,16 @@ func TestEd25519Signature(t *testing.T) {
 	txBytes := []byte(tx)
 
 	// Sign the transaction
-	signature := ed25519.Sign(privateKey, txBytes)
-
-	// Verify the signature
-	if !ed25519.Verify(publicKey, txBytes, signature) {
-		t.Fatal("Ed25519 signature verification failed")
+	// Note: MLDSA44 requires passing nil for the random source and crypto.Hash(0) for options
+	signature, err := privateKey.Sign(nil, txBytes, crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("MLDSA44 signing failed: %v", err)
 	}
 
-	t.Log("Ed25519 signature verification succeeded")
+	// Verify the signature using the scheme's Verify function
+	if !mldsa44.Verify(publicKey, txBytes, nil, signature) {
+		t.Fatal("MLDSA44 signature verification failed")
+	}
+
+	t.Log("MLDSA44 signature verification succeeded")
 }

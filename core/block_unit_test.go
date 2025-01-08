@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto"
+	"crypto/rand"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -9,10 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+
 	"github.com/stretchr/testify/require"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/state"
-	"golang.org/x/crypto/ed25519"
 )
 
 func TestNewBlockchain1(t *testing.T) {
@@ -39,7 +42,7 @@ func TestNewBlockchain1(t *testing.T) {
 }
 
 // Helper function to handle block creation and signing
-func createAndSignBlock(t *testing.T, blockchain *Blockchain, txs []*thrylos.Transaction, validator string, validatorKey ed25519.PrivateKey, prevHash []byte) error {
+func createAndSignBlock(t *testing.T, blockchain *Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
 	// Create block
 	block := &Block{
 		Index:        int32(len(blockchain.Blocks)),
@@ -57,9 +60,26 @@ func createAndSignBlock(t *testing.T, blockchain *Blockchain, txs []*thrylos.Tra
 	// Compute hash
 	block.Hash = block.ComputeHash()
 
-	// Sign block
-	signature := ed25519.Sign(validatorKey, block.Hash)
+	// Generate a random salt for the signature
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("failed to generate signature salt: %v", err)
+	}
+
+	// The MLDSA-44 signing method might be something like:
+	// - Sign
+	// - SignMessage
+	// - CreateSignature
+	// Let me know what's available and I'll update this part
+
+	// For now, let's try the standard crypto.Signer interface:
+	signature, err := validatorKey.Sign(rand.Reader, append(block.Hash, salt...), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create signature: %v", err)
+	}
+
 	block.Signature = signature
+	block.Salt = salt
 
 	// Add block to blockchain
 	blockchain.Mu.Lock()
@@ -88,17 +108,15 @@ func TestBlockTimeToFinality(t *testing.T) {
 	})
 	require.NoError(t, err, "Failed to create blockchain")
 
-	// Generate and store test keys
-	publicKey, privateKey, err := ed25519.GenerateKey(nil)
-	require.NoError(t, err, "Failed to generate key pair")
+	// Generate MLDSA key pair
+	publicKey, privateKey, err := mldsa44.GenerateKey(rand.Reader)
+	require.NoError(t, err, "Failed to generate MLDSA key pair")
 
-	err = blockchain.Database.InsertOrUpdateEd25519PublicKey(genesisAddress, publicKey)
-	require.NoError(t, err, "Failed to store public key")
+	err = blockchain.Database.InsertOrUpdateMLDSAPublicKey(genesisAddress, publicKey)
+	require.NoError(t, err, "Failed to store MLDSA public key")
 
 	err = blockchain.ValidatorKeys.StoreKey(genesisAddress, privateKey)
-	require.NoError(t, err, "Failed to store private key")
-
-	blockchain.PublicKeyMap[genesisAddress] = publicKey
+	require.NoError(t, err, "Failed to store MLDSA private key")
 
 	// Get genesis transaction
 	blockchain.Mu.RLock()
@@ -181,11 +199,13 @@ func TestBlockTimeToFinality(t *testing.T) {
 						output.Amount))...)
 				}
 
-				tx.Signature = ed25519.Sign(privateKey, signData)
+				signature, err := privateKey.Sign(rand.Reader, signData, crypto.Hash(0))
+				require.NoError(t, err, "Failed to sign transaction")
+				tx.Signature = signature
 
 				// Create and sign block
 				blockStart := time.Now()
-				err := createAndSignBlock(t, blockchain, []*thrylos.Transaction{tx}, genesisAddress, privateKey, prevHash)
+				err = createAndSignBlock(t, blockchain, []*thrylos.Transaction{tx}, genesisAddress, privateKey, prevHash)
 				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
 				blockTime := time.Since(blockStart)
 
@@ -272,11 +292,14 @@ func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender str
 	signData := createSignatureData(tx)
 
 	// Get sender's private key
-	privateKey, exists := blockchain.ValidatorKeys.GetKey(sender)
+	mldsaPrivKey, exists := blockchain.ValidatorKeys.GetKey(sender)
 	require.True(t, exists, "Failed to get sender's private key")
 
-	// Sign transaction
-	tx.Signature = ed25519.Sign(privateKey, signData)
+	// Sign using mldsa44's signing method
+	signature, err := mldsaPrivKey.Sign(rand.Reader, signData, crypto.Hash(0))
+	require.NoError(t, err, "Failed to sign transaction")
+
+	tx.Signature = signature
 	return tx
 }
 
@@ -364,7 +387,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	// Initialize batch processor
 	node := &Node{
 		Blockchain:   blockchain,
-		BlockTrigger: make(chan struct{}, 1), // Add this
+		BlockTrigger: make(chan struct{}, 1),
 	}
 
 	// Initialize DAG Manager first
@@ -374,34 +397,38 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	node.ModernProcessor = NewModernProcessor(node)
 	node.ModernProcessor.Start()
 
-	// Setup validators (same as before)
+	// Setup validators
+	// Setup validators
+	// Setup validators
 	validators := make([]struct {
 		address    string
-		publicKey  ed25519.PublicKey
-		privateKey ed25519.PrivateKey
+		publicKey  *mldsa44.PublicKey  // Note: Using pointer type
+		privateKey *mldsa44.PrivateKey // Note: Using pointer type
 	}, validatorCount)
 
 	// Create and register validators
 	for i := 0; i < validatorCount; i++ {
-		publicKey, privateKey, err := ed25519.GenerateKey(nil)
+		// GenerateKey returns pointers
+		publicKey, privateKey, err := mldsa44.GenerateKey(nil)
 		require.NoError(t, err, "Failed to generate validator key pair")
 
 		address := fmt.Sprintf("tl11validator%d", i)
 		validators[i] = struct {
 			address    string
-			publicKey  ed25519.PublicKey
-			privateKey ed25519.PrivateKey
+			publicKey  *mldsa44.PublicKey
+			privateKey *mldsa44.PrivateKey
 		}{
 			address:    address,
-			publicKey:  publicKey,
-			privateKey: privateKey,
+			publicKey:  publicKey,  // Store the pointer directly
+			privateKey: privateKey, // Store the pointer directly
 		}
 
-		err = blockchain.Database.InsertOrUpdateEd25519PublicKey(address, publicKey)
+		// Make sure we pass the pointers to these functions
+		err = blockchain.Database.InsertOrUpdateMLDSAPublicKey(address, publicKey)
 		require.NoError(t, err, "Failed to store validator public key")
 		err = blockchain.ValidatorKeys.StoreKey(address, privateKey)
 		require.NoError(t, err, "Failed to store validator private key")
-		blockchain.PublicKeyMap[address] = publicKey
+		blockchain.PublicKeyMap[address] = publicKey // Store the pointer in the map
 
 		err = stateManager.UpdateState(address, 1000000, nil)
 		require.NoError(t, err, "Failed to initialize validator state")
@@ -477,7 +504,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 				}, txsPerBlock)
 
 				var wg sync.WaitGroup
-				parallelism := runtime.NumCPU() * 6 // Increase from 4x to 6x
+				parallelism := runtime.NumCPU() * 6
 
 				// Launch processor goroutines
 				for w := 0; w < parallelism; w++ {
@@ -566,7 +593,8 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 				require.NoError(t, err)
 
 				block.Hash = block.ComputeHash()
-				block.Signature = ed25519.Sign(currentValidator.privateKey, block.Hash)
+				block.Signature, err = currentValidator.privateKey.Sign(nil, block.Hash, crypto.Hash(0))
+				require.NoError(t, err)
 
 				blockchain.Mu.Lock()
 				blockchain.Blocks = append(blockchain.Blocks, block)
@@ -579,7 +607,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 				t.Logf("Block %d total creation time: %v", i, blockTime)
 			}
 
-			// Calculate and log metrics (same as before)
+			// Calculate and log metrics
 			t.Logf("\nDetailed Shard Distribution Analysis:")
 			var totalTxs int64
 			var maxLoad, minLoad float64 = 0, 1

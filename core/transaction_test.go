@@ -11,10 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/ed25519"
-
 	// ensure this import path is correct
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -203,10 +202,10 @@ func signTransactionData(data []byte, privateKey *rsa.PrivateKey) (string, error
 }
 
 func TestTransactionSigningAndVerification1(t *testing.T) {
-	// Step 1: Generate Ed25519 keys
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	// Step 1: Generate mldsa44 keys
+	publicKey, privateKey, err := mldsa44.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate Ed25519 keys: %v", err)
+		t.Fatalf("Failed to generate mldsa44 keys: %v", err)
 	}
 
 	// Step 2: Create a new transaction
@@ -223,16 +222,16 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 		t.Fatalf("Failed to serialize transaction: %v", err)
 	}
 
-	// Step 4: Sign the serialized transaction data directly with Ed25519 (no separate hashing needed)
-	signature := ed25519.Sign(privateKey, serializedTx)
-	if signature == nil {
-		t.Fatalf("Failed to sign transaction")
+	// Step 4: Sign the serialized transaction data with mldsa44
+	signature := make([]byte, mldsa44.SignatureSize)
+	if err := mldsa44.SignTo(privateKey, serializedTx, nil, false, signature); err != nil {
+		t.Fatalf("Failed to sign transaction: %v", err)
 	}
 
-	// Step 5: Verify the signature with the Ed25519 public key
-	if !ed25519.Verify(publicKey, serializedTx, signature) {
+	// Step 5: Verify the signature with the mldsa44 public key
+	if !mldsa44.Verify(publicKey, serializedTx, nil, signature) {
 		t.Fatalf("Signature verification failed")
 	}
 
-	t.Log("Transaction signing and verification with Ed25519 successful")
+	t.Log("Transaction signing and verification with mldsa44 successful")
 }

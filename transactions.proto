@@ -18,6 +18,8 @@ message Transaction {
   int32 gasfee = 11; // Added gas fee field
   string status = 12; // New field for transaction status
   bytes block_hash = 13; // Changed from string to bytes
+  bytes sender_public_key = 14; // For ML-DSA44 public key when needed
+  bytes salt = 15;
 }
 
 // UTXO message optimized for size and clarity.
@@ -143,7 +145,9 @@ message Block {
   string validator = 4;
   repeated Transaction transactions = 5;
   bytes hash = 6;
-  // Note: We don't include the signature here as it's not part of what gets signed
+  bytes signature = 7; // If not already present
+  bytes salt = 8; // Add this for MLDSA signature scheme
+  // Note: The signature and salt are not included in what gets signed
 }
 
 // to generate the file again run:
