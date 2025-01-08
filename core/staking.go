@@ -72,26 +72,28 @@ func (s *StakingService) calculateStakeReward(rewardDistributionTime int64) map[
 	}
 
 	// finalise stake period before reward distribution
-	totalStateTimeAverage := float64(0)
+	totalStakeTimeAverage := float64(0)
 	for _, stake := range s.stakes {
 		if stake.LastStakeUpdateTime < rewardDistributionTime {
 			stakeTime := stake.Amount * (rewardDistributionTime - stake.LastStakeUpdateTime)
 			stake.StakeTimeSum += float64(stakeTime)
 			stake.LastStakeUpdateTime = rewardDistributionTime
 			stake.StakeTimeAverage = stake.StakeTimeSum / float64(rewardDistributionTime-s.pool.LastRewardTime)
-			totalStateTimeAverage += stake.StakeTimeAverage
+			totalStakeTimeAverage += stake.StakeTimeAverage
 		}
 	}
 
 	rewards := make(map[string]float64)
 	extraRewardsFromDelegation := float64(0)
+	validatorsTotalStakeTimeAverage := float64(0)
 	//distribution of rewards to delegators and validators
-	if totalStateTimeAverage > 0 {
+	if totalStakeTimeAverage > 0 {
 		for addr, stake := range s.stakes {
-			reward := (stake.StakeTimeAverage / float64(totalStateTimeAverage)) * float64(DailyStakeReward)
+			reward := (stake.StakeTimeAverage / float64(totalStakeTimeAverage)) * float64(DailyStakeReward)
 			if stake.ValidatorRole {
 				rewards[addr] = reward
 				stake.TotalStakeRewards += reward
+				validatorsTotalStakeTimeAverage += stake.StakeTimeAverage
 			} else {
 				rewards[addr] = reward * DelegationRewardPercent
 				extraRewardsFromDelegation += reward * (1 - DelegationRewardPercent)
@@ -99,11 +101,14 @@ func (s *StakingService) calculateStakeReward(rewardDistributionTime int64) map[
 			}
 		}
 	}
+
+	fmt.Printf("reward: %v\n", rewards)
+	fmt.Printf("extra reward: %v\n", extraRewardsFromDelegation)
 	//distribute extra rewards from delegation
-	if extraRewardsFromDelegation > 0 {
+	if extraRewardsFromDelegation > 0 && validatorsTotalStakeTimeAverage > 0 {
 		for addr, stake := range s.stakes {
 			if stake.ValidatorRole {
-				reward := (stake.StakeTimeAverage / float64(totalStateTimeAverage)) * extraRewardsFromDelegation
+				reward := (stake.StakeTimeAverage / float64(validatorsTotalStakeTimeAverage)) * extraRewardsFromDelegation
 				rewards[addr] += reward
 				stake.TotalDelegationRewards += reward
 			}
