@@ -34,26 +34,26 @@ func TestRewardDistribution(t *testing.T) {
 	stakingAddress1 := "0x1234567890"
 	// Staking 100 THRLY at midnight
 	a1t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress1, false, 100*1e7, a1t1)
+	stakingService.CreateStakeForTest(stakingAddress1, false, ThrylosToNano(100.0), a1t1)
 	// Unstaking 50 THRLY at noon, and the remaining 50 THRLY up to the end of reward distribution
 	a1t2 := time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC).Unix()
-	stakingService.UnstakeTokensForTest(stakingAddress1, false, 50*1e7, a1t2)
+	stakingService.UnstakeTokensForTest(stakingAddress1, false, ThrylosToNano(50.0), a1t2)
 
 	// Simulate stakeing for address 2
 	stakingAddress2 := "0x0987654321"
 	// Staking 200 THRLY stakeing at midnight, and 150 THRLY at 0500 making total stake to be 350 THRLY
 	a2t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress2, false, 200*1e7, a2t1)
+	stakingService.CreateStakeForTest(stakingAddress2, false, ThrylosToNano(200.0), a2t1)
 	a2t2 := time.Date(2025, 1, 4, 5, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress2, false, 150*1e7, a2t2)
+	stakingService.CreateStakeForTest(stakingAddress2, false, ThrylosToNano(150.0), a2t2)
 
 	// Simulate stakeing for address 3
 	stakingAddress3 := "0x1357924680"
 	// Staking 150 THRLY at midday, and unstaking 100 THRLY at 2000
 	a3t1 := time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress3, false, 150*1e7, a3t1)
+	stakingService.CreateStakeForTest(stakingAddress3, false, ThrylosToNano(150.0), a3t1)
 	a3t2 := time.Date(2025, 1, 4, 20, 0, 0, 0, time.UTC).Unix()
-	stakingService.UnstakeTokensForTest(stakingAddress3, false, 100*1e7, a3t2)
+	stakingService.UnstakeTokensForTest(stakingAddress3, false, ThrylosToNano(100.0), a3t2)
 
 	// Expected rewards
 
@@ -90,19 +90,19 @@ func TestDeletationStakeRewardDistribution(t *testing.T) {
 	delegatingAddress1 := "0x1234567890"
 	// Delegating 1000 THRLY at midnight
 	d1t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(delegatingAddress1, true, 1000*1e7, d1t1)
+	stakingService.CreateStakeForTest(delegatingAddress1, true, ThrylosToNano(1000.0), d1t1)
 
 	// Simulate staking for address 2
 	stakingAddress2 := "0x0987654321"
 	// Staking 1000 THRLY stakeing at midnight
 	a2t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress2, false, 1000*1e7, a2t1)
+	stakingService.CreateStakeForTest(stakingAddress2, false, ThrylosToNano(1000.0), a2t1)
 
 	// Simulate stakeing for address 3
 	stakingAddress3 := "0x1357924680"
 	// Staking 1000 THRLY at midnight
 	a3t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress3, false, 1000*1e7, a3t1)
+	stakingService.CreateStakeForTest(stakingAddress3, false, ThrylosToNano(1000.0), a3t1)
 
 	// Expected rewards
 	// there are three addresses, one deleting and two staking
@@ -145,19 +145,19 @@ func TestEstimateStakingReward(t *testing.T) {
 	delegatingAddress1 := "0x1234567890"
 	// Delegating 1000 THRLY at midnight
 	d1t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(delegatingAddress1, true, 1000*1e7, d1t1)
+	stakingService.CreateStakeForTest(delegatingAddress1, true, ThrylosToNano(1000.0), d1t1)
 
 	// Simulate staking for address 2
 	stakingAddress2 := "0x0987654321"
 	// Staking 1000 THRLY stakeing at midnight
 	a2t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress2, false, 1000*1e7, a2t1)
+	stakingService.CreateStakeForTest(stakingAddress2, false, ThrylosToNano(1000.0), a2t1)
 
 	// Simulate stakeing for address 3
 	stakingAddress3 := "0x1357924680"
 	// Staking 1000 THRLY at midnight
 	a3t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
-	stakingService.CreateStakeForTest(stakingAddress3, false, 1000*1e7, a3t1)
+	stakingService.CreateStakeForTest(stakingAddress3, false, ThrylosToNano(1000.0), a3t1)
 
 	// Expected rewards
 	// there are three addresses, one deleting and two staking
