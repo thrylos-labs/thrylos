@@ -129,6 +129,60 @@ func TestDeletationStakeRewardDistribution(t *testing.T) {
 	}
 }
 
+func TestEstimateStakingReward(t *testing.T) {
+	// Define the reward period (from midnight to the next midnight)
+	stakingPeriodStartTime := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
+	stakingPeriodEndTime := time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC).Unix()
+
+	blockchain := &Blockchain{
+		Stakeholders: make(map[string]int64),
+	}
+
+	stakingService := NewStakingService(blockchain)
+	stakingService.pool.LastRewardTime = stakingPeriodStartTime
+
+	// Simulate stakeing for address 1
+	delegatingAddress1 := "0x1234567890"
+	// Delegating 1000 THRLY at midnight
+	d1t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
+	stakingService.CreateStakeForTest(delegatingAddress1, true, 1000*1e7, d1t1)
+
+	// Simulate staking for address 2
+	stakingAddress2 := "0x0987654321"
+	// Staking 1000 THRLY stakeing at midnight
+	a2t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
+	stakingService.CreateStakeForTest(stakingAddress2, false, 1000*1e7, a2t1)
+
+	// Simulate stakeing for address 3
+	stakingAddress3 := "0x1357924680"
+	// Staking 1000 THRLY at midnight
+	a3t1 := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
+	stakingService.CreateStakeForTest(stakingAddress3, false, 1000*1e7, a3t1)
+
+	// Expected rewards
+	// there are three addresses, one deleting and two staking
+	// each has equal amount of time and equal coins.
+	// Each address is expected to receive 1/3 of the reward => 1/3 * 4.8 M/365 = 4,383.5616
+	// But one address is a delegator, so will receive half of the amount another half will be distributed to validators
+	// delegatingAddress1 = 2,191.78
+	// stakingAddress2 = 4,383.5616 + 2,191.78/2 = 5,479.4520
+	// stakingAddress3 = 4,383.5616 + 2,191.78/2 = 5,479.4520
+
+	expectedRewards := map[string]float64{
+		delegatingAddress1: 21917808219.18,
+		stakingAddress2:    54794520547.95,
+		stakingAddress3:    54794520547.95,
+	}
+
+	for addr, expected := range expectedRewards {
+		actual := stakingService.estimateStakeReward(addr, stakingPeriodEndTime)
+		if absFloat(float64(actual)-expected) > 0.1 {
+			t.Errorf("Reward for %s: expected %.2f, got %.2f", addr, expected, float64(actual))
+		}
+	}
+
+}
+
 // Helper function to calculate absolute difference
 func absFloat(a float64) float64 {
 	if a < 0 {

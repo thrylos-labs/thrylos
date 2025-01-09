@@ -102,8 +102,6 @@ func (s *StakingService) calculateStakeReward(rewardDistributionTime int64) map[
 		}
 	}
 
-	fmt.Printf("reward: %v\n", rewards)
-	fmt.Printf("extra reward: %v\n", extraRewardsFromDelegation)
 	//distribute extra rewards from delegation
 	if extraRewardsFromDelegation > 0 && validatorsTotalStakeTimeAverage > 0 {
 		for addr, stake := range s.stakes {
@@ -120,37 +118,47 @@ func (s *StakingService) calculateStakeReward(rewardDistributionTime int64) map[
 func (s *StakingService) estimateStakeReward(targetAddress string, currentTimeStamp int64) float64 {
 	totalStakeTimeAverage := float64(0)
 	addressStakeTimeAverage := float64(0)
-	extraStakeTimeAverage := float64(0)
+	validatorsStakeTimeAverage := float64(0)
+	delegatorsStakeTimeAverage := float64(0)
 	isDelegator := false
 
 	for addr, stake := range s.stakes {
 		if stake.LastStakeUpdateTime < currentTimeStamp {
 			stakeTime := stake.Amount * (currentTimeStamp - stake.LastStakeUpdateTime)
 			stakeTimeSum := stake.StakeTimeSum + float64(stakeTime)
-			stakeTimeAverage := stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
-			totalStakeTimeAverage += stakeTimeAverage
-			if !stake.ValidatorRole {
-				extraStakeTimeAverage += stakeTimeAverage * (1 - DelegationRewardPercent)
-			}
+			totalStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
 
-			if addr == targetAddress && stake.ValidatorRole {
-				addressStakeTimeAverage = stakeTimeAverage
-			} else if addr == targetAddress && !stake.ValidatorRole {
-				isDelegator = true
-				addressStakeTimeAverage = stakeTimeAverage * DelegationRewardPercent
+			if addr == targetAddress {
+				addressStakeTimeAverage = stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
+				if !stake.ValidatorRole {
+					isDelegator = true
+				}
+			}
+			if stake.ValidatorRole {
+				validatorsStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
+			} else {
+				delegatorsStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
 			}
 		}
 	}
-
 	if totalStakeTimeAverage == 0 {
 		return 0
 	}
+
 	if isDelegator {
-		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(DailyStakeReward)
+		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(DailyStakeReward) * DelegationRewardPercent
 	}
 
-	extra := addressStakeTimeAverage * extraStakeTimeAverage / totalStakeTimeAverage
-	return ((addressStakeTimeAverage + extra) / totalStakeTimeAverage) * float64(DailyStakeReward) * DelegationRewardPercent
+	if delegatorsStakeTimeAverage == 0 {
+		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(DailyStakeReward) * (1 - DelegationRewardPercent)
+	}
+
+	extraDelegationReward := delegatorsStakeTimeAverage * float64(DailyStakeReward) * (1 - DelegationRewardPercent) / totalStakeTimeAverage
+
+	extraReward := extraDelegationReward * addressStakeTimeAverage / validatorsStakeTimeAverage
+
+	reward := (addressStakeTimeAverage / totalStakeTimeAverage) * float64(DailyStakeReward)
+	return extraReward + reward
 }
 
 // Add this method to your StakingService struct
