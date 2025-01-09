@@ -3,8 +3,7 @@ package shared
 import (
 	"crypto/rsa"
 
-	"golang.org/x/crypto/ed25519"
-
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos"
 )
 
@@ -19,7 +18,7 @@ type BlockchainDBInterface interface {
 	SanitizeAndFormatAddress(address string) (string, error)
 	InsertBlock(data []byte, blockNumber int) error
 	GetLastBlockData() ([]byte, int, error)
-	RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error)
+	RetrievePublicKeyFromAddress(address string) (*mldsa44.PublicKey, error)
 	PublicKeyExists(address string) (bool, error) // Added new method to the interface
 	AddTransaction(tx *thrylos.Transaction) error
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error
@@ -27,8 +26,8 @@ type BlockchainDBInterface interface {
 	GetUTXOsForUser(address string) ([]UTXO, error)
 	GetUTXOs(address string) (map[string][]UTXO, error)
 	CreateAndSignTransaction(txID string, inputs, outputs []UTXO, privKey *rsa.PrivateKey) (Transaction, error)
-	InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error
-	RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error)
+	InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mldsa44.PublicKey) error
+	RetrieveMLDSAPublicKey(address string) ([]byte, error)
 	StoreBlock(data []byte, blockNumber int) error
 	RetrieveBlock(blockNumber int) ([]byte, error)
 	BeginTransaction() (*TransactionContext, error)
@@ -44,5 +43,6 @@ type BlockchainDBInterface interface {
 	StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error
 	MarkUTXOAsSpent(txn *TransactionContext, utxo UTXO) error
 	AddNewUTXO(txn *TransactionContext, utxo UTXO) error
-	GetAllValidatorPublicKeys() (map[string]ed25519.PublicKey, error)
+	GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error)
+	StoreValidatorMLDSAPublicKey(validatorAddress string, publicKey *mldsa44.PublicKey) error
 }

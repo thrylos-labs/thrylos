@@ -1,17 +1,14 @@
 package shared
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"hash"
@@ -23,15 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/ed25519"
-
 	"github.com/asaskevich/govalidator"
 	"github.com/btcsuite/btcutil/bech32"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
-	"github.com/tyler-smith/go-bip39"
 	"golang.org/x/crypto/blake2b"
-	"golang.org/x/crypto/pbkdf2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -49,11 +43,12 @@ type Transaction struct {
 	PreviousTxIds    []string `json:"previoustxids,omitempty"`
 	Sender           string   `json:"sender"`
 	GasFee           int      `json:"gasfee"`
+	SenderPublicKey  []byte   `json:"senderpublickey"`
 	Status           string   `json:"status,omitempty"`
 	BlockHash        string   `json:"blockHash,omitempty"`
 }
 
-type GetPublicKeyFunc func(address string) (ed25519.PublicKey, error)
+type GetPublicKeyFunc func(address string) ([]byte, error)
 
 var hashCache sync.Map // A thread-safe map to cache hash results
 
@@ -195,37 +190,6 @@ var (
 	cacheMutex   sync.RWMutex
 )
 
-// PublicKeyToAddressWithCache converts an Ed25519 public key to a blockchain address string,
-
-func PublicKeyToAddressWithCache(pubKey ed25519.PublicKey) string {
-	pubKeyStr := hex.EncodeToString(pubKey) // Convert public key to string for map key
-
-	// First attempt to get the address from cache without writing
-	cacheMutex.RLock()
-	address, found := addressCache[pubKeyStr]
-	cacheMutex.RUnlock()
-
-	if found {
-		return address // Return cached address if available
-	}
-
-	// Lock for writing if the address was not found
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-
-	// Double-check: Verify the address was not added while acquiring the lock
-	address, found = addressCache[pubKeyStr]
-	if found {
-		return address
-	}
-
-	// Compute the address if still not found in cache
-	address = computeAddressFromPublicKey(pubKey)
-	addressCache[pubKeyStr] = address
-
-	return address
-}
-
 func CreateThrylosTransaction(id int) *thrylos.Transaction {
 	return &thrylos.Transaction{
 		Id:        fmt.Sprintf("tx%d", id),
@@ -235,127 +199,6 @@ func CreateThrylosTransaction(id int) *thrylos.Transaction {
 		Signature: []byte("signature"), // This should be properly generated or mocked
 		Sender:    "Alice",
 	}
-}
-
-// computeAddressFromPublicKey performs the actual computation of the address from a public key.
-func computeAddressFromPublicKey(pubKey ed25519.PublicKey) string {
-	// Compute hash or another identifier from the public key
-	return hex.EncodeToString(pubKey) // Simplified
-}
-
-// DebugSignatureVerification wraps the verification process with detailed logging
-func DebugSignatureVerification(tx *thrylos.Transaction, publicKey ed25519.PublicKey) error {
-	// Log the transaction details before serialization
-	log.Printf("=== Transaction Verification Debug ===")
-	log.Printf("Transaction ID: %s", tx.GetId())
-	log.Printf("Sender: %s", tx.GetSender())
-	log.Printf("Timestamp: %d", tx.GetTimestamp())
-
-	// Create a copy for verification
-	txCopy := proto.Clone(tx).(*thrylos.Transaction)
-
-	// Store original signature
-	originalSig := tx.GetSignature()
-	log.Printf("Original signature length: %d bytes", len(originalSig))
-
-	// Clear signature for serialization
-	txCopy.Signature = nil
-
-	// Serialize the transaction
-	txBytes, err := proto.Marshal(txCopy)
-	if err != nil {
-		return fmt.Errorf("serialization error: %v", err)
-	}
-	log.Printf("Serialized transaction length: %d bytes", len(txBytes))
-
-	// Log the hash that will be verified
-	hasher := blake2b.Sum256(txBytes)
-	log.Printf("Transaction hash to verify: %x", hasher[:])
-
-	// Verify signature
-	valid := ed25519.Verify(publicKey, txBytes, originalSig)
-	log.Printf("Signature verification result: %v", valid)
-
-	if !valid {
-		// Additional debugging info for failed verification
-		log.Printf("Public key used: %x", publicKey)
-		return errors.New("transaction signature verification failed")
-	}
-
-	log.Printf("=== End Transaction Verification Debug ===")
-	return nil
-}
-
-// DebugSignTransaction wraps the signing process with detailed logging
-func DebugSignTransaction(tx *thrylos.Transaction, privateKey ed25519.PrivateKey) error {
-	log.Printf("=== Transaction Signing Debug ===")
-	log.Printf("Transaction ID: %s", tx.GetId())
-	log.Printf("Sender: %s", tx.GetSender())
-
-	// Clear any existing signature
-	tx.Signature = nil
-
-	// Serialize transaction
-	txBytes, err := proto.Marshal(tx)
-	if err != nil {
-		return fmt.Errorf("serialization error: %v", err)
-	}
-	log.Printf("Serialized transaction length: %d bytes", len(txBytes))
-
-	// Generate signature
-	signature := ed25519.Sign(privateKey, txBytes)
-	log.Printf("Generated signature length: %d bytes", len(signature))
-
-	// Store signature in transaction
-	tx.Signature = signature
-
-	// Verify immediately after signing
-	publicKey := privateKey.Public().(ed25519.PublicKey)
-	valid := ed25519.Verify(publicKey, txBytes, signature)
-	log.Printf("Immediate verification result: %v", valid)
-
-	log.Printf("=== End Transaction Signing Debug ===")
-	return nil
-}
-
-// GenerateEd25519Keys generates a new Ed25519 public/private key pair derived from a mnemonic seed phrase.
-func GenerateEd25519Keys() (ed25519.PublicKey, ed25519.PrivateKey, string, error) {
-	// Generate a new mnemonic
-	entropy, err := bip39.NewEntropy(256)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	mnemonic, err := bip39.NewMnemonic(entropy)
-	if err != nil {
-		return nil, nil, "", err
-	}
-
-	// Generate a seed from the mnemonic
-	seed := bip39.NewSeed(mnemonic, "") // Use an empty passphrase for simplicity
-
-	// Use PBKDF2 to derive a key from the seed suitable for Ed25519
-	key := pbkdf2.Key(seed, []byte("ed25519 seed"), 2048, 32, sha512.New)
-
-	// Generate Ed25519 keys from the derived key
-	publicKey, privateKey, err := ed25519.GenerateKey(bytes.NewReader(key))
-	if err != nil {
-		return nil, nil, "", err
-	}
-
-	return publicKey, privateKey, mnemonic, nil
-}
-
-// PublicKeyToAddress generates a public address from an Ed25519 public key using SHA-256 and then BLAKE2b-256.
-func PublicKeyToAddress(pubKey ed25519.PublicKey) string {
-	// First hash using SHA-256
-	shaHasher := sha256.New()
-	shaHasher.Write(pubKey)
-	shaHashedPubKey := shaHasher.Sum(nil)
-
-	// Then hash using BLAKE2b-256
-	blakeHasher, _ := blake2b.New256(nil)
-	blakeHasher.Write(shaHashedPubKey)
-	return hex.EncodeToString(cachedHashData(pubKey))
 }
 
 // Use a global hash pool for BLAKE2b hashers to reduce allocation overhead
@@ -513,72 +356,6 @@ func selectTips() ([]string, error) {
 	return []string{"prevTxID1", "prevTxID2"}, nil
 }
 
-// CreateAndSignTransaction generates a new transaction and signs it with the sender's Ed25519.
-// Assuming Transaction is the correct type across your application:
-
-// Used only in the CLI Signer (not in the blockchain!)
-func CreateAndSignTransaction(id string, sender string, inputs []UTXO, outputs []UTXO, ed25519PrivateKey ed25519.PrivateKey, aesKey []byte, estimator GasEstimator) (*Transaction, error) {
-	// Serialize inputs and outputs for data size calculation
-	serializedInputs, err := SerializeUTXOs(inputs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize inputs: %v", err)
-	}
-	serializedOutputs, err := SerializeUTXOs(outputs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize outputs: %v", err)
-	}
-
-	// Calculate total data size
-	totalDataSize := len(serializedInputs) + len(serializedOutputs)
-
-	// Example fixed balance value
-	balance := int64(1000) // You can set this to a value that makes sense in your context
-
-	// Fetch gas estimate
-	gasFee, err := estimator.FetchGasEstimate(totalDataSize, balance)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch gas estimate: %v", err)
-	}
-
-	// Adjust the first output to account for the gas fee
-	// Adjust the first output to account for the gas fee
-	if len(outputs) > 0 {
-		outputs[0].Amount -= int64(gasFee) // Convert gasFee to int64 just for the subtraction
-	}
-
-	// Initialize the transaction, now including PreviousTxIDs
-	tx := Transaction{
-		ID:               id,
-		Sender:           sender,
-		Inputs:           inputs,
-		Outputs:          outputs,
-		EncryptedInputs:  nil,
-		EncryptedOutputs: nil,
-		Timestamp:        time.Now().Unix(),
-		GasFee:           gasFee,
-	}
-
-	// Convert the Transaction type to *thrylos.Transaction for signing
-	thrylosTx, err := ConvertLocalTransactionToThrylosTransaction(tx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert transaction for signing: %v", err)
-	}
-
-	// Sign the transaction using Ed25519
-	if err := SignTransaction(thrylosTx, ed25519PrivateKey); err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %v", err)
-	}
-
-	// Convert the signed thrylos.Transaction back to your local Transaction format
-	signedTx, err := ConvertThrylosTransactionToLocal(thrylosTx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert signed transaction back to local format: %v", err)
-	}
-
-	// Return the signed transaction
-	return &signedTx, nil
-}
-
 // Hypothetical conversion function from your local Transaction type to *thrylos.Transaction
 // ConvertLocalTransactionToThrylosTransaction converts your local Transaction type to *thrylos.Transaction
 func ConvertLocalTransactionToThrylosTransaction(tx Transaction) (*thrylos.Transaction, error) {
@@ -693,30 +470,6 @@ func ConvertToProtoTransaction(tx *Transaction) (*thrylos.Transaction, error) {
 	return protoTx, nil
 }
 
-// SignTransaction creates a digital signature for a transaction using the sender's private RSA key.
-// The signature is created by first hashing the transaction data, then signing the hash with the private key.
-// SignTransaction creates a signature for a transaction using the sender's private Ed25519 key.
-
-// Used only in the CLI Signer (not in the blockchain!)
-func SignTransaction(tx *thrylos.Transaction, ed25519PrivateKey ed25519.PrivateKey) error {
-	// Serialize the transaction for signing
-	txBytes, err := proto.Marshal(tx)
-	if err != nil {
-		return fmt.Errorf("failed to serialize transaction: %v", err)
-	}
-
-	// Ed25519 Signature
-	ed25519Signature := ed25519.Sign(ed25519PrivateKey, txBytes)
-	if ed25519Signature == nil {
-		return fmt.Errorf("failed to generate signature")
-	}
-
-	// Assign the generated signature to the transaction
-	tx.Signature = ed25519Signature
-
-	return nil
-}
-
 // SerializeWithoutSignature generates a JSON representation of the transaction without including the signature.
 // This is useful for verifying the transaction signature, as the signature itself cannot be part of the signed data.
 func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
@@ -739,17 +492,19 @@ func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
 	return json.Marshal(temp)
 }
 
-// VerifyTransactionSignature verifies both the Ed25519 of a given transaction.
-func VerifyTransactionSignature(tx *thrylos.Transaction, ed25519PublicKey ed25519.PublicKey) error {
+func VerifyTransactionSignature(tx *thrylos.Transaction, publicKey *mldsa44.PublicKey) error {
 	// Deserialize the transaction for verification
 	txBytes, err := proto.Marshal(tx)
 	if err != nil {
 		return fmt.Errorf("failed to serialize transaction for verification: %v", err)
 	}
 
-	// Verify the signature using the public key and transaction bytes
-	if !ed25519.Verify(ed25519PublicKey, txBytes, tx.Signature) {
-		return errors.New("Ed25519 signature verification failed")
+	// MLDSA verification
+	// The function requires 4 parameters: (publicKey, message, salt, signature)
+	// The salt is an additional randomization value used in the signature scheme
+	valid := mldsa44.Verify(publicKey, txBytes, tx.Salt, tx.Signature)
+	if !valid {
+		return errors.New("MLDSA signature verification failed")
 	}
 
 	return nil
@@ -762,12 +517,18 @@ func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.
 	}
 
 	// Validate sender exists in system
-	_, err := getPublicKeyFunc(tx.Sender)
+	pubKeyBytes, err := getPublicKeyFunc(tx.Sender)
 	if err != nil {
 		return false, fmt.Errorf("invalid sender address: %v", err)
 	}
 
-	// Verify input UTXOs belong to sender and exist
+	// Convert bytes to MLDSA public key if signature verification is needed
+	pubKey := new(mldsa44.PublicKey)
+	if err := pubKey.UnmarshalBinary(pubKeyBytes); err != nil {
+		return false, fmt.Errorf("failed to parse public key: %v", err)
+	}
+
+	// Rest of your verification logic...
 	for _, input := range tx.Inputs {
 		if input.OwnerAddress != tx.Sender {
 			return false, fmt.Errorf("input owner address does not match sender")
@@ -789,46 +550,6 @@ func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.
 	// Account for gas fee
 	if inputSum != outputSum+int64(tx.Gasfee) {
 		return false, fmt.Errorf("input amount does not match output amount plus gas fee")
-	}
-
-	return true, nil
-}
-
-// VerifyTransaction ensures the overall validity of a transaction, including the correctness of its signature,
-// the existence and ownership of UTXOs in its inputs, and the equality of input and output values.
-func VerifyTransaction(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc func(address string) (ed25519.PublicKey, error)) (bool, error) {
-	// Create a JSON payload matching the frontend format EXACTLY
-	payload := map[string]interface{}{
-		"id":              tx.Id,
-		"sender":          tx.Sender,
-		"gasfee":          int(tx.Gasfee),
-		"timestamp":       tx.Timestamp,
-		"inputs":          convertInputsToJSON(tx.Inputs),
-		"outputs":         convertOutputsToJSON(tx.Outputs),
-		"previous_tx_ids": nil, // Always use null to match frontend
-		"status":          "pending",
-	}
-
-	// Marshal to JSON bytes (same as frontend)
-	txBytes, err := json.Marshal(payload)
-	if err != nil {
-		return false, fmt.Errorf("Error serializing transaction for verification: %v", err)
-	}
-
-	// Get the sender's public key
-	ed25519PublicKey, err := getPublicKeyFunc(tx.Sender)
-	if err != nil {
-		return false, fmt.Errorf("Error retrieving Ed25519 public key: %v", err)
-	}
-
-	// Verify signature
-	if !ed25519.Verify(ed25519PublicKey, txBytes, tx.Signature) {
-		// Log values for debugging
-		log.Printf("Transaction verification failed:")
-		log.Printf("- Transaction ID: %s", tx.Id)
-		log.Printf("- Signature: %x", tx.Signature)
-		log.Printf("- Verification bytes: %x", txBytes)
-		return false, fmt.Errorf("Transaction signature verification failed")
 	}
 
 	return true, nil
@@ -1030,49 +751,12 @@ func isValidUUID(uuid string) bool {
 	return r.MatchString(uuid)
 }
 
-func SignTransactionData(tx *Transaction, privateKeyBytes []byte) ([]byte, error) {
-	data, err := SerializeTransactionForSigning(tx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
-	}
+func deriveAddressFromPublicKey(publicKey *mldsa44.PublicKey) (string, error) {
+	// Get the public key bytes
+	publicKeyBytes := publicKey.Bytes()
 
-	// Hash the data
-	hasher, err := blake2b.New256(nil)
-	hasher.Write(data)
-	hashed := hasher.Sum(nil)
-
-	// Assuming the privateKeyBytes is the Ed25519 private key
-	privateKey := ed25519.PrivateKey(privateKeyBytes)
-	signature := ed25519.Sign(privateKey, hashed) // Sign the hashed data
-
-	return signature, nil
-}
-
-func DecodePrivateKey(encodedKey []byte) (ed25519.PrivateKey, error) {
-	block, _ := pem.Decode(encodedKey)
-	if block == nil || block.Type != "PRIVATE KEY" {
-		return nil, errors.New("failed to decode PEM block containing private key")
-	}
-
-	key := ed25519.NewKeyFromSeed(block.Bytes)
-	return key, nil
-}
-
-// // Decouples the process of verifying a signature by accepting raw data and a signature string
-// func VerifySignature(tx *Transaction, data []byte, signature string, publicKey ed25519.PublicKey) bool {
-// 	sigBytes, err := base64.StdEncoding.DecodeString(signature)
-// 	if err != nil {
-// 		log.Printf("Error decoding signature: %v", err)
-// 		return false
-// 	}
-// 	return ed25519.Verify(publicKey, data, sigBytes)
-// }
-
-// Process batched transactions
-
-func deriveAddressFromPublicKey(publicKey []byte) (string, error) {
 	// Convert public key bytes to 5-bit words for bech32 encoding
-	words, err := bech32.ConvertBits(publicKey, 8, 5, true)
+	words, err := bech32.ConvertBits(publicKeyBytes, 8, 5, true)
 	if err != nil {
 		return "", fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
 	}
@@ -1089,7 +773,7 @@ func deriveAddressFromPublicKey(publicKey []byte) (string, error) {
 func ValidateAndConvertTransaction(
 	tx *thrylos.Transaction,
 	db BlockchainDBInterface,
-	publicKey ed25519.PublicKey,
+	publicKey *mldsa44.PublicKey,
 	estimator GasEstimator,
 	balance int64,
 ) error {

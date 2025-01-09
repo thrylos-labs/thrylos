@@ -9,7 +9,7 @@ The blockchain database (BlockchainDB) initializes, setting up the storage struc
 
 ## 2. Key Generation and Management
 
-Generate RSA and Ed25519 key pairs for transaction signing and encryption.
+Generate RSA and MLDSA44 key pairs for transaction signing and encryption.
 Public keys are stored and retrieved from the database, providing mechanisms to verify identities and signatures.
 
 ## 3. Transaction Creation
@@ -19,7 +19,7 @@ Transaction data may be encrypted using AES for confidentiality, particularly fo
 
 ## 4. Transaction Signing
 
-Transactions are signed using the private keys (Ed25519 or RSA), ensuring non-repudiation and integrity.
+Transactions are signed using the private keys (MLDSA44 or RSA), ensuring non-repudiation and integrity.
 The system supports batch signing for efficiency in processing multiple transactions.
 
 

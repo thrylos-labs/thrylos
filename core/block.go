@@ -12,7 +12,6 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
-	"golang.org/x/crypto/ed25519"
 
 	"github.com/gballet/go-verkle"
 	"google.golang.org/protobuf/proto"
@@ -58,8 +57,9 @@ type Block struct {
 
 	Data string `json:"data"` // Assuming the block's content is just a string for simplicity
 
-	Signature []byte `json:"signature"` // Add this field
+	Signature []byte `json:"signature"`
 
+	Salt []byte `json:"salt"`
 }
 
 func (b *Block) SerializeForSigning() ([]byte, error) {
@@ -73,23 +73,6 @@ func (b *Block) SerializeForSigning() ([]byte, error) {
 	}
 
 	return proto.Marshal(pbBlock)
-}
-
-func (b *Block) Sign(privateKey ed25519.PrivateKey) error {
-	data, err := b.SerializeForSigning()
-	if err != nil {
-		return err
-	}
-	b.Signature = ed25519.Sign(privateKey, data)
-	return nil
-}
-
-func (b *Block) VerifySignature(publicKey ed25519.PublicKey) bool {
-	data, err := b.SerializeForSigning()
-	if err != nil {
-		return false
-	}
-	return ed25519.Verify(publicKey, data, b.Signature)
 }
 
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.

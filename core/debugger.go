@@ -1,11 +1,12 @@
 package core
 
 import (
-	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
+
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 )
 
 // SignatureDebugger helps diagnose transaction signature issues
@@ -37,8 +38,13 @@ func (d *SignatureDebugger) DebugSignature(tx map[string]interface{}, signature,
 	d.logger.Printf("5. Signature (hex): %x", signature)
 	d.logger.Printf("6. Public Key (hex): %x", publicKey)
 
+	pk := new(mldsa44.PublicKey)
+	if err := pk.UnmarshalBinary(publicKey); err != nil {
+		return fmt.Errorf("failed to unmarshal public key: %v", err)
+	}
+
 	// Verify signature
-	if !ed25519.Verify(publicKey, canonicalData, signature) {
+	if !mldsa44.Verify(pk, canonicalData, signature, nil) {
 		d.logger.Printf("❌ Signature Verification Failed")
 		return fmt.Errorf("signature verification failed")
 	}

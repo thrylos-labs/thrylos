@@ -105,13 +105,13 @@ func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 
 	log.Printf("VerifyAndProcessTransaction: Verifying transaction for sender address: %s", senderAddress)
 
-	senderEd25519PublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress)
+	senderMLDSAPublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress)
 	if err != nil {
-		log.Printf("VerifyAndProcessTransaction: Failed to retrieve or validate Ed25519 public key for address %s: %v", senderAddress, err)
-		return fmt.Errorf("failed to retrieve or validate Ed25519 public key: %v", err)
+		log.Printf("VerifyAndProcessTransaction: Failed to retrieve or validate MLDSA public key for address %s: %v", senderAddress, err)
+		return fmt.Errorf("failed to retrieve or validate MLDSA public key: %v", err)
 	}
 
-	if err := shared.VerifyTransactionSignature(tx, senderEd25519PublicKey); err != nil {
+	if err := shared.VerifyTransactionSignature(tx, senderMLDSAPublicKey); err != nil {
 		return fmt.Errorf("transaction signature verification failed: %v", err)
 	}
 
@@ -258,15 +258,20 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 	if tx == nil {
 		return nil
 	}
-	signatureBase64 := base64.StdEncoding.EncodeToString(tx.GetSignature())
 
+	// Convert signature to base64 if it exists
+	var signatureBase64 string
+	if tx.GetSignature() != nil {
+		signatureBase64 = base64.StdEncoding.EncodeToString(tx.GetSignature())
+	}
 	return &shared.Transaction{
-		ID:            tx.GetId(),
-		Timestamp:     tx.GetTimestamp(),
-		Inputs:        ConvertProtoInputs(tx.GetInputs()),
-		Outputs:       ConvertProtoOutputs(tx.GetOutputs()),
-		Signature:     signatureBase64,
-		PreviousTxIds: tx.GetPreviousTxIds(),
+		ID:              tx.GetId(),
+		Timestamp:       tx.GetTimestamp(),
+		Inputs:          ConvertProtoInputs(tx.GetInputs()),
+		Outputs:         ConvertProtoOutputs(tx.GetOutputs()),
+		Signature:       signatureBase64,
+		PreviousTxIds:   tx.GetPreviousTxIds(),
+		SenderPublicKey: tx.GetSenderPublicKey(),
 	}
 }
 

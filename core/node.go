@@ -9,8 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/ed25519"
-
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/state"
@@ -26,7 +25,7 @@ type Node struct {
 	Blockchain          *Blockchain         // The blockchain maintained by this node.
 	StateManager        *state.StateManager // Replace Shard field
 	PendingTransactions []*thrylos.Transaction
-	PublicKeyMap        map[string]ed25519.PublicKey // Updated to store ed25519 public keys
+	PublicKeyMap        map[string]mldsa44.PublicKey // Updated to store mldsa44 public keys
 	chainID             string
 	ResponsibleUTXOs    map[string]shared.UTXO // Tracks UTXOs for which the node is responsible
 	// Database provides an abstraction over the underlying database technology used to persist
@@ -128,7 +127,7 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		Blockchain:           bc,
 		Database:             db,
 		StateManager:         stateManager,
-		PublicKeyMap:         make(map[string]ed25519.PublicKey),
+		PublicKeyMap:         make(map[string]mldsa44.PublicKey),
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,
 		WebSocketConnections: make(map[string]*WebSocketConnection),

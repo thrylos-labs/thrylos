@@ -1,14 +1,14 @@
 package core
 
 import (
+	"crypto"
 	"crypto/rand"
 	"encoding/json"
 	"io/ioutil"
 	"os"
 	"testing"
 
-	"golang.org/x/crypto/ed25519"
-
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -30,13 +30,9 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT") // Now this should always be set
+	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 	if genesisAccount == "" {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
-	}
-
-	if err != nil {
-		t.Fatalf("error initializing app: %v\n", err)
 	}
 
 	// Initialize the blockchain with the temporary directory
@@ -55,16 +51,17 @@ func TestGenesisBlockCreation(t *testing.T) {
 	if len(blockchain.Blocks) == 0 || blockchain.Blocks[0] != blockchain.Genesis {
 		t.Errorf("Genesis block is not the first block in the blockchain")
 	}
-
-	// Additional checks can include validating genesis block's specific properties.
 }
 
 func TestTransactionSigningAndVerification(t *testing.T) {
-	// Step 1: Generate RSA keys
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	// Step 1: Generate ML-DSA-44 keys
+	seed := new([mldsa44.SeedSize]byte)
+	_, err := rand.Read(seed[:])
 	if err != nil {
-		t.Fatalf("Failed to generate RSA keys: %v", err)
+		t.Fatalf("Failed to generate seed: %v", err)
 	}
+
+	publicKey, privateKey := mldsa44.NewKeyFromSeed(seed)
 
 	// Step 2: Create a new transaction
 	tx := shared.Transaction{
@@ -74,22 +71,24 @@ func TestTransactionSigningAndVerification(t *testing.T) {
 		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
 	}
 
-	// Step 3: Serialize the transaction (excluding the signature for now, as we're focusing on signing)
+	// Step 3: Serialize the transaction
 	serializedTx, err := json.Marshal(tx)
 	if err != nil {
 		t.Fatalf("Failed to serialize transaction: %v", err)
 	}
 
-	// Step 4: Sign the serialized transaction data directly (Ed25519 does not require hashing before signing)
-	signature := ed25519.Sign(privateKey, serializedTx)
-	if signature == nil {
-		t.Fatalf("Failed to sign transaction")
+	// Step 4: Sign the serialized transaction
+	context := []byte{} // Use an empty context as required by ML-DSA-44
+	// Sign the serialized transaction
+	signature, err := privateKey.Sign(rand.Reader, serializedTx, crypto.Hash(0))
+	if err != nil {
+		t.Fatalf("Failed to sign transaction: %v", err)
 	}
 
 	// Step 5: Verify the signature
-	if !ed25519.Verify(publicKey, serializedTx, signature) {
+	if !mldsa44.Verify(publicKey, serializedTx, context, signature) {
 		t.Fatalf("Signature verification failed")
 	}
 
-	t.Log("Transaction signing and verification successful with Ed25519")
+	t.Log("Transaction signing and verification successful with ML-DSA44")
 }

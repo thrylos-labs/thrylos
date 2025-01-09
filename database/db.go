@@ -20,8 +20,7 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/crypto/ed25519"
-
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -324,8 +323,8 @@ func (bdb *BlockchainDB) SanitizeAndFormatAddress(address string) (string, error
 	return formattedAddress, nil
 }
 
-func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519PublicKey []byte) error {
-	log.Printf("Attempting to insert/update public key for address: %s", address)
+func (bdb *BlockchainDB) InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mldsa44.PublicKey) error {
+	log.Printf("Attempting to insert/update MLDSA public key for address: %s", address)
 
 	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
 	if err != nil {
@@ -334,11 +333,18 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 	}
 	log.Printf("Sanitized and formatted address: %s", formattedAddress)
 
-	// Prepare the data to be inserted or updated
-	data, err := json.Marshal(map[string][]byte{"ed25519PublicKey": ed25519PublicKey})
+	// Convert MLDSA public key to bytes
+	publicKeyBytes, err := mldsaPublicKey.MarshalBinary()
 	if err != nil {
-		log.Printf("Failed to marshal public key for address %s: %v", formattedAddress, err)
-		return fmt.Errorf("Failed to marshal public key: %v", err)
+		log.Printf("Failed to marshal MLDSA public key for address %s: %v", formattedAddress, err)
+		return fmt.Errorf("failed to marshal MLDSA public key: %v", err)
+	}
+
+	// Prepare the data to be inserted or updated
+	data, err := json.Marshal(map[string][]byte{"mldsaPublicKey": publicKeyBytes})
+	if err != nil {
+		log.Printf("Failed to marshal public key data for address %s: %v", formattedAddress, err)
+		return fmt.Errorf("failed to marshal public key data: %v", err)
 	}
 	log.Printf("Marshalled public key data length: %d bytes", len(data))
 
@@ -351,27 +357,23 @@ func (bdb *BlockchainDB) InsertOrUpdateEd25519PublicKey(address string, ed25519P
 	// Attempt to set the public key in the database
 	key := []byte("publicKey-" + formattedAddress)
 	if err := txn.Set(key, data); err != nil {
-		log.Printf("Failed to insert public key for address %s: %v", formattedAddress, err)
-		return fmt.Errorf("Failed to insert public key for address %s: %v", formattedAddress, err)
+		log.Printf("Failed to insert MLDSA public key for address %s: %v", formattedAddress, err)
+		return fmt.Errorf("failed to insert MLDSA public key for address %s: %v", formattedAddress, err)
 	}
-	log.Printf("Public key set in transaction for address: %s", formattedAddress)
+	log.Printf("MLDSA public key set in transaction for address: %s", formattedAddress)
 
 	// Commit the transaction
 	if err := txn.Commit(); err != nil {
-		log.Printf("Transaction commit failed for public key update for address %s: %v", formattedAddress, err)
-		return fmt.Errorf("Transaction commit failed for public key update for address %s: %v", formattedAddress, err)
+		log.Printf("Transaction commit failed for MLDSA public key update for address %s: %v", formattedAddress, err)
+		return fmt.Errorf("transaction commit failed for MLDSA public key update for address %s: %v", formattedAddress, err)
 	}
 
 	log.Printf("Transaction committed successfully for address: %s", formattedAddress)
-	log.Printf("Public key successfully updated for address %s", formattedAddress)
+	log.Printf("MLDSA public key successfully updated for address %s", formattedAddress)
 	return nil
 }
 
-type publicKeyData struct {
-	Ed25519PublicKey []byte `json:"ed25519PublicKey"`
-}
-
-func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.PublicKey, error) {
+func (bdb *BlockchainDB) RetrieveMLDSAPublicKey(address string) ([]byte, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
 
 	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
@@ -404,20 +406,14 @@ func (bdb *BlockchainDB) RetrieveEd25519PublicKey(address string) (ed25519.Publi
 		return nil, err
 	}
 
-	if len(publicKeyData) != ed25519.PublicKeySize {
-		log.Printf("Retrieved public key has incorrect size for address %s. Expected %d, got %d",
-			formattedAddress, ed25519.PublicKeySize, len(publicKeyData))
-		return nil, fmt.Errorf("invalid public key size")
-	}
-
 	log.Printf("Successfully retrieved public key for address %s", formattedAddress)
-	return ed25519.PublicKey(publicKeyData), nil
+	return publicKeyData, nil
 }
 
-func (bdb *BlockchainDB) GetAllValidatorPublicKeys() (map[string]ed25519.PublicKey, error) {
+func (bdb *BlockchainDB) GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error) {
 	log.Println("Retrieving all validator public keys")
 
-	publicKeys := make(map[string]ed25519.PublicKey)
+	publicKeys := make(map[string]mldsa44.PublicKey)
 
 	err := bdb.DB.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -431,12 +427,15 @@ func (bdb *BlockchainDB) GetAllValidatorPublicKeys() (map[string]ed25519.PublicK
 			key := item.Key()
 
 			err := item.Value(func(val []byte) error {
-				if len(val) != ed25519.PublicKeySize {
-					return fmt.Errorf("invalid public key size for key %s", string(key))
+				// Create a new MLDSA public key
+				pubKey := new(mldsa44.PublicKey)
+				err := pubKey.UnmarshalBinary(val)
+				if err != nil {
+					return fmt.Errorf("failed to parse MLDSA public key for key %s: %v", string(key), err)
 				}
 
 				address := string(key[len(prefix):]) // Remove prefix to get address
-				publicKeys[address] = ed25519.PublicKey(val)
+				publicKeys[address] = *pubKey
 				return nil
 			})
 
@@ -520,16 +519,19 @@ func (bdb *BlockchainDB) RetrieveValidatorPublicKey(validatorAddress string) ([]
 
 const validatorPublicKeyPrefix = "validatorPubKey-"
 
-func (bdb *BlockchainDB) StoreValidatorPublicKey(validatorAddress string, publicKey []byte) error {
+// StoreValidatorPublicKey stores a validator's ML-DSA44 public key
+// In database/blockchain.go
+func (bdb *BlockchainDB) StoreValidatorPublicKey(validatorAddress string, publicKeyBytes []byte) error {
 	if !strings.HasPrefix(validatorAddress, "tl1") {
 		log.Printf("Invalid address format for validator %s: must start with 'tl1'", validatorAddress)
 		return fmt.Errorf("invalid address format: must start with 'tl1'")
 	}
 
+	// We'll store the bytes directly since they're already in the correct format
 	return bdb.DB.Update(func(txn *badger.Txn) error {
-		key := []byte("validatorPubKey-" + validatorAddress)
+		key := []byte(validatorPublicKeyPrefix + validatorAddress)
 		log.Printf("Storing public key for validator: %s, key: %s", validatorAddress, key)
-		err := txn.Set(key, publicKey)
+		err := txn.Set(key, publicKeyBytes)
 		if err != nil {
 			log.Printf("Failed to store public key for validator %s: %v", validatorAddress, err)
 			return fmt.Errorf("failed to store public key: %v", err)
@@ -539,35 +541,48 @@ func (bdb *BlockchainDB) StoreValidatorPublicKey(validatorAddress string, public
 	})
 }
 
-func (bdb *BlockchainDB) InsertOrUpdatePublicKey(address string, ed25519PublicKey []byte) error {
-	data, err := json.Marshal(map[string][]byte{
-		"ed25519PublicKey": ed25519PublicKey,
-	})
+// Helper function for when you have an ML-DSA44 key
+func (bdb *BlockchainDB) StoreValidatorMLDSAPublicKey(validatorAddress string, publicKey *mldsa44.PublicKey) error {
+	publicKeyBytes, err := publicKey.MarshalBinary()
 	if err != nil {
-		log.Printf("Error marshalling public key data for address %s: %v", address, err)
-		return err
+		return fmt.Errorf("failed to marshal public key: %v", err)
+	}
+	return bdb.StoreValidatorPublicKey(validatorAddress, publicKeyBytes)
+}
+
+// And for retrieving as ML-DSA44 key
+func (bdb *BlockchainDB) GetValidatorMLDSAPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
+	var pubKey mldsa44.PublicKey
+
+	err := bdb.DB.View(func(txn *badger.Txn) error {
+		key := []byte(validatorPublicKeyPrefix + validatorAddress)
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
+
+		return item.Value(func(val []byte) error {
+			return pubKey.UnmarshalBinary(val)
+		})
+	})
+
+	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, fmt.Errorf("no public key found for validator %s", validatorAddress)
+		}
+		return nil, err
 	}
 
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		log.Printf("Attempting to store public key for address %s", address)
-		return txn.Set([]byte("publicKey-"+address), data)
-	})
-
-	if err != nil {
-		log.Printf("Error updating public key in the database for address %s: %v", address, err)
-	} else {
-		log.Printf("Successfully updated public key in the database for address %s", address)
-	}
-
-	return err
+	return &pubKey, nil
 }
 
 var publicKeyCache = sync.Map{}
 
-func (bdb *BlockchainDB) GetPublicKeyWithCaching(address string) (ed25519.PublicKey, error) {
-	if key, found := publicKeyCache.Load(address); found {
+func (bdb *BlockchainDB) GetPublicKeyWithCaching(address string) (*mldsa44.PublicKey, error) {
+	if cachedKey, found := publicKeyCache.Load(address); found {
 		log.Printf("Public key retrieved from cache for address: %s", address)
-		return key.(ed25519.PublicKey), nil
+		// Type assert to *mldsa44.PublicKey
+		return cachedKey.(*mldsa44.PublicKey), nil
 	}
 
 	key, err := bdb.RetrievePublicKeyFromAddress(address)
@@ -579,9 +594,8 @@ func (bdb *BlockchainDB) GetPublicKeyWithCaching(address string) (ed25519.Public
 	return key, nil
 }
 
-// RetrievePublicKeyFromAddress fetches the public key for a given blockchain address from the database.
 // It is essential for verifying transaction signatures and ensuring the integrity of transactions.
-func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.PublicKey, error) {
+func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (*mldsa44.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
 	var publicKeyData []byte
 	err := bdb.DB.View(func(txn *badger.Txn) error {
@@ -610,14 +624,22 @@ func (bdb *BlockchainDB) RetrievePublicKeyFromAddress(address string) (ed25519.P
 		return nil, err
 	}
 
-	ed25519Key, ok := keys["ed25519PublicKey"]
-	if !ok || len(ed25519Key) == 0 {
-		log.Printf("No Ed25519 public key found for address %s", address)
-		return nil, fmt.Errorf("no Ed25519 public key found for address %s", address)
+	mldsaKeyBytes, ok := keys["mldsaPublicKey"]
+	if !ok || len(mldsaKeyBytes) == 0 {
+		log.Printf("No MLDSA public key found for address %s", address)
+		return nil, fmt.Errorf("no MLDSA public key found for address %s", address)
 	}
 
-	log.Printf("Successfully retrieved and parsed Ed25519 public key for address %s", address)
-	return ed25519.PublicKey(ed25519Key), nil
+	// Parse the bytes into an MLDSA public key
+	pubKey := new(mldsa44.PublicKey)
+	err = pubKey.UnmarshalBinary(mldsaKeyBytes)
+	if err != nil {
+		log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
+		return nil, fmt.Errorf("failed to parse MLDSA public key: %v", err)
+	}
+
+	log.Printf("Successfully retrieved and parsed MLDSA public key for address %s", address)
+	return pubKey, nil
 }
 
 // PublicKeyExists checks if a public key already exists for the given address.

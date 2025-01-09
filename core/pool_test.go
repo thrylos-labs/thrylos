@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos/shared"
-	"golang.org/x/crypto/ed25519"
 )
 
 // Add this to node.go
@@ -16,7 +16,7 @@ func NewTestNode(address string, knownPeers []string, dataDir string, blockchain
 		Address:              address,
 		Peers:                make(map[string]*PeerConnection),
 		Blockchain:           blockchain,
-		PublicKeyMap:         make(map[string]ed25519.PublicKey),
+		PublicKeyMap:         make(map[string]mldsa44.PublicKey),
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		WebSocketConnections: make(map[string]*WebSocketConnection),
 		stakingService:       NewStakingService(blockchain),

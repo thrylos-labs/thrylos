@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/shopspring/decimal"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
-	"golang.org/x/crypto/ed25519"
 )
 
 func sendJSONRPCError(w http.ResponseWriter, jsonrpcErr *JSONRPCError, id interface{}) {
@@ -453,7 +453,14 @@ func (node *Node) handleSubmitSignedTransaction(params []interface{}) (interface
 		}
 
 		// Verify signature
-		if !ed25519.Verify(publicKeyBytes, messageBytes, signatureBytes) {
+		pk := new(mldsa44.PublicKey)
+		if err := pk.UnmarshalBinary(publicKeyBytes); err != nil {
+			validationDone <- fmt.Errorf("failed to unmarshal public key: %v", err)
+			return
+		}
+
+		// Verify signature using mldsa44
+		if !mldsa44.Verify(pk, messageBytes, signatureBytes, nil) {
 			validationDone <- fmt.Errorf("invalid signature")
 			return
 		}
@@ -535,10 +542,16 @@ func (node *Node) handleSubmitSignedTransaction(params []interface{}) (interface
 			return
 		}
 
+		pk := new(mldsa44.PublicKey)
+		if err := pk.UnmarshalBinary(publicKeyBytes); err != nil {
+			validationComplete <- fmt.Errorf("failed to unmarshal public key: %v", err)
+			return
+		}
+
 		if err := shared.ValidateAndConvertTransaction(
 			thrylosTx,
 			node.Database,
-			ed25519.PublicKey(publicKeyBytes),
+			pk,
 			node,
 			balance,
 		); err != nil {
