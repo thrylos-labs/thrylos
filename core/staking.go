@@ -155,10 +155,10 @@ func (s *StakingService) estimateStakeReward(targetAddress string, currentTimeSt
 
 	extraDelegationReward := delegatorsStakeTimeAverage * float64(DailyStakeReward) * (1 - DelegationRewardPercent) / totalStakeTimeAverage
 
-	extraReward := extraDelegationReward * addressStakeTimeAverage / validatorsStakeTimeAverage
+	extraAddressReward := extraDelegationReward * addressStakeTimeAverage / validatorsStakeTimeAverage
 
 	reward := (addressStakeTimeAverage / totalStakeTimeAverage) * float64(DailyStakeReward)
-	return extraReward + reward
+	return extraAddressReward + reward
 }
 
 // Add this method to your StakingService struct
