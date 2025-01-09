@@ -7,8 +7,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -27,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/scrypt"
 
