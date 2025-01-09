@@ -11,6 +11,14 @@ import (
 	"github.com/btcsuite/btcd/btcutil/bech32"
 )
 
+func ThrylosToNano(thrylos float64) int64 {
+	return int64(thrylos * NanoPerThrylos)
+}
+
+func NanoToThrylos(nano int64) float64 {
+	return float64(nano) / NanoPerThrylos
+}
+
 func (n *Node) logError(stage string, err error) {
 	log.Printf("[%s] error: %v", stage, err)
 }

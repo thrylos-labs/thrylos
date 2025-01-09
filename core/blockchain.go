@@ -7,8 +7,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -27,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/scrypt"
 
@@ -232,16 +231,6 @@ func NewValidatorKeyStore() *ValidatorKeyStore {
 	}
 }
 
-const NanoPerThrylos = 1e7
-
-func ThrylosToNano(thrylos float64) int64 {
-	return int64(thrylos * NanoPerThrylos)
-}
-
-func NanoToThrylos(nano int64) float64 {
-	return float64(nano) / NanoPerThrylos
-}
-
 // GetMinStakeForValidator returns the current minimum stake required for a validator
 func (bc *Blockchain) GetMinStakeForValidator() *big.Int {
 	bc.Mu.RLock()
@@ -255,11 +244,6 @@ func (bc *Blockchain) SetMinStakeForValidator(newMinStake *big.Int) {
 	defer bc.Mu.Unlock()
 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
 }
-
-const (
-	TotalSupply        = 120_000_000 // 120 million tokens
-	MinStakePercentage = 0.1         // 0.1% of total supply as minimum stake
-)
 
 func ConvertToBech32Address(address string) (string, error) {
 	// Check if the address is already in Bech32 format
@@ -314,10 +298,9 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	publicKeyMap := make(map[string]*mldsa44.PublicKey)
 
 	// Initialize Stakeholders map with the genesis account
-	totalSupply := big.NewInt(120_000_000) // 120 million tokens
-	totalSupplyNano := ThrylosToNano(float64(totalSupply.Int64()))
+	totalSupplyNano := ThrylosToNano(InitialTotalSupply)
 
-	log.Printf("Initializing genesis account with total supply: %d THR", totalSupplyNano/1e7)
+	log.Printf("Initializing genesis account with total supply: %.2f THR", NanoToThrylos(totalSupplyNano))
 
 	// Convert the genesis account address to Bech32 format
 	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)
@@ -421,13 +404,9 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	// When logging the genesis account
 	log.Printf("Genesis account %s initialized with total supply: %d", bech32GenesisAccount, totalSupplyNano)
 
-	// Calculate and set the minimum stake for validators
-	minStakePercentage := big.NewFloat(0.001) // 0.1%
-
-	minStake := new(big.Float).Mul(new(big.Float).SetInt(totalSupply), minStakePercentage)
-
-	blockchain.MinStakeForValidator = new(big.Int)
-	minStake.Int(blockchain.MinStakeForValidator) // Convert big.Float to big.Int
+	// Set the minimum stake for validators
+	//FIXME: we need to harmonise the minimum stake amount in one service
+	blockchain.MinStakeForValidator = big.NewInt(MinimumStakeAmount)
 
 	// Initialize ConsensusManager which provides sufficient consensus management
 	blockchain.ConsensusManager = NewConsensusManager(blockchain)
@@ -555,6 +534,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	return blockchain, bdb, nil
 }
 
+// FIXME: The total supply is not correct, it needs to be improved
 func (bc *Blockchain) GetTotalSupply() int64 {
 	totalSupply := int64(0)
 	for _, balance := range bc.Stakeholders {
@@ -564,11 +544,9 @@ func (bc *Blockchain) GetTotalSupply() int64 {
 }
 
 func (bc *Blockchain) GetEffectiveInflationRate() float64 {
-	currentTotalSupply := float64(bc.GetTotalSupply()) / 1e7
-	yearlyReward := 4_800_000.0 // Fixed 4.8M
-
+	currentTotalSupply := NanoToThrylos(bc.GetTotalSupply())
 	// Calculate effective rate (will decrease as total supply grows)
-	effectiveRate := (yearlyReward / currentTotalSupply) * 100
+	effectiveRate := (NanoToThrylos(AnnualStakeReward) / currentTotalSupply) * 100
 	return effectiveRate
 }
 
