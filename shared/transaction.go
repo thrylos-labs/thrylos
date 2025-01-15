@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -46,6 +47,7 @@ type Transaction struct {
 	SenderPublicKey  []byte   `json:"senderpublickey"`
 	Status           string   `json:"status,omitempty"`
 	BlockHash        string   `json:"blockHash,omitempty"`
+	Salt             []byte   `json:"salt,omitempty"`
 }
 
 type GetPublicKeyFunc func(address string) ([]byte, error)
@@ -511,6 +513,14 @@ func VerifyTransactionSignature(tx *thrylos.Transaction, publicKey *mldsa44.Publ
 }
 
 func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKeyFunc GetPublicKeyFunc) (bool, error) {
+	// Validate salt exists and has proper length
+	if len(tx.Salt) == 0 {
+		return false, fmt.Errorf("transaction must have a salt value")
+	}
+	if len(tx.Salt) != 32 { // Ensuring proper salt length
+		return false, fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
+	}
+
 	// Validate inputs and outputs exist
 	if len(tx.Inputs) == 0 || len(tx.Outputs) == 0 {
 		return false, fmt.Errorf("transaction must have inputs and outputs")
@@ -522,18 +532,37 @@ func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.
 		return false, fmt.Errorf("invalid sender address: %v", err)
 	}
 
-	// Convert bytes to MLDSA public key if signature verification is needed
+	// Convert bytes to MLDSA public key
 	pubKey := new(mldsa44.PublicKey)
 	if err := pubKey.UnmarshalBinary(pubKeyBytes); err != nil {
 		return false, fmt.Errorf("failed to parse public key: %v", err)
 	}
 
-	// Rest of your verification logic...
+	// Create transaction data bundle including salt for signature verification
+	txDataBundle := createTransactionDataBundle(tx)
+
+	// Verify signature using ML-DSA44 with the salt-included data bundle
+	if !mldsa44.Verify(pubKey, txDataBundle, nil, tx.Signature) {
+		return false, fmt.Errorf("invalid transaction signature")
+	}
+
+	// Verify inputs
 	for _, input := range tx.Inputs {
 		if input.OwnerAddress != tx.Sender {
 			return false, fmt.Errorf("input owner address does not match sender")
 		}
-		// Additional UTXO existence and ownership checks...
+
+		// Verify UTXO exists and is unspent
+		utxoKey := fmt.Sprintf("%s:%d", input.TransactionId, input.Index)
+		utxoList, exists := utxos[utxoKey]
+		if !exists || len(utxoList) == 0 {
+			return false, fmt.Errorf("input UTXO not found: %s", utxoKey)
+		}
+
+		// Verify UTXO amount matches
+		if utxoList[0].Amount != input.Amount {
+			return false, fmt.Errorf("input amount mismatch for UTXO: %s", utxoKey)
+		}
 	}
 
 	// Verify amounts balance
@@ -549,10 +578,45 @@ func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.
 
 	// Account for gas fee
 	if inputSum != outputSum+int64(tx.Gasfee) {
-		return false, fmt.Errorf("input amount does not match output amount plus gas fee")
+		return false, fmt.Errorf("input amount (%d) does not match output amount (%d) plus gas fee (%d)",
+			inputSum, outputSum, tx.Gasfee)
 	}
 
 	return true, nil
+}
+
+// Helper function to create a transaction data bundle for verification
+func createTransactionDataBundle(tx *thrylos.Transaction) []byte {
+	// Create a deterministic bundle of transaction data including the salt
+	var bundle [][]byte
+
+	// Add transaction components in a fixed order
+	bundle = append(bundle, []byte(tx.Id))
+	bundle = append(bundle, tx.Salt)
+	bundle = append(bundle, []byte(strconv.FormatInt(tx.Timestamp, 10)))
+
+	// Add input data
+	for _, input := range tx.Inputs {
+		inputData := []byte(fmt.Sprintf("%s:%d:%d",
+			input.TransactionId,
+			input.Index,
+			input.Amount))
+		bundle = append(bundle, inputData)
+	}
+
+	// Add output data
+	for _, output := range tx.Outputs {
+		outputData := []byte(fmt.Sprintf("%s:%d",
+			output.OwnerAddress,
+			output.Amount))
+		bundle = append(bundle, outputData)
+	}
+
+	// Add gas fee
+	bundle = append(bundle, []byte(strconv.FormatInt(int64(tx.Gasfee), 10)))
+
+	// Join all components with a separator
+	return bytes.Join(bundle, []byte("|"))
 }
 
 func convertInputsToJSON(inputs []*thrylos.UTXO) []map[string]interface{} {
@@ -641,7 +705,23 @@ func ConvertSharedToThrylos(tx *Transaction) (*thrylos.Transaction, error) {
 // ValidateTransaction checks the internal consistency of a transaction,
 // ensuring that the sum of inputs matches the sum of outputs.
 func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool {
-	inputSum := int64(0) // Change type to int64
+	// Add salt validation
+	if len(tx.Salt) == 0 {
+		fmt.Println("Transaction is missing salt")
+		return false
+	}
+	if len(tx.Salt) != 32 {
+		fmt.Printf("Invalid salt length: expected 32 bytes, got %d\n", len(tx.Salt))
+		return false
+	}
+
+	// Validate inputs and outputs exist
+	if len(tx.Inputs) == 0 || len(tx.Outputs) == 0 {
+		fmt.Println("Transaction must have inputs and outputs")
+		return false
+	}
+
+	inputSum := int64(0)
 	for _, input := range tx.Inputs {
 		// Construct the key used to find the UTXOs for this input.
 		utxoKey := input.TransactionID + strconv.Itoa(input.Index)
@@ -656,13 +736,15 @@ func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool 
 		inputSum += utxos[0].Amount
 	}
 
-	outputSum := int64(0) // Change type to int64
+	outputSum := int64(0)
 	for _, output := range tx.Outputs {
 		outputSum += output.Amount
 	}
 
-	if inputSum != outputSum {
-		fmt.Printf("Input sum (%d) does not match output sum (%d).\n", inputSum, outputSum)
+	// Validate balance including gas fee
+	if inputSum != outputSum+int64(tx.GasFee) {
+		fmt.Printf("Input sum (%d) does not match output sum (%d) plus gas fee (%d)\n",
+			inputSum, outputSum, tx.GasFee)
 		return false
 	}
 

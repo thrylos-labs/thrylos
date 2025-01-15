@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"regexp"
@@ -264,14 +265,29 @@ func ThrylosToShared(tx *thrylos.Transaction) *shared.Transaction {
 	if tx.GetSignature() != nil {
 		signatureBase64 = base64.StdEncoding.EncodeToString(tx.GetSignature())
 	}
+
+	// Convert BlockHash to string if it exists
+	var blockHashStr string
+	if tx.GetBlockHash() != nil {
+		blockHashStr = hex.EncodeToString(tx.GetBlockHash())
+	}
+
 	return &shared.Transaction{
-		ID:              tx.GetId(),
-		Timestamp:       tx.GetTimestamp(),
-		Inputs:          ConvertProtoInputs(tx.GetInputs()),
-		Outputs:         ConvertProtoOutputs(tx.GetOutputs()),
-		Signature:       signatureBase64,
-		PreviousTxIds:   tx.GetPreviousTxIds(),
-		SenderPublicKey: tx.GetSenderPublicKey(),
+		ID:               tx.GetId(),
+		Timestamp:        tx.GetTimestamp(),
+		Inputs:           ConvertProtoInputs(tx.GetInputs()),
+		Outputs:          ConvertProtoOutputs(tx.GetOutputs()),
+		EncryptedInputs:  tx.GetEncryptedInputs(),
+		EncryptedOutputs: tx.GetEncryptedOutputs(),
+		Signature:        signatureBase64,
+		EncryptedAESKey:  tx.GetEncryptedAesKey(),
+		PreviousTxIds:    tx.GetPreviousTxIds(),
+		Sender:           tx.GetSender(),
+		GasFee:           int(tx.GetGasfee()),
+		SenderPublicKey:  tx.GetSenderPublicKey(),
+		Status:           tx.GetStatus(),
+		BlockHash:        blockHashStr,
+		Salt:             tx.GetSalt(),
 	}
 }
 

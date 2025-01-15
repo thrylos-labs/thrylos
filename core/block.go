@@ -63,16 +63,69 @@ type Block struct {
 }
 
 func (b *Block) SerializeForSigning() ([]byte, error) {
+	// Create a slice to hold all transaction data including salts
+	txsWithSalts := make([]*thrylos.Transaction, len(b.Transactions))
+
+	// Copy transactions and ensure salts are included
+	for i, tx := range b.Transactions {
+		// Create a copy of the transaction to avoid modifying the original
+		txCopy := &thrylos.Transaction{
+			Id:        tx.Id,
+			Timestamp: tx.Timestamp,
+			Inputs:    tx.Inputs,
+			Outputs:   tx.Outputs,
+			Signature: tx.Signature,
+			Salt:      tx.Salt, // Explicitly include salt
+			Sender:    tx.Sender,
+			Status:    tx.Status,
+			BlockHash: tx.BlockHash,
+			Gasfee:    tx.Gasfee,
+		}
+		txsWithSalts[i] = txCopy
+	}
+
+	// Create the block protobuf with all transaction data
 	pbBlock := &thrylos.Block{
 		Index:        b.Index,
 		Timestamp:    b.Timestamp,
 		PrevHash:     b.PrevHash,
 		Validator:    b.Validator,
-		Transactions: b.Transactions,
+		Transactions: txsWithSalts, // Use the transactions with explicitly included salts
 		Hash:         b.Hash,
 	}
 
-	return proto.Marshal(pbBlock)
+	// Marshal the block to bytes
+	blockBytes, err := proto.Marshal(pbBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal block for signing: %v", err)
+	}
+
+	return blockBytes, nil
+}
+
+// Helper function to verify block serialization
+func VerifyBlockSerialization(block *Block) error {
+	// Serialize the block
+	serializedData, err := block.SerializeForSigning()
+	if err != nil {
+		return fmt.Errorf("failed to serialize block: %v", err)
+	}
+
+	// Deserialize to verify all data was included
+	var pbBlock thrylos.Block
+	err = proto.Unmarshal(serializedData, &pbBlock)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal block: %v", err)
+	}
+
+	// Verify all transactions including salts were properly serialized
+	for i, tx := range pbBlock.Transactions {
+		if len(tx.Salt) == 0 {
+			return fmt.Errorf("missing salt in transaction %d after serialization", i)
+		}
+	}
+
+	return nil
 }
 
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.

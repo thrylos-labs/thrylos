@@ -945,6 +945,54 @@ func (bc *Blockchain) CheckValidatorKeyConsistency() error {
 	return nil
 }
 
+// Helper function to efficiently check salt uniqueness in all blocks
+func (bc *Blockchain) checkSaltInBlocks(salt []byte) bool {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+
+	// Create an efficient lookup for pending transaction salts
+	pendingSalts := make(map[string]bool)
+	for _, tx := range bc.PendingTransactions {
+		pendingSalts[string(tx.Salt)] = true
+	}
+
+	// Check pending transactions first (faster in-memory check)
+	if pendingSalts[string(salt)] {
+		return true
+	}
+
+	// Check confirmed blocks
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			if bytes.Equal(tx.Salt, salt) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// Helper function to verify transaction uniqueness using salt
+func verifyTransactionUniqueness(tx *thrylos.Transaction, blockchain *Blockchain) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if len(tx.Salt) == 0 {
+		return fmt.Errorf("empty salt")
+	}
+	if len(tx.Salt) != 32 {
+		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
+	}
+
+	// Use the efficient helper function to check salt uniqueness
+	if blockchain.checkSaltInBlocks(tx.Salt) {
+		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
+	}
+
+	return nil
+}
+
 func (bc *Blockchain) SignBlock(block *Block, validatorAddress string) ([]byte, error) {
 	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(validatorAddress)
 	if err != nil {
@@ -1039,21 +1087,44 @@ func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKeyBytes []b
 	}
 }
 
+func (bc *Blockchain) validateBlockTransactionSalts(block *Block) error {
+	seenSalts := make(map[string]bool)
+
+	for _, tx := range block.Transactions {
+		saltStr := string(tx.Salt)
+		if seenSalts[saltStr] {
+			return fmt.Errorf("duplicate salt found in block transactions")
+		}
+		seenSalts[saltStr] = true
+
+		// Verify each transaction's salt
+		if err := verifyTransactionUniqueness(tx, bc); err != nil {
+			return fmt.Errorf("invalid transaction salt: %v", err)
+		}
+	}
+	return nil
+}
+
 // ValidateBlock checks if the block is valid
 func (bc *Blockchain) ValidateBlock(newBlock *Block, prevBlock *Block) bool {
-	// Check if PrevHash matches the hash of the previous block
+	// Existing checks
 	if !bytes.Equal(newBlock.PrevHash, prevBlock.Hash) {
 		fmt.Printf("Invalid previous hash in block %d\n", newBlock.Index)
 		return false
 	}
 
-	// Validate the block's proof of stake
+	// Add salt validation
+	if err := bc.validateBlockTransactionSalts(newBlock); err != nil {
+		fmt.Printf("Invalid transaction salts in block %d: %v\n", newBlock.Index, err)
+		return false
+	}
+
+	// Rest of existing validation...
 	if !bc.VerifyPoSRules(*newBlock) {
 		fmt.Printf("Invalid block %d due to PoS rules: validator was %s\n", newBlock.Index, newBlock.Validator)
 		return false
 	}
 
-	// Validate the block's hash
 	computedHash := newBlock.ComputeHash()
 	if !bytes.Equal(newBlock.Hash, computedHash) {
 		fmt.Printf("Invalid hash in block %d: expected %x, got %x\n", newBlock.Index, computedHash, newBlock.Hash)
@@ -1122,52 +1193,84 @@ func (bc *Blockchain) removeUTXO(transactionID string, index int32) bool {
 // including signature verification and double spending checks. It's essential for maintaining the
 // Example snippet for VerifyTransaction method adjustment
 func (bc *Blockchain) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
-	// Function to retrieve MLDSA public key from the address, returning bytes
+	// Check if salt is present and valid
+	if len(tx.Salt) == 0 {
+		return false, fmt.Errorf("transaction missing salt")
+	}
+	if len(tx.Salt) != 32 {
+		return false, fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
+	}
+
+	// Verify transaction uniqueness using salt
+	if err := verifyTransactionUniqueness(tx, bc); err != nil {
+		return false, fmt.Errorf("salt verification failed: %v", err)
+	}
+
+	// Get public key function for verification
 	getMldsaPublicKeyFunc := func(address string) ([]byte, error) {
 		pubKey, err := bc.Database.RetrievePublicKeyFromAddress(address)
 		if err != nil {
 			return nil, err
 		}
-
-		// Convert the MLDSA public key to bytes
 		pubKeyBytes, err := pubKey.MarshalBinary()
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal MLDSA public key: %v", err)
 		}
-
 		return pubKeyBytes, nil
 	}
 
-	// Convert UTXOs to proto format if needed
+	// Convert UTXOs to proto format
 	protoUTXOs := make(map[string][]*thrylos.UTXO)
 	for key, utxos := range bc.UTXOs {
 		protoUTXOs[key] = utxos
 	}
 
-	// Only verify transaction data, no proof verification needed
+	// Verify transaction data
 	isValid, err := shared.VerifyTransactionData(tx, protoUTXOs, getMldsaPublicKeyFunc)
 	if err != nil {
-		fmt.Printf("Error during transaction data verification: %v\n", err)
-		return false, err
+		return false, fmt.Errorf("transaction data verification failed: %v", err)
 	}
 	if !isValid {
-		fmt.Println("Transaction data validation failed")
-		return false, nil
+		return false, fmt.Errorf("invalid transaction data")
 	}
 
 	return true, nil
 }
 
+// Helper function to generate a random salt
+func generateSalt() ([]byte, error) {
+	salt := make([]byte, 32) // Using 32 bytes for salt
+	_, err := rand.Read(salt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate salt: %v", err)
+	}
+	return salt, nil
+}
+
 // AddPendingTransaction adds a new transaction to the pool of pending transactions.
 func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
-	// Start a database transaction
+	// Generate and set salt if not already present
+	if len(tx.Salt) == 0 {
+		salt, err := generateSalt()
+		if err != nil {
+			return fmt.Errorf("failed to generate salt: %v", err)
+		}
+		tx.Salt = salt
+	}
+
+	// Verify salt uniqueness before adding to pending pool
+	if err := verifyTransactionUniqueness(tx, bc); err != nil {
+		return fmt.Errorf("transaction salt verification failed: %v", err)
+	}
+
+	// Start database transaction
 	txn, err := bc.Database.BeginTransaction()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %v", err)
 	}
 	defer bc.Database.RollbackTransaction(txn)
 
-	// Prepare transaction data
+	// Store transaction with salt
 	txKey := []byte("transaction-" + tx.Id)
 	tx.Status = "pending"
 	txJSON, err := json.Marshal(tx)
@@ -1175,23 +1278,20 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("error marshaling transaction: %v", err)
 	}
 
-	// Store in database
 	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
 		return fmt.Errorf("error storing transaction: %v", err)
 	}
 
-	// Commit the database transaction
 	if err := bc.Database.CommitTransaction(txn); err != nil {
 		return fmt.Errorf("error committing transaction: %v", err)
 	}
 
-	// Only lock for the in-memory update
 	bc.Mu.Lock()
 	bc.PendingTransactions = append(bc.PendingTransactions, tx)
 	totalPending := len(bc.PendingTransactions)
 	bc.Mu.Unlock()
 
-	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
+	log.Printf("Transaction %s with salt added to pending pool. Total pending: %d",
 		tx.Id, totalPending)
 
 	return nil
@@ -1932,16 +2032,28 @@ func SharedToThrylos(tx *shared.Transaction) *thrylos.Transaction {
 
 	signatureBytes, _ := base64.StdEncoding.DecodeString(tx.Signature)
 
+	// Generate salt for new transaction if not present
+	salt := tx.Salt
+	if len(salt) == 0 {
+		var err error
+		salt, err = generateSalt()
+		if err != nil {
+			log.Printf("Failed to generate salt: %v", err)
+			return nil
+		}
+	}
+
 	return &thrylos.Transaction{
 		Id:            tx.ID,
 		Timestamp:     tx.Timestamp,
 		Inputs:        ConvertSharedInputs(tx.Inputs),
 		Outputs:       ConvertSharedOutputs(tx.Outputs),
 		Signature:     signatureBytes,
+		Salt:          salt,
 		PreviousTxIds: tx.PreviousTxIds,
 		Sender:        tx.Sender,
 		Status:        tx.Status,
-		Gasfee:        int32(tx.GasFee), // No conversion needed since both are int64
+		Gasfee:        int32(tx.GasFee),
 	}
 }
 
