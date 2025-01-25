@@ -21,7 +21,6 @@ PEERS=XXXXXXXXX
 DATA=./blockchain_data
 TESTNET=true
 AES_KEY_ENV_VAR=XXXXXXXXX
-WASM_PATH="https://raw.githubusercontent.com/thrylos-labs/rust_wasm/main/target/wasm32-unknown-unknown/release/rust_wasm.wasm"
 DATA_DIR=/database
 GENESIS_ACCOUNT=XXXXXXXXX
 GAS_ESTIMATE_URL=https://localhost:8546/api/gas-estimate

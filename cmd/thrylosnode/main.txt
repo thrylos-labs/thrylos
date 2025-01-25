@@ -4,9 +4,6 @@ Initialization and Setup
 Logging Setup: Configure logging to display output in standard output and include file name and line number for debugging.
 Environment Configuration:
 Load .env file to get environment variables like server addresses, path settings, and network configuration.
-Handle errors if necessary environment variables are not set (like DATA_DIR or WASM_PATH).
-WebAssembly (Wasm) Execution:
-Read and execute a WebAssembly module, handling potential errors in reading or executing.
 AES Key Configuration:
 Fetch and decode the AES key from an environment variable.
 Blockchain and Database Initialization:

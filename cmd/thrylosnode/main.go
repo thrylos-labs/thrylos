@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -51,7 +50,6 @@ func main() {
 	knownPeers := envFile["PEERS"]
 	nodeDataDir := envFile["DATA"]
 	testnet := envFile["TESTNET"] == "true" // Convert to boolea]
-	wasmPath := envFile["WASM_PATH"]
 	dataDir := envFile["DATA_DIR"]
 	chainID := "0x539" // Default local chain ID (1337 in decimal)
 	// domainName := envFile["DOMAIN_NAME")
@@ -64,28 +62,6 @@ func main() {
 		fmt.Println("Running in Testnet Mode")
 		chainID = "0x5" // Goerli Testnet chain ID
 	}
-
-	if wasmPath == "" {
-		log.Fatal("WASM_PATH environment variable not set")
-	}
-
-	// Fetch and load WebAssembly binary
-	response, err := http.Get(wasmPath)
-	if err != nil {
-		log.Fatalf("Failed to fetch wasm file from %s: %v", wasmPath, err)
-	}
-	defer response.Body.Close()
-
-	// Load WebAssembly binary
-
-	wasmBytes, err := io.ReadAll(response.Body)
-	if err != nil {
-		log.Fatalf("Failed to read wasm file: %v", err)
-	}
-
-	// Execute the WebAssembly module
-	result := thrylos.ExecuteWasm(wasmBytes)
-	fmt.Printf("Result from wasm: %d\n", result)
 
 	// Fetch the Base64-encoded AES key from the environment variable
 	base64Key := envFile["AES_KEY_ENV_VAR"]
