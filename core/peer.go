@@ -274,3 +274,22 @@ func (node *Node) PingPeers() {
 		}
 	}
 }
+
+func (pc *PeerConnection) SendVote(vote Vote) error {
+	voteData, err := json.Marshal(vote)
+	if err != nil {
+		return fmt.Errorf("failed to serialize vote: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/vote", pc.Address)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(voteData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("received non-OK response: %s", resp.Status)
+	}
+	return nil
+}

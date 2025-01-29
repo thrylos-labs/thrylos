@@ -97,9 +97,48 @@ func (node *Node) TriggerBlockCreation() error {
 }
 
 // ProcessConfirmedTransactions handles newly confirmed transactions in a block
+// ProcessConfirmedTransactions handles newly confirmed transactions in a block
 func (node *Node) ProcessConfirmedTransactions(block *Block) {
-	addressesToUpdate := make(map[string]bool)
+	// Clear old votes first
+	node.VoteCounter.ClearOldVotes()
 
+	// If this is not the counter node, validate and vote
+	if !node.IsVoteCounter {
+		if err := node.ValidateAndVoteForBlock(block); err != nil {
+			log.Printf("Failed to validate and vote for block: %v", err)
+			return
+		}
+	}
+
+	// Start new voting round for next block
+	activeValidators := node.Blockchain.GetActiveValidators()
+
+	// Calculate required votes (2/3 of active validators)
+	requiredVotes := (2*len(activeValidators) + 2) / 3
+
+	// Start voting process for eligible validators
+	votedValidators := 0
+	for _, validator := range activeValidators {
+		if node.isEligibleValidator(validator) {
+			node.BroadcastVote(validator, block.Index+1)
+			votedValidators++
+
+			// Check if we have reached super majority
+			if votedValidators >= requiredVotes {
+				log.Printf("Achieved 2/3 majority with %d out of %d validators for block %d",
+					votedValidators, len(activeValidators), block.Index+1)
+				break
+			}
+		}
+	}
+
+	if votedValidators < requiredVotes {
+		log.Printf("Warning: Could not achieve 2/3 majority. Only got %d out of required %d votes",
+			votedValidators, requiredVotes)
+	}
+
+	// Process transaction updates
+	addressesToUpdate := make(map[string]bool)
 	for _, tx := range block.Transactions {
 		balanceCache.Delete(tx.Sender)
 		addressesToUpdate[tx.Sender] = true
@@ -121,6 +160,17 @@ func (node *Node) ProcessConfirmedTransactions(block *Block) {
 			}
 		}
 	}
+}
+
+func (node *Node) isEligibleValidator(validatorID string) bool {
+	// Check if validator meets stake requirements and other criteria
+	stakeholders := node.Blockchain.GetStakeholders()
+	minStake := node.Blockchain.GetMinStakeForValidator()
+
+	if stake, exists := stakeholders[validatorID]; exists {
+		return stake >= minStake.Int64()
+	}
+	return false
 }
 
 // GetCurrentValidator gets the current validator for block creation

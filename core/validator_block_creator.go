@@ -23,11 +23,19 @@ type ValidatorSelector struct {
 	blockchain       BlockchainValidatorInterface
 	mu               sync.RWMutex
 	lastSelectedTime time.Time
+	voteCounter      *VoteCounter
+	node             *Node // Add this if you need node-level access
 }
 
-func NewValidatorSelector(bc BlockchainValidatorInterface) *ValidatorSelector {
+func NewValidatorSelector(bc BlockchainValidatorInterface, node ...*Node) *ValidatorSelector {
+	var n *Node
+	if len(node) > 0 {
+		n = node[0]
+	}
+
 	return &ValidatorSelector{
 		blockchain:       bc,
+		node:             n,
 		lastSelectedTime: time.Now(),
 	}
 }
@@ -42,14 +50,15 @@ func (vs *ValidatorSelector) SelectNextValidator() (string, error) {
 		return "", fmt.Errorf("no active validators available")
 	}
 
-	// Select based on stakes and last selection time
+	// Select based on stakes and votes
 	selectedValidator := ""
 	highestStake := int64(0)
-
 	stakeholders := vs.blockchain.GetStakeholders()
+
 	for _, validator := range activeValidators {
 		if stake, exists := stakeholders[validator]; exists {
-			if stake > highestStake {
+			// Only consider validators with majority votes
+			if stake > highestStake && vs.voteCounter.HasSuperMajority(validator) {
 				highestStake = stake
 				selectedValidator = validator
 			}
@@ -57,7 +66,7 @@ func (vs *ValidatorSelector) SelectNextValidator() (string, error) {
 	}
 
 	if selectedValidator == "" {
-		return "", fmt.Errorf("no eligible validator found")
+		return "", fmt.Errorf("no validator with sufficient votes and stake found")
 	}
 
 	vs.lastSelectedTime = time.Now()

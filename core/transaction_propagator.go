@@ -51,6 +51,8 @@ func (tp *TransactionPropagator) PropagateTransaction(tx *thrylos.Transaction) e
 	return nil
 }
 
+// It needs to send transaction to the other nodes
+
 func (tp *TransactionPropagator) sendToValidator(tx *thrylos.Transaction, validatorAddr string) error {
 	// Add transaction to validator's pending pool
 	if err := tp.blockchain.AddPendingTransaction(tx); err != nil {

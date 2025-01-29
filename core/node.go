@@ -1,9 +1,12 @@
 package core
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -50,6 +53,25 @@ type Node struct {
 	MaxInbound           int
 	MaxOutbound          int
 	txStatusMap          sync.Map
+	VoteCounter          *VoteCounter
+	ValidatorSelector    *ValidatorSelector
+	IsVoteCounter        bool   // Indicates if this node is the designated vote counter
+	VoteCounterAddress   string // Address of the designated vote counter
+}
+
+// GetActiveValidators implements NodeInterface.
+func (node *Node) GetActiveValidators() []string {
+	panic("unimplemented")
+}
+
+// GetStakeholders implements NodeInterface.
+func (node *Node) GetStakeholders() map[string]int64 {
+	panic("unimplemented")
+}
+
+// IsActiveValidator implements NodeInterface.
+func (node *Node) IsActiveValidator(address string) bool {
+	panic("unimplemented")
 }
 
 // Hold the chain ID and then proviude a method to set it
@@ -139,6 +161,21 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		MaxOutbound:          20,
 	}
 
+	isDesignatedCounter := false
+	if len(bc.GetActiveValidators()) > 0 {
+		// Make the first validator the designated counter
+		isDesignatedCounter = (address == bc.GetActiveValidators()[0])
+	}
+
+	// Initialize VoteCounter with designation status
+	node.VoteCounter = NewVoteCounter(node, isDesignatedCounter)
+
+	if isDesignatedCounter {
+		log.Printf("Node %s designated as vote counter", address)
+	}
+	// Initialize ValidatorSelector with node
+	node.ValidatorSelector = NewValidatorSelector(bc, node)
+
 	node.InitializeProcessors()
 
 	// Add known peers as outbound connections
@@ -190,6 +227,17 @@ func (node *Node) StartBackgroundTasks() {
 			}
 		}
 	}()
+
+	// Add vote synchronization
+	tickerVoteSync := time.NewTicker(30 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-tickerVoteSync.C:
+				node.syncVotes()
+			}
+		}
+	}()
 }
 
 func (node *Node) startStakingTasks() {
@@ -211,6 +259,98 @@ func (node *Node) GetStakingStats() map[string]interface{} {
 
 func (node *Node) CreateStake(userAddress string, amount int64) (*Stake, error) {
 	return node.stakingService.CreateStake(userAddress, amount)
+}
+
+func (node *Node) ValidateAndVoteForBlock(block *Block) error {
+	// Perform block validation
+	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
+		return fmt.Errorf("block validation failed: %v", err)
+	}
+
+	// Create vote with validation result
+	vote := Vote{
+		ValidatorID:    block.Validator,
+		BlockNumber:    block.Index,
+		BlockHash:      block.Hash,
+		ValidationPass: true,
+		Timestamp:      time.Now(),
+		VoterNode:      node.Address,
+	}
+
+	// Send vote to designated counter node
+	if err := node.sendVoteToCounter(vote); err != nil {
+		return fmt.Errorf("failed to send vote to counter: %v", err)
+	}
+
+	return nil
+}
+
+func (node *Node) sendVoteToCounter(vote Vote) error {
+	if node.IsVoteCounter {
+		// If this is the counter node, process locally
+		return node.VoteCounter.AddVote(vote)
+	}
+
+	// Send to designated counter node
+	voteData, err := json.Marshal(vote)
+	if err != nil {
+		return fmt.Errorf("failed to marshal vote: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/vote", node.VoteCounterAddress)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(voteData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("vote counter returned non-OK status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (n *Node) ConfirmBlock(blockNumber int32) {
+	if !n.IsVoteCounter {
+		return
+	}
+
+	// Broadcast confirmation to all nodes
+	confirmation := struct {
+		BlockNumber int32
+		Confirmed   bool
+	}{
+		BlockNumber: blockNumber,
+		Confirmed:   true,
+	}
+
+	n.BroadcastBlockConfirmation(confirmation)
+}
+
+func (node *Node) BroadcastBlockConfirmation(confirmation struct {
+	BlockNumber int32
+	Confirmed   bool
+}) {
+	// Convert confirmation to JSON
+	confirmationData, err := json.Marshal(confirmation)
+	if err != nil {
+		log.Printf("Failed to marshal block confirmation: %v", err)
+		return
+	}
+
+	// Broadcast to all peers
+	for _, peer := range node.Peers {
+		url := fmt.Sprintf("%s/block-confirmation", peer.Address)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(confirmationData))
+		if err != nil {
+			log.Printf("Failed to send confirmation to peer %s: %v", peer.Address, err)
+			continue
+		}
+		resp.Body.Close()
+	}
+
+	log.Printf("Block %d confirmation broadcast to all peers", confirmation.BlockNumber)
 }
 
 // This method should be aligned with how we're handling stake determinations
@@ -253,4 +393,63 @@ func (node *Node) DelegateToPool(delegator string, amount int64) (*Stake, error)
 
 func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
 	return node.UnstakeTokens(delegator, true, amount)
+}
+
+func (node *Node) GetValidatorVoteStatus(validatorID string) int {
+	return node.VoteCounter.GetVoteCount(validatorID)
+}
+
+func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
+	vote := Vote{
+		ValidatorID: validatorID,
+		BlockNumber: blockNumber,
+		Timestamp:   time.Now(),
+		VoterNode:   node.Address,
+	}
+
+	// If this node is not the vote counter, send to the designated counter
+	if !node.IsVoteCounter {
+		// Send vote to specific vote counter node
+		counterPeer, exists := node.Peers[node.VoteCounterAddress]
+		if !exists {
+			return fmt.Errorf("vote counter node not found in peers")
+		}
+		return counterPeer.SendVote(vote)
+	}
+
+	// If this is the vote counter node, process the vote
+	node.VoteCounter.AddVote(vote)
+	return nil
+}
+
+// Validate block and send vote
+func (node *Node) ValidateAndVoteOnBlock(block *Block) error {
+	// Validate the block
+	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
+		return fmt.Errorf("block validation failed: %v", err)
+	}
+
+	// If validation successful, send vote to counter node
+	return node.BroadcastVote(block.Validator, block.Index)
+}
+
+func (node *Node) syncVotes() {
+	for _, peer := range node.Peers {
+		resp, err := http.Get(fmt.Sprintf("%s/votes", peer.Address))
+		if err != nil {
+			log.Printf("Failed to sync votes with peer %s: %v", peer.Address, err)
+			continue
+		}
+		defer resp.Body.Close()
+
+		var votes []Vote
+		if err := json.NewDecoder(resp.Body).Decode(&votes); err != nil {
+			log.Printf("Failed to decode votes from peer %s: %v", peer.Address, err)
+			continue
+		}
+
+		for _, vote := range votes {
+			node.VoteCounter.AddVote(vote)
+		}
+	}
 }

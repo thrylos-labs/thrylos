@@ -569,16 +569,19 @@ func (bc *Blockchain) getActiveNodeCount() int {
 }
 
 // Example usage function
-func (bc *Blockchain) CreateNextBlock() (*Block, error) {
-	selector := NewValidatorSelector(bc)
+func (bc *Blockchain) CreateNextBlock(nodes ...*Node) (*Block, error) {
+	var node *Node
+	if len(nodes) > 0 {
+		node = nodes[0]
+	}
 
-	// Select next validator
+	selector := NewValidatorSelector(bc, node)
+
 	validator, err := selector.SelectNextValidator()
 	if err != nil {
 		return nil, fmt.Errorf("failed to select validator: %v", err)
 	}
 
-	// Create and return the new block
 	return bc.CreateBlockFromPendingTransactions(validator)
 }
 
