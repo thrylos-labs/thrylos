@@ -8,6 +8,10 @@ import (
 	"github.com/thrylos-labs/thrylos"
 )
 
+// The TransactionPropagator ensures that when a new transaction is added to the blockchain,
+// all validators (network participants who verify transactions) receive a copy of it.
+// This keeps the network in sync by making sure everyone is working with the same transactions.
+
 type BlockchainInterface interface {
 	IsActiveValidator(address string) bool
 	AddPendingTransaction(tx *thrylos.Transaction) error

@@ -87,6 +87,8 @@ type MockBlockchain struct {
 	PendingTxs            []*thrylos.Transaction
 	PropagatedTxs         map[string][]string
 	TransactionPropagator *TransactionPropagator
+	Stakeholders          map[string]int64
+	Blocks                []*Block
 	mu                    sync.RWMutex
 }
 

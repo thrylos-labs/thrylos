@@ -504,6 +504,30 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 			log.Println("Stopping state synchronization...")
 			blockchain.StateManager.StopStateSyncLoop()
 		}()
+
+		// Start block creation routine
+		go func() {
+			log.Println("Starting block creation process")
+			ticker := time.NewTicker(10 * time.Second) // Or whatever interval is appropriate
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					// Check if there are pending transactions
+					if len(blockchain.PendingTransactions) > 0 {
+						block, err := blockchain.CreateNextBlock()
+						if err != nil {
+							log.Printf("Failed to create new block: %v", err)
+							continue
+						}
+						log.Printf("Successfully created new block %d with %d transactions",
+							block.Index, len(block.Transactions))
+
+					}
+				}
+			}
+		}()
 	} else {
 		// In test mode, log that background processes are disabled
 		log.Println("Background processes disabled for testing")
@@ -542,6 +566,20 @@ func (bc *Blockchain) getActiveNodeCount() int {
 	// This is a placeholder. In a real implementation, you would track active nodes.
 	// For now, we'll return a constant value.
 	return 50
+}
+
+// Example usage function
+func (bc *Blockchain) CreateNextBlock() (*Block, error) {
+	selector := NewValidatorSelector(bc)
+
+	// Select next validator
+	validator, err := selector.SelectNextValidator()
+	if err != nil {
+		return nil, fmt.Errorf("failed to select validator: %v", err)
+	}
+
+	// Create and return the new block
+	return bc.CreateBlockFromPendingTransactions(validator)
 }
 
 func (bc *Blockchain) calculateAverageLatency() time.Duration {
@@ -1336,6 +1374,12 @@ func (bc *Blockchain) GetActiveValidators() []string {
 	bc.Mu.RLock()
 	defer bc.Mu.RUnlock()
 	return bc.ActiveValidators
+}
+
+func (bc *Blockchain) GetStakeholders() map[string]int64 {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+	return bc.Stakeholders
 }
 
 // First, ensure when creating transaction inputs we set the original transaction ID
