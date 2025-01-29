@@ -727,8 +727,6 @@ func (node *Node) handleStaking(params []interface{}) (interface{}, error) {
 		return node.handleUnstakeOperation(reqData)
 	case "delegate":
 		return node.handleDelegateOperation(reqData)
-	case "update":
-		return node.handleUpdateStakeOperation(reqData)
 	case "validate":
 		return node.handleValidateStakeOperation(reqData)
 	default:
@@ -941,36 +939,6 @@ func (node *Node) handleUnstakeOperation(reqData map[string]interface{}) (interf
 
 func (node *Node) handleDelegateOperation(reqData map[string]interface{}) (interface{}, error) {
 	// Extract required fields
-	from, ok := reqData["from"].(string)
-	if !ok {
-		return nil, fmt.Errorf("from address required")
-	}
-
-	to, ok := reqData["to"].(string)
-	if !ok {
-		return nil, fmt.Errorf("to address required")
-	}
-
-	amountFloat, ok := reqData["amount"].(float64)
-	if !ok {
-		return nil, fmt.Errorf("amount required")
-	}
-	amount := int64(amountFloat)
-
-	if err := node.Blockchain.DelegateStake(from, to, amount); err != nil {
-		return nil, fmt.Errorf("failed to delegate stake: %v", err)
-	}
-
-	return map[string]interface{}{
-		"message": "Stake delegated successfully",
-		"from":    from,
-		"to":      to,
-		"amount":  float64(amount) / 1e7,
-	}, nil
-}
-
-func (node *Node) handleUpdateStakeOperation(reqData map[string]interface{}) (interface{}, error) {
-	// Extract required fields
 	address, ok := reqData["address"].(string)
 	if !ok {
 		return nil, fmt.Errorf("address required")
@@ -982,12 +950,13 @@ func (node *Node) handleUpdateStakeOperation(reqData map[string]interface{}) (in
 	}
 	amount := int64(amountFloat)
 
-	if err := node.Blockchain.UpdateStake(address, amount); err != nil {
-		return nil, fmt.Errorf("failed to update stake: %v", err)
+	_, err := node.stakingService.createStakeInternal(address, true, amount, time.Now().Unix())
+	if err != nil {
+		return nil, fmt.Errorf("failed to delegate stake: %v", err)
 	}
 
 	return map[string]interface{}{
-		"message": "Stake updated successfully",
+		"message": "Stake delegated successfully",
 		"address": address,
 		"amount":  float64(amount) / 1e7,
 	}, nil

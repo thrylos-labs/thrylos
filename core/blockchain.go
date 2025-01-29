@@ -118,11 +118,6 @@ type Fork struct {
 	Blocks []*Block
 }
 
-type ValidatorKeyStore struct {
-	keys map[string]*mldsa44.PrivateKey
-	mu   sync.RWMutex
-}
-
 type BlockchainConfig struct {
 	DataDir           string
 	AESKey            []byte
@@ -130,22 +125,6 @@ type BlockchainConfig struct {
 	TestMode          bool
 	DisableBackground bool
 	StateManager      *state.StateManager
-}
-
-func (vks *ValidatorKeyStore) StoreKey(address string, privKey *mldsa44.PrivateKey) error {
-	vks.mu.Lock()
-	defer vks.mu.Unlock()
-
-	vks.keys[address] = privKey
-	return nil
-}
-
-func (vks *ValidatorKeyStore) GetKey(address string) (*mldsa44.PrivateKey, bool) {
-	vks.mu.RLock()
-	defer vks.mu.RUnlock()
-
-	privateKey, exists := vks.keys[address]
-	return privateKey, exists
 }
 
 const (
@@ -223,12 +202,6 @@ func decryptPrivateKey(encryptedKey []byte) (*mldsa44.PrivateKey, error) {
 	}
 
 	return &privKey, nil
-}
-
-func NewValidatorKeyStore() *ValidatorKeyStore {
-	return &ValidatorKeyStore{
-		keys: make(map[string]*mldsa44.PrivateKey),
-	}
 }
 
 // GetMinStakeForValidator returns the current minimum stake required for a validator
@@ -571,6 +544,7 @@ func (bc *Blockchain) calculateAverageLatency() time.Duration {
 	return 200 * time.Millisecond
 }
 
+// FIXME: Does this need to started here?
 func (bc *Blockchain) StartPeriodicValidatorUpdate(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
@@ -1719,29 +1693,6 @@ func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
 	return &block, nil
 }
 
-// If the stake adjustment leads to a non-positive value, the stakeholder is removed from the map.
-func (bc *Blockchain) UpdateStake(address string, amount int64) error {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
-
-	// Calculate the new stake amount
-	currentStake, exists := bc.Stakeholders[address]
-	newStake := currentStake + amount
-
-	// Check if the new stake is positive
-	if newStake <= 0 {
-		if exists {
-			// Remove the stakeholder if the stake is zero or negative
-			delete(bc.Stakeholders, address)
-		} // If not exists and amount is negative, we cannot set a negative stake
-		return fmt.Errorf("invalid stake amount; stake cannot be negative or zero")
-	}
-
-	// Set or update the stake
-	bc.Stakeholders[address] = newStake
-	return nil
-}
-
 func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassStakeCheck bool) error {
 	log.Printf("Entering RegisterValidator function for address: %s", address)
 
@@ -1940,36 +1891,6 @@ func (bc *Blockchain) TransferFunds(from, to string, amount int64) error {
 	bc.Stakeholders[to] += amount
 
 	return nil
-}
-
-// This method will adjust the stake between two addresses, which represents delegating stake from one user (the delegator) to another (the delegatee or validator).
-func (bc *Blockchain) DelegateStake(from, to string, amount int64) error {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
-
-	// Check if the 'from' address has enough stake to delegate
-	if stake, exists := bc.Stakeholders[from]; !exists || stake < amount {
-		return fmt.Errorf("insufficient stake to delegate: has %d, needs %d", stake, amount)
-	}
-
-	// Reduce stake from the 'from' address
-	bc.Stakeholders[from] -= amount
-
-	// Add stake to the 'to' address
-	if _, exists := bc.Stakeholders[to]; exists {
-		bc.Stakeholders[to] += amount
-	} else {
-		bc.Stakeholders[to] = amount
-	}
-
-	return nil
-}
-
-type Validator struct {
-	Address          string
-	Stake            int64
-	NewlyRegistered  bool
-	RegistrationTime time.Time
 }
 
 func (bc *Blockchain) UpdateActiveValidators(count int) {
