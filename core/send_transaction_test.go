@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
+	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -75,5 +78,130 @@ func TestEnhancedSubmitTransactionHandler(t *testing.T) {
 	expected := "Transaction processed successfully"
 	if rr.Body.String() != expected {
 		t.Errorf("handler returned unexpected body: got %v want %v", rr.Body.String(), expected)
+	}
+}
+
+// MockBlockchain for testing propagation
+type MockBlockchain struct {
+	ActiveValidators      []string
+	PendingTxs            []*thrylos.Transaction
+	PropagatedTxs         map[string][]string
+	TransactionPropagator *TransactionPropagator
+	mu                    sync.RWMutex
+}
+
+// Add this new method to satisfy the interface
+func (mb *MockBlockchain) GetActiveValidators() []string {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	return mb.ActiveValidators
+}
+
+func NewMockBlockchain() *MockBlockchain {
+	mock := &MockBlockchain{
+		ActiveValidators: []string{"validator1", "validator2", "validator3"},
+		PendingTxs:       make([]*thrylos.Transaction, 0),
+		PropagatedTxs:    make(map[string][]string),
+	}
+	mock.TransactionPropagator = NewTransactionPropagator(mock)
+	return mock
+}
+
+func (mb *MockBlockchain) IsActiveValidator(address string) bool {
+	mb.mu.RLock()
+	defer mb.mu.RUnlock()
+	for _, v := range mb.ActiveValidators {
+		if v == address {
+			return true
+		}
+	}
+	return false
+}
+
+func (mb *MockBlockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.PendingTxs = append(mb.PendingTxs, tx)
+	return nil
+}
+
+func TestTransactionPropagation(t *testing.T) {
+	mockBC := NewMockBlockchain()
+
+	// Create test transaction
+	tx := &thrylos.Transaction{
+		Id:        "test-tx-1",
+		Timestamp: time.Now().Unix(),
+		Sender:    "test-sender",
+		Salt:      make([]byte, 32),
+	}
+
+	// Test propagation
+	err := mockBC.TransactionPropagator.PropagateTransaction(tx)
+	if err != nil {
+		t.Errorf("PropagateTransaction failed: %v", err)
+	}
+
+	// Verify transaction was propagated to all validators
+	mockBC.mu.RLock()
+	txCount := 0
+	for _, pendingTx := range mockBC.PendingTxs {
+		if pendingTx.Id == tx.Id {
+			txCount++
+		}
+	}
+	mockBC.mu.RUnlock()
+
+	if txCount != len(mockBC.ActiveValidators) {
+		t.Errorf("Expected transaction to be added %d times (once per validator), got %d times",
+			len(mockBC.ActiveValidators), txCount)
+	}
+}
+
+func TestPropagationWithNoValidators(t *testing.T) {
+	mockBC := NewMockBlockchain()
+	mockBC.ActiveValidators = []string{} // Empty validator list
+
+	tx := &thrylos.Transaction{
+		Id:        "test-tx-2",
+		Timestamp: time.Now().Unix(),
+		Sender:    "test-sender",
+		Salt:      make([]byte, 32),
+	}
+
+	err := mockBC.TransactionPropagator.PropagateTransaction(tx)
+	if err == nil {
+		t.Error("Expected propagation to fail with no validators, but it succeeded")
+	}
+}
+
+func TestAddPendingTransactionWithPropagation(t *testing.T) {
+	// Create mock blockchain
+	mockBC := NewMockBlockchain()
+
+	// Create test transaction
+	tx := &thrylos.Transaction{
+		Id:        "test-tx-3",
+		Timestamp: time.Now().Unix(),
+		Sender:    "test-sender",
+		Salt:      make([]byte, 32),
+	}
+
+	// Test AddPendingTransaction
+	err := mockBC.AddPendingTransaction(tx)
+	if err != nil {
+		t.Errorf("AddPendingTransaction failed: %v", err)
+	}
+
+	// Verify transaction was added to pending pool
+	found := false
+	for _, pendingTx := range mockBC.PendingTxs {
+		if pendingTx.Id == tx.Id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Transaction was not added to pending transactions")
 	}
 }

@@ -104,6 +104,8 @@ type Blockchain struct {
 
 	StateNetwork   shared.NetworkInterface
 	StakingService *StakingService
+
+	TransactionPropagator *TransactionPropagator
 }
 
 // NewTransaction creates a new transaction
@@ -465,6 +467,10 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
 	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
 	log.Printf("- Current total supply: 120M THRYLOS")
+
+	log.Println("Initializing transaction propagator...")
+	blockchain.TransactionPropagator = NewTransactionPropagator(blockchain)
+	log.Println("Transaction propagator initialized successfully")
 
 	// Modify background process initialization based on DisableBackground flag
 	if !config.DisableBackground {
@@ -1215,6 +1221,12 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
 		return fmt.Errorf("transaction salt verification failed: %v", err)
 	}
 
+	// Propagate to all validators before proceeding
+	if err := bc.TransactionPropagator.PropagateTransaction(tx); err != nil {
+		return fmt.Errorf("failed to propagate transaction: %v", err)
+	}
+	log.Printf("Transaction %s propagated to all validators", tx.Id)
+
 	// Start database transaction
 	txn, err := bc.Database.BeginTransaction()
 	if err != nil {
@@ -1318,6 +1330,12 @@ func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, erro
 	}()
 
 	return signedBlock, nil
+}
+
+func (bc *Blockchain) GetActiveValidators() []string {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
+	return bc.ActiveValidators
 }
 
 // First, ensure when creating transaction inputs we set the original transaction ID
