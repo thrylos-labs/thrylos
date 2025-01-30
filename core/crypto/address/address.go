@@ -2,36 +2,31 @@ package address
 
 import (
 	"bytes"
-	"encoding/hex"
-	"log"
+	"fmt"
 
 	"github.com/btcsuite/btcutil/bech32"
+	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/core/crypto/hash"
 )
 
 const (
-	AddressSize = 32
+	AddressSize   = 32
+	AddressPrefix = "tl"
 )
 
 type Address [AddressSize]byte
 
-func New(publicKeyBytes []byte) (*Address, error) {
-	hashBytes := hash.NewHash(publicKeyBytes)
-	encoded, err := bech32.Encode("mldsa", hashBytes.Bytes())
+func New(pubKey *mldsa.PublicKey) (*Address, error) {
+	hashBytes := hash.NewHash(pubKey.Bytes())
+	addressBytes := hashBytes[:20]
+	words, err := bech32.ConvertBits(addressBytes[:], 8, 5, true)
+	//fmt.Printf("words: %v, length: %v\n", words, len(words))
 	if err != nil {
-		log.Printf("error encoding the supplied public key bytes: %v", err)
-		return nil, err
-	}
-
-	// Decode the hex string into a byte slice
-	decoded, err := hex.DecodeString(encoded)
-	if err != nil {
-		log.Printf("error decoding string: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
 	}
 	var address Address
-	copy(address[:], decoded)
+	copy(address[:], words)
 	return &address, nil
 }
 
@@ -39,7 +34,8 @@ func (a *Address) Bytes() []byte {
 	return a[:]
 }
 func (a *Address) String() string {
-	return string(a[:])
+	encoded, _ := bech32.Encode(AddressPrefix, a.Bytes())
+	return encoded
 }
 func (a *Address) Marshal() ([]byte, error) {
 	return cbor.Marshal(a[:])

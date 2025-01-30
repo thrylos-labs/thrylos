@@ -51,7 +51,7 @@ func (p *PublicKey) Verify(data []byte, signature *Signature) error {
 }
 
 func (p *PublicKey) Address() (*address.Address, error) {
-	return address.New(p.Bytes())
+	return address.New(&p.pk)
 }
 
 func (p *PublicKey) Compare(other *PublicKey) bool {
