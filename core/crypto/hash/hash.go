@@ -1,4 +1,4 @@
-package crypto
+package hash
 
 import (
 	"encoding/hex"
@@ -11,9 +11,7 @@ const HashSize = 32
 
 type Hash [HashSize]byte
 
-var UndefHash = Hash{0}
-
-func New(data []byte) Hash {
+func NewHash(data []byte) Hash {
 	h := blake2b.Sum256(data)
 	var hash Hash
 	copy(hash[:], h[:HashSize])
