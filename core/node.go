@@ -59,19 +59,81 @@ type Node struct {
 	VoteCounterAddress   string // Address of the designated vote counter
 }
 
-// GetActiveValidators implements NodeInterface.
+// GetActiveValidators returns a list of addresses for currently active validators
 func (node *Node) GetActiveValidators() []string {
-	panic("unimplemented")
+	node.Mu.RLock()
+	defer node.Mu.RUnlock()
+
+	// Get all staking data from the staking service
+	stakingStats := node.stakingService.GetPoolStats()
+	validators := make([]string, 0)
+
+	// Extract the minimum stake requirement
+	minStake, ok := stakingStats["minimumStake"].(int64)
+	if !ok {
+		log.Printf("Warning: Could not get minimum stake requirement, using default")
+		minStake = 40 // Default minimum stake in THRYLOS tokens
+	}
+
+	// Get all stakeholders
+	stakeholders := node.GetStakeholders()
+
+	// Filter for addresses that meet the minimum stake requirement
+	for address, stake := range stakeholders {
+		if stake >= minStake {
+			validators = append(validators, address)
+		}
+	}
+
+	return validators
 }
 
-// GetStakeholders implements NodeInterface.
-func (node *Node) GetStakeholders() map[string]int64 {
-	panic("unimplemented")
-}
-
-// IsActiveValidator implements NodeInterface.
+// IsActiveValidator checks if a given address is an active validator
 func (node *Node) IsActiveValidator(address string) bool {
-	panic("unimplemented")
+	node.Mu.RLock()
+	defer node.Mu.RUnlock()
+
+	// Get stake amount for the address
+	stakeholders := node.GetStakeholders()
+	stake, exists := stakeholders[address]
+	if !exists {
+		return false
+	}
+
+	// Get minimum stake requirement
+	stakingStats := node.stakingService.GetPoolStats()
+	minStake, ok := stakingStats["minimumStake"].(int64)
+	if !ok {
+		log.Printf("Warning: Could not get minimum stake requirement, using default")
+		minStake = 40 // Default minimum stake in THRYLOS tokens
+	}
+
+	// Check if stake meets minimum requirement
+	return stake >= minStake
+}
+
+// GetStakeholders returns a map of addresses to their staked amounts
+func (node *Node) GetStakeholders() map[string]int64 {
+	node.Mu.RLock()
+	defer node.Mu.RUnlock()
+
+	stakeholders := make(map[string]int64)
+
+	// Get all stakes from the staking service
+	stats := node.stakingService.GetPoolStats()
+
+	// Extract stakes from the pool stats
+	if stakes, ok := stats["stakes"].(map[string]interface{}); ok {
+		for address, stakeInfo := range stakes {
+			if stake, ok := stakeInfo.(map[string]interface{}); ok {
+				if amount, ok := stake["amount"].(int64); ok {
+					stakeholders[address] = amount
+				}
+			}
+		}
+	}
+
+	return stakeholders
 }
 
 // Hold the chain ID and then proviude a method to set it

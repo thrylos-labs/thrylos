@@ -23,15 +23,69 @@ import (
 
 func loadEnv() (map[string]string, error) {
 	env := os.Getenv("ENV")
+	if env == "" {
+		env = "development" // Default to development if not set
+		log.Printf("ENV not set, defaulting to development mode")
+	}
+
 	var envPath string
 	if env == "production" {
-		envPath = "../../.env.prod" // The Cert is managed through the droplet
+		envPath = "../../.env.prod"
 	} else {
-		envPath = "../../.env.dev" // Managed through local host
+		envPath = "../../.env.dev"
 	}
-	envFile, err := godotenv.Read(envPath)
 
-	return envFile, err
+	// Get the absolute path for better error reporting
+	absPath, err := filepath.Abs(envPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path for %s: %v", envPath, err)
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("environment file not found at %s", absPath)
+	}
+
+	// Load the environment file
+	envFile, err := godotenv.Read(envPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading environment file at %s: %v", absPath, err)
+	}
+
+	// Validate required environment variables
+	requiredVars := []string{
+		"WS_ADDRESS",
+		"HTTP_NODE_ADDRESS",
+		"GRPC_NODE_ADDRESS",
+		"AES_KEY_ENV_VAR",
+		"GENESIS_ACCOUNT",
+		"DATA_DIR",
+	}
+
+	missingVars := []string{}
+	for _, v := range requiredVars {
+		if envFile[v] == "" {
+			missingVars = append(missingVars, v)
+		}
+	}
+
+	if len(missingVars) > 0 {
+		return nil, fmt.Errorf("missing required environment variables: %v", missingVars)
+	}
+
+	// Force development mode settings
+	if env == "development" {
+		log.Println("Running in development mode - TLS will be disabled")
+		// Explicitly set development mode variables
+		envFile["ENV"] = "development"
+		// Clear any TLS-related settings to prevent accidental usage
+		envFile["CERT_FILE"] = ""
+		envFile["KEY_FILE"] = ""
+		envFile["TLS_CERT_PATH"] = ""
+		envFile["TLS_KEY_PATH"] = ""
+	}
+
+	return envFile, nil
 }
 
 func main() {
