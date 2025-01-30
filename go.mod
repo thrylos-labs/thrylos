@@ -24,6 +24,8 @@ require (
 	google.golang.org/protobuf v1.34.2
 )
 
+require github.com/x448/float16 v0.8.4 // indirect
+
 require (
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
 	github.com/bits-and-blooms/bitset v1.7.0 // indirect
@@ -35,6 +37,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/golang/glog v1.2.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
