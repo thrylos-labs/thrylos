@@ -7,9 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/core/config"
-	"github.com/thrylos-labs/thrylos/core/node"
-
+	"github.com/thrylos-labs/thrylos/config"
+	"github.com/thrylos-labs/thrylos/node"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
