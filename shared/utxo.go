@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcutil/bech32"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/willf/bloom"
@@ -16,20 +15,15 @@ import (
 // to understanding a user's balance within the blockchain.
 type UTXO struct {
 	ID            string `json:"id,omitempty"`
-	TransactionID string `json:"transaction_id"` // Changed from transactionid
 	Index         int    `json:"index"`
-	OwnerAddress  string `json:"owner_address"` // Already correct
+	TransactionID string `json:"transaction_id"` // Changed from transactionid
+	OwnerAddress  string `json:"owner_address"`  // Already correct
 	Amount        int64  `json:"amount"`
 	IsSpent       bool   `json:"is_spent"` // Changed from isspent
 }
 
-func validateBech32Address(address string) bool {
-	_, _, err := bech32.Decode(address)
-	return err == nil
-}
-
 // ValidateUTXO checks for the validity of the UTXO, ensuring its data conforms to expected formats and rules.
-func (u *UTXO) ValidateUTXO() error {
+func (u *UTXO) Validate() error {
 	// Check if the owner address is correctly formatted
 	if !validateBech32Address(u.OwnerAddress) {
 		return fmt.Errorf("invalid owner address format: %s", u.OwnerAddress)

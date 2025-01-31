@@ -5,7 +5,7 @@ import (
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/fxamacker/cbor/v2"
-	"github.com/thrylos-labs/thrylos/core/crypto/address"
+	"github.com/thrylos-labs/thrylos/crypto/address"
 )
 
 type PublicKey struct {

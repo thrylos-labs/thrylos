@@ -7,7 +7,7 @@ import (
 	"github.com/btcsuite/btcutil/bech32"
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/fxamacker/cbor/v2"
-	"github.com/thrylos-labs/thrylos/core/crypto/hash"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
 )
 
 const (
@@ -21,13 +21,24 @@ func New(pubKey *mldsa.PublicKey) (*Address, error) {
 	hashBytes := hash.NewHash(pubKey.Bytes())
 	addressBytes := hashBytes[:20]
 	words, err := bech32.ConvertBits(addressBytes[:], 8, 5, true)
-	//fmt.Printf("words: %v, length: %v\n", words, len(words))
+	fmt.Printf("words: %v, length: %v\n", words, len(words))
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
 	}
 	var address Address
 	copy(address[:], words)
 	return &address, nil
+}
+
+func Validate(addr string) bool {
+	_, decoded, err := bech32.Decode(addr)
+	if err != nil {
+		return false
+	}
+	if len(decoded) != AddressSize {
+		return false
+	}
+	return true
 }
 
 func (a *Address) Bytes() []byte {
