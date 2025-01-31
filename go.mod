@@ -24,7 +24,16 @@ require (
 	google.golang.org/protobuf v1.34.2
 )
 
-require github.com/x448/float16 v0.8.4 // indirect
+require (
+	github.com/cespare/xxhash v1.1.0 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang/groupcache v0.0.0-20190702054246-869f871628b6 // indirect
+	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/flatbuffers v1.12.1 // indirect
+	github.com/klauspost/compress v1.12.3 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
+	go.opencensus.io v0.22.5 // indirect
+)
 
 require (
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
@@ -35,6 +44,7 @@ require (
 	github.com/consensys/gnark-crypto v0.12.1 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dgraph-io/badger/v3 v3.2103.5
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fxamacker/cbor v1.5.1
