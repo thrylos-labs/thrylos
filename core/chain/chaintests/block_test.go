@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	"github.com/thrylos-labs/thrylos/core/chain"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -36,7 +37,7 @@ func TestGenesisBlockCreation(t *testing.T) {
 	}
 
 	// Initialize the blockchain with the temporary directory
-	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
+	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,

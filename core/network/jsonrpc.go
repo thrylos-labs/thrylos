@@ -14,6 +14,8 @@ import (
 	"github.com/shopspring/decimal" // Add this import instead of just thrylos
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/config"
+	"github.com/thrylos-labs/thrylos/core/consensus/staking"
 	"github.com/thrylos-labs/thrylos/core/node" // This import is needed
 	"github.com/thrylos-labs/thrylos/shared"
 )
@@ -228,7 +230,7 @@ func (h *Handler) handleGetBlock(params []interface{}) (interface{}, error) {
 		return nil, fmt.Errorf("block identifier required")
 	}
 
-	var block *Block
+	var block *chain.Block
 	var err error
 
 	// Handle both string (hash) and number (height) parameters
@@ -383,7 +385,7 @@ func deriveAddressFromPublicKey(publicKey []byte) (string, error) {
 
 var _ shared.GasEstimator = &node.Node{} // Ensures Node implements the GasEstimator interface
 
-const MinTransactionAmount int64 = 1 * node.NanoThrylosPerThrylos // 1 THRYLOS in nanoTHRYLOS
+const MinTransactionAmount int64 = 1 * config.NanoPerThrylos // 1 THRYLOS in nanoTHRYLOS
 
 func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface{}, error) {
 	// Check if params exist
@@ -562,7 +564,7 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 			thrylosTx,
 			node.Database,
 			pk,
-			node,
+			node.node,
 			balance,
 		); err != nil {
 			validationComplete <- fmt.Errorf("failed to validate transaction: %v", err)
@@ -847,7 +849,7 @@ func (h *Handler) handleStakeOperation(reqData map[string]interface{}) (interfac
 			"rewardInterval":   "24h",
 			"activeValidators": len(node.Blockchain.ActiveValidators),
 			// Calculate estimated daily reward per validator
-			"estimatedDailyReward": float64(DailyStakeReward) /
+			"estimatedDailyReward": float64(config.DailyStakeReward) /
 				float64(len(node.Blockchain.ActiveValidators)) / 1e7,
 		},
 	}, nil
@@ -922,7 +924,7 @@ func (h *Handler) handleUnstakeOperation(reqData map[string]interface{}) (interf
 	}
 
 	// Calculate effective rate for response
-	currentSupply := getTotalSupply(node)
+	currentSupply := getTotalSupply(node.node)
 	yearlyReward := 4_800_000.0 // Fixed 4.8M
 	effectiveRate := (yearlyReward / currentSupply) * 100
 
@@ -1029,7 +1031,7 @@ func (h *Handler) handleGetStakingInfo(params []interface{}) (interface{}, error
 	stakingPool := node.Blockchain.StakingService.pool
 
 	// Calculate effective rate based on current supply
-	currentSupply := getTotalSupply(node)
+	currentSupply := getTotalSupply(node.node)
 	yearlyReward := 4_800_000.0 // Fixed 4.8M
 	effectiveRate := (yearlyReward / currentSupply) * 100
 
@@ -1052,8 +1054,8 @@ func (h *Handler) handleGetStakingInfo(params []interface{}) (interface{}, error
 				"thrylos": float64(totalRewards) / 1e7,
 				"nano":    totalRewards,
 			},
-			"activeStakesCount": 1,                //len(activeStakes), //TODO: we need to get these
-			"activeStakes":      []*Stake{stakes}, //activeStakes, //TODO: we do not need this.
+			"activeStakesCount": 1,                        //len(activeStakes), //TODO: we need to get these
+			"activeStakes":      []*staking.Stake{stakes}, //activeStakes, //TODO: we do not need this.
 			"nextRewardTime":    nextRewardTime,
 		},
 		"stakingPool": map[string]interface{}{
@@ -1070,7 +1072,7 @@ func (h *Handler) handleGetStakingInfo(params []interface{}) (interface{}, error
 				"lastRewardTime":      stakingPool.LastRewardTime,
 				"nextRewardTime":      nextRewardTime,
 				"timeUntilNextReward": timeUntilNextReward,
-				"estimatedDailyReward": float64(DailyStakeReward) /
+				"estimatedDailyReward": float64(config.DailyStakeReward) /
 					float64(len(node.Blockchain.ActiveValidators)) / 1e7,
 			},
 			"rewardInfo": map[string]interface{}{
@@ -1178,7 +1180,7 @@ func (h *Handler) handleGetValidators(params []interface{}) (interface{}, error)
 				"nextRewardTime":    nextNetworkReward,
 				"timeUntilReward":   timeUntilNextNetworkReward,
 				"lastNetworkReward": stakingPool.LastRewardTime,
-				"dailyRewardPool":   fmt.Sprintf("%.2f", float64(DailyStakeReward)/1e7),
+				"dailyRewardPool":   fmt.Sprintf("%.2f", float64(config.DailyStakeReward)/1e7),
 				"validatorsCount":   len(node.Blockchain.ActiveValidators),
 			},
 		},
@@ -1274,7 +1276,7 @@ func (h *Handler) handleGetStats(params []interface{}) (interface{}, error) {
 }
 
 // Handler for delegation to pool
-func (node *node.Node) handlePoolDelegation(params []interface{}) (interface{}, error) {
+func (h *Handler) handlePoolDelegation(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("parameters required")
 	}

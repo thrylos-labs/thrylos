@@ -279,9 +279,9 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	publicKeyMap := make(map[string]*mldsa44.PublicKey)
 
 	// Initialize Stakeholders map with the genesis account
-	totalSupplyNano := utils.ThrylosToNano(config.InitialTotalSupply)
+	totalSupplyNano := utils.ThrylosToNano(InitialTotalSupply)
 
-	log.Printf("Initializing genesis account with total supply: %.2f THR", NanoToThrylos(totalSupplyNano))
+	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
 
 	// Convert the genesis account address to Bech32 format
 	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)

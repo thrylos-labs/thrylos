@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thrylos-labs/thrylos/core/config"
 	"github.com/thrylos-labs/thrylos/core/node"
+
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -236,10 +238,10 @@ func (m *Manager) Stop() {
 
 // Utility functions
 func FormatBalance(balanceNano int64) string {
-	balanceThrylos := float64(balanceNano) / NanoThrylosPerThrylos
+	balanceThrylos := float64(balanceNano) / config.NanoPerThrylos
 	return fmt.Sprintf("%d nanoTHRYLOS (%.7f THRYLOS)", balanceNano, balanceThrylos)
 }
 
 func ThrylosToNano(thrylos float64) int64 {
-	return int64(thrylos * NanoThrylosPerThrylos)
+	return int64(thrylos * config.NanoPerThrylos)
 }

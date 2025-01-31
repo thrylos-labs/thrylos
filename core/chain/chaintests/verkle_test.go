@@ -3,16 +3,18 @@ package chaintests
 import (
 	"bytes"
 	"testing"
+
+	"github.com/thrylos-labs/thrylos/core/chain"
 )
 
 // TestNewVerkleTree tests the NewVerkleTree function to ensure it creates a tree correctly with valid data.
 
 func TestNewVerkleTree(t *testing.T) {
 	// Example keys and values for testing
-	key1 := bytes.Repeat([]byte{1}, KeySize)
-	value1 := bytes.Repeat([]byte{2}, LeafValueSize)
-	key2 := bytes.Repeat([]byte{3}, KeySize)
-	value2 := bytes.Repeat([]byte{4}, LeafValueSize)
+	key1 := bytes.Repeat([]byte{1}, chain.KeySize)
+	value1 := bytes.Repeat([]byte{2}, chain.LeafValueSize)
+	key2 := bytes.Repeat([]byte{3}, chain.KeySize)
+	value2 := bytes.Repeat([]byte{4}, chain.LeafValueSize)
 
 	// Ensure test data items are at least KeySize + LeafValueSize in length
 	testData := [][]byte{
@@ -20,7 +22,7 @@ func TestNewVerkleTree(t *testing.T) {
 		append(key2, value2...),
 	}
 
-	tree, err := NewVerkleTree(testData)
+	tree, err := chain.NewVerkleTree(testData)
 	if err != nil {
 		t.Fatalf("Failed to create Verkle tree: %v", err)
 	}

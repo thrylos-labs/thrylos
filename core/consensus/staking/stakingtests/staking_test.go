@@ -77,7 +77,7 @@ func TestDeletationStakeRewardDistribution(t *testing.T) {
 		Stakeholders: make(map[string]int64),
 	}
 
-	stakingService := NewStakingService(blockchain)
+	stakingService := staking.NewStakingService(blockchain)
 	stakingService.pool.LastRewardTime = stakingPeriodStartTime
 
 	// Simulate stakeing for address 1

@@ -516,7 +516,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 						defer wg.Done()
 						for tx := range txChan {
 							start := time.Now()
-							err := node.ProcessIncomingTransaction(tx)
+							err := network.ProcessIncomingTransaction(tx)
 							require.NoError(t, err)
 
 							resultChan <- struct {

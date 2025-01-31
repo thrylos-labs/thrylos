@@ -267,7 +267,7 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 	node.Blockchain.OnNewBlock = node.ProcessConfirmedTransactions
 
 	// Initialize the balanceUpdateQueue
-	node.balanceUpdateQueue = newBalanceUpdateQueue(node)
+	node.balanceUpdateQueue = node.newBalanceUpdateQueue(node)
 
 	// Start the balance update worker goroutine
 	go node.balanceUpdateQueue.balanceUpdateWorker()
@@ -331,7 +331,7 @@ func (node *Node) GetStakingStats() map[string]interface{} {
 	return node.StakingService.GetPoolStats()
 }
 
-func (node *Node) CreateStake(userAddress string, amount int64) (*Stake, error) {
+func (node *Node) CreateStake(userAddress string, amount int64) (*staking.Stake, error) {
 	return node.StakingService.CreateStake(userAddress, amount)
 }
 
@@ -359,7 +359,7 @@ func (node *Node) ValidateAndVoteForBlock(block *chain.Block) error {
 	return nil
 }
 
-func (node *Node) sendVoteToCounter(vote Vote) error {
+func (node *Node) sendVoteToCounter(vote validators.Vote) error {
 	if node.IsVoteCounter {
 		// If this is the counter node, process locally
 		return node.VoteCounter.AddVote(vote)
@@ -461,7 +461,7 @@ func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int
 }
 
 // These delegation-specific methods are correct
-func (node *Node) DelegateToPool(delegator string, amount int64) (*Stake, error) {
+func (node *Node) DelegateToPool(delegator string, amount int64) (*staking.Stake, error) {
 	return node.StakingService.CreateStake(delegator, amount)
 }
 
@@ -526,7 +526,7 @@ func (node *Node) syncVotes() {
 		}
 		defer resp.Body.Close()
 
-		var votes []Vote
+		var votes []validators.Vote
 		if err := json.NewDecoder(resp.Body).Decode(&votes); err != nil {
 			log.Printf("Failed to decode votes from peer %s: %v", peer.Address, err)
 			continue

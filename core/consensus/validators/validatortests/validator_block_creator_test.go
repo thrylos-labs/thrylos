@@ -8,6 +8,7 @@ import (
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/consensus/selection"
 )
 
 // MockBlockchainForValidator implements the test blockchain
@@ -112,7 +113,7 @@ func (mb *MockBlockchainForValidator) CreateBlockFromPendingTransactions(validat
 }
 
 func (mb *MockBlockchainForValidator) CreateNextBlock() (*chain.Block, error) {
-	selector := NewValidatorSelector(mb)
+	selector := selection.NewValidatorSelector(mb)
 
 	validator, err := selector.SelectNextValidator()
 	if err != nil {
@@ -125,7 +126,7 @@ func (mb *MockBlockchainForValidator) CreateNextBlock() (*chain.Block, error) {
 // Tests
 func TestValidatorSelection(t *testing.T) {
 	mockBC := NewMockBlockchainForValidator()
-	selector := NewValidatorSelector(mockBC)
+	selector := selection.NewValidatorSelector(mockBC)
 
 	validator, err := selector.SelectNextValidator()
 	if err != nil {

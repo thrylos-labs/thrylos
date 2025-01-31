@@ -12,6 +12,7 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 
 	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/consensus/processor"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
