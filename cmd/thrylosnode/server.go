@@ -12,7 +12,6 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 
 	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
@@ -205,7 +204,7 @@ func (s *server) processTransaction(transaction *thrylos.Transaction) error {
 
 	// Continue with conversion and validation...
 	// Convert thrylos.Transaction to shared.Transaction
-	sharedTx := core.ThrylosToShared(transaction)
+	sharedTx := processor.ThrylosToShared(transaction)
 	if sharedTx == nil {
 		return fmt.Errorf("conversion failed for transaction ID %s", transaction.Id)
 	}

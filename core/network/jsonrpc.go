@@ -11,18 +11,21 @@ import (
 
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/shopspring/decimal"
-	"github.com/thrylos-labs/thrylos" // Add this import
+	"github.com/shopspring/decimal" // Add this import instead of just thrylos
+	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/node" // This import is needed
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
 type Handler struct {
-	node *node.Node
+	node *node.Node // This reference requires the above import
 }
 
 func NewHandler(node *node.Node) *Handler {
 	return &Handler{node: node}
 }
+
 func sendJSONRPCError(w http.ResponseWriter, jsonrpcErr *JSONRPCError, id interface{}) {
 	response := JSONRPCResponse{
 		JSONRPC: "2.0",
@@ -56,7 +59,7 @@ type JSONRPCError struct {
 }
 
 // Main JSON-RPC handler that routes to these handlers
-func (node *node.Node) JSONRPCHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { // was JSONRPCHandler
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -156,7 +159,7 @@ func (node *node.Node) JSONRPCHandler(w http.ResponseWriter, r *http.Request) {
 
 // Method handlers
 // handleGetBalance maps to BalanceHandler
-func (node *node.Node) handleGetBalance(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("address parameter required")
 	}
@@ -188,7 +191,7 @@ func (node *node.Node) handleGetBalance(params []interface{}) (interface{}, erro
 }
 
 // handleGetUTXO maps to GetUTXOsForAddressHandler
-func (node *node.Node) handleGetUTXO(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetUTXO(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("address parameter required")
 	}
@@ -220,7 +223,7 @@ func (node *node.Node) handleGetUTXO(params []interface{}) (interface{}, error) 
 }
 
 // handleGetBlock maps to GetBlockHandler
-func (node *node.Node) handleGetBlock(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetBlock(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("block identifier required")
 	}
@@ -260,7 +263,7 @@ func (node *node.Node) handleGetBlock(params []interface{}) (interface{}, error)
 }
 
 // handleGetBlockchainInfo maps to BlockchainHandler
-func (node *node.Node) handleGetBlockchainInfo(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetBlockchainInfo(params []interface{}) (interface{}, error) {
 	// Enhanced blockchain info
 	info := struct {
 		Height      int32  `json:"height"`
@@ -286,7 +289,7 @@ func (node *node.Node) handleGetBlockchainInfo(params []interface{}) (interface{
 	return info, nil
 }
 
-func (node *node.Node) handleSubmitBlock(params []interface{}) (interface{}, error) {
+func (h *Handler) handleSubmitBlock(params []interface{}) (interface{}, error) {
 	// Check if params exist
 	if len(params) < 1 {
 		return nil, fmt.Errorf("block parameter required")
@@ -304,7 +307,7 @@ func (node *node.Node) handleSubmitBlock(params []interface{}) (interface{}, err
 		return nil, fmt.Errorf("error marshaling block data: %v", err)
 	}
 
-	var block Block
+	var block chain.Block
 	if err := json.Unmarshal(blockJSON, &block); err != nil {
 		return nil, fmt.Errorf("error unmarshaling block: %v", err)
 	}
@@ -351,7 +354,7 @@ func (node *node.Node) handleSubmitBlock(params []interface{}) (interface{}, err
 	}, nil
 }
 
-func (node *node.Node) handleGetPeers(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetPeers(params []interface{}) (interface{}, error) {
 	// Return the peers in a structured format
 	return struct {
 		Peers []string `json:"peers"`
@@ -382,7 +385,7 @@ var _ shared.GasEstimator = &node.Node{} // Ensures Node implements the GasEstim
 
 const MinTransactionAmount int64 = 1 * node.NanoThrylosPerThrylos // 1 THRYLOS in nanoTHRYLOS
 
-func (node *node.Node) handleSubmitSignedTransaction(params []interface{}) (interface{}, error) {
+func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface{}, error) {
 	// Check if params exist
 	if len(params) < 1 {
 		return nil, fmt.Errorf("transaction parameter required")
@@ -631,7 +634,7 @@ func (node *node.Node) handleSubmitSignedTransaction(params []interface{}) (inte
 	}, nil
 }
 
-func (node *node.Node) handleEstimateGas(params []interface{}) (interface{}, error) {
+func (h *Handler) handleEstimateGas(params []interface{}) (interface{}, error) {
 	// Log the incoming request
 	log.Printf("estimateGas JSON-RPC method called")
 
@@ -665,7 +668,7 @@ func (node *node.Node) handleEstimateGas(params []interface{}) (interface{}, err
 	}, nil
 }
 
-func (node *node.Node) handleGetStakingStats(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetStakingStats(params []interface{}) (interface{}, error) {
 	// Check if params exist
 	if len(params) < 1 {
 		return nil, fmt.Errorf("address parameter required")
@@ -711,7 +714,7 @@ func (node *node.Node) handleGetStakingStats(params []interface{}) (interface{},
 	}, nil
 }
 
-func (node *node.Node) handleStaking(params []interface{}) (interface{}, error) {
+func (h *Handler) handleStaking(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("parameters required")
 	}
@@ -741,7 +744,7 @@ func (node *node.Node) handleStaking(params []interface{}) (interface{}, error) 
 	}
 }
 
-func (node *node.Node) handleStakeOperation(reqData map[string]interface{}) (interface{}, error) {
+func (h *Handler) handleStakeOperation(reqData map[string]interface{}) (interface{}, error) {
 	// Extract required fields
 	userAddress, ok := reqData["userAddress"].(string)
 	if !ok {
@@ -851,7 +854,7 @@ func (node *node.Node) handleStakeOperation(reqData map[string]interface{}) (int
 }
 
 // Similar implementations for other operations:
-func (node *node.Node) handleUnstakeOperation(reqData map[string]interface{}) (interface{}, error) {
+func (h *Handler) handleUnstakeOperation(reqData map[string]interface{}) (interface{}, error) {
 	// Extract required fields
 	userAddress, ok := reqData["userAddress"].(string)
 	if !ok {
@@ -944,7 +947,7 @@ func (node *node.Node) handleUnstakeOperation(reqData map[string]interface{}) (i
 	}, nil
 }
 
-func (node *node.Node) handleDelegateOperation(reqData map[string]interface{}) (interface{}, error) {
+func (h *Handler) handleDelegateOperation(reqData map[string]interface{}) (interface{}, error) {
 	// Extract required fields
 	address, ok := reqData["address"].(string)
 	if !ok {
@@ -994,7 +997,7 @@ func getTotalSupply(node *node.Node) float64 {
 	return float64(totalSupply) / 1e7
 }
 
-func (node *node.Node) handleGetStakingInfo(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetStakingInfo(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("address parameter required")
 	}
@@ -1085,7 +1088,7 @@ func (node *node.Node) handleGetStakingInfo(params []interface{}) (interface{}, 
 	}, nil
 }
 
-func (node *node.Node) handleGetNetworkHealth(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetNetworkHealth(params []interface{}) (interface{}, error) {
 	healthInfo := map[string]interface{}{
 		"status":  "OK",
 		"message": "Node is active and connected to peers",
@@ -1099,7 +1102,7 @@ func (node *node.Node) handleGetNetworkHealth(params []interface{}) (interface{}
 	return healthInfo, nil
 }
 
-func (node *node.Node) handleGetValidators(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetValidators(params []interface{}) (interface{}, error) {
 	validators := make([]map[string]interface{}, 0)
 	effectiveRate := node.Blockchain.GetEffectiveInflationRate()
 
@@ -1182,7 +1185,7 @@ func (node *node.Node) handleGetValidators(params []interface{}) (interface{}, e
 	}, nil
 }
 
-func (node *node.Node) handleGetBlockTransactions(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetBlockTransactions(params []interface{}) (interface{}, error) {
 	// Check if params exist
 	if len(params) < 1 {
 		return nil, fmt.Errorf("block ID parameter required")
@@ -1213,7 +1216,7 @@ func (node *node.Node) handleGetBlockTransactions(params []interface{}) (interfa
 	}, nil
 }
 
-func (node *node.Node) handleRegisterValidator(params []interface{}) (interface{}, error) {
+func (h *Handler) handleRegisterValidator(params []interface{}) (interface{}, error) {
 	// Check if params exist
 	if len(params) < 1 {
 		return nil, fmt.Errorf("parameters required")
@@ -1262,7 +1265,7 @@ func (node *node.Node) handleRegisterValidator(params []interface{}) (interface{
 	}, nil
 }
 
-func (node *node.Node) handleGetStats(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetStats(params []interface{}) (interface{}, error) {
 	// Simply return the stats - no params needed for this endpoint
 	stats := node.GetBlockchainStats()
 
@@ -1313,7 +1316,7 @@ func (node *node.Node) handlePoolDelegation(params []interface{}) (interface{}, 
 }
 
 // Handler for getting pool statistics
-func (node *node.Node) handleGetPoolStats(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetPoolStats(params []interface{}) (interface{}, error) {
 	poolStats := node.Blockchain.GetPoolStats()
 
 	// Get active validators info
@@ -1342,7 +1345,7 @@ func (node *node.Node) handleGetPoolStats(params []interface{}) (interface{}, er
 }
 
 // Handler for getting delegator information
-func (node *node.Node) handleGetDelegatorInfo(params []interface{}) (interface{}, error) {
+func (h *Handler) handleGetDelegatorInfo(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("address parameter required")
 	}
@@ -1397,7 +1400,7 @@ func (node *node.Node) handleGetDelegatorInfo(params []interface{}) (interface{}
 }
 
 // Handler for undelegation from pool
-func (node *Node) handlePoolUndelegation(params []interface{}) (interface{}, error) {
+func (h *Handler) handlePoolUndelegation(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("parameters required")
 	}

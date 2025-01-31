@@ -13,7 +13,9 @@ import (
 	"strings"
 
 	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core"
+	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/network"
+	"github.com/thrylos-labs/thrylos/core/node"
 	"github.com/thrylos-labs/thrylos/database"
 
 	"github.com/joho/godotenv"
@@ -144,7 +146,7 @@ func main() {
 	// Initialize the blockchain and database with the AES key
 
 	// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
-	blockchain, _, err := core.NewBlockchainWithConfig(&core.BlockchainConfig{
+	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           absPath,
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
@@ -173,12 +175,13 @@ func main() {
 		peersList = strings.Split(knownPeers, ",")
 	}
 
-	node := core.NewNode(grpcAddress, peersList, nodeDataDir, nil)
+	node := node.NewNode(grpcAddress, peersList, nodeDataDir, nil)
 
 	node.SetChainID(chainID)
 
 	// Set up routes
-	mux := node.SetupRoutes()
+	router := network.NewRouter(node)
+	mux := router.SetupRoutes()
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())

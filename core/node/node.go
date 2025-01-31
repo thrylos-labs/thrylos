@@ -1,4 +1,4 @@
-package core
+package node
 
 import (
 	"bytes"
@@ -14,18 +14,27 @@ import (
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/balance"
+	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/consensus/processor"
+	"github.com/thrylos-labs/thrylos/core/consensus/staking"
+	consensus "github.com/thrylos-labs/thrylos/core/consensus/staking"
+	"github.com/thrylos-labs/thrylos/core/consensus/validators"
+	"github.com/thrylos-labs/thrylos/core/network"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/state"
 
 	"github.com/joho/godotenv"
 )
 
+//a central component that coordinates between different parts of the system.
+
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
 // the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
 type Node struct {
 	Address             string              // Network address of the node.
-	Blockchain          *Blockchain         // The blockchain maintained by this node.
+	Blockchain          *chain.Blockchain   // The blockchain maintained by this node.
 	StateManager        *state.StateManager // Replace Shard field
 	PendingTransactions []*thrylos.Transaction
 	PublicKeyMap        map[string]mldsa44.PublicKey // Updated to store mldsa44 public keys
@@ -38,25 +47,26 @@ type Node struct {
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
 	Mu                   sync.RWMutex
-	WebSocketConnections map[string]*WebSocketConnection
+	WebSocketConnections map[string]*network.WebSocketConnection
 	WebSocketMutex       sync.RWMutex
-	balanceUpdateQueue   *BalanceUpdateQueue
-	blockProducer        *ModernBlockProducer
-	stakingService       *StakingService
+	balanceUpdateQueue   *balance.BalanceUpdateQueue
+	blockProducer        *chain.ModernBlockProducer
+	stakingService       *consensus.StakingService
 	serverHost           string
 	useSSL               bool
-	ModernProcessor      *ModernProcessor
+	ModernProcessor      *processor.ModernProcessor
 	BlockTrigger         chan struct{}
-	DAGManager           *DAGManager
-	Peers                map[string]*PeerConnection
+	DAGManager           *processor.DAGManager
+	Peers                map[string]*network.PeerConnection
 	PeerMu               sync.RWMutex
 	MaxInbound           int
 	MaxOutbound          int
 	txStatusMap          sync.Map
-	VoteCounter          *VoteCounter
-	ValidatorSelector    *ValidatorSelector
+	VoteCounter          *validators.VoteCounter
+	ValidatorSelector    *validators.ValidatorSelector
 	IsVoteCounter        bool   // Indicates if this node is the designated vote counter
 	VoteCounterAddress   string // Address of the designated vote counter
+	BalanceManager       *balance.Manager
 }
 
 // GetActiveValidators returns a list of addresses for currently active validators
@@ -191,7 +201,7 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		log.Fatalf("error initializing app: %v\n", err)
 	}
 
-	bc, db, err := NewBlockchainWithConfig(&BlockchainConfig{
+	bc, db, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           dataDir,
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
@@ -203,18 +213,18 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 	}
 
 	// Initialize staking service with the blockchain
-	stakingService := NewStakingService(bc)
+	stakingService := staking.NewStakingService(bc)
 
 	node := &Node{
 		Address:              address,
-		Peers:                make(map[string]*PeerConnection),
+		Peers:                make(map[string]*network.PeerConnection),
 		Blockchain:           bc,
 		Database:             db,
 		StateManager:         stateManager,
 		PublicKeyMap:         make(map[string]mldsa44.PublicKey),
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,
-		WebSocketConnections: make(map[string]*WebSocketConnection),
+		WebSocketConnections: make(map[string]*network.WebSocketConnection),
 		stakingService:       stakingService,
 		serverHost:           serverHost,
 		useSSL:               useSSL,
@@ -223,6 +233,9 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		MaxOutbound:          20,
 	}
 
+	wsManager := network.NewWebSocketManager(node)
+	node.BalanceManager = balance.NewManager(node, wsManager)
+
 	isDesignatedCounter := false
 	if len(bc.GetActiveValidators()) > 0 {
 		// Make the first validator the designated counter
@@ -230,37 +243,37 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 	}
 
 	// Initialize VoteCounter with designation status
-	node.VoteCounter = NewVoteCounter(node, isDesignatedCounter)
+	node.VoteCounter = validators.NewVoteCounter(node, isDesignatedCounter)
 
 	if isDesignatedCounter {
 		log.Printf("Node %s designated as vote counter", address)
 	}
 	// Initialize ValidatorSelector with node
-	node.ValidatorSelector = NewValidatorSelector(bc, node)
+	node.ValidatorSelector = validators.NewValidatorSelector(bc, node)
 
 	node.InitializeProcessors()
 
 	// Add known peers as outbound connections
 	for _, peer := range knownPeers {
-		if err := node.AddPeer(peer, false); err != nil {
+		if err := network.AddPeer(peer, false); err != nil {
 			log.Printf("Failed to add known peer %s: %v", peer, err)
 		}
 	}
 
 	// Initialize block producer after node is set up
-	node.blockProducer = NewBlockProducer(node, bc)
+	node.blockProducer = chain.NewBlockProducer(node, bc)
 	node.blockProducer.Start()
 
 	// Set the callback function
 	node.Blockchain.OnNewBlock = node.ProcessConfirmedTransactions
 
 	// Initialize the balanceUpdateQueue
-	node.balanceUpdateQueue = newBalanceUpdateQueue(node)
+	node.balanceUpdateQueue = chain.newBalanceUpdateQueue(node)
 
 	// Start the balance update worker goroutine
 	go node.balanceUpdateQueue.balanceUpdateWorker()
 
-	node.DiscoverPeers()
+	network.DiscoverPeers()
 
 	bc.OnTransactionProcessed = node.handleProcessedTransaction
 
@@ -459,6 +472,16 @@ func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
 
 func (node *Node) GetValidatorVoteStatus(validatorID string) int {
 	return node.VoteCounter.GetVoteCount(validatorID)
+}
+
+func (node *Node) GetBlockchainStats() *chain.BlockchainStats {
+	blockCount, txCount := node.Blockchain.StatsCollector.GetBlockStats()
+	return &chain.BlockchainStats{
+		NumberOfBlocks:       blockCount,
+		NumberOfTransactions: txCount,
+		TotalStake:           node.Blockchain.StatsCollector.GetTotalStake(),
+		NumberOfPeers:        len(node.Peers),
+	}
 }
 
 func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
