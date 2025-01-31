@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/node"
 )
 
 // ValidatorSelector manages the selection and coordination of validators
@@ -26,11 +27,11 @@ type ValidatorSelector struct {
 	mu               sync.RWMutex
 	lastSelectedTime time.Time
 	voteCounter      *VoteCounter
-	node             *Node // Add this if you need node-level access
+	node             *node.Node // Add this if you need node-level access
 }
 
 func NewValidatorSelector(bc BlockchainValidatorInterface, node ...*Node) *ValidatorSelector {
-	var n *Node
+	var n *node.Node
 	if len(node) > 0 {
 		n = node[0]
 	}

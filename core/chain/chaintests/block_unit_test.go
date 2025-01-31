@@ -1,4 +1,4 @@
-package chain
+package chaintests
 
 import (
 	"crypto"
@@ -15,6 +15,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/consensus/processor"
+	"github.com/thrylos-labs/thrylos/core/node"
 	"github.com/thrylos-labs/thrylos/state"
 )
 
@@ -26,7 +29,7 @@ func TestNewBlockchain1(t *testing.T) {
 	require.NoError(t, err, "Failed to create temp directory")
 	defer os.RemoveAll(tempDir)
 
-	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
+	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            []byte("test-key"),
 		GenesisAccount:    genesisAddress,
@@ -42,9 +45,9 @@ func TestNewBlockchain1(t *testing.T) {
 }
 
 // Helper function to handle block creation and signing
-func createAndSignBlock(t *testing.T, blockchain *Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
+func createAndSignBlock(t *testing.T, blockchain *chain.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
 	// Create block
-	block := &Block{
+	block := &chain.Block{
 		Index:        int32(len(blockchain.Blocks)),
 		Timestamp:    time.Now().Unix(),
 		Transactions: txs,
@@ -99,7 +102,7 @@ func TestBlockTimeToFinality(t *testing.T) {
 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 
 	// Initialize blockchain
-	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
+	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            []byte("test-key"),
 		GenesisAccount:    genesisAddress,
@@ -159,7 +162,7 @@ func TestBlockTimeToFinality(t *testing.T) {
 			// Create blocks
 			for i := 0; i < tc.numBlocks; i++ {
 				// Create transaction
-				gasAmount := int32(BaseGasFee)
+				gasAmount := int32(processor.BaseGasFee)
 				inputAmount := int64(2000)
 				outputAmount := inputAmount - int64(gasAmount)
 
@@ -254,7 +257,7 @@ func generateAddressForShard(shardID int, nonce int, numShards int) string {
 	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
 }
 
-func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
+func createRealisticTransaction(t *testing.T, blockchain *chain.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
 	h := fnv.New32a()
 	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
 	shardID := int(h.Sum32() % uint32(numShards))
@@ -263,7 +266,7 @@ func createRealisticTransaction(t *testing.T, blockchain *Blockchain, sender str
 
 	// Rest of the function remains the same
 	inputAmount := int64(5000 + (nonce % 1000))
-	gasAmount := int32(BaseGasFee)
+	gasAmount := int32(processor.BaseGasFee)
 	outputAmount := inputAmount - int64(gasAmount)
 
 	tx := &thrylos.Transaction{
@@ -374,7 +377,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 
 	// Initialize blockchain with genesis account and state manager
 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
-	blockchain, _, err := NewBlockchainWithConfig(&BlockchainConfig{
+	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            []byte("test-key"),
 		GenesisAccount:    genesisAddress,
@@ -385,16 +388,16 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	require.NoError(t, err, "Failed to create blockchain")
 
 	// Initialize batch processor
-	node := &Node{
+	node := &node.Node{
 		Blockchain:   blockchain,
 		BlockTrigger: make(chan struct{}, 1),
 	}
 
 	// Initialize DAG Manager first
-	node.DAGManager = NewDAGManager(node)
+	node.DAGManager = processor.NewDAGManager(node)
 
 	// Initialize ModernProcessor instead of BatchProcessor
-	node.ModernProcessor = NewModernProcessor(node)
+	node.ModernProcessor = processor.NewModernProcessor(node)
 	node.ModernProcessor.Start()
 
 	// Setup validators
@@ -581,7 +584,7 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 				currentValidator := validators[validatorIndex]
 				time.Sleep(consensusDelay)
 
-				block := &Block{
+				block := &chain.Block{
 					Index:        int32(initialHeight + i),
 					Timestamp:    time.Now().Unix(),
 					Transactions: allTxs,

@@ -1,4 +1,4 @@
-package chain
+package chaintests
 
 import (
 	"crypto"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/joho/godotenv"
+	"github.com/thrylos-labs/thrylos/core/chain"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -39,7 +40,7 @@ func TestNewBlockchain(t *testing.T) {
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
 	// Correctly handle all three return values
-	blockchain, db, err := NewBlockchainWithConfig(&BlockchainConfig{
+	blockchain, db, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,

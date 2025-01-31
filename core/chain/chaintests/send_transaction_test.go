@@ -1,4 +1,4 @@
-package chain
+package chaintests
 
 import (
 	"bytes"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/network"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -86,9 +88,9 @@ type MockBlockchain struct {
 	ActiveValidators      []string
 	PendingTxs            []*thrylos.Transaction
 	PropagatedTxs         map[string][]string
-	TransactionPropagator *TransactionPropagator
+	TransactionPropagator *network.TransactionPropagator
 	Stakeholders          map[string]int64
-	Blocks                []*Block
+	Blocks                []*chain.Block
 	mu                    sync.RWMutex
 }
 
@@ -105,7 +107,7 @@ func NewMockBlockchain() *MockBlockchain {
 		PendingTxs:       make([]*thrylos.Transaction, 0),
 		PropagatedTxs:    make(map[string][]string),
 	}
-	mock.TransactionPropagator = NewTransactionPropagator(mock)
+	mock.TransactionPropagator = network.NewTransactionPropagator(mock)
 	return mock
 }
 

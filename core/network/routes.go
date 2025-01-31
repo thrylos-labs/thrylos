@@ -6,25 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/node"
+	"github.com/thrylos-labs/thrylos/core/node"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
-
-type Router struct {
-	node *node.Node
-	rpc  *Handler          // JSON-RPC handler
-	ws   *WebSocketManager // WebSocket handler
-}
-
-func NewRouter(node *node.Node) *Router {
-	return &Router{
-		node: node,
-		rpc:  NewHandler(node),
-		ws:   NewWebSocketManager(node),
-	}
-}
 
 // Helper function to check if request is WebSocket
 func isWebSocketRequest(r *http.Request) bool {

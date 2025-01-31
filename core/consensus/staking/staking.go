@@ -22,6 +22,12 @@ type StakingManager interface {
 	GetEffectiveInflationRate() float64
 }
 
+func (s *StakingService) GetPool() *StakingPool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pool
+}
+
 type StakingPool struct {
 	MinStakeAmount    int64 `json:"minStakeAmount"`
 	MinDelegation     int64 `json:"minDelegation"`     // Added for pool delegations
@@ -197,16 +203,14 @@ func (s *StakingService) GetPoolStats() map[string]interface{} {
 	}
 }
 
-func (s *StakingService) isValidator(address string) bool {
-	// First check ActiveValidators list (fastest check)
+func (s *StakingService) IsValidator(address string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, validator := range s.blockchain.ActiveValidators {
 		if validator == address {
 			return true
 		}
 	}
-
-	// If not in active validators, assume it's a delegator
-	// This simplifies testing and matches common use case
 	return false
 }
 

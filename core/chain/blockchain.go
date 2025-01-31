@@ -31,6 +31,12 @@ import (
 
 	"github.com/btcsuite/btcd/btcutil/bech32"
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/config"
+	"github.com/thrylos-labs/thrylos/core/consensus"
+	"github.com/thrylos-labs/thrylos/core/consensus/selection"
+	"github.com/thrylos-labs/thrylos/core/consensus/validators"
+	"github.com/thrylos-labs/thrylos/core/node"
+	utils "github.com/thrylos-labs/thrylos/core/utlils"
 	"github.com/thrylos-labs/thrylos/database"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/state"
@@ -273,7 +279,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 	publicKeyMap := make(map[string]*mldsa44.PublicKey)
 
 	// Initialize Stakeholders map with the genesis account
-	totalSupplyNano := ThrylosToNano(InitialTotalSupply)
+	totalSupplyNano := utils.ThrylosToNano(config.InitialTotalSupply)
 
 	log.Printf("Initializing genesis account with total supply: %.2f THR", NanoToThrylos(totalSupplyNano))
 
@@ -339,7 +345,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
 		StateNetwork:        stateNetwork,
-		ValidatorKeys:       NewValidatorKeyStore(),
+		ValidatorKeys:       validators.NewValidatorKeyStore(),
 		TestMode:            config.TestMode,
 		StateManager:        stateManager,
 	}
@@ -381,10 +387,10 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*Blockchain, shared.Bloc
 
 	// Set the minimum stake for validators
 	//FIXME: we need to harmonise the minimum stake amount in one service
-	blockchain.MinStakeForValidator = big.NewInt(MinimumStakeAmount)
+	blockchain.MinStakeForValidator = big.NewInt(staking.MinimumStakeAmount)
 
 	// Initialize ConsensusManager which provides sufficient consensus management
-	blockchain.ConsensusManager = NewConsensusManager(blockchain)
+	blockchain.ConsensusManager = consensus.NewConsensusManager(blockchain)
 
 	log.Println("Generating and storing validator keys")
 	validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
@@ -547,9 +553,9 @@ func (bc *Blockchain) GetTotalSupply() int64 {
 }
 
 func (bc *Blockchain) GetEffectiveInflationRate() float64 {
-	currentTotalSupply := NanoToThrylos(bc.GetTotalSupply())
+	currentTotalSupply := utils.NanoToThrylos(bc.GetTotalSupply())
 	// Calculate effective rate (will decrease as total supply grows)
-	effectiveRate := (NanoToThrylos(AnnualStakeReward) / currentTotalSupply) * 100
+	effectiveRate := (utils.NanoToThrylos(config.AnnualStakeReward) / currentTotalSupply) * 100
 	return effectiveRate
 }
 
@@ -569,15 +575,15 @@ func (bc *Blockchain) getActiveNodeCount() int {
 }
 
 // Example usage function
-func (bc *Blockchain) CreateNextBlock(nodes ...*Node) (*Block, error) {
-	var node *Node
+func (bc *Blockchain) CreateNextBlock(nodes ...*node.Node) (*Block, error) {
+	var node *node.Node
 	if len(nodes) > 0 {
 		node = nodes[0]
 	}
 
-	selector := NewValidatorSelector(bc, node)
+	selector := selection.NewValidatorSelector(bc, node)
 
-	validator, err := selector.SelectNextValidator()
+	validator, err := selector.validator.SelectNextValidator()
 	if err != nil {
 		return nil, fmt.Errorf("failed to select validator: %v", err)
 	}

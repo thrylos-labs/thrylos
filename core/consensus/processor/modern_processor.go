@@ -12,10 +12,12 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/core/node"
 )
 
 type ModernProcessor struct {
-	node           *Node
+	node           *node.Node
 	workerCount    int
 	workers        []*txWorker
 	processedTxs   sync.Map
@@ -45,7 +47,7 @@ type workerMetrics struct {
 	totalLatency atomic.Int64
 }
 
-func NewModernProcessor(node *Node) *ModernProcessor {
+func NewModernProcessor(blockchain *chain.Blockchain) *ModernProcessor {
 	ctx, cancel := context.WithCancel(context.Background())
 	workerCount := runtime.NumCPU() * 2 // Double the CPU count for optimal throughput
 

@@ -18,7 +18,6 @@ import (
 	"github.com/thrylos-labs/thrylos/core/chain"
 	"github.com/thrylos-labs/thrylos/core/consensus/processor"
 	"github.com/thrylos-labs/thrylos/core/consensus/staking"
-	consensus "github.com/thrylos-labs/thrylos/core/consensus/staking"
 	"github.com/thrylos-labs/thrylos/core/consensus/validators"
 	"github.com/thrylos-labs/thrylos/core/network"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -51,7 +50,7 @@ type Node struct {
 	WebSocketMutex       sync.RWMutex
 	balanceUpdateQueue   *balance.BalanceUpdateQueue
 	blockProducer        *chain.ModernBlockProducer
-	stakingService       *consensus.StakingService
+	StakingService       *staking.StakingService
 	serverHost           string
 	useSSL               bool
 	ModernProcessor      *processor.ModernProcessor
@@ -75,7 +74,7 @@ func (node *Node) GetActiveValidators() []string {
 	defer node.Mu.RUnlock()
 
 	// Get all staking data from the staking service
-	stakingStats := node.stakingService.GetPoolStats()
+	stakingStats := node.StakingService.GetPoolStats()
 	validators := make([]string, 0)
 
 	// Extract the minimum stake requirement
@@ -111,7 +110,7 @@ func (node *Node) IsActiveValidator(address string) bool {
 	}
 
 	// Get minimum stake requirement
-	stakingStats := node.stakingService.GetPoolStats()
+	stakingStats := node.StakingService.GetPoolStats()
 	minStake, ok := stakingStats["minimumStake"].(int64)
 	if !ok {
 		log.Printf("Warning: Could not get minimum stake requirement, using default")
@@ -130,7 +129,7 @@ func (node *Node) GetStakeholders() map[string]int64 {
 	stakeholders := make(map[string]int64)
 
 	// Get all stakes from the staking service
-	stats := node.stakingService.GetPoolStats()
+	stats := node.StakingService.GetPoolStats()
 
 	// Extract stakes from the pool stats
 	if stakes, ok := stats["stakes"].(map[string]interface{}); ok {
@@ -225,7 +224,7 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
 		GasEstimateURL:       gasEstimateURL,
 		WebSocketConnections: make(map[string]*network.WebSocketConnection),
-		stakingService:       stakingService,
+		StakingService:       stakingService,
 		serverHost:           serverHost,
 		useSSL:               useSSL,
 		BlockTrigger:         make(chan struct{}, 1),
@@ -268,7 +267,7 @@ func NewNode(address string, knownPeers []string, dataDir string, stateManager *
 	node.Blockchain.OnNewBlock = node.ProcessConfirmedTransactions
 
 	// Initialize the balanceUpdateQueue
-	node.balanceUpdateQueue = chain.newBalanceUpdateQueue(node)
+	node.balanceUpdateQueue = newBalanceUpdateQueue(node)
 
 	// Start the balance update worker goroutine
 	go node.balanceUpdateQueue.balanceUpdateWorker()
@@ -320,7 +319,7 @@ func (node *Node) startStakingTasks() {
 	for {
 		select {
 		case <-ticker.C:
-			if err := node.stakingService.DistributeRewards(); err != nil {
+			if err := node.StakingService.DistributeRewards(); err != nil {
 				log.Printf("Error distributing staking rewards: %v", err)
 			}
 		}
@@ -329,21 +328,21 @@ func (node *Node) startStakingTasks() {
 
 // These methods are correct as they simply proxy the calls
 func (node *Node) GetStakingStats() map[string]interface{} {
-	return node.stakingService.GetPoolStats()
+	return node.StakingService.GetPoolStats()
 }
 
 func (node *Node) CreateStake(userAddress string, amount int64) (*Stake, error) {
-	return node.stakingService.CreateStake(userAddress, amount)
+	return node.StakingService.CreateStake(userAddress, amount)
 }
 
-func (node *Node) ValidateAndVoteForBlock(block *Block) error {
+func (node *Node) ValidateAndVoteForBlock(block *chain.Block) error {
 	// Perform block validation
 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
 		return fmt.Errorf("block validation failed: %v", err)
 	}
 
 	// Create vote with validation result
-	vote := Vote{
+	vote := validators.Vote{
 		ValidatorID:    block.Validator,
 		BlockNumber:    block.Index,
 		BlockHash:      block.Hash,
@@ -431,7 +430,7 @@ func (node *Node) BroadcastBlockConfirmation(confirmation struct {
 // This method should be aligned with how we're handling stake determinations
 func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
 	// We should determine if it's a delegator by checking validator status
-	isValidator := node.stakingService.isValidator(userAddress)
+	isValidator := node.StakingService.IsValidator(userAddress)
 	isDelegator = !isValidator
 
 	txType := "unstake"
@@ -458,12 +457,12 @@ func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int
 		return fmt.Errorf("failed to create unstaking transaction: %v", err)
 	}
 
-	return node.stakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
+	return node.StakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
 }
 
 // These delegation-specific methods are correct
 func (node *Node) DelegateToPool(delegator string, amount int64) (*Stake, error) {
-	return node.stakingService.CreateStake(delegator, amount)
+	return node.StakingService.CreateStake(delegator, amount)
 }
 
 func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
@@ -485,7 +484,7 @@ func (node *Node) GetBlockchainStats() *chain.BlockchainStats {
 }
 
 func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
-	vote := Vote{
+	vote := validators.Vote{
 		ValidatorID: validatorID,
 		BlockNumber: blockNumber,
 		Timestamp:   time.Now(),
@@ -508,7 +507,7 @@ func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
 }
 
 // Validate block and send vote
-func (node *Node) ValidateAndVoteOnBlock(block *Block) error {
+func (node *Node) ValidateAndVoteOnBlock(block *chain.Block) error {
 	// Validate the block
 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
 		return fmt.Errorf("block validation failed: %v", err)
