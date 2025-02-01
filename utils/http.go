@@ -8,6 +8,11 @@ import (
 	"strconv"
 )
 
+// GasEstimator defines an interface for fetching gas estimates.
+type GasEstimator interface {
+	FetchGasEstimate(dataSize int, balance int64) (int, error)
+}
+
 func SendErrorResponse(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
