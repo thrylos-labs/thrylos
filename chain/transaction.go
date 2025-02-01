@@ -66,7 +66,6 @@ func (tx *Transaction) Validate() error {
 	if !utils.IsTimestampWithinOneHour(tx.Timestamp) {
 		return errors.New("invalid timestamp: must be recent within an hour")
 	}
-
 	return nil
 }
 
