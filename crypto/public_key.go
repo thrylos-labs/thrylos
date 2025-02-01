@@ -9,5 +9,5 @@ type PublicKey interface {
 	Unmarshal([]byte) error
 	Verify(data []byte, signature *Signature) error
 	Address() (*address.Address, error)
-	Compare(other *PublicKey) bool
+	Equal(other *PublicKey) bool
 }

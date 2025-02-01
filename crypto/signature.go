@@ -7,5 +7,5 @@ type Signature interface {
 	String() string
 	Marshal() ([]byte, error) //CBOR marshal
 	Unmarshal([]byte) error   //CBOR unmarshal
-	Compare(other Signature) bool
+	Equal(other Signature) bool
 }

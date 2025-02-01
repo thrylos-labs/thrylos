@@ -15,7 +15,7 @@ func TestKeyGeneration(t *testing.T) {
 	privKey := &PrivateKey{sk: *sk}
 	pubKey := privKey.PublicKey()
 
-	if !pubKey.Compare(&PublicKey{pk: *pk}) {
+	if !pubKey.pk.Equal(&PublicKey{pk: *pk}) {
 		t.Errorf("Public key mismatch")
 	}
 }
@@ -52,11 +52,11 @@ func TestSignatureComparison(t *testing.T) {
 	sig1 := privKey.Sign(msg)
 	sig2 := privKey.Sign(msg)
 
-	if !sig1.Compare(*sig1) {
+	if !sig1.Equal(*sig1) {
 		t.Errorf("Signature should be equal to itself")
 	}
 
-	if sig1.Compare(*sig2) {
+	if sig1.Equal(*sig2) {
 		t.Errorf("Two signatures of the same message should be different")
 	}
 }

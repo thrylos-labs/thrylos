@@ -5,5 +5,5 @@ type PrivateKey interface {
 	String() string
 	Sign(msg []byte) *Signature
 	PublicKey() *PublicKey
-	Compare(other *PrivateKey) bool
+	Equal(other *PrivateKey) bool
 }
