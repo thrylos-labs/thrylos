@@ -1,6 +1,6 @@
 package crypto
 
-import "github.com/thrylos-labs/thrylos/core/crypto/address"
+import "github.com/thrylos-labs/thrylos/crypto/address"
 
 type PublicKey interface {
 	Bytes() []byte

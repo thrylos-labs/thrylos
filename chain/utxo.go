@@ -3,7 +3,7 @@ package chain
 import (
 	"fmt"
 
-	"github.com/fxamacker/cbor"
+	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 )
 
@@ -51,8 +51,7 @@ func (u *UTXO) Key() string {
 
 // Marshal serializes the UTXO struct into CBOR format.
 func (u *UTXO) Marshal() ([]byte, error) {
-	options := cbor.EncOptions{}
-	return cbor.Marshal(u, options)
+	return cbor.Marshal(u)
 }
 
 // Unmarshal deserializes the CBOR data into a UTXO struct.
