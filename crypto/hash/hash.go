@@ -1,6 +1,7 @@
 package hash
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 
@@ -11,6 +12,9 @@ const HashSize = 32
 
 type Hash [HashSize]byte
 
+func NullHash() Hash {
+	return Hash{}
+}
 func NewHash(data []byte) Hash {
 	h := blake2b.Sum256(data)
 	var hash Hash
@@ -44,6 +48,10 @@ func (h *Hash) String() string {
 
 func (h *Hash) Bytes() []byte {
 	return h[:]
+}
+
+func (h *Hash) Equal(other Hash) bool {
+	return bytes.Equal(h[:], other[:])
 }
 
 //TODO: optimise the hashing function

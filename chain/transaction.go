@@ -35,19 +35,17 @@ type Transaction struct {
 }
 
 // NewTransaction creates a new Transaction instance with the specified ID, inputs, outputs, and records
-func NewTransaction(id string, inputs []UTXO, outputs []UTXO) *Transaction {
+func NewTransaction(id string, inputs, outputs []UTXO) *Transaction {
 	// Log the inputs and outputs for debugging
 	fmt.Printf("Creating new transaction with ID: %s\n", id)
 	fmt.Printf("Inputs: %+v\n", inputs)
 	fmt.Printf("Outputs: %+v\n", outputs)
-
 	return &Transaction{
 		ID:        id,
 		Inputs:    inputs,
 		Outputs:   outputs,
 		Timestamp: time.Now().Unix(),
 	}
-
 }
 
 // Validate ensures the fields of Transaction are correct.
@@ -93,6 +91,20 @@ func (tx *Transaction) VerifySignature() error {
 		return tx.Signature.Verify(&tx.SenderPublicKey, txBytes)
 	}
 	return tx.Signature.VerifyWithSalt(&tx.SenderPublicKey, txBytes, tx.Salt)
+}
+
+// Marshal serializes the Transaction into CBOR format.
+func (tx *Transaction) Marshal() ([]byte, error) {
+	return cbor.Marshal(tx)
+}
+
+// Unmarshal deserializes the CBOR data into a Transaction.
+func (tx *Transaction) Unmarshal(data []byte) error {
+	err := cbor.Unmarshal(data, &tx)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // // TransactionContext wraps a BadgerDB transaction to manage its lifecycle.

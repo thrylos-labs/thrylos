@@ -1,6 +1,7 @@
 package mldsa44
 
 import (
+	"bytes"
 	"errors"
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
@@ -24,7 +25,7 @@ func (s *Signature) Verify(pubKey *PublicKey, data []byte) error {
 	}
 	return nil
 }
-func (s *Signature) VerifyWithSalf(pubKey *PublicKey, data, salt []byte) error {
+func (s *Signature) VerifyWithSalt(pubKey *PublicKey, data, salt []byte) error {
 	if s == nil {
 		return errors.New("signature cannot be nil")
 	}
@@ -46,6 +47,6 @@ func (s *Signature) Unmarshal(data []byte) error {
 	return cbor.Unmarshal(data, s.sig)
 }
 
-func (s *Signature) Compare(other Signature) bool {
-	return string(s.Bytes()) == string(other.Bytes())
+func (s *Signature) Equal(other Signature) bool {
+	return bytes.Equal(s.Bytes(), other.Bytes())
 }

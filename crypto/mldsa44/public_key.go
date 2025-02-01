@@ -1,6 +1,7 @@
 package mldsa44
 
 import (
+	"bytes"
 	"errors"
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
@@ -55,5 +56,5 @@ func (p *PublicKey) Address() (*address.Address, error) {
 }
 
 func (p *PublicKey) Compare(other *PublicKey) bool {
-	return string(p.Bytes()) == string(other.Bytes())
+	return bytes.Equal(p.Bytes(), other.Bytes())
 }

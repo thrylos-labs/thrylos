@@ -30,6 +30,10 @@ func New(pubKey *mldsa.PublicKey) (*Address, error) {
 	return &address, nil
 }
 
+func NullAddress() *Address {
+	return &Address{}
+}
+
 func Validate(addr string) bool {
 	_, decoded, err := bech32.Decode(addr)
 	if err != nil {

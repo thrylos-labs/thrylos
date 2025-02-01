@@ -1,6 +1,7 @@
 package mldsa44
 
 import (
+	"bytes"
 	"log"
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
@@ -34,6 +35,6 @@ func (p *PrivateKey) PublicKey() *PublicKey {
 	return &PublicKey{pk: *pub}
 }
 
-func (p *PrivateKey) Compare(other *PrivateKey) bool {
-	return string(p.Bytes()) == string(other.Bytes())
+func (p *PrivateKey) Equal(other *PrivateKey) bool {
+	return bytes.Equal(p.Bytes(), other.Bytes())
 }
