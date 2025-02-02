@@ -7,14 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"testing"
-	"time"
 
 	// ensure this import path is correct
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/chain"
 )
 
 // Verifying with a Different Public Key Than the One Used for Signing
@@ -133,62 +131,62 @@ func TestSignatureVerificationSimplified(t *testing.T) {
 	}
 }
 
-func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Transaction {
-	// Example: Creating a single mock transaction for simplicity.
-	// In a real scenario, you might create several transactions based on your test requirements.
+// func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []chain.Transaction {
+// 	// Example: Creating a single mock transaction for simplicity.
+// 	// In a real scenario, you might create several transactions based on your test requirements.
 
-	// Mock transaction details.
-	txID := "tx1"
-	inputs := []shared.UTXO{
-		{
-			ID:            "utxo1",
-			TransactionID: "tx0",
-			Index:         0,
-			OwnerAddress:  "Alice",
-			Amount:        100,
-		},
-	}
-	outputs := []shared.UTXO{
-		{
-			ID:            "utxo2",
-			TransactionID: txID,
-			Index:         0,
-			OwnerAddress:  "Bob",
-			Amount:        100,
-		},
-	}
+// 	// Mock transaction details.
+// 	txID := "tx1"
+// 	inputs := []chain.UTXO{
+// 		{
+// 			ID:            "utxo1",
+// 			TransactionID: "tx0",
+// 			Index:         0,
+// 			OwnerAddress:  "Alice",
+// 			Amount:        100,
+// 		},
+// 	}
+// 	outputs := []chain.UTXO{
+// 		{
+// 			ID:            "utxo2",
+// 			TransactionID: txID,
+// 			Index:         0,
+// 			OwnerAddress:  "Bob",
+// 			Amount:        100,
+// 		},
+// 	}
 
-	// Create a new transaction.
-	tx := shared.Transaction{
-		ID:        txID,
-		Inputs:    inputs,
-		Outputs:   outputs,
-		Timestamp: time.Now().Unix(),
-	}
+// 	// Create a new transaction.
+// 	tx := chain.Transaction{
+// 		ID:        txID,
+// 		Inputs:    inputs,
+// 		Outputs:   outputs,
+// 		Timestamp: time.Now().Unix(),
+// 	}
 
-	// Serialize the transaction without the signature for signing.
-	txBytes, err := json.Marshal(tx)
-	if err != nil {
-		fmt.Printf("Error serializing transaction: %v\n", err)
-		return nil // In real code, handle errors more gracefully.
-	}
+// 	// Serialize the transaction without the signature for signing.
+// 	txBytes, err := json.Marshal(tx)
+// 	if err != nil {
+// 		fmt.Printf("Error serializing transaction: %v\n", err)
+// 		return nil // In real code, handle errors more gracefully.
+// 	}
 
-	// Sign the transaction.
-	rawSignature, err := signTransactionData(txBytes, privateKey)
-	if err != nil {
-		fmt.Printf("Error signing transaction: %v\n", err)
-		return nil // In real code, handle errors more gracefully.
-	}
+// 	// Sign the transaction.
+// 	rawSignature, err := signTransactionData(txBytes, privateKey)
+// 	if err != nil {
+// 		fmt.Printf("Error signing transaction: %v\n", err)
+// 		return nil // In real code, handle errors more gracefully.
+// 	}
 
-	// Encode the raw signature (byte slice) into a Base64 string.
-	signature := base64.StdEncoding.EncodeToString([]byte(rawSignature))
+// 	// Encode the raw signature (byte slice) into a Base64 string.
+// 	signature := base64.StdEncoding.EncodeToString([]byte(rawSignature))
 
-	// Attach the signature to the transaction.
-	tx.Signature = signature // The Signature field should be a string.
+// 	// Attach the signature to the transaction.
+// 	tx.Signature = signature // The Signature field should be a string.
 
-	// Return a slice containing the signed transaction.
-	return []shared.Transaction{tx}
-}
+// 	// Return a slice containing the signed transaction.
+// 	return []chain.Transaction{tx}
+// }
 
 // signTransactionData signs the transaction data with the provided RSA private key and returns the base64-encoded signature.
 func signTransactionData(data []byte, privateKey *rsa.PrivateKey) (string, error) {
@@ -209,11 +207,11 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 	}
 
 	// Step 2: Create a new transaction
-	tx := shared.Transaction{
+	tx := chain.Transaction{
 		ID:        "txTest123",
 		Timestamp: 1630000000,
-		Inputs:    []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		Inputs:    []chain.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []chain.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
 	}
 
 	// Step 3: Serialize the transaction (excluding the signature for now)
