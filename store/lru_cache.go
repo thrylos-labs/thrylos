@@ -20,12 +20,12 @@ type LRUCache struct {
 	mutex       sync.Mutex
 }
 
-func NewLRUCache(size int, bloomFilterSize uint, bloomFilterHashes uint) (*LRUCache, error) {
+func NewLRUCache(size int, bloomFilterSize uint, bloomFilterHashes float64) (*LRUCache, error) {
 	c, err := lru.New(size)
 	if err != nil {
 		return nil, err
 	}
-	bf := bloom.New(bloomFilterHashes, bloomFilterSize)
+	bf := bloom.NewWithEstimates(bloomFilterSize, bloomFilterHashes)
 	return &LRUCache{cache: c, bloomFilter: bf}, nil
 }
 

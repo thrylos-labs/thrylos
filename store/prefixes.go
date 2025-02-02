@@ -9,4 +9,5 @@ const (
 	PublicKeyPrefix   = "pu-"
 	PrivateKeyPrifx   = "pk-"
 	SignaturePrifx    = "sn-"
+	ValidatorPrefix   = "vd-"
 )
