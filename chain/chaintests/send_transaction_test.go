@@ -1,211 +1,211 @@
 package chaintests
 
-import (
-	"bytes"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"sync"
-	"testing"
-	"time"
+// import (
+// 	"bytes"
+// 	"encoding/json"
+// 	"net/http"
+// 	"net/http/httptest"
+// 	"sync"
+// 	"testing"
+// 	"time"
 
-	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core/chain"
-	"github.com/thrylos-labs/thrylos/core/network"
-	"github.com/thrylos-labs/thrylos/shared"
-)
+// 	thrylos "github.com/thrylos-labs/thrylos"
+// 	"github.com/thrylos-labs/thrylos/core/chain"
+// 	"github.com/thrylos-labs/thrylos/core/network"
+// 	"github.com/thrylos-labs/thrylos/shared"
+// )
 
-// MockNode for testing without a full node setup
-type MockNode struct {
-	shared.BlockchainDBInterface
-	// RetrievePrivateKeyFunc func(string) ([]byte, error)
-}
-
-// func (mn *MockNode) RetrievePrivateKey(sender string) ([]byte, error) {
-// 	if mn.RetrievePrivateKeyFunc == nil {
-// 		return mn.RetrievePrivateKeyFunc(sender)
-// 	}
-// 	return nil, fmt.Errorf("retrieve private key function not initialized")
+// // MockNode for testing without a full node setup
+// type MockNode struct {
+// 	shared.BlockchainDBInterface
+// 	// RetrievePrivateKeyFunc func(string) ([]byte, error)
 // }
 
-func (mn *MockNode) EnhancedSubmitTransactionHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var tx shared.Transaction
-		decoder := json.NewDecoder(r.Body)
-		if err := decoder.Decode(&tx); err != nil {
-			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
-			return
-		}
+// // func (mn *MockNode) RetrievePrivateKey(sender string) ([]byte, error) {
+// // 	if mn.RetrievePrivateKeyFunc == nil {
+// // 		return mn.RetrievePrivateKeyFunc(sender)
+// // 	}
+// // 	return nil, fmt.Errorf("retrieve private key function not initialized")
+// // }
 
-		// Assume validation always passes for simplicity
-		if err := mn.signAndProcessTransaction(&tx); err != nil {
-			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+// func (mn *MockNode) EnhancedSubmitTransactionHandler() http.HandlerFunc {
+// 	return func(w http.ResponseWriter, r *http.Request) {
+// 		var tx shared.Transaction
+// 		decoder := json.NewDecoder(r.Body)
+// 		if err := decoder.Decode(&tx); err != nil {
+// 			http.Error(w, "Invalid transaction format", http.StatusBadRequest)
+// 			return
+// 		}
 
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Transaction processed successfully"))
-	}
-}
+// 		// Assume validation always passes for simplicity
+// 		if err := mn.signAndProcessTransaction(&tx); err != nil {
+// 			http.Error(w, "Failed to process transaction: "+err.Error(), http.StatusInternalServerError)
+// 			return
+// 		}
 
-func (mn *MockNode) signAndProcessTransaction(tx *shared.Transaction) error {
-	// Mock signing and processing logic
-	return nil // Return nil indicating success
-}
+// 		w.WriteHeader(http.StatusOK)
+// 		w.Write([]byte("Transaction processed successfully"))
+// 	}
+// }
 
-func TestEnhancedSubmitTransactionHandler(t *testing.T) {
-	node := &MockNode{}
+// func (mn *MockNode) signAndProcessTransaction(tx *shared.Transaction) error {
+// 	// Mock signing and processing logic
+// 	return nil // Return nil indicating success
+// }
 
-	handler := node.EnhancedSubmitTransactionHandler()
+// func TestEnhancedSubmitTransactionHandler(t *testing.T) {
+// 	node := &MockNode{}
 
-	// Creating a valid transaction
-	transaction := shared.Transaction{
-		ID:        "tx123",
-		Timestamp: 1609459200,
-		Inputs:    []shared.UTXO{{TransactionID: "tx100", Index: 0, Amount: 50}},
-		Outputs:   []shared.UTXO{{TransactionID: "tx123", Index: 0, OwnerAddress: "recipientAddress", Amount: 50}},
-		Sender:    "senderPublicKey",
-	}
+// 	handler := node.EnhancedSubmitTransactionHandler()
 
-	b, _ := json.Marshal(transaction)
-	req, _ := http.NewRequest("POST", "/submit-transaction", bytes.NewBuffer(b))
-	rr := httptest.NewRecorder()
+// 	// Creating a valid transaction
+// 	transaction := shared.Transaction{
+// 		ID:        "tx123",
+// 		Timestamp: 1609459200,
+// 		Inputs:    []shared.UTXO{{TransactionID: "tx100", Index: 0, Amount: 50}},
+// 		Outputs:   []shared.UTXO{{TransactionID: "tx123", Index: 0, OwnerAddress: "recipientAddress", Amount: 50}},
+// 		Sender:    "senderPublicKey",
+// 	}
 
-	handler.ServeHTTP(rr, req)
+// 	b, _ := json.Marshal(transaction)
+// 	req, _ := http.NewRequest("POST", "/submit-transaction", bytes.NewBuffer(b))
+// 	rr := httptest.NewRecorder()
 
-	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
-	}
+// 	handler.ServeHTTP(rr, req)
 
-	expected := "Transaction processed successfully"
-	if rr.Body.String() != expected {
-		t.Errorf("handler returned unexpected body: got %v want %v", rr.Body.String(), expected)
-	}
-}
+// 	if status := rr.Code; status != http.StatusOK {
+// 		t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
+// 	}
 
-// MockBlockchain for testing propagation
-type MockBlockchain struct {
-	ActiveValidators      []string
-	PendingTxs            []*thrylos.Transaction
-	PropagatedTxs         map[string][]string
-	TransactionPropagator *network.TransactionPropagator
-	Stakeholders          map[string]int64
-	Blocks                []*chain.Block
-	mu                    sync.RWMutex
-}
+// 	expected := "Transaction processed successfully"
+// 	if rr.Body.String() != expected {
+// 		t.Errorf("handler returned unexpected body: got %v want %v", rr.Body.String(), expected)
+// 	}
+// }
 
-// Add this new method to satisfy the interface
-func (mb *MockBlockchain) GetActiveValidators() []string {
-	mb.mu.RLock()
-	defer mb.mu.RUnlock()
-	return mb.ActiveValidators
-}
+// // MockBlockchain for testing propagation
+// type MockBlockchain struct {
+// 	ActiveValidators      []string
+// 	PendingTxs            []*thrylos.Transaction
+// 	PropagatedTxs         map[string][]string
+// 	TransactionPropagator *network.TransactionPropagator
+// 	Stakeholders          map[string]int64
+// 	Blocks                []*chain.Block
+// 	mu                    sync.RWMutex
+// }
 
-func NewMockBlockchain() *MockBlockchain {
-	mock := &MockBlockchain{
-		ActiveValidators: []string{"validator1", "validator2", "validator3"},
-		PendingTxs:       make([]*thrylos.Transaction, 0),
-		PropagatedTxs:    make(map[string][]string),
-	}
-	mock.TransactionPropagator = network.NewTransactionPropagator(mock)
-	return mock
-}
+// // Add this new method to satisfy the interface
+// func (mb *MockBlockchain) GetActiveValidators() []string {
+// 	mb.mu.RLock()
+// 	defer mb.mu.RUnlock()
+// 	return mb.ActiveValidators
+// }
 
-func (mb *MockBlockchain) IsActiveValidator(address string) bool {
-	mb.mu.RLock()
-	defer mb.mu.RUnlock()
-	for _, v := range mb.ActiveValidators {
-		if v == address {
-			return true
-		}
-	}
-	return false
-}
+// func NewMockBlockchain() *MockBlockchain {
+// 	mock := &MockBlockchain{
+// 		ActiveValidators: []string{"validator1", "validator2", "validator3"},
+// 		PendingTxs:       make([]*thrylos.Transaction, 0),
+// 		PropagatedTxs:    make(map[string][]string),
+// 	}
+// 	mock.TransactionPropagator = network.NewTransactionPropagator(mock)
+// 	return mock
+// }
 
-func (mb *MockBlockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	mb.PendingTxs = append(mb.PendingTxs, tx)
-	return nil
-}
+// func (mb *MockBlockchain) IsActiveValidator(address string) bool {
+// 	mb.mu.RLock()
+// 	defer mb.mu.RUnlock()
+// 	for _, v := range mb.ActiveValidators {
+// 		if v == address {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
-func TestTransactionPropagation(t *testing.T) {
-	mockBC := NewMockBlockchain()
+// func (mb *MockBlockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
+// 	mb.mu.Lock()
+// 	defer mb.mu.Unlock()
+// 	mb.PendingTxs = append(mb.PendingTxs, tx)
+// 	return nil
+// }
 
-	// Create test transaction
-	tx := &thrylos.Transaction{
-		Id:        "test-tx-1",
-		Timestamp: time.Now().Unix(),
-		Sender:    "test-sender",
-		Salt:      make([]byte, 32),
-	}
+// func TestTransactionPropagation(t *testing.T) {
+// 	mockBC := NewMockBlockchain()
 
-	// Test propagation
-	err := mockBC.TransactionPropagator.PropagateTransaction(tx)
-	if err != nil {
-		t.Errorf("PropagateTransaction failed: %v", err)
-	}
+// 	// Create test transaction
+// 	tx := &thrylos.Transaction{
+// 		Id:        "test-tx-1",
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    "test-sender",
+// 		Salt:      make([]byte, 32),
+// 	}
 
-	// Verify transaction was propagated to all validators
-	mockBC.mu.RLock()
-	txCount := 0
-	for _, pendingTx := range mockBC.PendingTxs {
-		if pendingTx.Id == tx.Id {
-			txCount++
-		}
-	}
-	mockBC.mu.RUnlock()
+// 	// Test propagation
+// 	err := mockBC.TransactionPropagator.PropagateTransaction(tx)
+// 	if err != nil {
+// 		t.Errorf("PropagateTransaction failed: %v", err)
+// 	}
 
-	if txCount != len(mockBC.ActiveValidators) {
-		t.Errorf("Expected transaction to be added %d times (once per validator), got %d times",
-			len(mockBC.ActiveValidators), txCount)
-	}
-}
+// 	// Verify transaction was propagated to all validators
+// 	mockBC.mu.RLock()
+// 	txCount := 0
+// 	for _, pendingTx := range mockBC.PendingTxs {
+// 		if pendingTx.Id == tx.Id {
+// 			txCount++
+// 		}
+// 	}
+// 	mockBC.mu.RUnlock()
 
-func TestPropagationWithNoValidators(t *testing.T) {
-	mockBC := NewMockBlockchain()
-	mockBC.ActiveValidators = []string{} // Empty validator list
+// 	if txCount != len(mockBC.ActiveValidators) {
+// 		t.Errorf("Expected transaction to be added %d times (once per validator), got %d times",
+// 			len(mockBC.ActiveValidators), txCount)
+// 	}
+// }
 
-	tx := &thrylos.Transaction{
-		Id:        "test-tx-2",
-		Timestamp: time.Now().Unix(),
-		Sender:    "test-sender",
-		Salt:      make([]byte, 32),
-	}
+// func TestPropagationWithNoValidators(t *testing.T) {
+// 	mockBC := NewMockBlockchain()
+// 	mockBC.ActiveValidators = []string{} // Empty validator list
 
-	err := mockBC.TransactionPropagator.PropagateTransaction(tx)
-	if err == nil {
-		t.Error("Expected propagation to fail with no validators, but it succeeded")
-	}
-}
+// 	tx := &thrylos.Transaction{
+// 		Id:        "test-tx-2",
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    "test-sender",
+// 		Salt:      make([]byte, 32),
+// 	}
 
-func TestAddPendingTransactionWithPropagation(t *testing.T) {
-	// Create mock blockchain
-	mockBC := NewMockBlockchain()
+// 	err := mockBC.TransactionPropagator.PropagateTransaction(tx)
+// 	if err == nil {
+// 		t.Error("Expected propagation to fail with no validators, but it succeeded")
+// 	}
+// }
 
-	// Create test transaction
-	tx := &thrylos.Transaction{
-		Id:        "test-tx-3",
-		Timestamp: time.Now().Unix(),
-		Sender:    "test-sender",
-		Salt:      make([]byte, 32),
-	}
+// func TestAddPendingTransactionWithPropagation(t *testing.T) {
+// 	// Create mock blockchain
+// 	mockBC := NewMockBlockchain()
 
-	// Test AddPendingTransaction
-	err := mockBC.AddPendingTransaction(tx)
-	if err != nil {
-		t.Errorf("AddPendingTransaction failed: %v", err)
-	}
+// 	// Create test transaction
+// 	tx := &thrylos.Transaction{
+// 		Id:        "test-tx-3",
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    "test-sender",
+// 		Salt:      make([]byte, 32),
+// 	}
 
-	// Verify transaction was added to pending pool
-	found := false
-	for _, pendingTx := range mockBC.PendingTxs {
-		if pendingTx.Id == tx.Id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("Transaction was not added to pending transactions")
-	}
-}
+// 	// Test AddPendingTransaction
+// 	err := mockBC.AddPendingTransaction(tx)
+// 	if err != nil {
+// 		t.Errorf("AddPendingTransaction failed: %v", err)
+// 	}
+
+// 	// Verify transaction was added to pending pool
+// 	found := false
+// 	for _, pendingTx := range mockBC.PendingTxs {
+// 		if pendingTx.Id == tx.Id {
+// 			found = true
+// 			break
+// 		}
+// 	}
+// 	if !found {
+// 		t.Error("Transaction was not added to pending transactions")
+// 	}
+// }

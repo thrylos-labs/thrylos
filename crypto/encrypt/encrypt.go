@@ -1,5 +1,28 @@
 package encrypt
 
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"io"
+)
+
+// EncryptWithAES encrypts data using AES-256-CBC.
+func EncryptWithAES(key, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
+	return ciphertext, nil
+}
+
 // var blake2bHasher, _ = blake2b.New256(nil)
 
 // func EncryptAESKey(aesKey []byte, recipientPublicKey *rsa.PublicKey) ([]byte, error) {
@@ -27,20 +50,4 @@ package encrypt
 // 		return nil, err
 // 	}
 // 	return key, nil
-// }
-
-// // EncryptWithAES encrypts data using AES-256-CBC.
-// func EncryptWithAES(key, plaintext []byte) ([]byte, error) {
-// 	block, err := aes.NewCipher(key)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
-// 	iv := ciphertext[:aes.BlockSize]
-// 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-// 		return nil, err
-// 	}
-// 	stream := cipher.NewCFBEncrypter(block, iv)
-// 	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
-// 	return ciphertext, nil
 // }
