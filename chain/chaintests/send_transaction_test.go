@@ -10,8 +10,9 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core/chain"
-	"github.com/thrylos-labs/thrylos/core/network"
+
+	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -64,7 +65,7 @@ func TestEnhancedSubmitTransactionHandler(t *testing.T) {
 		Timestamp: 1609459200,
 		Inputs:    []shared.UTXO{{TransactionID: "tx100", Index: 0, Amount: 50}},
 		Outputs:   []shared.UTXO{{TransactionID: "tx123", Index: 0, OwnerAddress: "recipientAddress", Amount: 50}},
-		Sender:    "senderPublicKey",
+		// Sender:    "senderPublicKey",
 	}
 
 	b, _ := json.Marshal(transaction)

@@ -2,24 +2,22 @@ package node
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core/balance"
-	"github.com/thrylos-labs/thrylos/core/chain"
-	"github.com/thrylos-labs/thrylos/core/consensus/processor"
-	"github.com/thrylos-labs/thrylos/core/consensus/staking"
-	"github.com/thrylos-labs/thrylos/core/consensus/validators"
-	"github.com/thrylos-labs/thrylos/core/network"
+	"github.com/thrylos-labs/thrylos/balance"
+	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/consensus/processor"
+	"github.com/thrylos-labs/thrylos/consensus/staking"
+	"github.com/thrylos-labs/thrylos/consensus/validators"
+	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/state"
 
@@ -45,27 +43,28 @@ type Node struct {
 	GasEstimateURL string                       // New field to store the URL for gas estimation
 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 	// preventing race conditions and ensuring data integrity.
-	Mu                   sync.RWMutex
-	WebSocketConnections map[string]*network.WebSocketConnection
-	WebSocketMutex       sync.RWMutex
-	balanceUpdateQueue   *balance.BalanceUpdateQueue
-	blockProducer        *chain.ModernBlockProducer
-	StakingService       *staking.StakingService
-	serverHost           string
-	useSSL               bool
-	ModernProcessor      *processor.ModernProcessor
-	BlockTrigger         chan struct{}
-	DAGManager           *processor.DAGManager
-	Peers                map[string]*network.PeerConnection
-	PeerMu               sync.RWMutex
-	MaxInbound           int
-	MaxOutbound          int
-	txStatusMap          sync.Map
-	VoteCounter          *validators.VoteCounter
-	ValidatorSelector    *validators.ValidatorSelector
-	IsVoteCounter        bool   // Indicates if this node is the designated vote counter
-	VoteCounterAddress   string // Address of the designated vote counter
-	BalanceManager       *balance.Manager
+	Mu sync.RWMutex
+	// WebSocketConnections map[string]*network.WebSocketConnection
+	WebSocketMutex     sync.RWMutex
+	balanceUpdateQueue *balance.BalanceUpdateQueue
+	blockProducer      *chain.ModernBlockProducer
+	StakingService     *staking.StakingService
+	serverHost         string
+	useSSL             bool
+	ModernProcessor    *processor.ModernProcessor
+	BlockTrigger       chan struct{}
+	DAGManager         *processor.DAGManager
+	Peers              map[string]*network.PeerConnection
+	PeerMu             sync.RWMutex
+	MaxInbound         int
+	MaxOutbound        int
+	txStatusMap        sync.Map
+	VoteCounter        *validators.VoteCounter
+	ValidatorSelector  *validators.ValidatorSelector
+	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
+	VoteCounterAddress string // Address of the designated vote counter
+	BalanceManager     *balance.Manager
+	messageCh          chan shared.Message
 }
 
 // GetActiveValidators returns a list of addresses for currently active validators
@@ -165,154 +164,260 @@ func loadEnv() (map[string]string, error) {
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
-func NewNode(address string, knownPeers []string, dataDir string, stateManager *state.StateManager) *Node {
-	// Default values for WebSocket configuration
-	serverHost := address                            // Use the node's address as default server host
-	useSSL := strings.HasPrefix(address, "https://") // Determine SSL based on address
+// func NewNode(address string, knownPeers []string, dataDir string, stateManager *state.StateManager) *Node {
+// 	// Default values for WebSocket configuration
+// 	serverHost := address                            // Use the node's address as default server host
+// 	useSSL := strings.HasPrefix(address, "https://") // Determine SSL based on address
 
-	envFile, _ := loadEnv() // Dynamically load the correct environment configuration
+// 	envFile, _ := loadEnv() // Dynamically load the correct environment configuration
 
-	// Retrieve the AES key securely from an environment variable, with a fallback for tests
-	aesKeyEncoded := envFile["AES_KEY_ENV_VAR"]
+// 	// Retrieve the AES key securely from an environment variable, with a fallback for tests
+// 	aesKeyEncoded := envFile["AES_KEY_ENV_VAR"]
 
-	log.Printf("AES Key from environment: %s", aesKeyEncoded)
+// 	log.Printf("AES Key from environment: %s", aesKeyEncoded)
 
-	aesKey, err := base64.StdEncoding.DecodeString(aesKeyEncoded)
-	if err != nil {
-		log.Fatalf("Failed to decode AES key: %v", err)
-	} else {
-		log.Println("AES key decoded successfully")
+// 	aesKey, err := base64.StdEncoding.DecodeString(aesKeyEncoded)
+// 	if err != nil {
+// 		log.Fatalf("Failed to decode AES key: %v", err)
+// 	} else {
+// 		log.Println("AES key decoded successfully")
+// 	}
+
+// 	// Retrieve the URL for gas estimation from an environment variable
+// 	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
+// 	if gasEstimateURL == "" {
+// 		log.Fatal("Gas estimate URL is not set in environment variables. Please configure it before starting.")
+// 	}
+
+// 	// Assuming you have a way to get or set a default genesis account address
+// 	genesisAccount := envFile["GENESIS_ACCOUNT"]
+// 	if genesisAccount == "" {
+// 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+// 	}
+
+// 	if err != nil {
+// 		log.Fatalf("error initializing app: %v\n", err)
+// 	}
+
+// 	bc, db, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+// 		DataDir:           dataDir,
+// 		AESKey:            aesKey,
+// 		GenesisAccount:    genesisAccount,
+// 		TestMode:          true,
+// 		DisableBackground: false,
+// 	})
+// 	if err != nil {
+// 		log.Fatalf("Failed to create new blockchain: %v", err)
+// 	}
+
+// 	// Initialize staking service with the blockchain
+// 	stakingService := staking.NewStakingService(bc)
+
+// 	node := &Node{
+// 		Address:              address,
+// 		Peers:                make(map[string]*network.PeerConnection),
+// 		Blockchain:           bc,
+// 		Database:             db,
+// 		StateManager:         stateManager,
+// 		PublicKeyMap:         make(map[string]mldsa44.PublicKey),
+// 		ResponsibleUTXOs:     make(map[string]shared.UTXO),
+// 		GasEstimateURL:       gasEstimateURL,
+// 		WebSocketConnections: make(map[string]*network.WebSocketConnection),
+// 		StakingService:       stakingService,
+// 		serverHost:           serverHost,
+// 		useSSL:               useSSL,
+// 		BlockTrigger:         make(chan struct{}, 1),
+// 		MaxInbound:           30,
+// 		MaxOutbound:          20,
+// 		messageCh:            make(chan shared.Message, 1000),
+// 	}
+
+// 	// Subscribe to message types
+// 	messageBus := shared.GetMessageBus()
+// 	messageBus.Subscribe(shared.GetBalance, node.messageCh)
+// 	messageBus.Subscribe(shared.ProcessBlock, node.messageCh)
+// 	messageBus.Subscribe(shared.ValidateBlock, node.messageCh)
+// 	messageBus.Subscribe(shared.UpdatePeerList, node.messageCh)
+// 	messageBus.Subscribe(shared.GetStakingStats, node.messageCh)
+// 	messageBus.Subscribe(shared.CreateStake, node.messageCh)
+
+// 	// Start message handler
+// 	go node.handleMessages()
+
+// 	wsManager := network.NewWebSocketManager(node)
+// 	node.BalanceManager = balance.NewManager(node, wsManager)
+
+// 	isDesignatedCounter := false
+// 	if len(bc.GetActiveValidators()) > 0 {
+// 		// Make the first validator the designated counter
+// 		isDesignatedCounter = (address == bc.GetActiveValidators()[0])
+// 	}
+
+// 	// Initialize VoteCounter with designation status
+// 	node.VoteCounter = validators.NewVoteCounter(node, isDesignatedCounter)
+
+// 	if isDesignatedCounter {
+// 		log.Printf("Node %s designated as vote counter", address)
+// 	}
+// 	// Initialize ValidatorSelector with node
+// 	node.ValidatorSelector = validators.NewValidatorSelector(bc, node)
+
+// 	node.InitializeProcessors()
+
+// 	// Add known peers as outbound connections
+// 	for _, peer := range knownPeers {
+// 		if err := network.AddPeer(peer, false); err != nil {
+// 			log.Printf("Failed to add known peer %s: %v", peer, err)
+// 		}
+// 	}
+
+// 	// Initialize block producer after node is set up
+// 	node.blockProducer = chain.NewBlockProducer(node, bc)
+// 	node.blockProducer.Start()
+
+// 	// Set the callback function
+// 	node.Blockchain.OnNewBlock = balance.ProcessConfirmedTransactions
+
+// 	// Initialize the balanceUpdateQueue
+// 	node.balanceUpdateQueue = balance.newBalanceUpdateQueue(node)
+
+// 	// Start the balance update worker goroutine
+// 	go node.balanceUpdateQueue.balanceUpdateWorker()
+
+// 	network.DiscoverPeers()
+
+// 	bc.OnTransactionProcessed = balance.handleProcessedTransaction
+
+// 	go node.startStakingTasks()
+
+// 	return node
+// }
+
+// Add message handling methods
+// func (node *Node) handleMessages() {
+// 	for msg := range node.messageCh {
+// 		switch msg.Type {
+// 		case shared.GetUTXOs:
+// 			node.handleGetUTXOs(msg)
+// 		case shared.AddUTXO:
+// 			node.handleAddUTXO(msg)
+// 		case shared.UpdateState:
+// 			node.handleUpdateState(msg)
+// 		case shared.GetBalance:
+// 			node.handleGetBalanceMessage(msg)
+// 		case shared.ProcessBlock:
+// 			node.handleProcessBlockMessage(msg)
+// 		case shared.ValidateBlock:
+// 			node.handleValidateBlockMessage(msg)
+// 		case shared.GetStakingStats:
+// 			node.handleGetStakingStatsMessage(msg)
+// 		case shared.CreateStake:
+// 			node.handleCreateStakeMessage(msg)
+// 		}
+// 	}
+// }
+
+func (node *Node) handleGetUTXOs(msg shared.Message) {
+	req := msg.Data.(shared.UTXORequest)
+	utxos, err := node.Blockchain.GetUTXOsForAddress(req.Address)
+	msg.ResponseCh <- shared.Response{
+		Data:  utxos,
+		Error: err,
 	}
-
-	// Retrieve the URL for gas estimation from an environment variable
-	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
-	if gasEstimateURL == "" {
-		log.Fatal("Gas estimate URL is not set in environment variables. Please configure it before starting.")
-	}
-
-	// Assuming you have a way to get or set a default genesis account address
-	genesisAccount := envFile["GENESIS_ACCOUNT"]
-	if genesisAccount == "" {
-		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
-	}
-
-	if err != nil {
-		log.Fatalf("error initializing app: %v\n", err)
-	}
-
-	bc, db, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-		DataDir:           dataDir,
-		AESKey:            aesKey,
-		GenesisAccount:    genesisAccount,
-		TestMode:          true,
-		DisableBackground: false,
-	})
-	if err != nil {
-		log.Fatalf("Failed to create new blockchain: %v", err)
-	}
-
-	// Initialize staking service with the blockchain
-	stakingService := staking.NewStakingService(bc)
-
-	node := &Node{
-		Address:              address,
-		Peers:                make(map[string]*network.PeerConnection),
-		Blockchain:           bc,
-		Database:             db,
-		StateManager:         stateManager,
-		PublicKeyMap:         make(map[string]mldsa44.PublicKey),
-		ResponsibleUTXOs:     make(map[string]shared.UTXO),
-		GasEstimateURL:       gasEstimateURL,
-		WebSocketConnections: make(map[string]*network.WebSocketConnection),
-		StakingService:       stakingService,
-		serverHost:           serverHost,
-		useSSL:               useSSL,
-		BlockTrigger:         make(chan struct{}, 1),
-		MaxInbound:           30,
-		MaxOutbound:          20,
-	}
-
-	wsManager := network.NewWebSocketManager(node)
-	node.BalanceManager = balance.NewManager(node, wsManager)
-
-	isDesignatedCounter := false
-	if len(bc.GetActiveValidators()) > 0 {
-		// Make the first validator the designated counter
-		isDesignatedCounter = (address == bc.GetActiveValidators()[0])
-	}
-
-	// Initialize VoteCounter with designation status
-	node.VoteCounter = validators.NewVoteCounter(node, isDesignatedCounter)
-
-	if isDesignatedCounter {
-		log.Printf("Node %s designated as vote counter", address)
-	}
-	// Initialize ValidatorSelector with node
-	node.ValidatorSelector = validators.NewValidatorSelector(bc, node)
-
-	node.InitializeProcessors()
-
-	// Add known peers as outbound connections
-	for _, peer := range knownPeers {
-		if err := network.AddPeer(peer, false); err != nil {
-			log.Printf("Failed to add known peer %s: %v", peer, err)
-		}
-	}
-
-	// Initialize block producer after node is set up
-	node.blockProducer = chain.NewBlockProducer(node, bc)
-	node.blockProducer.Start()
-
-	// Set the callback function
-	node.Blockchain.OnNewBlock = node.ProcessConfirmedTransactions
-
-	// Initialize the balanceUpdateQueue
-	node.balanceUpdateQueue = node.newBalanceUpdateQueue(node)
-
-	// Start the balance update worker goroutine
-	go node.balanceUpdateQueue.balanceUpdateWorker()
-
-	network.DiscoverPeers()
-
-	bc.OnTransactionProcessed = node.handleProcessedTransaction
-
-	go node.startStakingTasks()
-
-	return node
 }
+
+func (node *Node) handleAddUTXO(msg shared.Message) {
+	req := msg.Data.(shared.AddUTXORequest)
+	err := node.Blockchain.Database.AddUTXO(req.UTXO)
+	msg.ResponseCh <- shared.Response{
+		Error: err,
+	}
+}
+
+func (node *Node) handleUpdateState(msg shared.Message) {
+	req := msg.Data.(shared.UpdateStateRequest)
+	node.Blockchain.StateManager.UpdateState(req.Address, req.Balance, nil)
+	msg.ResponseCh <- shared.Response{} // No error possible in current implementation
+}
+
+// Individual message handlers
+func (node *Node) handleGetBalanceMessage(msg shared.Message) {
+	address := msg.Data.(string)
+	balance, err := node.BalanceManager.GetBalance(address)
+	msg.ResponseCh <- shared.Response{
+		Data:  balance,
+		Error: err,
+	}
+}
+
+// func (node *Node) handleProcessBlockMessage(msg shared.Message) {
+// 	block := msg.Data.(*chain.Block)
+// 	err := node.ValidateAndVoteForBlock(block)
+// 	msg.ResponseCh <- shared.Response{
+// 		Error: err,
+// 	}
+// }
+
+// func (node *Node) handleValidateBlockMessage(msg shared.Message) {
+// 	block := msg.Data.(*chain.Block)
+// 	err := node.ValidateAndVoteOnBlock(block)
+// 	msg.ResponseCh <- shared.Response{
+// 		Error: err,
+// 	}
+// }
+
+func (node *Node) handleGetStakingStatsMessage(msg shared.Message) {
+	stats := node.GetStakingStats()
+	msg.ResponseCh <- shared.Response{
+		Data: stats,
+	}
+}
+
+// func (node *Node) handleCreateStakeMessage(msg shared.Message) {
+// 	data := msg.Data.(map[string]interface{})
+// 	address := data["address"].(string)
+// 	amount := data["amount"].(int64)
+
+// 	stake, err := node.CreateStake(address, amount)
+// 	msg.ResponseCh <- shared.Response{
+// 		Data:  stake,
+// 		Error: err,
+// 	}
+// }
 
 // Lifecycle methods (StartBackgroundTasks, Shutdown)
 
-func (node *Node) Shutdown() error {
-	if node.blockProducer != nil {
-		node.blockProducer.Stop()
-	}
-	// ... other cleanup ...
-	return nil
-}
+// func (node *Node) Shutdown() error {
+// 	if node.blockProducer != nil {
+// 		node.blockProducer.Stop()
+// 	}
+// 	close(node.messageCh) // Close message channel
+// 	// ... other possible cleanup ...
+// 	return nil
+// }
 
-func (node *Node) StartBackgroundTasks() {
-	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
-	go func() {
-		for {
-			select {
-			case <-tickerDiscoverPeers.C:
-				node.DiscoverPeers()
-			}
-		}
-	}()
+// func (node *Node) StartBackgroundTasks() {
+// 	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
+// 	go func() {
+// 		for {
+// 			select {
+// 			case <-tickerDiscoverPeers.C:
+// 				network.DiscoverPeers()
+// 			}
+// 		}
+// 	}()
 
-	// Add vote synchronization
-	tickerVoteSync := time.NewTicker(30 * time.Second)
-	go func() {
-		for {
-			select {
-			case <-tickerVoteSync.C:
-				node.syncVotes()
-			}
-		}
-	}()
-}
+// 	// Add vote synchronization
+// 	tickerVoteSync := time.NewTicker(30 * time.Second)
+// 	go func() {
+// 		for {
+// 			select {
+// 			case <-tickerVoteSync.C:
+// 				node.syncVotes()
+// 			}
+// 		}
+// 	}()
+// }
 
 func (node *Node) startStakingTasks() {
 	ticker := time.NewTicker(24 * time.Hour)
@@ -331,33 +436,48 @@ func (node *Node) GetStakingStats() map[string]interface{} {
 	return node.StakingService.GetPoolStats()
 }
 
-func (node *Node) CreateStake(userAddress string, amount int64) (*staking.Stake, error) {
-	return node.StakingService.CreateStake(userAddress, amount)
-}
+// func (node *Node) CreateStake(userAddress string, amount int64) (*staking.Stake, error) {
+// 	return node.StakingService.CreateStake(userAddress, amount)
+// }
 
-func (node *Node) ValidateAndVoteForBlock(block *chain.Block) error {
-	// Perform block validation
-	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
-		return fmt.Errorf("block validation failed: %v", err)
-	}
+// func (n *Node) InitializeProcessors() {
+// 	log.Printf("Initializing node processors...")
 
-	// Create vote with validation result
-	vote := validators.Vote{
-		ValidatorID:    block.Validator,
-		BlockNumber:    block.Index,
-		BlockHash:      block.Hash,
-		ValidationPass: true,
-		Timestamp:      time.Now(),
-		VoterNode:      node.Address,
-	}
+// 	// Initialize DAG Manager first - no node parameter needed now
+// 	n.DAGManager = processor.NewDAGManager()
+// 	log.Printf("DAG manager initialized")
 
-	// Send vote to designated counter node
-	if err := node.sendVoteToCounter(vote); err != nil {
-		return fmt.Errorf("failed to send vote to counter: %v", err)
-	}
+// 	// Initialize ModernProcessor
+// 	n.ModernProcessor = processor.NewModernProcessor()
+// 	n.ModernProcessor.Start()
+// 	log.Printf("Modern processor initialized and started")
 
-	return nil
-}
+// 	log.Printf("Node processors initialization complete")
+// }
+
+// func (node *Node) ValidateAndVoteForBlock(block *chain.Block) error {
+// 	// Perform block validation
+// 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
+// 		return fmt.Errorf("block validation failed: %v", err)
+// 	}
+
+// 	// Create vote with validation result
+// 	vote := validators.Vote{
+// 		ValidatorID:    block.Validator,
+// 		BlockNumber:    block.Index,
+// 		BlockHash:      block.Hash,
+// 		ValidationPass: true,
+// 		Timestamp:      time.Now(),
+// 		VoterNode:      node.Address,
+// 	}
+
+// 	// Send vote to designated counter node
+// 	if err := node.sendVoteToCounter(vote); err != nil {
+// 		return fmt.Errorf("failed to send vote to counter: %v", err)
+// 	}
+
+// 	return nil
+// }
 
 func (node *Node) sendVoteToCounter(vote validators.Vote) error {
 	if node.IsVoteCounter {
@@ -428,94 +548,94 @@ func (node *Node) BroadcastBlockConfirmation(confirmation struct {
 }
 
 // This method should be aligned with how we're handling stake determinations
-func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
-	// We should determine if it's a delegator by checking validator status
-	isValidator := node.StakingService.IsValidator(userAddress)
-	isDelegator = !isValidator
+// func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
+// 	// We should determine if it's a delegator by checking validator status
+// 	isValidator := node.StakingService.IsValidator(userAddress)
+// 	isDelegator = !isValidator
 
-	txType := "unstake"
-	if isDelegator {
-		txType = "undelegate"
-	}
+// 	txType := "unstake"
+// 	if isDelegator {
+// 		txType = "undelegate"
+// 	}
 
-	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
-	timestamp := time.Now().Unix()
+// 	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
+// 	timestamp := time.Now().Unix()
 
-	unstakingTx := &thrylos.Transaction{
-		Id:        txID,
-		Sender:    "staking_pool",
-		Timestamp: timestamp,
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress:  userAddress,
-			Amount:        amount,
-			Index:         0,
-			TransactionId: "",
-		}},
-	}
+// 	unstakingTx := &thrylos.Transaction{
+// 		Id:        txID,
+// 		Sender:    "staking_pool",
+// 		Timestamp: timestamp,
+// 		Outputs: []*thrylos.UTXO{{
+// 			OwnerAddress:  userAddress,
+// 			Amount:        amount,
+// 			Index:         0,
+// 			TransactionId: "",
+// 		}},
+// 	}
 
-	if err := node.Blockchain.AddPendingTransaction(unstakingTx); err != nil {
-		return fmt.Errorf("failed to create unstaking transaction: %v", err)
-	}
+// 	if err := node.Blockchain.AddPendingTransaction(unstakingTx); err != nil {
+// 		return fmt.Errorf("failed to create unstaking transaction: %v", err)
+// 	}
 
-	return node.StakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
-}
+// 	return node.StakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
+// }
 
 // These delegation-specific methods are correct
-func (node *Node) DelegateToPool(delegator string, amount int64) (*staking.Stake, error) {
-	return node.StakingService.CreateStake(delegator, amount)
-}
+// func (node *Node) DelegateToPool(delegator string, amount int64) (*staking.Stake, error) {
+// 	return node.StakingService.CreateStake(delegator, amount)
+// }
 
-func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
-	return node.UnstakeTokens(delegator, true, amount)
-}
+// func (node *Node) UndelegateFromPool(delegator string, amount int64) error {
+// 	return node.UnstakeTokens(delegator, true, amount)
+// }
 
 func (node *Node) GetValidatorVoteStatus(validatorID string) int {
 	return node.VoteCounter.GetVoteCount(validatorID)
 }
 
-func (node *Node) GetBlockchainStats() *chain.BlockchainStats {
-	blockCount, txCount := node.Blockchain.StatsCollector.GetBlockStats()
-	return &chain.BlockchainStats{
-		NumberOfBlocks:       blockCount,
-		NumberOfTransactions: txCount,
-		TotalStake:           node.Blockchain.StatsCollector.GetTotalStake(),
-		NumberOfPeers:        len(node.Peers),
-	}
-}
+// func (node *Node) GetBlockchainStats() *chain.BlockchainStats {
+// 	blockCount, txCount := node.Blockchain.StatsCollector.GetBlockStats()
+// 	return &chain.BlockchainStats{
+// 		NumberOfBlocks:       blockCount,
+// 		NumberOfTransactions: txCount,
+// 		TotalStake:           node.Blockchain.StatsCollector.GetTotalStake(),
+// 		NumberOfPeers:        len(node.Peers),
+// 	}
+// }
 
-func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
-	vote := validators.Vote{
-		ValidatorID: validatorID,
-		BlockNumber: blockNumber,
-		Timestamp:   time.Now(),
-		VoterNode:   node.Address,
-	}
+// func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
+// 	vote := validators.Vote{
+// 		ValidatorID: validatorID,
+// 		BlockNumber: blockNumber,
+// 		Timestamp:   time.Now(),
+// 		VoterNode:   node.Address,
+// 	}
 
-	// If this node is not the vote counter, send to the designated counter
-	if !node.IsVoteCounter {
-		// Send vote to specific vote counter node
-		counterPeer, exists := node.Peers[node.VoteCounterAddress]
-		if !exists {
-			return fmt.Errorf("vote counter node not found in peers")
-		}
-		return counterPeer.SendVote(vote)
-	}
+// 	// If this node is not the vote counter, send to the designated counter
+// 	if !node.IsVoteCounter {
+// 		// Send vote to specific vote counter node
+// 		counterPeer, exists := node.Peers[node.VoteCounterAddress]
+// 		if !exists {
+// 			return fmt.Errorf("vote counter node not found in peers")
+// 		}
+// 		return counterPeer.SendVote(vote)
+// 	}
 
-	// If this is the vote counter node, process the vote
-	node.VoteCounter.AddVote(vote)
-	return nil
-}
+// 	// If this is the vote counter node, process the vote
+// 	node.VoteCounter.AddVote(vote)
+// 	return nil
+// }
 
 // Validate block and send vote
-func (node *Node) ValidateAndVoteOnBlock(block *chain.Block) error {
-	// Validate the block
-	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
-		return fmt.Errorf("block validation failed: %v", err)
-	}
+// func (node *Node) ValidateAndVoteOnBlock(block *chain.Block) error {
+// 	// Validate the block
+// 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
+// 		return fmt.Errorf("block validation failed: %v", err)
+// 	}
 
-	// If validation successful, send vote to counter node
-	return node.BroadcastVote(block.Validator, block.Index)
-}
+// 	// If validation successful, send vote to counter node
+// 	return node.BroadcastVote(block.Validator, block.Index)
+// }
 
 func (node *Node) syncVotes() {
 	for _, peer := range node.Peers {

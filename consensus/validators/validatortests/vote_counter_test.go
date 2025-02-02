@@ -1,11 +1,5 @@
 package validatortests
 
-import (
-	"log"
-	"testing"
-	"time"
-)
-
 // Interface definition
 type BlockchainValidatorNewInterface interface {
 	IsActiveValidator(address string) bool
@@ -37,71 +31,71 @@ func (tb *TestBlockchain) GetActiveValidators() []string {
 }
 
 // Test version of Node with just what we need
-type TestNode struct {
-	Address    string
-	blockchain BlockchainValidatorInterface
-	votes      map[string][]Vote // Add for testing
-}
+// type TestNode struct {
+// 	Address    string
+// 	blockchain BlockchainValidatorInterface
+// 	votes      map[string][]Vote // Add for testing
+// }
 
-func (tn *TestNode) GetActiveValidators() []string {
-	return tn.blockchain.GetActiveValidators()
-}
+// func (tn *TestNode) GetActiveValidators() []string {
+// 	return tn.blockchain.GetActiveValidators()
+// }
 
-func (tn *TestNode) IsActiveValidator(address string) bool {
-	return tn.blockchain.IsActiveValidator(address)
-}
+// func (tn *TestNode) IsActiveValidator(address string) bool {
+// 	return tn.blockchain.IsActiveValidator(address)
+// }
 
-func (tn *TestNode) GetStakeholders() map[string]int64 {
-	return tn.blockchain.GetStakeholders()
-}
+// func (tn *TestNode) GetStakeholders() map[string]int64 {
+// 	return tn.blockchain.GetStakeholders()
+// }
 
-func (tn *TestNode) ConfirmBlock(blockNumber int32) {
-	// For testing, just log the confirmation
-	log.Printf("Test node confirmed block: %d", blockNumber)
-}
+// func (tn *TestNode) ConfirmBlock(blockNumber int32) {
+// 	// For testing, just log the confirmation
+// 	log.Printf("Test node confirmed block: %d", blockNumber)
+// }
 
-func newTestBlockchain() *TestBlockchain {
-	return &TestBlockchain{
-		ActiveValidators: []string{"validator1", "validator2", "validator3"},
-		Stakeholders: map[string]int64{
-			"validator1": 1000,
-			"validator2": 2000,
-			"validator3": 3000,
-		},
-	}
-}
+// func newTestBlockchain() *TestBlockchain {
+// 	return &TestBlockchain{
+// 		ActiveValidators: []string{"validator1", "validator2", "validator3"},
+// 		Stakeholders: map[string]int64{
+// 			"validator1": 1000,
+// 			"validator2": 2000,
+// 			"validator3": 3000,
+// 		},
+// 	}
+// }
 
-func TestVoteCounter_AddVote(t *testing.T) {
-	testBC := newTestBlockchain()
-	testNode := &TestNode{
-		Address:    "testNode",
-		blockchain: testBC,
-	}
+// func TestVoteCounter_AddVote(t *testing.T) {
+// 	testBC := newTestBlockchain()
+// 	testNode := &TestNode{
+// 		Address:    "testNode",
+// 		blockchain: testBC,
+// 	}
 
-	// Create vote counter
-	voteCounter := NewVoteCounter(testNode, true)
+// 	// Create vote counter
+// 	voteCounter := NewVoteCounter(testNode, true)
 
-	// Test adding a valid vote
-	vote := Vote{
-		ValidatorID:    "validator3",
-		BlockNumber:    1,
-		BlockHash:      []byte("testhash"),
-		ValidationPass: true,
-		Timestamp:      time.Now(),
-		VoterNode:      "validator1",
-	}
+// 	// Test adding a valid vote
+// 	vote := Vote{
+// 		ValidatorID:    "validator3",
+// 		BlockNumber:    1,
+// 		BlockHash:      []byte("testhash"),
+// 		ValidationPass: true,
+// 		Timestamp:      time.Now(),
+// 		VoterNode:      "validator1",
+// 	}
 
-	err := voteCounter.AddVote(vote)
-	if err != nil {
-		t.Errorf("Failed to add valid vote: %v", err)
-	}
+// 	err := voteCounter.AddVote(vote)
+// 	if err != nil {
+// 		t.Errorf("Failed to add valid vote: %v", err)
+// 	}
 
-	// Verify vote count
-	count := voteCounter.GetVoteCount("validator3")
-	if count != 1 {
-		t.Errorf("Expected vote count 1, got %d", count)
-	}
-}
+// 	// Verify vote count
+// 	count := voteCounter.GetVoteCount("validator3")
+// 	if count != 1 {
+// 		t.Errorf("Expected vote count 1, got %d", count)
+// 	}
+// }
 
 // func TestVoteCounter_RejectDuplicateVotes(t *testing.T) {
 // 	mockBC := NewMockBlockchainForValidator()

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core/chain"
-	"github.com/thrylos-labs/thrylos/core/config"
+	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/config"
 )
 
 type StakingManager interface {
@@ -214,50 +214,50 @@ func (s *StakingService) IsValidator(address string) bool {
 	return false
 }
 
-func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// func (s *StakingService) CreateStake(userAddress string, amount int64) (*Stake, error) {
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
 
-	// Automatically determine if address is a validator
-	isValidator := s.isValidator(userAddress)
-	isDelegator := !isValidator // isDelegator is opposite of isValidator
+// 	// Automatically determine if address is a validator
+// 	isValidator := s.isValidator(userAddress)
+// 	isDelegator := !isValidator // isDelegator is opposite of isValidator
 
-	// Use appropriate minimum based on status
-	minRequired := s.pool.MinStakeAmount
-	if isDelegator {
-		minRequired = s.pool.MinDelegation
-	}
+// 	// Use appropriate minimum based on status
+// 	minRequired := s.pool.MinStakeAmount
+// 	if isDelegator {
+// 		minRequired = s.pool.MinDelegation
+// 	}
 
-	if amount < minRequired {
-		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
-	}
+// 	if amount < minRequired {
+// 		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
+// 	}
 
-	// Create transaction based on type
-	txType := "stake"
-	if isDelegator {
-		txType = "delegate"
-	}
-	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
+// 	// Create transaction based on type
+// 	txType := "stake"
+// 	if isDelegator {
+// 		txType = "delegate"
+// 	}
+// 	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
 
-	stakingTx := &thrylos.Transaction{
-		Id:        txID,
-		Sender:    userAddress,
-		Timestamp: time.Now().Unix(),
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress:  "staking_pool",
-			Amount:        amount,
-			Index:         0,
-			TransactionId: "",
-		}},
-	}
+// 	stakingTx := &thrylos.Transaction{
+// 		Id:        txID,
+// 		Sender:    userAddress,
+// 		Timestamp: time.Now().Unix(),
+// 		Outputs: []*thrylos.UTXO{{
+// 			OwnerAddress:  "staking_pool",
+// 			Amount:        amount,
+// 			Index:         0,
+// 			TransactionId: "",
+// 		}},
+// 	}
 
-	// Create the stake transaction
-	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
-		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
-	}
+// 	// Create the stake transaction
+// 	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
+// 		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
+// 	}
 
-	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
-}
+// 	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
+// }
 
 // Keep internal function for testing
 func (s *StakingService) createStakeInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) (*Stake, error) {

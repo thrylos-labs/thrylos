@@ -27,6 +27,6 @@ func (sc *StatsCollector) GetBlockStats() (int, int) {
 	return blocks, txCount
 }
 
-func (sc *StatsCollector) GetTotalStake() int64 {
-	return sc.blockchain.TotalStake()
-}
+// func (sc *StatsCollector) GetTotalStake() int64 {
+// 	return sc.blockchain.TotalStake()
+// }

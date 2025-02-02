@@ -10,12 +10,9 @@ import (
 	_ "net/http/pprof" // This is important as it registers pprof handlers with the default mux.
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/core/chain"
-	"github.com/thrylos-labs/thrylos/core/network"
-	"github.com/thrylos-labs/thrylos/core/node"
+
 	"github.com/thrylos-labs/thrylos/database"
 
 	"github.com/joho/godotenv"
@@ -103,21 +100,21 @@ func main() {
 
 	// Environment variables
 	grpcAddress := envFile["GRPC_NODE_ADDRESS"]
-	knownPeers := envFile["PEERS"]
+	// knownPeers := envFile["PEERS"]
 	nodeDataDir := envFile["DATA"]
-	testnet := envFile["TESTNET"] == "true" // Convert to boolea]
+	// testnet := envFile["TESTNET"] == "true" // Convert to boolea]
 	dataDir := envFile["DATA_DIR"]
-	chainID := "0x539" // Default local chain ID (1337 in decimal)
+	// chainID := "0x539" // Default local chain ID (1337 in decimal)
 	// domainName := envFile["DOMAIN_NAME")
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
 	}
 
-	if testnet {
-		fmt.Println("Running in Testnet Mode")
-		chainID = "0x5" // Goerli Testnet chain ID
-	}
+	// if testnet {
+	// 	fmt.Println("Running in Testnet Mode")
+	// 	chainID = "0x5" // Goerli Testnet chain ID
+	// }
 
 	// Fetch the Base64-encoded AES key from the environment variable
 	base64Key := envFile["AES_KEY_ENV_VAR"]
@@ -146,22 +143,22 @@ func main() {
 	// Initialize the blockchain and database with the AES key
 
 	// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
-	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-		DataDir:           absPath,
-		AESKey:            aesKey,
-		GenesisAccount:    genesisAccount,
-		TestMode:          true,
-		DisableBackground: false, // Set based on your requirements
-	})
+	// blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+	// 	DataDir:           absPath,
+	// 	AESKey:            aesKey,
+	// 	GenesisAccount:    genesisAccount,
+	// 	TestMode:          true,
+	// 	DisableBackground: false, // Set based on your requirements
+	// })
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
 	// Perform an integrity check on the blockchain
-	if !blockchain.CheckChainIntegrity() {
-		log.Fatal("Blockchain integrity check failed.")
-	} else {
-		fmt.Println("Blockchain integrity check passed.")
-	}
+	// if !blockchain.CheckChainIntegrity() {
+	// 	log.Fatal("Blockchain integrity check failed.")
+	// } else {
+	// 	fmt.Println("Blockchain integrity check passed.")
+	// }
 
 	// Initialize the database
 	blockchainDB, err := database.InitializeDatabase(dataDir)
@@ -170,31 +167,31 @@ func main() {
 	}
 
 	// Initialize a new node with the specified address and known peers
-	peersList := []string{}
-	if knownPeers != "" {
-		peersList = strings.Split(knownPeers, ",")
-	}
+	// peersList := []string{}
+	// if knownPeers != "" {
+	// 	peersList = strings.Split(knownPeers, ",")
+	// }
 
-	node := node.NewNode(grpcAddress, peersList, nodeDataDir, nil)
+	// node := node.NewNode(grpcAddress, peersList, nodeDataDir, nil)
 
-	node.SetChainID(chainID)
+	// node.SetChainID(chainID)
 
-	// Set up routes
-	router := network.NewRouter(node)
-	mux := router.SetupRoutes()
+	// // Set up routes
+	// router := network.NewRouter(node)
+	// mux := router.SetupRoutes()
 
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
-	})
+	// mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+	// 	fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
+	// })
 
 	// Start background tasks
-	node.StartBackgroundTasks()
+	// node.StartBackgroundTasks()
 
 	// Create a sample HTTP handler
 	// mux := http.NewServeMux()
 
 	// Setup and start servers
-	setupServers(mux, envFile)
+	// setupServers(mux, envFile)
 
 	// Create BlockchainDB instance
 	encryptionKey := []byte(aesKey) // This should ideally come from a secure source

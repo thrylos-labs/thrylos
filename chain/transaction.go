@@ -1,153 +1,118 @@
 package chain
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/asaskevich/govalidator"
-	"github.com/fxamacker/cbor/v2"
-	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/utils"
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
-//Let us put here all codes related to transactions
+// lockchain-specific operations and processing
 
-// Transaction defines the structure for blockchain transactions, including its inputs, outputs, a unique identifier,
-// and an optional signature. Transactions are the mechanism through which value is transferred within the blockchain.
-type Transaction struct {
-	ID               string           `cbor:"1,keyasint"`
-	Timestamp        int64            `cbor:"2,keyasint"`
-	Inputs           []UTXO           `cbor:"3,keyasint"`
-	Outputs          []UTXO           `cbor:"4,keyasint"`
-	EncryptedInputs  []byte           `cbor:"5,keyasint,omitempty"`
-	EncryptedOutputs []byte           `cbor:"6,keyasint,omitempty"`
-	EncryptedAESKey  []byte           `cbor:"7,keyasint"`
-	PreviousTxIds    []string         `cbor:"8,keyasint"`
-	SenderAddress    address.Address  `cbor:"9,keyasint"`
-	SenderPublicKey  crypto.PublicKey `cbor:"10,keyasint"`
-	Signature        crypto.Signature `cbor:"11,keyasint,omitempty"`
-	GasFee           int              `cbor:"12,keyasint"`
-	BlockHash        string           `cbor:"13,keyasint,omitempty"`
-	Salt             []byte           `cbor:"14,keyasint,omitempty"`
-	Status           string           `cbor:"15,keyasint,omitempty"`
-}
+// TransactionContext manages blockchain-specific transaction operations
 
-// NewTransaction creates a new Transaction instance with the specified ID, inputs, outputs, and records
-func NewTransaction(id string, inputs, outputs []UTXO) *Transaction {
-	// Log the inputs and outputs for debugging
-	fmt.Printf("Creating new transaction with ID: %s\n", id)
-	fmt.Printf("Inputs: %+v\n", inputs)
-	fmt.Printf("Outputs: %+v\n", outputs)
-	return &Transaction{
-		ID:        id,
-		Inputs:    inputs,
-		Outputs:   outputs,
-		Timestamp: time.Now().Unix(),
-	}
-}
-
-// Validate ensures the fields of Transaction are correct.
-// Validate ensures the fields of Transaction are correct.
-func (tx *Transaction) Validate() error {
-	// Custom validation logic
-	if !utils.IsValidUUID(tx.ID) {
-		return errors.New("invalid ID: must be a valid UUID")
+func ValidateTransaction(tx *shared.Transaction, availableUTXOs map[string][]shared.UTXO) error {
+	// First perform basic structure validation
+	if err := tx.ValidateStructure(); err != nil {
+		return fmt.Errorf("structure validation failed: %w", err)
 	}
 
-	// Validates using struct tags and custom logic
-	_, err := govalidator.ValidateStruct(tx)
-	if err != nil {
-		return err
+	// Blockchain-specific validation
+	inputSum := int64(0)
+	for _, input := range tx.Inputs {
+		// Construct the key used to find the UTXOs for this input
+		utxoKey := input.Key() // Use the standardized Key() method from shared.UTXO
+		utxos, exists := availableUTXOs[utxoKey]
+
+		if !exists || len(utxos) == 0 {
+			return fmt.Errorf("input UTXO not found or empty slice: %s", utxoKey)
+		}
+
+		// Verify UTXO ownership and amount
+		if utxos[0].OwnerAddress != tx.SenderAddress.String() {
+			return fmt.Errorf("UTXO owner mismatch for: %s", utxoKey)
+		}
+
+		inputSum += utxos[0].Amount
 	}
 
-	// Check timestamp validity
-	if !utils.IsTimestampWithinOneHour(tx.Timestamp) {
-		return errors.New("invalid timestamp: must be recent within an hour")
+	// Calculate output sum
+	outputSum := int64(0)
+	for _, output := range tx.Outputs {
+		outputSum += output.Amount
+	}
+
+	// Validate balance including gas fee
+	if inputSum != outputSum+int64(tx.GasFee) {
+		return fmt.Errorf("input sum (%d) does not match output sum (%d) plus gas fee (%d)",
+			inputSum, outputSum, tx.GasFee)
 	}
 
 	return nil
 }
 
-// SerializeWithoutSignature generates a JSON representation of the transaction without including the signature.
-// This is useful for verifying the transaction signature, as the signature itself cannot be part of the signed data.
-
-func (tx *Transaction) SerializeWithoutSignature() ([]byte, error) {
-	txCopy := *tx
-	txCopy.Signature = nil
-	return cbor.Marshal(txCopy)
-}
-
-// VerifySignature verifies the transaction's signature using the sender's public key.
-func (tx *Transaction) VerifySignature() error {
-	// Serialize the transaction without the signature
-	txBytes, err := tx.SerializeWithoutSignature()
-	if err != nil {
-		return fmt.Errorf("failed to serialize transaction: %v", err)
+// Blockchain-specific conversion functions
+func ConvertToThrylosTransaction(tx *shared.Transaction) (*thrylos.Transaction, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("nil transaction")
 	}
-	if (tx.Salt == nil) || (len(tx.Salt) == 0) {
-		// Verify the signature using the sender's public key
-		return tx.Signature.Verify(&tx.SenderPublicKey, txBytes)
+
+	// Convert inputs and outputs
+	thrylosInputs := make([]*thrylos.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		thrylosInputs[i] = &thrylos.UTXO{
+			TransactionId: input.TransactionID,
+			Index:         int32(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        input.Amount,
+		}
 	}
-	return tx.Signature.VerifyWithSalt(&tx.SenderPublicKey, txBytes, tx.Salt)
-}
 
-// Marshal serializes the Transaction into CBOR format.
-func (tx *Transaction) Marshal() ([]byte, error) {
-	return cbor.Marshal(tx)
-}
-
-// Unmarshal deserializes the CBOR data into a Transaction.
-func (tx *Transaction) Unmarshal(data []byte) error {
-	err := cbor.Unmarshal(data, &tx)
-	if err != nil {
-		return err
+	thrylosOutputs := make([]*thrylos.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		thrylosOutputs[i] = &thrylos.UTXO{
+			TransactionId: output.TransactionID,
+			Index:         int32(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        output.Amount,
+		}
 	}
-	return nil
+
+	return &thrylos.Transaction{
+		Id:            tx.ID,
+		Inputs:        thrylosInputs,
+		Outputs:       thrylosOutputs,
+		Timestamp:     tx.Timestamp,
+		PreviousTxIds: tx.PreviousTxIds,
+		Gasfee:        int32(tx.GasFee),
+	}, nil
 }
 
-// // TransactionContext wraps a BadgerDB transaction to manage its lifecycle.
-// type TransactionContext struct {
-// 	Txn      *badger.Txn
-// 	UTXOs    map[string][]UTXO // Map of address to UTXOs
-// 	Modified map[string]bool   // Track which addresses have modified UTXOs
-// 	mu       sync.RWMutex      // Mutex for thread-safe access
-// }
-
-// // NewTransactionContext creates a new context for a database transaction.
-// func NewTransactionContext(txn *badger.Txn) *TransactionContext {
-// 	return &TransactionContext{
-// 		Txn:      txn,
-// 		UTXOs:    make(map[string][]UTXO),
-// 		Modified: make(map[string]bool),
-// 	}
-// }
-
-// // GetUTXOs retrieves UTXOs for a specific address from the transaction context
-// func (tc *TransactionContext) GetUTXOs(address string) []UTXO {
+// GetUTXOs retrieves UTXOs for a specific address from the transaction context
+// func (tc *TransactionContext) GetUTXOs(address string) []shared.UTXO {
 // 	tc.mu.RLock()
 // 	defer tc.mu.RUnlock()
 // 	return tc.UTXOs[address]
 // }
 
-// // MarkModified marks an address as having modified UTXOs
+// MarkModified marks an address as having modified UTXOs
 // func (tc *TransactionContext) MarkModified(address string) {
 // 	tc.mu.Lock()
 // 	defer tc.mu.Unlock()
 // 	tc.Modified[address] = true
 // }
 
-// func CreateThrylosTransaction(id int) *thrylos.Transaction {
-// 	return &thrylos.Transaction{
-// 		Id:        fmt.Sprintf("tx%d", id),
-// 		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-// 		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
-// 		Timestamp: time.Now().Unix(),
-// 		Signature: []byte("signature"), // This should be properly generated or mocked
-// 		Sender:    "Alice",
-// 	}
-// }
+func CreateThrylosTransaction(id int) *thrylos.Transaction {
+	return &thrylos.Transaction{
+		Id:        fmt.Sprintf("tx%d", id),
+		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		Timestamp: time.Now().Unix(),
+		Signature: []byte("signature"), // This should be properly generated or mocked
+		Sender:    "Alice",
+	}
+}
 
 // func SharedToThrylos(tx *Transaction) *thrylos.Transaction {
 // 	if tx == nil {
@@ -497,57 +462,6 @@ func (tx *Transaction) Unmarshal(data []byte) error {
 // 		Outputs:   protoOutputs,
 // 		Signature: signatureBytes, // Use the decoded byte slice here
 // 	}, nil
-// }
-
-// // ValidateTransaction checks the internal consistency of a transaction, ensuring that the sum of inputs matches the sum of outputs.
-// // It is a crucial part of ensuring no value is created out of thin air within the blockchain system.
-// // ValidateTransaction checks the internal consistency of a transaction,
-// // ensuring that the sum of inputs matches the sum of outputs.
-// func ValidateTransaction(tx Transaction, availableUTXOs map[string][]UTXO) bool {
-// 	// Add salt validation
-// 	if len(tx.Salt) == 0 {
-// 		fmt.Println("Transaction is missing salt")
-// 		return false
-// 	}
-// 	if len(tx.Salt) != 32 {
-// 		fmt.Printf("Invalid salt length: expected 32 bytes, got %d\n", len(tx.Salt))
-// 		return false
-// 	}
-
-// 	// Validate inputs and outputs exist
-// 	if len(tx.Inputs) == 0 || len(tx.Outputs) == 0 {
-// 		fmt.Println("Transaction must have inputs and outputs")
-// 		return false
-// 	}
-
-// 	inputSum := int64(0)
-// 	for _, input := range tx.Inputs {
-// 		// Construct the key used to find the UTXOs for this input.
-// 		utxoKey := input.TransactionID + strconv.Itoa(input.Index)
-// 		utxos, exists := availableUTXOs[utxoKey]
-
-// 		if !exists || len(utxos) == 0 {
-// 			fmt.Println("Input UTXO not found or empty slice:", utxoKey)
-// 			return false
-// 		}
-
-// 		// Assuming the first UTXO in the slice is the correct one.
-// 		inputSum += utxos[0].Amount
-// 	}
-
-// 	outputSum := int64(0)
-// 	for _, output := range tx.Outputs {
-// 		outputSum += output.Amount
-// 	}
-
-// 	// Validate balance including gas fee
-// 	if inputSum != outputSum+int64(tx.GasFee) {
-// 		fmt.Printf("Input sum (%d) does not match output sum (%d) plus gas fee (%d)\n",
-// 			inputSum, outputSum, tx.GasFee)
-// 		return false
-// 	}
-
-// 	return true
 // }
 
 // // GenerateTransactionID creates a unique identifier for a transaction based on its contents.

@@ -7,10 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/config"
-	"github.com/thrylos-labs/thrylos/node"
 	"github.com/thrylos-labs/thrylos/shared"
+
+	"github.com/thrylos-labs/thrylos/config"
 )
+
+// NEED TO ADD MESSAGES TO MESSAGES.GO FOR BALANCE
+// SO IT CAN USE NODE.GO
 
 type BalanceNotifier interface {
 	SendBalanceUpdate(address string) error
@@ -18,7 +21,7 @@ type BalanceNotifier interface {
 }
 
 type Manager struct {
-	node           *node.Node
+	// node           *node.Node
 	notifier       BalanceNotifier
 	cache          sync.Map
 	cacheTTL       time.Duration
@@ -27,16 +30,16 @@ type Manager struct {
 	updateQueue    *BalanceUpdateQueue
 }
 
-func NewManager(node *node.Node, notifier BalanceNotifier) *Manager {
-	m := &Manager{
-		node:           node,
-		notifier:       notifier,
-		cacheTTL:       5 * time.Second,
-		pendingUpdates: make(map[string][]PendingBalanceUpdate),
-	}
-	m.updateQueue = newBalanceUpdateQueue(m)
-	return m
-}
+// func NewManager(node *node.Node, notifier BalanceNotifier) *Manager {
+// 	m := &Manager{
+// 		node:           node,
+// 		notifier:       notifier,
+// 		cacheTTL:       5 * time.Second,
+// 		pendingUpdates: make(map[string][]PendingBalanceUpdate),
+// 	}
+// 	m.updateQueue = newBalanceUpdateQueue(m)
+// 	return m
+// }
 
 func (m *Manager) SendBalanceUpdate(address string) error {
 	return m.notifier.SendBalanceUpdate(address)
@@ -92,11 +95,30 @@ func (q *BalanceUpdateQueue) balanceUpdateWorker() {
 }
 
 func (m *Manager) GetBalance(address string) (int64, error) {
-	utxos, err := m.node.Blockchain.GetUTXOsForAddress(address)
-	if err != nil {
-		return 0, err
+	// Check cache first
+	if cached, ok := m.checkCache(address); ok {
+		return cached, nil
 	}
 
+	// Get UTXOs through message system
+	utxoResponseCh := make(chan shared.Response)
+	shared.GetMessageBus().Publish(shared.Message{
+		Type: shared.GetUTXOs,
+		Data: shared.UTXORequest{
+			Address: address,
+		},
+		ResponseCh: utxoResponseCh,
+	})
+
+	// Wait for response
+	utxoResponse := <-utxoResponseCh
+	if utxoResponse.Error != nil {
+		return 0, utxoResponse.Error
+	}
+
+	utxos := utxoResponse.Data.([]shared.UTXO)
+
+	// Calculate total from UTXOs
 	var total int64
 	for _, utxo := range utxos {
 		if !utxo.IsSpent {
@@ -104,6 +126,7 @@ func (m *Manager) GetBalance(address string) (int64, error) {
 		}
 	}
 
+	// Handle genesis balance if total is 0
 	if total == 0 {
 		initialBalanceThrylos := 70.0
 		initialBalanceNano := ThrylosToNano(initialBalanceThrylos)
@@ -116,20 +139,52 @@ func (m *Manager) GetBalance(address string) (int64, error) {
 			Index:         0,
 		}
 
-		if err := m.node.Blockchain.Database.AddUTXO(newUtxo); err != nil {
-			return 0, err
+		// Add UTXO through message system
+		addUTXOResponseCh := make(chan shared.Response)
+		shared.GetMessageBus().Publish(shared.Message{
+			Type: shared.AddUTXO,
+			Data: shared.AddUTXORequest{
+				UTXO: newUtxo,
+			},
+			ResponseCh: addUTXOResponseCh,
+		})
+
+		// Wait for response
+		addUTXOResponse := <-addUTXOResponseCh
+		if addUTXOResponse.Error != nil {
+			return 0, addUTXOResponse.Error
 		}
 
 		total = initialBalanceNano
 	}
 
+	// Update cache
 	m.cache.Store(address, cachedBalance{
 		value:     total,
 		timestamp: time.Now(),
 	})
-	m.node.Blockchain.StateManager.UpdateState(address, total, nil)
+
+	// Update state through message system
+	shared.GetMessageBus().Publish(shared.Message{
+		Type: shared.UpdateState,
+		Data: shared.UpdateStateRequest{
+			Address: address,
+			Balance: total,
+		},
+		ResponseCh: make(chan shared.Response),
+	})
 
 	return total, nil
+}
+
+func (m *Manager) checkCache(address string) (int64, bool) {
+	if cached, ok := m.cache.Load(address); ok {
+		cachedBal := cached.(cachedBalance)
+		if time.Since(cachedBal.timestamp) < m.cacheTTL {
+			return cachedBal.value, true
+		}
+	}
+	return 0, false
 }
 
 func (m *Manager) AddPendingBalanceUpdate(address string, balance int64) {

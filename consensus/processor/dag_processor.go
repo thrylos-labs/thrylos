@@ -8,6 +8,7 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 const (
@@ -22,9 +23,19 @@ type DAGManager struct {
 	vertices map[string]*TransactionVertex
 	tips     map[string]*TransactionVertex
 	sync.RWMutex
-	node        *Node
 	processChan chan *txProcessRequest
 	workers     int
+	msgCh       chan shared.Message // Channel for receiving messages
+
+}
+
+type TransactionVertex struct {
+	Transaction  *thrylos.Transaction
+	References   []string
+	ReferencedBy []string
+	Score        float64
+	IsConfirmed  bool
+	Timestamp    time.Time
 }
 
 type txProcessRequest struct {
@@ -32,13 +43,22 @@ type txProcessRequest struct {
 	respChan chan error
 }
 
-func NewDAGManager(node *Node) *DAGManager {
+func NewDAGManager() *DAGManager {
 	dm := &DAGManager{
 		vertices:    make(map[string]*TransactionVertex),
 		tips:        make(map[string]*TransactionVertex),
-		node:        node,
 		processChan: make(chan *txProcessRequest, 1000),
+		msgCh:       make(chan shared.Message, 100),
 	}
+
+	// Subscribe to relevant message types
+	messageBus := shared.GetMessageBus()
+	messageBus.Subscribe(shared.ValidateDAGTx, dm.msgCh)
+	messageBus.Subscribe(shared.UpdateDAGState, dm.msgCh)
+	messageBus.Subscribe(shared.GetDAGTips, dm.msgCh)
+
+	// Start message handler
+	go dm.handleMessages()
 
 	// Start minimal number of workers
 	for i := 0; i < runtime.NumCPU(); i++ {
@@ -48,10 +68,54 @@ func NewDAGManager(node *Node) *DAGManager {
 	return dm
 }
 
+func (dm *DAGManager) handleMessages() {
+	for msg := range dm.msgCh {
+		switch msg.Type {
+		case shared.ValidateDAGTx:
+			dm.handleValidateTransaction(msg)
+		case shared.UpdateDAGState:
+			dm.handleUpdateState(msg)
+		case shared.GetDAGTips:
+			dm.handleGetTips(msg)
+		}
+	}
+}
+
+func (dm *DAGManager) handleGetTips(msg shared.Message) {
+	dm.RLock()
+	tips := make([]string, 0, len(dm.tips))
+	for tipID := range dm.tips {
+		tips = append(tips, tipID)
+	}
+	dm.RUnlock()
+
+	msg.ResponseCh <- shared.Response{Data: tips}
+}
+
+func (dm *DAGManager) handleValidateTransaction(msg shared.Message) {
+	tx := msg.Data.(*thrylos.Transaction)
+	err := dm.AddTransaction(tx)
+	msg.ResponseCh <- shared.Response{Error: err}
+}
+
 func (dm *DAGManager) processWorker() {
 	for req := range dm.processChan {
 		req.respChan <- dm.processTransaction(req.tx)
 	}
+}
+
+func (dm *DAGManager) handleUpdateState(msg shared.Message) {
+	req := msg.Data.(shared.UpdateTransactionStateRequest) // Match the type we're sending
+	dm.Lock()
+	if vertex, exists := dm.vertices[req.TransactionID]; exists {
+		vertex.IsConfirmed = true
+		// Only notify if state actually changed
+		if req.State == "confirmed" && !vertex.IsConfirmed {
+			dm.notifyStateChange(vertex)
+		}
+	}
+	dm.Unlock()
+	msg.ResponseCh <- shared.Response{}
 }
 
 func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
@@ -71,36 +135,15 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 		Score:        1.0,
 	}
 
-	// Fast tip selection with pre-allocated slice
-	tips := make([]*TransactionVertex, 0, MinReferences)
-	for _, tip := range dm.tips {
-		if time.Since(tip.Timestamp) < 100*time.Millisecond {
-			tips = append(tips, tip)
-			if len(tips) == MinReferences {
-				break
-			}
-		}
-	}
-
-	// Add references
+	tips := dm.selectTips()
 	for _, tip := range tips {
 		vertex.References = append(vertex.References, tip.Transaction.GetId())
 		tip.ReferencedBy = append(tip.ReferencedBy, txID)
 
-		// Check if this reference confirms the tip
 		if len(tip.ReferencedBy) >= ConfirmationThreshold {
 			tip.IsConfirmed = true
-			statusIface, _ := dm.node.txStatusMap.LoadOrStore(tip.Transaction.GetId(), &TransactionStatus{})
-			tipStatus := statusIface.(*TransactionStatus)
-
-			tipStatus.Lock()
-			if !tipStatus.ConfirmedByDAG {
-				tipStatus.ConfirmedByDAG = true
-				if tipStatus.ProcessedByModern {
-					go dm.node.handleProcessedTransaction(tip.Transaction)
-				}
-			}
-			tipStatus.Unlock()
+			// Only use message system when communicating with node
+			dm.notifyNodeOfConfirmation(tip.Transaction)
 		}
 
 		delete(dm.tips, tip.Transaction.GetId())
@@ -110,6 +153,16 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 	dm.tips[txID] = vertex
 
 	return nil
+}
+
+func (dm *DAGManager) notifyTransactionConfirmed(tx *thrylos.Transaction) {
+	responseCh := make(chan shared.Response)
+	shared.GetMessageBus().Publish(shared.Message{
+		Type:       shared.ProcessBlock,
+		Data:       tx,
+		ResponseCh: responseCh,
+	})
+	// We don't wait for response as this is asynchronous notification
 }
 
 func (dm *DAGManager) AddTransaction(tx *thrylos.Transaction) error {
@@ -123,6 +176,7 @@ func (dm *DAGManager) AddTransaction(tx *thrylos.Transaction) error {
 }
 
 func (dm *DAGManager) selectTips() []*TransactionVertex {
+	// Internal method - no message system needed
 	tips := make([]*TransactionVertex, 0, MinReferences)
 	if len(dm.tips) < MinReferences {
 		for _, tip := range dm.tips {
@@ -131,7 +185,6 @@ func (dm *DAGManager) selectTips() []*TransactionVertex {
 		return tips
 	}
 
-	// Get recent tips
 	var candidates []*TransactionVertex
 	for _, tip := range dm.tips {
 		if time.Since(tip.Timestamp) < 500*time.Millisecond {
@@ -139,7 +192,6 @@ func (dm *DAGManager) selectTips() []*TransactionVertex {
 		}
 	}
 
-	// Select random tips from candidates
 	for i := 0; i < MinReferences && len(candidates) > 0; i++ {
 		idx := rand.Intn(len(candidates))
 		tips = append(tips, candidates[idx])
@@ -147,6 +199,28 @@ func (dm *DAGManager) selectTips() []*TransactionVertex {
 	}
 
 	return tips
+}
+
+func (dm *DAGManager) notifyStateChange(vertex *TransactionVertex) {
+	responseCh := make(chan shared.Response)
+	shared.GetMessageBus().Publish(shared.Message{
+		Type: shared.UpdateState,
+		Data: shared.UpdateTransactionStateRequest{
+			TransactionID: vertex.Transaction.GetId(),
+			State:         "confirmed",
+		},
+		ResponseCh: responseCh,
+	})
+}
+
+func (dm *DAGManager) notifyNodeOfConfirmation(tx *thrylos.Transaction) {
+	responseCh := make(chan shared.Response)
+	shared.GetMessageBus().Publish(shared.Message{
+		Type:       shared.ProcessBlock,
+		Data:       tx,
+		ResponseCh: responseCh,
+	})
+	// Async notification to node
 }
 
 func (dm *DAGManager) GetConfirmationStatus(txID string) (bool, error) {
@@ -157,13 +231,4 @@ func (dm *DAGManager) GetConfirmationStatus(txID string) (bool, error) {
 		return vertex.IsConfirmed, nil
 	}
 	return false, fmt.Errorf("transaction not found")
-}
-
-type TransactionVertex struct {
-	Transaction  *thrylos.Transaction
-	References   []string
-	ReferencedBy []string
-	Score        float64
-	IsConfirmed  bool
-	Timestamp    time.Time
 }

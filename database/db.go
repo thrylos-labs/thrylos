@@ -9,7 +9,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -23,6 +22,7 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/dgraph-io/badger"
 	"github.com/thrylos-labs/thrylos"
+	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
 )
@@ -857,12 +857,12 @@ func (bdb *BlockchainDB) GetTransactionByID(txID string, recipientPrivateKey *rs
 	encryptedKey := encryptedTx.EncryptedAESKey // This field should exist in your encrypted transaction structure
 
 	// Decrypt the encrypted inputs and outputs using the AES key
-	decryptedInputsData, err := shared.DecryptTransactionData(encryptedTx.EncryptedInputs, encryptedKey, recipientPrivateKey)
+	decryptedInputsData, err := encryption.DecryptTransactionData(encryptedTx.EncryptedInputs, encryptedKey, recipientPrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt inputs: %v", err)
 	}
 
-	decryptedOutputsData, err := shared.DecryptTransactionData(encryptedTx.EncryptedOutputs, encryptedKey, recipientPrivateKey)
+	decryptedOutputsData, err := encryption.DecryptTransactionData(encryptedTx.EncryptedOutputs, encryptedKey, recipientPrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt outputs: %v", err)
 	}
@@ -922,17 +922,17 @@ func (bdb *BlockchainDB) GetLatestBlockData() ([]byte, error) {
 	return latestBlockData, nil
 }
 
-func (bdb *BlockchainDB) ProcessTransaction(tx *shared.Transaction) error {
-	return bdb.DB.Update(func(txn *badger.Txn) error {
-		if err := bdb.updateUTXOsInTxn(txn, tx.Inputs, tx.Outputs); err != nil {
-			return err
-		}
-		if err := bdb.addTransactionInTxn(txn, tx); err != nil {
-			return err
-		}
-		return nil
-	})
-}
+// func (bdb *BlockchainDB) ProcessTransaction(tx *shared.Transaction) error {
+// 	return bdb.DB.Update(func(txn *badger.Txn) error {
+// 		if err := bdb.updateUTXOsInTxn(txn, tx.Inputs, tx.Outputs); err != nil {
+// 			return err
+// 		}
+// 		if err := bdb.addTransactionInTxn(txn, tx); err != nil {
+// 			return err
+// 		}
+// 		return nil
+// 	})
+// }
 
 func (bdb *BlockchainDB) updateUTXOsInTxn(txn *badger.Txn, inputs, outputs []shared.UTXO) error {
 	for _, input := range inputs {
@@ -963,37 +963,37 @@ func (bdb *BlockchainDB) updateUTXOsInTxn(txn *badger.Txn, inputs, outputs []sha
 	return nil
 }
 
-func (bdb *BlockchainDB) addTransactionInTxn(txn *badger.Txn, tx *shared.Transaction) error {
-	key := []byte("transaction-" + tx.ID)
-	value, err := json.Marshal(tx)
-	if err != nil {
-		return err
-	}
-	return txn.Set(key, value)
-}
+// func (bdb *BlockchainDB) addTransactionInTxn(txn *badger.Txn, tx *shared.Transaction) error {
+// 	key := []byte("transaction-" + tx.ID)
+// 	value, err := json.Marshal(tx)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	return txn.Set(key, value)
+// }
 
-func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error {
-	utxo := shared.CreateUTXO(id, txID, index, owner, amount)
+// func (bdb *BlockchainDB) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error {
+// 	utxo := shared.CreateUTXO(id, txID, index, owner, amount)
 
-	// Marshal the UTXO object into JSON for storage.
-	utxoJSON, err := json.Marshal(utxo)
-	if err != nil {
-		return fmt.Errorf("error marshalling UTXO: %v", err)
-	}
+// 	// Marshal the UTXO object into JSON for storage.
+// 	utxoJSON, err := json.Marshal(utxo)
+// 	if err != nil {
+// 		return fmt.Errorf("error marshalling UTXO: %v", err)
+// 	}
 
-	// Prepare the key for this UTXO entry in the database.
-	key := []byte("utxo-" + id)
+// 	// Prepare the key for this UTXO entry in the database.
+// 	key := []byte("utxo-" + id)
 
-	// Use BadgerDB transaction to put the UTXO data into the database.
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, utxoJSON)
-	})
-	if err != nil {
-		return fmt.Errorf("error inserting UTXO into BadgerDB: %v", err)
-	}
+// 	// Use BadgerDB transaction to put the UTXO data into the database.
+// 	err = bdb.DB.Update(func(txn *badger.Txn) error {
+// 		return txn.Set(key, utxoJSON)
+// 	})
+// 	if err != nil {
+// 		return fmt.Errorf("error inserting UTXO into BadgerDB: %v", err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // UpdateUTXOs updates the UTXOs in the database, marking the inputs as spent and adding new outputs.
 func (bdb *BlockchainDB) UpdateUTXOs(inputs []shared.UTXO, outputs []shared.UTXO) error {
@@ -1287,37 +1287,37 @@ func (bdb *BlockchainDB) GetLastBlockIndex() (int, error) {
 	return lastIndex, nil
 }
 
-func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs []shared.UTXO, privKey *rsa.PrivateKey) (shared.Transaction, error) {
-	tx := shared.NewTransaction(txID, inputs, outputs)
+// func (bdb *BlockchainDB) CreateAndSignTransaction(txID string, inputs, outputs []shared.UTXO, privKey *rsa.PrivateKey) (*shared.Transaction, error) {
+// 	tx := shared.NewTransaction(txID, inputs, outputs) // Returns *shared.Transaction
 
-	// Serialize the transaction without the signature
-	txBytes, err := tx.SerializeWithoutSignature()
-	if err != nil {
-		return tx, fmt.Errorf("error serializing transaction: %v", err) // returning tx, error
-	}
+// 	// Serialize the transaction without the signature
+// 	txBytes, err := tx.SerializeWithoutSignature()
+// 	if err != nil {
+// 		return tx, fmt.Errorf("error serializing transaction: %v", err) // Return pointer
+// 	}
 
-	// Hash the serialized transaction using BLAKE2b
-	hasher, _ := blake2b.New256(nil)
-	hasher.Write(txBytes)
-	hashedTx := hasher.Sum(nil)
+// 	// Hash the serialized transaction using BLAKE2b
+// 	hasher, _ := blake2b.New256(nil)
+// 	hasher.Write(txBytes)
+// 	hashedTx := hasher.Sum(nil)
 
-	// Sign the hashed transaction
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, hashedTx[:])
-	if err != nil {
-		return tx, fmt.Errorf("error signing transaction: %v", err) // returning tx, error
-	}
+// 	// Sign the hashed transaction
+// 	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, hashedTx[:])
+// 	if err != nil {
+// 		return tx, fmt.Errorf("error signing transaction: %v", err) // Return pointer
+// 	}
 
-	// Encode the signature to base64
-	base64Signature := base64.StdEncoding.EncodeToString(signature)
+// 	// Create a mldsa44.Signature object from the raw signature bytes
+// 	sig := mldsa44.Signature{sig: signature}
 
-	// Set the encoded signature on the transaction
-	tx.Signature = base64Signature // Assign the base64 string directly
-	return tx, nil                 // returning tx, nil
-}
+// 	// Set the signature on the transaction
+// 	tx.Signature = sig // Assign the mldsa44.Signature object
+// 	return tx, nil     // Return pointer
+// }
 
 func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, amount int64) (shared.UTXO, error) {
 	// Use the existing CreateUTXO method to create a UTXO object
-	utxo := shared.CreateUTXO(id, txID, index, address, amount)
+	utxo := shared.CreateUTXO(id, index, txID, address, amount, false) // Add `false` for isSpent
 
 	// Check if the UTXO ID already exists to avoid duplicates
 	if _, exists := bdb.utxos[id]; exists {
@@ -1325,9 +1325,9 @@ func (bdb *BlockchainDB) CreateUTXO(id, txID string, index int, address string, 
 	}
 
 	// Add the created UTXO to the map
-	bdb.utxos[id] = utxo
+	bdb.utxos[id] = *utxo // Dereference the pointer
 
-	return utxo, nil
+	return *utxo, nil
 }
 
 func (bdb *BlockchainDB) GetUTXOsForUser(address string) ([]shared.UTXO, error) {

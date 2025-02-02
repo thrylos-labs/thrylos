@@ -10,6 +10,7 @@ import (
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
+	"github.com/thrylos-labs/thrylos/shared"
 	// other necessary imports
 )
 
@@ -39,8 +40,8 @@ type Block struct {
 
 	// Transactions is the list of transactions included in the block. Transactions are the actions
 	// that modify the blockchain's state, such as transferring assets between parties.
-	Transactions []*Transaction `cbor:"6,keyasint"`
-	Data         string         `cbor:"7,keyasint,omitempty"` // Assuming the block's content is just a string for simplicity
+	Transactions []*shared.Transaction `cbor:"6,keyasint"`
+	Data         string                `cbor:"7,keyasint,omitempty"` // Assuming the block's content is just a string for simplicity
 
 	// Validator is the identifier for the node or party that created and validated the block.
 	// In proof-of-stake systems, this would be the stakeholder who was entitled to produce the block.
@@ -54,7 +55,7 @@ type Block struct {
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
 
-func NewBlock(index int64, prevHash hash.Hash, transactions []*Transaction, validatorAddress address.Address, validatorPublicKey crypto.PublicKey) (*Block, error) {
+func NewBlock(index int64, prevHash hash.Hash, transactions []*shared.Transaction, validatorAddress address.Address, validatorPublicKey crypto.PublicKey) (*Block, error) {
 	block := &Block{
 		Index:              index,
 		Timestamp:          time.Now().Unix(),

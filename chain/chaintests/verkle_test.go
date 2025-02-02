@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/thrylos-labs/thrylos/core/chain"
+	"github.com/thrylos-labs/thrylos/chain"
 )
 
 // TestNewVerkleTree tests the NewVerkleTree function to ensure it creates a tree correctly with valid data.

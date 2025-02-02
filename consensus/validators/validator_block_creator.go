@@ -2,13 +2,11 @@ package validators
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
-
-	"github.com/thrylos-labs/thrylos/core/chain"
-	"github.com/thrylos-labs/thrylos/core/node"
 )
+
+// NEEDS TO UPDATE TO USE MESSAGES FROM NODE
 
 // ValidatorSelector manages the selection and coordination of validators
 // for creating new blocks from pending transactions in the blockchain.
@@ -27,21 +25,21 @@ type ValidatorSelector struct {
 	mu               sync.RWMutex
 	lastSelectedTime time.Time
 	voteCounter      *VoteCounter
-	node             *node.Node // Add this if you need node-level access
+	// node             *node.Node // Add this if you need node-level access
 }
 
-func NewValidatorSelector(bc BlockchainValidatorInterface, node ...*Node) *ValidatorSelector {
-	var n *node.Node
-	if len(node) > 0 {
-		n = node[0]
-	}
+// func NewValidatorSelector(bc BlockchainValidatorInterface, node ...*Node) *ValidatorSelector {
+// 	var n *node.Node
+// 	if len(node) > 0 {
+// 		n = node[0]
+// 	}
 
-	return &ValidatorSelector{
-		blockchain:       bc,
-		node:             n,
-		lastSelectedTime: time.Now(),
-	}
-}
+// 	return &ValidatorSelector{
+// 		blockchain:       bc,
+// 		node:             n,
+// 		lastSelectedTime: time.Now(),
+// 	}
+// }
 
 // SelectNextValidator chooses the next validator to create a block
 func (vs *ValidatorSelector) SelectNextValidator() (string, error) {
@@ -77,35 +75,35 @@ func (vs *ValidatorSelector) SelectNextValidator() (string, error) {
 }
 
 // CreateBlockFromPendingTransactions handles the block creation process for a selected validator
-func (bc *Blockchain) CreateBlockFromPendingTransactions(validator string) (*chain.Block, error) {
-	// Verify validator is active and eligible
-	if !bc.IsActiveValidator(validator) {
-		return nil, fmt.Errorf("invalid or inactive validator: %s", validator)
-	}
+// func (bc *Blockchain) CreateBlockFromPendingTransactions(validator string) (*chain.Block, error) {
+// 	// Verify validator is active and eligible
+// 	if !bc.IsActiveValidator(validator) {
+// 		return nil, fmt.Errorf("invalid or inactive validator: %s", validator)
+// 	}
 
-	// Process pending transactions and create block
-	block, err := bc.ProcessPendingTransactions(validator)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process pending transactions: %v", err)
-	}
+// 	// Process pending transactions and create block
+// 	block, err := bc.ProcessPendingTransactions(validator)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to process pending transactions: %v", err)
+// 	}
 
-	if block == nil {
-		return nil, fmt.Errorf("no pending transactions to process")
-	}
+// 	if block == nil {
+// 		return nil, fmt.Errorf("no pending transactions to process")
+// 	}
 
-	// Verify and sign the block
-	if err := bc.VerifySignedBlock(block); err != nil {
-		return nil, fmt.Errorf("block verification failed: %v", err)
-	}
+// 	// Verify and sign the block
+// 	if err := bc.VerifySignedBlock(block); err != nil {
+// 		return nil, fmt.Errorf("block verification failed: %v", err)
+// 	}
 
-	// Add the block to the chain
-	success, err := bc.AddBlock(block.Transactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash)
-	if !success {
-		return nil, fmt.Errorf("failed to add block to chain: %v", err)
-	}
+// 	// Add the block to the chain
+// 	success, err := bc.AddBlock(block.Transactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash)
+// 	if !success {
+// 		return nil, fmt.Errorf("failed to add block to chain: %v", err)
+// 	}
 
-	log.Printf("New block created by validator %s with %d transactions",
-		validator, len(block.Transactions))
+// 	log.Printf("New block created by validator %s with %d transactions",
+// 		validator, len(block.Transactions))
 
-	return block, nil
-}
+// 	return block, nil
+// }
