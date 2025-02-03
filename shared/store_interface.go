@@ -4,7 +4,6 @@ import (
 	"crypto/rsa"
 
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/consensus/validator"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
@@ -17,14 +16,14 @@ type Store interface {
 	GetLastBlockNumber() (int, error)
 	GetBlock(blockNumber uint32) (*Block, error)
 	GetPublicKey(addr address.Address) (crypto.PublicKey, error)
-	GetValidator(addr address.Address) (*validator.Validator, error)
+	// GetValidator(addr address.Address) (*Validator, error)
 	RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error)
 	BeginTransaction() (*TransactionContext, error)
 	RollbackTransaction(txn *TransactionContext) error
 	MarkUTXOAsSpent(txContext *TransactionContext, utxo UTXO) error
 	SaveTransaction(tx *Transaction) error
 	SaveBlock(blk *Block) error
-	UpdateValidator(v *validator.Validator) error
+	// UpdateValidator(v *Validator) error
 	AddNewUTXO(txContext *TransactionContext, utxo UTXO) error
 	CommitTransaction(txn *TransactionContext) error
 	GetUTXOsForAddress(address string) ([]UTXO, error)

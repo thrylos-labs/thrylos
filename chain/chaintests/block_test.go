@@ -52,11 +52,11 @@ package chaintests
 // 	publicKey, privateKey := mldsa44.NewKeyFromSeed(seed)
 
 // 	// Step 2: Create a new transaction
-// 	tx := chain.Transaction{
+// 	tx := shared.Transaction{
 // 		ID:        "txTest123",
 // 		Timestamp: 1630000000,
-// 		Inputs:    []chain.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-// 		Outputs:   []chain.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
+// 		Inputs:    []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+// 		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
 // 	}
 
 // 	// Step 3: Serialize the transaction

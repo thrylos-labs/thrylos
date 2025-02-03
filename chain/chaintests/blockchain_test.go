@@ -1,10 +1,16 @@
 package chaintests
 
-// func loadEnvTest() {
-// 	if err := godotenv.Load("../.env.dev"); err != nil {
-// 		log.Fatalf("Error loading .env file: %v", err)
-// 	}
-// }
+import (
+	"log"
+
+	"github.com/joho/godotenv"
+)
+
+func loadEnvTest() {
+	if err := godotenv.Load("../.env.dev"); err != nil {
+		log.Fatalf("Error loading .env file: %v", err)
+	}
+}
 
 // func TestNewBlockchain(t *testing.T) {
 // 	loadEnvTest() // Ensure environment variables are loaded before any Supabase operations

@@ -45,8 +45,8 @@ package stakingtests
 // 		stakingAddress3: 16968625718.07,
 // 	}
 
-// Distribute rewards
-// rewards := stakingService.calculateStakeReward(stakingPeriodEndTime)
+// 	// Distribute rewards
+// 	rewards := stakingService.calculateStakeReward(stakingPeriodEndTime)
 
 // 	// Validate rewards
 // 	for id, expected := range expectedRewards {
@@ -101,7 +101,7 @@ package stakingtests
 // 		stakingAddress3:    54794520547.95,
 // 	}
 
-// Distribute rewards
+// 	// Distribute rewards
 // 	rewards := stakingService.calculateStakeReward(stakingPeriodEndTime)
 // 	// Validate rewards
 // 	for id, expected := range expectedRewards {
@@ -156,12 +156,12 @@ package stakingtests
 // 		stakingAddress3:    54794520547.95,
 // 	}
 
-// for addr, expected := range expectedRewards {
-// 	actual := stakingService.estimateStakeReward(addr, stakingPeriodEndTime)
-// 	if absFloat(float64(actual)-expected) > 0.1 {
-// 		t.Errorf("Reward for %s: expected %.2f, got %.2f", addr, expected, float64(actual))
+// 	for addr, expected := range expectedRewards {
+// 		actual := stakingService.estimateStakeReward(addr, stakingPeriodEndTime)
+// 		if absFloat(float64(actual)-expected) > 0.1 {
+// 			t.Errorf("Reward for %s: expected %.2f, got %.2f", addr, expected, float64(actual))
+// 		}
 // 	}
-// }
 
 // }
 

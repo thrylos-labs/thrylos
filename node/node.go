@@ -1,22 +1,23 @@
 package node
 
-//a central component that coordinates between different parts of the system.
+// a central component that coordinates between different parts of the system.
 
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both
 // a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
 // the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
+
 // type Node struct {
-// 	Address             string              // Network address of the node.
-// 	Blockchain          *chain.Blockchain   // The blockchain maintained by this node.
-// 	StateManager        *state.StateManager // Replace Shard field
+// 	Address             string               // Network address of the node.
+// 	Blockchain          *shared.Blockchain   // The blockchain maintained by this node.
+// 	StateManager        *shared.StateManager // Replace Shard field
 // 	PendingTransactions []*thrylos.Transaction
 // 	PublicKeyMap        map[string]mldsa44.PublicKey // Updated to store mldsa44 public keys
 // 	chainID             string
 // 	ResponsibleUTXOs    map[string]shared.UTXO // Tracks UTXOs for which the node is responsible
 // 	// Database provides an abstraction over the underlying database technology used to persist
 // 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
-// 	Database       shared.BlockchainDBInterface // Updated the type to interface
-// 	GasEstimateURL string                       // New field to store the URL for gas estimation
+// 	Database       shared.Store // Updated the type to interface
+// 	GasEstimateURL string       // New field to store the URL for gas estimation
 // 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
 // 	// preventing race conditions and ensuring data integrity.
 // 	Mu sync.RWMutex
@@ -35,7 +36,7 @@ package node
 // 	MaxInbound         int
 // 	MaxOutbound        int
 // 	txStatusMap        sync.Map
-// 	VoteCounter        *validators.VoteCounter
+// 	VoteCounter        *validator.VoteCounter
 // 	ValidatorSelector  *validators.ValidatorSelector
 // 	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
 // 	VoteCounterAddress string // Address of the designated vote counter
@@ -138,8 +139,8 @@ package node
 // 	return envFile, err
 // }
 
-// NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
-// blockchain instance for the node and optionally discovers peers if not running in a test environment.
+// // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
+// // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 // func NewNode(address string, knownPeers []string, dataDir string, stateManager *state.StateManager) *Node {
 // 	// Default values for WebSocket configuration
 // 	serverHost := address                            // Use the node's address as default server host
@@ -230,7 +231,7 @@ package node
 // 	}
 
 // 	// Initialize VoteCounter with designation status
-// 	node.VoteCounter = validators.NewVoteCounter(node, isDesignatedCounter)
+// 	node.VoteCounter = validator.NewVoteCounter(node, isDesignatedCounter)
 
 // 	if isDesignatedCounter {
 // 		log.Printf("Node %s designated as vote counter", address)
@@ -269,7 +270,7 @@ package node
 // 	return node
 // }
 
-// Add message handling methods
+// // Add message handling methods
 // func (node *Node) handleMessages() {
 // 	for msg := range node.messageCh {
 // 		switch msg.Type {
@@ -361,7 +362,7 @@ package node
 // 	}
 // }
 
-// Lifecycle methods (StartBackgroundTasks, Shutdown)
+// // Lifecycle methods (StartBackgroundTasks, Shutdown)
 
 // func (node *Node) Shutdown() error {
 // 	if node.blockProducer != nil {
@@ -523,7 +524,7 @@ package node
 // 	log.Printf("Block %d confirmation broadcast to all peers", confirmation.BlockNumber)
 // }
 
-// This method should be aligned with how we're handling stake determinations
+// // This method should be aligned with how we're handling stake determinations
 // func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
 // 	// We should determine if it's a delegator by checking validator status
 // 	isValidator := node.StakingService.IsValidator(userAddress)
@@ -556,7 +557,7 @@ package node
 // 	return node.StakingService.unstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
 // }
 
-// These delegation-specific methods are correct
+// // These delegation-specific methods are correct
 // func (node *Node) DelegateToPool(delegator string, amount int64) (*staking.Stake, error) {
 // 	return node.StakingService.CreateStake(delegator, amount)
 // }
@@ -602,8 +603,8 @@ package node
 // 	return nil
 // }
 
-// Validate block and send vote
-// func (node *Node) ValidateAndVoteOnBlock(block *chain.Block) error {
+// // Validate block and send vote
+// func (node *Node) ValidateAndVoteOnBlock(block *thrylos.Block) error {
 // 	// Validate the block
 // 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
 // 		return fmt.Errorf("block validation failed: %v", err)

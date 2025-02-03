@@ -1,18 +1,10 @@
 package state
 
-// import (
-// 	"testing"
-// 	"time"
-
-// 	"github.com/stretchr/testify/assert"
-// 	"github.com/stretchr/testify/mock"
-// )
-
 // func TestStateReallocation(t *testing.T) {
 // 	mockNetwork := new(MockNetwork)
 // 	mockNetwork.On("BroadcastMessage", mock.Anything).Return(nil)
 
-// 	sm := NewStateManager(mockNetwork, 4)
+// 	sm := state.NewStateManager(mockNetwork, 4)
 
 // 	t.Run("Metrics Collection", func(t *testing.T) {
 // 		address := "tl1test123"

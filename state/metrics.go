@@ -1,54 +1,51 @@
 package state
 
 import (
-	"sync"
 	"time"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
-type ShardMetrics struct {
-	AccessCount int64
-	ModifyCount int64
-	LoadFactor  float64
-	Latency     time.Duration
-	LastUpdated time.Time
-	mu          sync.RWMutex
+type StateMetricsImpl struct {
+	*shared.StateMetrics
 }
 
-type StateMetrics struct {
-	shardMetrics map[int]*ShardMetrics
-	mu           sync.RWMutex
+type ShardMetricsImpl struct {
+	*shared.ShardMetrics
 }
 
-func NewStateMetrics(numShards int) *StateMetrics {
-	metrics := &StateMetrics{
-		shardMetrics: make(map[int]*ShardMetrics),
+func NewStateMetrics(numShards int) *StateMetricsImpl {
+	metrics := &shared.StateMetrics{
+		ShardMetrics: make(map[int]*shared.ShardMetrics),
 	}
 
 	for i := 0; i < numShards; i++ {
-		metrics.shardMetrics[i] = &ShardMetrics{
+		metrics.ShardMetrics[i] = &shared.ShardMetrics{
 			LastUpdated: time.Now(),
 		}
 	}
 
-	return metrics
+	return &StateMetricsImpl{
+		StateMetrics: metrics,
+	}
 }
 
-func (sm *ShardMetrics) RecordAccess() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+func (sm *ShardMetricsImpl) RecordAccess() {
+	sm.Mu.Lock()
+	defer sm.Mu.Unlock()
 	sm.AccessCount++
 	sm.LastUpdated = time.Now()
 }
 
-func (sm *ShardMetrics) RecordModify() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+func (sm *ShardMetricsImpl) RecordModify() {
+	sm.Mu.Lock()
+	defer sm.Mu.Unlock()
 	sm.ModifyCount++
 	sm.LastUpdated = time.Now()
 }
 
-func (sm *ShardMetrics) UpdateLoadFactor(stateSize int) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.LoadFactor = float64(stateSize) / 1000.0 // Example threshold
+func (sm *ShardMetricsImpl) UpdateLoadFactor(stateSize int) {
+	sm.Mu.Lock()
+	defer sm.Mu.Unlock()
+	sm.LoadFactor = float64(stateSize) / 1000.0
 }

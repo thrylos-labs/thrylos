@@ -18,6 +18,18 @@ type Database struct {
 
 }
 
+type BlockchainDB struct {
+	Database      *Database
+	encryptionKey []byte
+}
+
+func NewBlockchainDB(database *Database, encryptionKey []byte) *BlockchainDB {
+	return &BlockchainDB{
+		Database:      database,
+		encryptionKey: encryptionKey,
+	}
+}
+
 // NewBadgerDB initializes and returns a new instance of BadgerDB
 func NewDatabase(path string) (*Database, error) {
 	d := &Database{}

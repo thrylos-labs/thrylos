@@ -1,40 +1,35 @@
 package chain
 
-import (
-	"time"
-)
-
-// NEEDS TO USE MESSAGES FOR NODE INTERACTION
-
-type BlockProducerConfig struct {
-	TargetBlockTime   time.Duration
-	MinTransactions   int
-	MaxTransactions   int
-	MaxBlockSize      int64
-	NetworkLoadFactor float64
-}
-
-// type ModernBlockProducer struct {
-// 	config *BlockProducerConfig
-// 	// node          *Node
-// 	blockchain    *Blockchain
-// 	isProducing   atomic.Bool
-// 	lastBlockTime time.Time
-// 	mu            sync.RWMutex
+// type BlockProducerConfig struct {
+// 	TargetBlockTime   time.Duration
+// 	MinTransactions   int
+// 	MaxTransactions   int
+// 	MaxBlockSize      int64
+// 	NetworkLoadFactor float64
 // }
 
-// func NewBlockProducer(node *Node, blockchain *Blockchain) *ModernBlockProducer {
+// type ModernBlockProducer struct {
+// 	config         *BlockProducerConfig
+// 	blockchain     *shared.Blockchain
+// 	isProducing    atomic.Bool
+// 	lastBlockTime  time.Time
+// 	blockProcessor *BlockProcessor
+// 	mu             sync.RWMutex
+// 	messageBus     *shared.MessageBus
+// }
+
+// func NewBlockProducer(blockchain *shared.Blockchain, messageBus *shared.MessageBus) *ModernBlockProducer {
 // 	return &ModernBlockProducer{
 // 		config: &BlockProducerConfig{
-// 			TargetBlockTime:   1200 * time.Millisecond, // 1.2s
+// 			TargetBlockTime:   1200 * time.Millisecond,
 // 			MinTransactions:   1,
 // 			MaxTransactions:   1000,
-// 			MaxBlockSize:      1 << 20, // 1MB
+// 			MaxBlockSize:      1 << 20,
 // 			NetworkLoadFactor: 1.0,
 // 		},
-// 		node:          node,
 // 		blockchain:    blockchain,
 // 		lastBlockTime: time.Now(),
+// 		messageBus:    messageBus,
 // 	}
 // }
 
@@ -87,7 +82,7 @@ type BlockProducerConfig struct {
 // 	}
 // 	defer bp.isProducing.Store(false)
 
-// 	validator := bp.blockchain.GetCurrentValidator()
+// 	validator := bp.blockProcessor.GetCurrentValidator()
 // 	log.Printf("Attempting to produce block with validator: %s", validator)
 
 // 	newBlock, err := bp.blockchain.ProcessPendingTransactions(validator)

@@ -1,19 +1,8 @@
 package chain
 
-// import (
-// 	"fmt"
-// 	"log"
-// 	"sync"
-// 	"sync/atomic"
-// 	"time"
-
-// 	thrylos "github.com/thrylos-labs/thrylos"
-// 	"github.com/thrylos-labs/thrylos/shared"
-// )
-
 // type BlockProcessor struct {
 // 	config        *BlockProducerConfig
-// 	blockchain    *Blockchain
+// 	blockchain    *shared.Blockchain
 // 	messageBus    *shared.MessageBus
 // 	isProducing   atomic.Bool
 // 	lastBlockTime time.Time

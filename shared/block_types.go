@@ -24,6 +24,7 @@ type Block struct {
 	ValidatorPublicKey crypto.PublicKey `cbor:"9,keyasint"`
 	Signature          crypto.Signature `cbor:"10,keyasint,omitempty"`
 	Salt               []byte           `cbor:"11,keyasint"`
+	Validator          string           `cbor:"12,keyasint"`
 }
 
 // Basic methods that don't require chain-specific logic

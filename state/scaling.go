@@ -1,20 +1,17 @@
 package state
 
-// type ShardScaling struct {
-// 	LoadThresholds struct {
-// 		Split float64 // When to split a shard
-// 		Merge float64 // When to consider merging shards
-// 	}
-// 	Limits struct {
-// 		MinShards int
-// 		MaxShards int
-// 	}
-// 	cooldownPeriod time.Duration
-// 	lastScaleTime  time.Time
-// 	mu             sync.RWMutex
+// import (
+// 	"log"
+// 	"time"
+
+// 	"github.com/thrylos-labs/thrylos/shared"
+// )
+
+// type ShardScalingImpl struct {
+// 	*shared.ShardScaling
 // }
 
-// func NewShardScaling() *ShardScaling {
+// func NewShardScaling() *ShardScalingImpl {
 // 	return &ShardScaling{
 // 		LoadThresholds: struct {
 // 			Split float64
@@ -34,7 +31,7 @@ package state
 // 	}
 // }
 
-// func (s *ShardScaling) MonitorShards(sm *StateManager) {
+// func (s *ShardScalingImpl) MonitorShards(sm *shared.StateManager) {
 // 	go func() {
 // 		ticker := time.NewTicker(30 * time.Second)
 // 		defer ticker.Stop()
@@ -50,7 +47,7 @@ package state
 // 	}()
 // }
 
-// func (s *ShardScaling) evaluateShards(sm *StateManager) {
+// func (s *ShardScalingImpl) evaluateShards(sm *StateManager) {
 // 	s.mu.Lock()
 // 	defer s.mu.Unlock()
 

@@ -1,15 +1,8 @@
 package state
 
-// import (
-// 	"testing"
-// 	"time"
-
-// 	"github.com/stretchr/testify/assert"
-// )
-
 // func TestAdaptiveConsensus(t *testing.T) {
-// 	metrics := NewStateMetrics(4)
-// 	ac := NewAdaptiveConsensus(metrics)
+// 	metrics := state.NewStateMetrics(4)
+// 	ac := state.NewAdaptiveConsensus(metrics)
 
 // 	t.Run("Parameter Adjustment", func(t *testing.T) {
 // 		// Simulate high load

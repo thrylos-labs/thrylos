@@ -23,7 +23,7 @@ package chaintests
 // 	require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
 // }
 
-// Helper function to handle block creation and signing
+// // Helper function to handle block creation and signing
 // func createAndSignBlock(t *testing.T, blockchain *chain.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
 // 	// Create block
 // 	block := &chain.Block{
@@ -229,7 +229,7 @@ package chaintests
 // 	}
 // }
 
-// Helper function to generate address for specific shard
+// // Helper function to generate address for specific shard
 // func generateAddressForShard(shardID int, nonce int, numShards int) string {
 // 	// Use shardID instead of batch calculation
 // 	// Ensures addresses match partition ranges

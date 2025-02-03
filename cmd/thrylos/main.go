@@ -82,23 +82,23 @@ import (
 // 		log.Fatalf("Error creating Supabase client: %v", err)
 // 	}
 
-// Environment variables
-// grpcAddress := envFile["GRPC_NODE_ADDRESS"]
-// knownPeers := envFile["PEERS"]
-// nodeDataDir := envFile["DATA"]
-// testnet := envFile["TESTNET"] == "true" // Convert to boolea]
-// dataDir := envFile["DATA_DIR"]
-// chainID := "0x539" // Default local chain ID (1337 in decimal)
-// domainName := envFile["DOMAIN_NAME")
+// 	// Environment variables
+// 	grpcAddress := envFile["GRPC_NODE_ADDRESS"]
+// 	knownPeers := envFile["PEERS"]
+// 	nodeDataDir := envFile["DATA"]
+// 	testnet := envFile["TESTNET"] == "true" // Convert to boolea]
+// 	dataDir := envFile["DATA_DIR"]
+// 	chainID := "0x539" // Default local chain ID (1337 in decimal)
+// 	domainName := envFile["DOMAIN_NAME"]
 
 // 	if dataDir == "" {
 // 		log.Fatal("DATA_DIR environment variable is not set")
 // 	}
 
-// if testnet {
-// 	fmt.Println("Running in Testnet Mode")
-// 	chainID = "0x5" // Goerli Testnet chain ID
-// }
+// 	if testnet {
+// 		fmt.Println("Running in Testnet Mode")
+// 		chainID = "0x5" // Goerli Testnet chain ID
+// 	}
 
 // 	// Fetch the Base64-encoded AES key from the environment variable
 // 	base64Key := envFile["AES_KEY_ENV_VAR"]
@@ -126,23 +126,23 @@ import (
 
 // 	// Initialize the blockchain and database with the AES key
 
-// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
-// blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-// 	DataDir:           absPath,
-// 	AESKey:            aesKey,
-// 	GenesisAccount:    genesisAccount,
-// 	TestMode:          true,
-// 	DisableBackground: false, // Set based on your requirements
-// })
-// if err != nil {
-// 	log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
-// }
-// Perform an integrity check on the blockchain
-// if !blockchain.CheckChainIntegrity() {
-// 	log.Fatal("Blockchain integrity check failed.")
-// } else {
-// 	fmt.Println("Blockchain integrity check passed.")
-// }
+// 	// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
+// 	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+// 		DataDir:           absPath,
+// 		AESKey:            aesKey,
+// 		GenesisAccount:    genesisAccount,
+// 		TestMode:          true,
+// 		DisableBackground: false, // Set based on your requirements
+// 	})
+// 	if err != nil {
+// 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
+// 	}
+// 	// Perform an integrity check on the blockchain
+// 	if !blockchain.CheckChainIntegrity() {
+// 		log.Fatal("Blockchain integrity check failed.")
+// 	} else {
+// 		fmt.Println("Blockchain integrity check passed.")
+// 	}
 
 // 	// Initialize the database
 // 	blockchainDB, err := database.InitializeDatabase(dataDir)
@@ -150,32 +150,32 @@ import (
 // 		log.Fatalf("Failed to create blockchain database: %v", err)
 // 	}
 
-// Initialize a new node with the specified address and known peers
-// peersList := []string{}
-// if knownPeers != "" {
-// 	peersList = strings.Split(knownPeers, ",")
-// }
+// 	// Initialize a new node with the specified address and known peers
+// 	peersList := []string{}
+// 	if knownPeers != "" {
+// 		peersList = strings.Split(knownPeers, ",")
+// 	}
 
-// node := node.NewNode(grpcAddress, peersList, nodeDataDir, nil)
+// 	node := node.NewNode(grpcAddress, peersList, nodeDataDir, nil)
 
-// node.SetChainID(chainID)
+// 	node.SetChainID(chainID)
 
-// // Set up routes
-// router := network.NewRouter(node)
-// mux := router.SetupRoutes()
+// 	// Set up routes
+// 	router := network.NewRouter(node)
+// 	mux := router.SetupRoutes()
 
-// mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-// 	fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
-// })
+// 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+// 		fmt.Fprintf(w, "Blockchain status: %s", blockchain.Status())
+// 	})
 
-// Start background tasks
-// node.StartBackgroundTasks()
+// 	// Start background tasks
+// 	node.StartBackgroundTasks()
 
 // 	// Create a sample HTTP handler
-// 	// mux := http.NewServeMux()
+// 	mux := http.NewServeMux()
 
-// Setup and start servers
-// setupServers(mux, envFile)
+// 	// Setup and start servers
+// 	setupServers(mux, envFile)
 
 // 	// Create BlockchainDB instance
 // 	encryptionKey := []byte(aesKey) // This should ideally come from a secure source
@@ -204,10 +204,10 @@ import (
 // 	}
 
 // 	// Setup and start gRPC server
-// 	// lis, err := net.Listen("tcp", grpcAddress)
-// 	// if err != nil {
-// 	// 	log.Fatalf("Failed to listen on %s: %v", grpcAddress, err)
-// 	// }
+// 	lis, err := net.Listen("tcp", grpcAddress)
+// 	if err != nil {
+// 		log.Fatalf("Failed to listen on %s: %v", grpcAddress, err)
+// 	}
 
 // 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 // 	if err := s.Serve(lis); err != nil {
@@ -300,18 +300,18 @@ import (
 // 	return cert
 // }
 
-// // Get the blockchain stats: curl http://localhost:50051/get-stats
-// // Retrieve the genesis block: curl "http://localhost:50051/get-block?id=0"
-// // Retrieve pending transactions: curl http://localhost:50051/pending-transactions
-// // Retrive a balance from a specific address: curl "http://localhost:50051/get-balance?address=your_address_here"
+// Get the blockchain stats: curl http://localhost:50051/get-stats
+// Retrieve the genesis block: curl "http://localhost:50051/get-block?id=0"
+// Retrieve pending transactions: curl http://localhost:50051/pending-transactions
+// Retrive a balance from a specific address: curl "http://localhost:50051/get-balance?address=your_address_here"
 
-// // Server-Side Steps
-// // Blockchain Initialization:
-// // Initialize the blockchain database and genesis block upon starting the server.
-// // Load or create stakeholders, UTXOs, and transactions for the genesis block.
-// // Transaction Handling and Block Management:
-// // Receive transactions from clients, add to the pending transaction pool, and process them periodically.
-// // Create new blocks from pending transactions, ensuring transactions are valid, updating the UTXO set, and managing block links.
-// // Fork Resolution and Integrity Checks:
-// // Check for forks in the blockchain and resolve by selecting the longest chain.
-// // Perform regular integrity checks on the blockchain to ensure no tampering or inconsistencies.
+// Server-Side Steps
+// Blockchain Initialization:
+// Initialize the blockchain database and genesis block upon starting the server.
+// Load or create stakeholders, UTXOs, and transactions for the genesis block.
+// Transaction Handling and Block Management:
+// Receive transactions from clients, add to the pending transaction pool, and process them periodically.
+// Create new blocks from pending transactions, ensuring transactions are valid, updating the UTXO set, and managing block links.
+// Fork Resolution and Integrity Checks:
+// Check for forks in the blockchain and resolve by selecting the longest chain.
+// Perform regular integrity checks on the blockchain to ensure no tampering or inconsistencies.

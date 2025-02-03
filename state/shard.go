@@ -1,58 +1,21 @@
 package state
 
-// import (
-// 	"encoding/json"
-// 	"fmt"
-// 	"log"
-// 	"strings"
-// 	"sync"
-// 	"time"
-
-// 	"github.com/thrylos-labs/thrylos/chain"
-// 	"github.com/thrylos-labs/thrylos/shared"
-// )
-
-// // StatePartition represents the state data for a single shard
-// type StatePartition struct {
-// 	ID           int
-// 	StartAddress string
-// 	EndAddress   string
-// 	Balances     map[string]int64
-// 	UTXOs        map[string]*chain.UTXO
-// 	LastUpdated  int64
-// 	mu           sync.RWMutex
+// type StateManagerImpl struct {
+// 	*shared.StateManager
 // }
 
-// type NetworkMessage struct {
-// 	Type      string      `json:"type"`
-// 	Data      interface{} `json:"data"`
-// 	Timestamp time.Time   `json:"timestamp"`
-// }
-
-// // StateManager handles state sharding across the network
-// type StateManager struct {
-// 	partitions  []*StatePartition
-// 	network     shared.NetworkInterface
-// 	totalShards int
-// 	mu          sync.RWMutex
-// 	stopChan    chan struct{}
-// 	metrics     *StateMetrics
-// 	consensus   *AdaptiveConsensus
-// 	Scaling     *ShardScaling // Add this field (using capital S for public access)
-// }
-
-// func (sm *StateManager) StopStateSyncLoop() {
+// func (sm *StateManagerImpl) StopStateSyncLoop() {
 // 	close(sm.stopChan)
 // }
 
 // // NewStateManager creates a new state sharding manager
-// func NewStateManager(networkHandler shared.NetworkInterface, numShards int) *StateManager {
+// func NewStateManager(networkHandler shared.NetworkInterface, numShards int) *StateManagerImpl {
 // 	if numShards < 1 {
 // 		numShards = 1
 // 	}
 
 // 	metrics := NewStateMetrics(numShards)
-// 	sm := &StateManager{
+// 	sm := &StateManagerImpl{
 // 		partitions:  make([]*StatePartition, numShards),
 // 		network:     networkHandler,
 // 		totalShards: numShards,
@@ -69,7 +32,7 @@ package state
 // 			StartAddress: calculatePartitionStart(i, numShards),
 // 			EndAddress:   calculatePartitionEnd(i, numShards),
 // 			Balances:     make(map[string]int64),
-// 			UTXOs:        make(map[string]*chain.UTXO),
+// 			UTXOs:        make(map[string]*shared.UTXO),
 // 			LastUpdated:  time.Now().Unix(),
 // 		}
 // 	}
@@ -83,7 +46,7 @@ package state
 // }
 
 // // Add these methods to your StateManager struct
-// func (sm *StateManager) GetShardAccessCount(shardID int) int64 {
+// func (sm *StateManagerImpl) GetShardAccessCount(shardID int) int64 {
 // 	sm.mu.RLock()
 // 	defer sm.mu.RUnlock()
 
@@ -93,7 +56,7 @@ package state
 // 	return 0
 // }
 
-// func (sm *StateManager) GetShardModifyCount(shardID int) int64 {
+// func (sm *StateManagerImpl) GetShardModifyCount(shardID int) int64 {
 // 	sm.mu.RLock()
 // 	defer sm.mu.RUnlock()
 
@@ -103,7 +66,7 @@ package state
 // 	return 0
 // }
 
-// func (sm *StateManager) GetShardLoadFactor(shardID int) float64 {
+// func (sm *StateManagerImpl) GetShardLoadFactor(shardID int) float64 {
 // 	sm.mu.RLock()
 // 	defer sm.mu.RUnlock()
 
@@ -114,7 +77,7 @@ package state
 // }
 
 // // GetResponsiblePartition determines which partition handles a given address
-// func (sm *StateManager) GetResponsiblePartition(address string) *StatePartition {
+// func (sm *StateManagerImpl) GetResponsiblePartition(address string) *shared.StatePartition {
 // 	sm.mu.RLock()
 // 	defer sm.mu.RUnlock()
 
@@ -127,7 +90,7 @@ package state
 // }
 
 // // UpdateState updates state data in the appropriate partition
-// func (sm *StateManager) UpdateState(address string, balance int64, utxo *chain.UTXO) error {
+// func (sm *StateManagerImpl) UpdateState(address string, balance int64, utxo *shared.UTXO) error {
 // 	partition := sm.GetResponsiblePartition(address)
 // 	if partition == nil {
 // 		return fmt.Errorf("no responsible partition found for address: %s", address)
@@ -150,13 +113,13 @@ package state
 // 	return nil
 // }
 
-// func (sm *StateManager) syncPartitionState(partition *StatePartition) error {
+// func (sm *StateManagerImpl) syncPartitionState(partition *shared.StatePartition) error {
 // 	partitionData, err := json.Marshal(partition)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to marshal partition: %v", err)
 // 	}
 
-// 	message := NetworkMessage{
+// 	message := shared.NetworkMessage{
 // 		Type:      "STATE_SYNC",
 // 		Data:      partitionData,
 // 		Timestamp: time.Now(),
@@ -170,13 +133,13 @@ package state
 // 	return sm.network.BroadcastMessage(messageBytes)
 // }
 
-// func (sm *StateManager) handleStateSync(message NetworkMessage) error {
+// func (sm *StateManagerImpl) handleStateSync(message shared.NetworkMessage) error {
 // 	data, ok := message.Data.([]byte)
 // 	if !ok {
 // 		return fmt.Errorf("invalid data type in message")
 // 	}
 
-// 	var partition StatePartition
+// 	var partition shared.StatePartition
 // 	if err := json.Unmarshal(data, &partition); err != nil {
 // 		return fmt.Errorf("failed to unmarshal partition state: %v", err)
 // 	}
@@ -194,7 +157,7 @@ package state
 // }
 
 // // Add periodic state synchronization
-// func (sm *StateManager) StartStateSyncLoop() {
+// func (sm *StateManagerImpl) StartStateSyncLoop() {
 // 	go func() {
 // 		ticker := time.NewTicker(1 * time.Second) // Shorter interval for testing
 // 		defer ticker.Stop()
@@ -215,7 +178,7 @@ package state
 // }
 
 // // GetBalance retrieves balance from the appropriate partition
-// func (sm *StateManager) GetBalance(address string) (int64, error) {
+// func (sm *StateManagerImpl) GetBalance(address string) (int64, error) {
 // 	partition := sm.GetResponsiblePartition(address)
 // 	if partition == nil {
 // 		return 0, fmt.Errorf("no responsible partition found for address: %s", address)
@@ -236,7 +199,7 @@ package state
 // }
 
 // // GetUTXOs retrieves UTXOs from the appropriate partition
-// func (sm *StateManager) GetUTXOs(address string) ([]*chain.UTXO, error) {
+// func (sm *StateManagerImpl) GetUTXOs(address string) ([]*shared.UTXO, error) {
 // 	partition := sm.GetResponsiblePartition(address)
 // 	if partition == nil {
 // 		return nil, fmt.Errorf("no responsible partition found for address: %s", address)
@@ -245,7 +208,7 @@ package state
 // 	partition.mu.RLock()
 // 	defer partition.mu.RUnlock()
 
-// 	var utxos []*chain.UTXO
+// 	var utxos []*shared.UTXO
 // 	for _, utxo := range partition.UTXOs {
 // 		if utxo.OwnerAddress == address {
 // 			utxos = append(utxos, utxo)

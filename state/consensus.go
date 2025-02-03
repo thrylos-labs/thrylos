@@ -1,36 +1,25 @@
 package state
 
 import (
-	"sync"
 	"time"
+
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
-type ConsensusParams struct {
-	BlockSize        int
-	ConfirmationTime time.Duration
-	MinValidators    int
-	Threshold        float64
+type AdaptiveConsensusImpl struct {
+	*shared.AdaptiveConsensus
 }
 
-type AdaptiveConsensus struct {
-	params         map[int]*ConsensusParams
-	metrics        *StateMetrics
-	updateInterval time.Duration
-	mu             sync.RWMutex
-	stopChan       chan struct{}
-}
-
-func NewAdaptiveConsensus(metrics *StateMetrics) *AdaptiveConsensus {
-	ac := &AdaptiveConsensus{
-		params:         make(map[int]*ConsensusParams),
-		metrics:        metrics,
-		updateInterval: time.Minute * 5,
-		stopChan:       make(chan struct{}),
+func NewAdaptiveConsensus(metrics *shared.StateMetrics) *AdaptiveConsensusImpl {
+	ac := &shared.AdaptiveConsensus{
+		Params:         make(map[int]*shared.ConsensusParams),
+		Metrics:        metrics,
+		UpdateInterval: time.Minute * 5,
+		StopChan:       make(chan struct{}),
 	}
 
-	// Initialize with default parameters
-	for shardID := range metrics.shardMetrics {
-		ac.params[shardID] = &ConsensusParams{
+	for shardID := range metrics.ShardMetrics {
+		ac.Params[shardID] = &shared.ConsensusParams{
 			BlockSize:        1000,
 			ConfirmationTime: time.Second * 10,
 			MinValidators:    3,
@@ -38,52 +27,53 @@ func NewAdaptiveConsensus(metrics *StateMetrics) *AdaptiveConsensus {
 		}
 	}
 
-	return ac
+	return &AdaptiveConsensusImpl{
+		AdaptiveConsensus: ac,
+	}
 }
 
-func (ac *AdaptiveConsensus) Start() {
+func (ac *AdaptiveConsensusImpl) Start() {
 	go ac.adjustmentLoop()
 }
 
-func (ac *AdaptiveConsensus) Stop() {
-	close(ac.stopChan)
+func (ac *AdaptiveConsensusImpl) Stop() {
+	close(ac.StopChan)
 }
 
-func (ac *AdaptiveConsensus) adjustmentLoop() {
-	ticker := time.NewTicker(ac.updateInterval)
+func (ac *AdaptiveConsensusImpl) adjustmentLoop() {
+	ticker := time.NewTicker(ac.UpdateInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			ac.adjustParameters()
-		case <-ac.stopChan:
+		case <-ac.StopChan:
 			return
 		}
 	}
 }
 
-func (ac *AdaptiveConsensus) adjustParameters() {
-	ac.mu.Lock()
-	defer ac.mu.Unlock()
+func (ac *AdaptiveConsensusImpl) adjustParameters() {
+	ac.Mu.Lock()
+	defer ac.Mu.Unlock()
 
-	for shardID, metrics := range ac.metrics.shardMetrics {
-		params := ac.params[shardID]
+	for shardID, metrics := range ac.Metrics.ShardMetrics {
+		params := ac.Params[shardID]
 
-		// Adjust based on load
 		loadFactor := metrics.LoadFactor
 		switch {
-		case loadFactor > 0.8: // High load
+		case loadFactor > 0.8:
 			params.BlockSize = 2000
 			params.ConfirmationTime = time.Second * 5
 			params.MinValidators = 5
 			params.Threshold = 0.8
-		case loadFactor > 0.4: // Medium load
+		case loadFactor > 0.4:
 			params.BlockSize = 1000
 			params.ConfirmationTime = time.Second * 10
 			params.MinValidators = 3
 			params.Threshold = 0.67
-		default: // Low load
+		default:
 			params.BlockSize = 500
 			params.ConfirmationTime = time.Second * 15
 			params.MinValidators = 2
@@ -92,8 +82,8 @@ func (ac *AdaptiveConsensus) adjustParameters() {
 	}
 }
 
-func (ac *AdaptiveConsensus) GetConsensusParams(shardID int) *ConsensusParams {
-	ac.mu.RLock()
-	defer ac.mu.RUnlock()
-	return ac.params[shardID]
+func (ac *AdaptiveConsensusImpl) GetConsensusParams(shardID int) *shared.ConsensusParams {
+	ac.Mu.RLock()
+	defer ac.Mu.RUnlock()
+	return ac.Params[shardID]
 }

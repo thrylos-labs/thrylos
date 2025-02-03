@@ -1,19 +1,10 @@
 package state
 
-// import (
-// 	"log"
-// 	"sort"
-// 	"time"
-// )
-
-// type RelocationCandidate struct {
-// 	Address     string
-// 	AccessCount int64
-// 	FromShard   int
-// 	ToShard     int
+// type StateManagerImpl struct {
+// 	*shared.StateManager
 // }
 
-// func (sm *StateManager) StartRelocationMonitor() {
+// func (sm *StateManagerImpl) StartRelocationMonitor() {
 // 	go func() {
 // 		ticker := time.NewTicker(5 * time.Minute)
 // 		defer ticker.Stop()
@@ -29,7 +20,7 @@ package state
 // 	}()
 // }
 
-// func (sm *StateManager) checkAndRelocate() {
+// func (sm *StateManagerImpl) checkAndRelocate() {
 // 	candidates := sm.findRelocationCandidates()
 
 // 	for _, candidate := range candidates {
@@ -40,8 +31,8 @@ package state
 // 	}
 // }
 
-// func (sm *StateManager) findRelocationCandidates() []RelocationCandidate {
-// 	var candidates []RelocationCandidate
+// func (sm *StateManagerImpl) findRelocationCandidates() []shared.RelocationCandidate {
+// 	var candidates []shared.RelocationCandidate
 
 // 	// Find overloaded shards
 // 	overloadedShards := sm.findOverloadedShards()
@@ -50,7 +41,7 @@ package state
 // 	for _, fromShard := range overloadedShards {
 // 		for _, address := range sm.getHighAccessAddresses(fromShard) {
 // 			if toShard := sm.findOptimalShard(address, underutilizedShards); toShard != -1 {
-// 				candidates = append(candidates, RelocationCandidate{
+// 				candidates = append(candidates, shared.RelocationCandidate{
 // 					Address:   address,
 // 					FromShard: fromShard,
 // 					ToShard:   toShard,
@@ -62,7 +53,7 @@ package state
 // 	return candidates
 // }
 
-// func (sm *StateManager) relocateState(candidate RelocationCandidate) error {
+// func (sm *StateManagerImpl) relocateState(candidate shared.RelocationCandidate) error {
 // 	sm.mu.Lock()
 // 	defer sm.mu.Unlock()
 
@@ -90,7 +81,7 @@ package state
 // 	return sm.syncPartitionState(toPartition)
 // }
 
-// func (sm *StateManager) getHighAccessAddresses(shardID int) []string {
+// func (sm *StateManagerImpl) getHighAccessAddresses(shardID int) []string {
 // 	threshold := int64(100) // High access threshold
 // 	var addresses []string
 // 	metrics := sm.metrics.shardMetrics[shardID]
@@ -108,7 +99,7 @@ package state
 // 	return addresses
 // }
 
-// func (sm *StateManager) findOptimalShard(address string, candidates []int) int {
+// func (sm *StateManagerImpl) findOptimalShard(address string, candidates []int) int {
 // 	if len(candidates) == 0 {
 // 		return -1
 // 	}
@@ -134,7 +125,7 @@ package state
 // 	return scores[0].id
 // }
 
-// func (sm *StateManager) findOverloadedShards() []int {
+// func (sm *StateManagerImpl) findOverloadedShards() []int {
 // 	threshold := 0.8 // 80% load factor
 // 	var overloaded []int
 
@@ -147,7 +138,7 @@ package state
 // 	return overloaded
 // }
 
-// func (sm *StateManager) findUnderutilizedShards() []int {
+// func (sm *StateManagerImpl) findUnderutilizedShards() []int {
 // 	threshold := 0.3 // 30% load factor
 // 	var underutilized []int
 

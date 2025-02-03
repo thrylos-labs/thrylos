@@ -1,19 +1,17 @@
 package network
 
-import "time"
-
 // NEEDS TO UPDATE TO USE MESSAGES.GO FOR INTERACTION WITH NODE
 
 // // Peer Management: Nodes add new peers to their network, avoiding duplicates, and adjust protocols (HTTP/HTTPS) as necessary.
 // // Peer Discovery: Nodes discover new peers by requesting peer lists from known peers and integrating the discovered peers into their own peer list.
 // // Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network.
 
-type PeerConnection struct {
-	// Node      *Node // Add a reference to the Node
-	Address   string
-	IsInbound bool
-	LastSeen  time.Time
-}
+// type PeerConnection struct {
+// 	// Node      *Node // Add a reference to the Node
+// 	Address   string
+// 	IsInbound bool
+// 	LastSeen  time.Time
+// }
 
 // func (pc *PeerConnection) AddPeer(address string, isInbound bool) error {
 // 	pc.Node.PeerMu.Lock()
@@ -54,7 +52,7 @@ type PeerConnection struct {
 // 	delete(node.Peers, address)
 // }
 
-// func (pc *PeerConnection)  GetPeerCount() (inbound, outbound int) {
+// func (pc *PeerConnection) GetPeerCount() (inbound, outbound int) {
 // 	node.PeerMu.RLock()
 // 	defer node.PeerMu.RUnlock()
 
@@ -80,7 +78,7 @@ type PeerConnection struct {
 // }
 
 // // DiscoverPeers attempts to discover new peers from the current peer list
-// func (pc *PeerConnection)  DiscoverPeers() {
+// func (pc *PeerConnection) DiscoverPeers() {
 // 	maxRetries := 5
 // 	retryInterval := time.Second * 5
 
@@ -150,7 +148,7 @@ type PeerConnection struct {
 // }
 
 // // SyncBlockchain synchronizes with all peers to ensure the latest blockchain state
-// func (pc *PeerConnection)  SyncBlockchain() {
+// func (pc *PeerConnection) SyncBlockchain() {
 // 	for _, peer := range node.Peers {
 // 		resp, err := http.Get(peer.Address + "/blockchain")
 // 		if err != nil {
@@ -201,7 +199,7 @@ type PeerConnection struct {
 // }
 
 // // BroadcastBlock sends a block to all peers
-// func (pc *PeerConnection)  BroadcastBlock(block *Block) {
+// func (pc *PeerConnection) BroadcastBlock(block *Block) {
 // 	blockData, err := json.Marshal(block)
 // 	if err != nil {
 // 		fmt.Println("Failed to serialize block:", err)
@@ -222,7 +220,7 @@ type PeerConnection struct {
 // }
 
 // // BroadcastTransaction sends a transaction to all peers
-// func (pc *PeerConnection)  BroadcastTransaction(tx *thrylos.Transaction) error {
+// func (pc *PeerConnection) BroadcastTransaction(tx *thrylos.Transaction) error {
 // 	txData, err := json.Marshal(tx)
 // 	if err != nil {
 // 		fmt.Println("Failed to serialize transaction:", err)
@@ -248,12 +246,12 @@ type PeerConnection struct {
 // }
 
 // // Utility functions for peer management
-// func (pc *PeerConnection)  GetPeers() []string {
+// func (pc *PeerConnection) GetPeers() []string {
 // 	return node.GetPeerAddresses() // Use existing helper function
 // }
 
 // // PingPeers checks the health of all connected peers
-// func (pc *PeerConnection)  PingPeers() {
+// func (pc *PeerConnection) PingPeers() {
 // 	for _, peer := range node.Peers {
 // 		resp, err := http.Get(peer.Address + "/ping")
 // 		if err != nil {

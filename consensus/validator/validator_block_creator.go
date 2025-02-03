@@ -1,19 +1,9 @@
 package validator
 
-// import (
-// 	"fmt"
-// 	"log"
-// 	"sync"
-// 	"time"
-
-// 	"github.com/thrylos-labs/thrylos/core/chain"
-// 	"github.com/thrylos-labs/thrylos/core/node"
-// )
-
-// // ValidatorSelector manages the selection and coordination of validators
-// // for creating new blocks from pending transactions in the blockchain.
-// // It ensures fair selection based on stake amounts and maintains the
-// // synchronization of block creation across the network.
+// ValidatorSelector manages the selection and coordination of validators
+// for creating new blocks from pending transactions in the blockchain.
+// It ensures fair selection based on stake amounts and maintains the
+// synchronization of block creation across the network.
 
 // type BlockchainValidatorInterface interface {
 // 	IsActiveValidator(address string) bool
@@ -77,14 +67,14 @@ package validator
 // }
 
 // // CreateBlockFromPendingTransactions handles the block creation process for a selected validator
-// func (bc *Blockchain) CreateBlockFromPendingTransactions(validator string) (*chain.Block, error) {
+// func (vs *ValidatorSelector) CreateBlockFromPendingTransactions(validator string) (*shared.Block, error) {
 // 	// Verify validator is active and eligible
 // 	if !bc.IsActiveValidator(validator) {
 // 		return nil, fmt.Errorf("invalid or inactive validator: %s", validator)
 // 	}
 
 // 	// Process pending transactions and create block
-// 	block, err := bc.ProcessPendingTransactions(validator)
+// 	block, err := vs.node.Blockchain.ProcessPendingTransactions(validator)
 // 	if err != nil {
 // 		return nil, fmt.Errorf("failed to process pending transactions: %v", err)
 // 	}
@@ -94,12 +84,12 @@ package validator
 // 	}
 
 // 	// Verify and sign the block
-// 	if err := bc.VerifySignedBlock(block); err != nil {
+// 	if err := vs.node.Blockchain.VerifySignedBlock(block); err != nil {
 // 		return nil, fmt.Errorf("block verification failed: %v", err)
 // 	}
 
 // 	// Add the block to the chain
-// 	success, err := bc.AddBlock(block.Transactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash)
+// 	success, err := vs.node.Blockchain.AddBlock(block.Transactions, validator, bc.Blocks[len(bc.Blocks)-1].Hash)
 // 	if !success {
 // 		return nil, fmt.Errorf("failed to add block to chain: %v", err)
 // 	}

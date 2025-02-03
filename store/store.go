@@ -19,7 +19,7 @@ import (
 	"github.com/dgraph-io/badger/v3"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/consensus/validator"
+
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
@@ -1315,41 +1315,41 @@ func (s *store) RetrieveMLDSAPublicKey(address string) ([]byte, error) {
 
 const validatorPublicKeyPrefix = "validatorPubKey-"
 
-func (s *store) GetValidator(addr address.Address) (*validator.Validator, error) {
-	key := []byte(ValidatorPrefix + addr.String())
-	data, err := s.db.Get(key)
-	if err != nil {
-		log.Printf("Failed to retrieve validator: %v", err)
-		return nil, fmt.Errorf("error retrieving validator: %v", err)
-	}
-	var vl validator.Validator
-	err = vl.Unmarshal(data)
-	if err != nil {
-		log.Printf("Failed to unmarshal validator: %v", err)
-		return nil, fmt.Errorf("error unmarshaling validator: %v", err)
-	}
-	return &vl, nil
-}
+// func (s *store) GetValidator(addr address.Address) (*shared.Validator, error) {
+// 	key := []byte(ValidatorPrefix + addr.String())
+// 	data, err := s.db.Get(key)
+// 	if err != nil {
+// 		log.Printf("Failed to retrieve validator: %v", err)
+// 		return nil, fmt.Errorf("error retrieving validator: %v", err)
+// 	}
+// 	var vl shared.Validator
+// 	err = vl.Unmarshal(data)
+// 	if err != nil {
+// 		log.Printf("Failed to unmarshal validator: %v", err)
+// 		return nil, fmt.Errorf("error unmarshaling validator: %v", err)
+// 	}
+// 	return &vl, nil
+// }
 
-func (s *store) UpdateValidator(v *validator.Validator) error {
-	addr, err := v.PublicKey.Address()
-	if err != nil {
-		log.Printf("Failed to get address from public key: %v", err)
-		return fmt.Errorf("error getting address from public key: %v", err)
-	}
-	key := []byte(ValidatorPrefix + addr.String())
-	data, err := v.Marshal()
-	if err != nil {
-		log.Printf("Failed to marshal validator: %v", err)
-		return fmt.Errorf("error marshaling validator: %v", err)
-	}
-	err = s.db.Update(key, data)
-	if err != nil {
-		log.Printf("Failed to update validator: %v", err)
-		return fmt.Errorf("error updating validator: %v", err)
-	}
-	return nil
-}
+// func (s *store) UpdateValidator(v *shared.Validator) error {
+// 	addr, err := v.PublicKey.Address()
+// 	if err != nil {
+// 		log.Printf("Failed to get address from public key: %v", err)
+// 		return fmt.Errorf("error getting address from public key: %v", err)
+// 	}
+// 	key := []byte(ValidatorPrefix + addr.String())
+// 	data, err := v.Marshal()
+// 	if err != nil {
+// 		log.Printf("Failed to marshal validator: %v", err)
+// 		return fmt.Errorf("error marshaling validator: %v", err)
+// 	}
+// 	err = s.db.Update(key, data)
+// 	if err != nil {
+// 		log.Printf("Failed to update validator: %v", err)
+// 		return fmt.Errorf("error updating validator: %v", err)
+// 	}
+// 	return nil
+// }
 
 func (s *store) RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error) {
 	var publicKey []byte

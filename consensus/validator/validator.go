@@ -1,52 +1,46 @@
 package validator
 
 import (
-	"github.com/fxamacker/cbor/v2"
-	"github.com/thrylos-labs/thrylos/amount"
-	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
-type Validator struct {
-	PublicKey crypto.PublicKey `cbor:"1,keyasint"`
-	Number    int32            `cbor:"2,keyasint"`
-	Stake     amount.Amount    `cbor:"3,keyasint"`
+type ValidatorImpl struct {
+	*shared.Validator
 }
 
-func NewValidator(publicKey crypto.PublicKey, number int32, stake amount.Amount) *Validator {
-	return &Validator{
-		PublicKey: publicKey,
-		Number:    number,
-		Stake:     stake,
-	}
-}
-func (v *Validator) Address() *address.Address {
-	addr, err := v.PublicKey.Address()
-	if err != nil {
-		return address.NullAddress()
-	}
-	return addr
+type ValidatorKeyStoreImpl struct {
+	*shared.ValidatorKeyStore
 }
 
-func (v *Validator) Marshal() ([]byte, error) {
-	return cbor.Marshal(v)
-}
-
-func (v *Validator) Unmarshal(data []byte) error {
-	return cbor.Unmarshal(data, v)
-}
-
-// type ValidatorKeyStore struct {
-// 	keys map[string]*mldsa44.PrivateKey
-// 	mu   sync.RWMutex
+// func NewValidator(publicKey crypto.PublicKey, number int32, stake amount.Amount) *ValidatorImpl {
+// 	return &ValidatorImpl{
+// 		PublicKey: publicKey,
+// 		Number:    number,
+// 		Stake:     stake,
+// 	}
+// }
+// func (v *ValidatorImpl) Address() *address.Address {
+// 	addr, err := v.PublicKey.Address()
+// 	if err != nil {
+// 		return address.NullAddress()
+// 	}
+// 	return addr
 // }
 
-// func NewValidatorKeyStore() *ValidatorKeyStore {
-// 	return &ValidatorKeyStore{
+// func (v *ValidatorImpl) Marshal() ([]byte, error) {
+// 	return cbor.Marshal(v)
+// }
+
+// func (v *ValidatorImpl) Unmarshal(data []byte) error {
+// 	return cbor.Unmarshal(data, v)
+// }
+
+// func NewValidatorKeyStore() *ValidatorKeyStoreImpl {
+// 	return &ValidatorKeyStoreImpl{
 // 		keys: make(map[string]*mldsa44.PrivateKey),
 // 	}
 // }
-// func (vks *ValidatorKeyStore) StoreKey(address string, privKey *mldsa44.PrivateKey) error {
+// func (vks *ValidatorKeyStoreImpl) StoreKey(address string, privKey *mldsa44.PrivateKey) error {
 // 	vks.mu.Lock()
 // 	defer vks.mu.Unlock()
 
@@ -54,7 +48,7 @@ func (v *Validator) Unmarshal(data []byte) error {
 // 	return nil
 // }
 
-// func (vks *ValidatorKeyStore) GetKey(address string) (*mldsa44.PrivateKey, bool) {
+// func (vks *ValidatorKeyStoreImpl) GetKey(address string) (*mldsa44.PrivateKey, bool) {
 // 	vks.mu.RLock()
 // 	defer vks.mu.RUnlock()
 
