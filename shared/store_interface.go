@@ -1,6 +1,8 @@
 package shared
 
 import (
+	"crypto/rsa"
+
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/consensus/validator"
 	"github.com/thrylos-labs/thrylos/crypto"
@@ -30,4 +32,5 @@ type Store interface {
 	GetUTXOsForAddress(address string) ([]UTXO, error)
 	SetTransaction(txn *TransactionContext, key []byte, value []byte) error
 	AddTransaction(tx *thrylos.Transaction) error
+	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
 }
