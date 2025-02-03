@@ -1,10 +1,13 @@
-package validators
+package validator
 
 import (
 	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
 )
 
 type NodeInterface interface {
@@ -15,12 +18,12 @@ type NodeInterface interface {
 }
 
 type Vote struct {
-	ValidatorID    string
-	BlockNumber    int32
-	BlockHash      []byte // Add block hash to verify same block
-	ValidationPass bool   // Result of validation
-	Timestamp      time.Time
-	VoterNode      string
+	ValidatorAddrss address.Address
+	BlockNumber     int32
+	BlockHash       hash.Hash
+	ValidationPass  bool // Result of validation
+	Timestamp       time.Time
+	VoterNode       string
 }
 
 type VoteCounter struct {
@@ -85,14 +88,14 @@ func (vc *VoteCounter) AddVote(vote Vote) error {
 	}
 
 	// Initialize votes slice if needed
-	if vc.votes[vote.ValidatorID] == nil {
-		vc.votes[vote.ValidatorID] = make([]Vote, 0)
+	if vc.votes[vote.ValidatorAddrss.String()] == nil {
+		vc.votes[vote.ValidatorAddrss.String()] = make([]Vote, 0)
 	}
 
-	vc.votes[vote.ValidatorID] = append(vc.votes[vote.ValidatorID], vote)
+	vc.votes[vote.ValidatorAddrss.String()] = append(vc.votes[vote.ValidatorAddrss.String()], vote)
 
 	// Check if we've reached 2/3 majority
-	if vc.HasSuperMajority(vote.ValidatorID) {
+	if vc.HasSuperMajority(vote.ValidatorAddrss.String()) {
 		log.Printf("Achieved 2/3 majority for block %d", vote.BlockNumber)
 		// Use interface method ConfirmBlock instead of confirmBlock
 		vc.node.ConfirmBlock(vote.BlockNumber)

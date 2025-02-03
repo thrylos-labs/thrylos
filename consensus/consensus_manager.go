@@ -1,39 +1,41 @@
 package consensus
 
-import (
-	"math/big"
-	"time"
+// import (
+// 	"log"
+// 	"math/big"
+// 	"time"
 
-	"github.com/thrylos-labs/thrylos/consensus/detection"
-)
+// 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+// 	"github.com/thrylos-labs/thrylos/core/consensus/detection"
+// )
 
-const (
-	BaseBlockTime = 5 * time.Second
-	MinBlockTime  = 2 * time.Second
-	MaxBlockTime  = 10 * time.Second
-)
+// const (
+// 	BaseBlockTime = 5 * time.Second
+// 	MinBlockTime  = 2 * time.Second
+// 	MaxBlockTime  = 10 * time.Second
+// )
 
-type BlockchainInterface interface {
-	GetTotalSupply() int64
-	IsActiveValidator(address string) bool
-	UpdateActiveValidators(count int)
-	GetValidatorPublicKey(validator string) ([]byte, error)
-	RetrievePublicKey(validator string) ([]byte, error)
-	GetMinStakeForValidator() *big.Int
-	Stakeholders() map[string]int64
-}
+// type BlockchainInterface interface {
+// 	GetTotalSupply() int64
+// 	IsActiveValidator(address string) bool
+// 	UpdateActiveValidators(count int)
+// 	GetValidatorPublicKey(validator string) ([]byte, error)
+// 	RetrievePublicKey(validator string) ([]byte, error)
+// 	GetMinStakeForValidator() *big.Int
+// 	Stakeholders() map[string]int64
+// }
 
-type ConsensusManager struct {
-	Blockchain        BlockchainInterface
-	CurrentBlockTime  time.Duration
-	PredictionModel   *PredictionModel
-	maliciousDetector *detection.MaliciousDetector
-}
+// type ConsensusManager struct {
+// 	Blockchain        BlockchainInterface
+// 	CurrentBlockTime  time.Duration
+// 	PredictionModel   *PredictionModel
+// 	maliciousDetector *detection.MaliciousDetector
+// }
 
-type PredictionModel struct {
-	ExpectedTransactionVolume int
-	ExpectedNodeCount         int
-}
+// type PredictionModel struct {
+// 	ExpectedTransactionVolume int
+// 	ExpectedNodeCount         int
+// }
 
 // func NewConsensusManager(blockchain BlockchainInterface) *ConsensusManager {
 // 	cm := &ConsensusManager{
@@ -46,31 +48,31 @@ type PredictionModel struct {
 // 	return cm
 // }
 
-func (cm *ConsensusManager) UpdateConsensusParameters() {
-	cm.adjustBlockTime()
-	cm.adjustValidatorSet()
-}
+// func (cm *ConsensusManager) UpdateConsensusParameters() {
+// 	cm.adjustBlockTime()
+// 	cm.adjustValidatorSet()
+// }
 
-func (cm *ConsensusManager) adjustBlockTime() {
-	if cm.PredictionModel.ExpectedTransactionVolume > 5000 {
-		cm.CurrentBlockTime = MinBlockTime
-	} else if cm.PredictionModel.ExpectedTransactionVolume < 1000 {
-		cm.CurrentBlockTime = MaxBlockTime
-	} else {
-		factor := float64(cm.PredictionModel.ExpectedTransactionVolume-1000) / 4000
-		cm.CurrentBlockTime = time.Duration(float64(MaxBlockTime) - factor*float64(MaxBlockTime-MinBlockTime))
-	}
-}
+// func (cm *ConsensusManager) adjustBlockTime() {
+// 	if cm.PredictionModel.ExpectedTransactionVolume > 5000 {
+// 		cm.CurrentBlockTime = MinBlockTime
+// 	} else if cm.PredictionModel.ExpectedTransactionVolume < 1000 {
+// 		cm.CurrentBlockTime = MaxBlockTime
+// 	} else {
+// 		factor := float64(cm.PredictionModel.ExpectedTransactionVolume-1000) / 4000
+// 		cm.CurrentBlockTime = time.Duration(float64(MaxBlockTime) - factor*float64(MaxBlockTime-MinBlockTime))
+// 	}
+// }
 
-func (cm *ConsensusManager) adjustValidatorSet() {
-	activeValidators := cm.PredictionModel.ExpectedNodeCount / 10
-	if activeValidators < 5 {
-		activeValidators = 5
-	} else if activeValidators > 100 {
-		activeValidators = 100
-	}
-	cm.Blockchain.UpdateActiveValidators(activeValidators)
-}
+// func (cm *ConsensusManager) adjustValidatorSet() {
+// 	activeValidators := cm.PredictionModel.ExpectedNodeCount / 10
+// 	if activeValidators < 5 {
+// 		activeValidators = 5
+// 	} else if activeValidators > 100 {
+// 		activeValidators = 100
+// 	}
+// 	cm.Blockchain.UpdateActiveValidators(activeValidators)
+// }
 
 // func (cm *ConsensusManager) ValidateBlock(block *Block) bool {
 // 	log.Printf("Validating block created by validator: %s", block.Validator)
@@ -142,16 +144,16 @@ func (cm *ConsensusManager) adjustValidatorSet() {
 // 	return true
 // }
 
-func (cm *ConsensusManager) UpdatePredictions(transactionVolume, nodeCount int) {
-	cm.PredictionModel.ExpectedTransactionVolume = transactionVolume
-	cm.PredictionModel.ExpectedNodeCount = nodeCount
-	cm.UpdateConsensusParameters()
-}
+// func (cm *ConsensusManager) UpdatePredictions(transactionVolume, nodeCount int) {
+// 	cm.PredictionModel.ExpectedTransactionVolume = transactionVolume
+// 	cm.PredictionModel.ExpectedNodeCount = nodeCount
+// 	cm.UpdateConsensusParameters()
+// }
 
-func (cm *ConsensusManager) GetCurrentBlockTime() time.Duration {
-	return cm.CurrentBlockTime
-}
+// func (cm *ConsensusManager) GetCurrentBlockTime() time.Duration {
+// 	return cm.CurrentBlockTime
+// }
 
-func (cm *ConsensusManager) GetActiveValidatorCount() int {
-	return cm.PredictionModel.ExpectedNodeCount / 10
-}
+// func (cm *ConsensusManager) GetActiveValidatorCount() int {
+// 	return cm.PredictionModel.ExpectedNodeCount / 10
+// }

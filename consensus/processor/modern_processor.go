@@ -1,47 +1,36 @@
 package processor
 
-import (
-	"context"
-	"hash/fnv"
-	"sync"
-	"sync/atomic"
-	"time"
+// type ModernProcessor struct {
+// 	workerCount    int
+// 	workers        []*txWorker
+// 	processedTxs   sync.Map
+// 	metrics        *ProcessorMetrics
+// 	ctx            context.Context
+// 	cancel         context.CancelFunc
+// 	txQueues       []chan *thrylos.Transaction
+// 	priorityQueues []chan *thrylos.Transaction
+// 	workerPool     chan struct{}
+// 	msgCh          chan shared.Message
+// 	DAGManager     *DAGManager
+// }
 
-	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/shared"
-)
+// type ProcessorMetrics struct {
+// 	processedCount    atomic.Int64
+// 	totalLatency      atomic.Int64
+// 	currentThroughput atomic.Int64
+// }
 
-type ModernProcessor struct {
-	workerCount    int
-	workers        []*txWorker
-	processedTxs   sync.Map
-	metrics        *ProcessorMetrics
-	ctx            context.Context
-	cancel         context.CancelFunc
-	txQueues       []chan *thrylos.Transaction
-	priorityQueues []chan *thrylos.Transaction
-	workerPool     chan struct{}
-	msgCh          chan shared.Message
-	DAGManager     *DAGManager
-}
+// type txWorker struct {
+// 	id        int
+// 	shardID   int
+// 	processor *ModernProcessor
+// 	metrics   *workerMetrics
+// }
 
-type ProcessorMetrics struct {
-	processedCount    atomic.Int64
-	totalLatency      atomic.Int64
-	currentThroughput atomic.Int64
-}
-
-type txWorker struct {
-	id        int
-	shardID   int
-	processor *ModernProcessor
-	metrics   *workerMetrics
-}
-
-type workerMetrics struct {
-	processedTxs atomic.Int64
-	totalLatency atomic.Int64
-}
+// type workerMetrics struct {
+// 	processedTxs atomic.Int64
+// 	totalLatency atomic.Int64
+// }
 
 // func NewModernProcessor() *ModernProcessor {
 // 	ctx, cancel := context.WithCancel(context.Background())
@@ -300,44 +289,44 @@ type workerMetrics struct {
 // 	w.metrics.totalLatency.Add(int64(latency))
 // }
 
-func (mp *ModernProcessor) getShardID(tx *thrylos.Transaction) int {
-	// Use an FNV hash for better distribution
-	h := fnv.New32a()
-	h.Write([]byte(tx.GetId()))
-	return int(h.Sum32() % uint32(12))
-}
+// func (mp *ModernProcessor) getShardID(tx *thrylos.Transaction) int {
+// 	// Use an FNV hash for better distribution
+// 	h := fnv.New32a()
+// 	h.Write([]byte(tx.GetId()))
+// 	return int(h.Sum32() % uint32(12))
+// }
 
-func (mp *ModernProcessor) collectMetrics() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+// func (mp *ModernProcessor) collectMetrics() {
+// 	ticker := time.NewTicker(time.Second)
+// 	defer ticker.Stop()
 
-	var lastProcessed int64
-	for {
-		select {
-		case <-mp.ctx.Done():
-			return
-		case <-ticker.C:
-			currentProcessed := mp.getTotalProcessed()
-			throughput := currentProcessed - lastProcessed
-			mp.metrics.currentThroughput.Store(throughput)
-			lastProcessed = currentProcessed
-		}
-	}
-}
+// 	var lastProcessed int64
+// 	for {
+// 		select {
+// 		case <-mp.ctx.Done():
+// 			return
+// 		case <-ticker.C:
+// 			currentProcessed := mp.getTotalProcessed()
+// 			throughput := currentProcessed - lastProcessed
+// 			mp.metrics.currentThroughput.Store(throughput)
+// 			lastProcessed = currentProcessed
+// 		}
+// 	}
+// }
 
-func (mp *ModernProcessor) getTotalProcessed() int64 {
-	var total int64
-	for _, worker := range mp.workers {
-		total += worker.metrics.processedTxs.Load()
-	}
-	return total
-}
+// func (mp *ModernProcessor) getTotalProcessed() int64 {
+// 	var total int64
+// 	for _, worker := range mp.workers {
+// 		total += worker.metrics.processedTxs.Load()
+// 	}
+// 	return total
+// }
 
-// GetMetrics returns current processing metrics
-func (mp *ModernProcessor) GetMetrics() map[string]interface{} {
-	return map[string]interface{}{
-		"processed_count":    mp.getTotalProcessed(),
-		"current_throughput": mp.metrics.currentThroughput.Load(),
-		"worker_count":       mp.workerCount,
-	}
-}
+// // GetMetrics returns current processing metrics
+// func (mp *ModernProcessor) GetMetrics() map[string]interface{} {
+// 	return map[string]interface{}{
+// 		"processed_count":    mp.getTotalProcessed(),
+// 		"current_throughput": mp.metrics.currentThroughput.Load(),
+// 		"worker_count":       mp.workerCount,
+// 	}
+// }

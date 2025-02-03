@@ -1,259 +1,223 @@
 package chain
 
-import (
-	"bytes"
-	"strings"
+// other necessary imports
 
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/base64"
-	"encoding/gob"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
-	"math/big"
-	"sort"
-	"sync"
-	"time"
+// // Blockchain represents the entire blockchain structure, encapsulating all blocks, stakeholders,
+// // and transactions within the network. It serves as the central ledger of the system, tracking
+// // the state of the blockchain, including ownership of assets through UTXOs (Unspent Transaction Outputs),
+// // and the resolution of forks, ensuring the integrity and continuity of the chain.
+// type Blockchain struct {
+// 	// Blocks holds the sequence of blocks that constitute the blockchain. Each block contains
+// 	// a set of transactions and is linked to the previous block, forming the chain.
+// 	Blocks []*Block
 
-	"github.com/thrylos-labs/thrylos/consensus/validators"
-	"github.com/thrylos-labs/thrylos/network"
+// 	// Genesis points to the first block in the blockchain, known as the Genesis block. This block
+// 	// is the foundation of the blockchain, with no preceding block.
+// 	Genesis *Block
 
-	"github.com/thrylos-labs/thrylos/shared"
+// 	// Adding transactions to the pending transactions pool
+// 	PendingTransactions []*thrylos.Transaction
 
-	"github.com/btcsuite/btcutil/bech32"
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/shopspring/decimal"
-	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/config"
-	"github.com/thrylos-labs/thrylos/consensus"
-	"github.com/thrylos-labs/thrylos/state"
-	"github.com/thrylos-labs/thrylos/utils"
-	"golang.org/x/crypto/scrypt"
-	// other necessary imports
-)
+// 	// Stakeholders maps validator addresses to their respective stakes in the network. This is
+// 	// used in proof-of-stake (PoS) consensus mechanisms to determine validators' rights to create
+// 	// new blocks based on the size of their stake
+// 	Stakeholders map[string]int64 // Maps validator addresses to their respective stakes
 
-// Blockchain represents the entire blockchain structure, encapsulating all blocks, stakeholders,
-// and transactions within the network. It serves as the central ledger of the system, tracking
-// the state of the blockchain, including ownership of assets through UTXOs (Unspent Transaction Outputs),
-// and the resolution of forks, ensuring the integrity and continuity of the chain.
-type Blockchain struct {
-	// Blocks holds the sequence of blocks that constitute the blockchain. Each block contains
-	// a set of transactions and is linked to the previous block, forming the chain.
-	Blocks []*Block
+// 	// UTXOs tracks unspent transaction outputs, which represent the current state of ownership
+// 	// of the blockchain's assets. It is a key component in preventing double spending.
+// 	UTXOs map[string][]*thrylos.UTXO
 
-	// Genesis points to the first block in the blockchain, known as the Genesis block. This block
-	// is the foundation of the blockchain, with no preceding block.
-	Genesis *Block
+// 	// Forks captures any divergences in the blockchain, where two or more blocks are found to
+// 	// have the same predecessor. Forks are resolved through mechanisms that ensure consensus
+// 	// on a single chain.
+// 	Forks []*Fork
 
-	// Adding transactions to the pending transactions pool
-	PendingTransactions []*thrylos.Transaction
+// 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
+// 	// preventing race conditions and ensuring data integrity.
+// 	Mu sync.RWMutex
 
-	// Stakeholders maps validator addresses to their respective stakes in the network. This is
-	// used in proof-of-stake (PoS) consensus mechanisms to determine validators' rights to create
-	// new blocks based on the size of their stake
-	Stakeholders map[string]int64 // Maps validator addresses to their respective stakes
+// 	// lastTimestamp records the timestamp of the last added block. This is used to ensure that
+// 	// blocks are added in chronological order, preserving the integrity of the blockchain's timeline.
+// 	lastTimestamp int64
 
-	// UTXOs tracks unspent transaction outputs, which represent the current state of ownership
-	// of the blockchain's assets. It is a key component in preventing double spending.
-	UTXOs map[string][]*thrylos.UTXO
+// 	// SmartContracts lists all smart contracts deployed on the blockchain. Smart contracts are
+// 	// self-executing contracts with the terms of the agreement directly written into code
+// 	// SmartContracts []SmartContract // New field for storing smart contracts
 
-	// Forks captures any divergences in the blockchain, where two or more blocks are found to
-	// have the same predecessor. Forks are resolved through mechanisms that ensure consensus
-	// on a single chain.
-	Forks []*Fork
+// 	// Database provides an abstraction over the underlying database technology used to persist
+// 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
+// 	Database shared.BlockchainDBInterface // Updated the type to interface
 
-	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
-	// preventing race conditions and ensuring data integrity.
-	Mu sync.RWMutex
+// 	PublicKeyMap map[string]*mldsa44.PublicKey // To store public keys
 
-	// lastTimestamp records the timestamp of the last added block. This is used to ensure that
-	// blocks are added in chronological order, preserving the integrity of the blockchain's timeline.
-	lastTimestamp int64
+// 	GenesisAccount string // Add this to store the genesis account address
 
-	// SmartContracts lists all smart contracts deployed on the blockchain. Smart contracts are
-	// self-executing contracts with the terms of the agreement directly written into code
-	// SmartContracts []SmartContract // New field for storing smart contracts
+// ConsensusManager *ConsensusManager
 
-	// Database provides an abstraction over the underlying database technology used to persist
-	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
-	Database shared.BlockchainDBInterface // Updated the type to interface
+// 	ActiveValidators []string
 
-	PublicKeyMap map[string]*mldsa44.PublicKey // To store public keys
+// 	MinStakeForValidator *big.Int
 
-	GenesisAccount string // Add this to store the genesis account address
+// 	OnNewBlock func(*Block) // Callback function for when a new block is added
 
-	ConsensusManager *consensus.ConsensusManager
+// ValidatorKeys          *ValidatorKeyStore
+// TestMode               bool
+// OnTransactionProcessed func(*thrylos.Transaction)
+// OnBalanceUpdate        func(address string, balance int64)
 
-	ActiveValidators []string
+// 	StateManager *state.StateManager
 
-	MinStakeForValidator *big.Int
+// 	StateNetwork   shared.NetworkInterface
+// 	StakingService *StakingService
 
-	OnNewBlock func(*Block) // Callback function for when a new block is added
+// 	TransactionPropagator *TransactionPropagator
+// }
 
-	ValidatorKeys          *validators.ValidatorKeyStore
-	TestMode               bool
-	OnTransactionProcessed func(*thrylos.Transaction)
-	OnBalanceUpdate        func(address string, balance int64)
+// // NewTransaction creates a new transaction
+// type Stakeholder struct {
+// 	Address string
+// 	Stake   int
+// }
 
-	StateManager *state.StateManager
+// // Fork structure representing a fork in the blockchain
+// type Fork struct {
+// 	Index  int
+// 	Blocks []*Block
+// }
 
-	StateNetwork shared.NetworkInterface
-	// StakingService *staking.StakingService
+// type BlockchainConfig struct {
+// 	DataDir           string
+// 	AESKey            []byte
+// 	GenesisAccount    string
+// 	TestMode          bool
+// 	DisableBackground bool
+// 	StateManager      *state.StateManager
+// }
 
-	TransactionPropagator *network.TransactionPropagator
-}
+// const (
+// 	keyLen    = 32 // AES-256
+// 	nonceSize = 12
+// 	saltSize  = 32
+// )
 
-// NewTransaction creates a new transaction
-type Stakeholder struct {
-	Address string
-	Stake   int
-}
+// var ErrInvalidKeySize = errors.New("invalid key size")
 
-// Fork structure representing a fork in the blockchain
-type Fork struct {
-	Index  int
-	Blocks []*Block
-}
+// func deriveKey(password []byte, salt []byte) ([]byte, error) {
+// 	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
+// }
 
-type BlockchainConfig struct {
-	DataDir           string
-	AESKey            []byte
-	GenesisAccount    string
-	TestMode          bool
-	DisableBackground bool
-	StateManager      *state.StateManager
-}
+// func encryptPrivateKey(privKey *mldsa44.PrivateKey) ([]byte, error) {
+// 	// Convert ML-DSA44 private key to bytes
+// 	privKeyBytes, err := privKey.MarshalBinary()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to marshal private key: %v", err)
+// 	}
 
-const (
-	keyLen    = 32 // AES-256
-	nonceSize = 12
-	saltSize  = 32
-)
+// 	salt := make([]byte, saltSize)
+// 	if _, err := rand.Read(salt); err != nil {
+// 		return nil, err
+// 	}
 
-var ErrInvalidKeySize = errors.New("invalid key size")
+// 	block, err := aes.NewCipher(salt)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-func deriveKey(password []byte, salt []byte) ([]byte, error) {
-	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
-}
+// 	gcm, err := cipher.NewGCM(block)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-func encryptPrivateKey(privKey *mldsa44.PrivateKey) ([]byte, error) {
-	// Convert ML-DSA44 private key to bytes
-	privKeyBytes, err := privKey.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal private key: %v", err)
-	}
+// 	nonce := make([]byte, gcm.NonceSize())
+// 	if _, err := rand.Read(nonce); err != nil {
+// 		return nil, err
+// 	}
 
-	salt := make([]byte, saltSize)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, err
-	}
+// 	ciphertext := gcm.Seal(nil, nonce, privKeyBytes, nil)
+// 	return append(append(salt, nonce...), ciphertext...), nil
+// }
 
-	block, err := aes.NewCipher(salt)
-	if err != nil {
-		return nil, err
-	}
+// func decryptPrivateKey(encryptedKey []byte) (*mldsa44.PrivateKey, error) {
+// 	if len(encryptedKey) < saltSize+nonceSize+1 {
+// 		return nil, ErrInvalidKeySize
+// 	}
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+// 	salt := encryptedKey[:saltSize]
+// 	nonce := encryptedKey[saltSize : saltSize+nonceSize]
+// 	ciphertext := encryptedKey[saltSize+nonceSize:]
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
+// 	block, err := aes.NewCipher(salt)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	ciphertext := gcm.Seal(nil, nonce, privKeyBytes, nil)
-	return append(append(salt, nonce...), ciphertext...), nil
-}
+// 	gcm, err := cipher.NewGCM(block)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-func decryptPrivateKey(encryptedKey []byte) (*mldsa44.PrivateKey, error) {
-	if len(encryptedKey) < saltSize+nonceSize+1 {
-		return nil, ErrInvalidKeySize
-	}
+// 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	salt := encryptedKey[:saltSize]
-	nonce := encryptedKey[saltSize : saltSize+nonceSize]
-	ciphertext := encryptedKey[saltSize+nonceSize:]
+// 	// Convert bytes back to ML-DSA44 private key
+// 	var privKey mldsa44.PrivateKey
+// 	err = privKey.UnmarshalBinary(plaintext)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to unmarshal private key: %v", err)
+// 	}
 
-	block, err := aes.NewCipher(salt)
-	if err != nil {
-		return nil, err
-	}
+// 	return &privKey, nil
+// }
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
+// // GetMinStakeForValidator returns the current minimum stake required for a validator
+// func (bc *Blockchain) GetMinStakeForValidator() *big.Int {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
+// 	return new(big.Int).Set(bc.MinStakeForValidator) // Return a copy to prevent modification
+// }
 
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
+// // You might also want to add a setter method if you need to update this value dynamically
+// func (bc *Blockchain) SetMinStakeForValidator(newMinStake *big.Int) {
+// 	bc.Mu.Lock()
+// 	defer bc.Mu.Unlock()
+// 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
+// }
 
-	// Convert bytes back to ML-DSA44 private key
-	var privKey mldsa44.PrivateKey
-	err = privKey.UnmarshalBinary(plaintext)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal private key: %v", err)
-	}
+// func ConvertToBech32Address(address string) (string, error) {
+// 	// Check if the address is already in Bech32 format
+// 	if strings.HasPrefix(address, "tl1") {
+// 		return address, nil
+// 	}
 
-	return &privKey, nil
-}
+// 	// Try to decode the address as hexadecimal
+// 	addressBytes, err := hex.DecodeString(address)
+// 	if err == nil {
+// 		// Take the first 20 bytes (40 characters of the hex string)
+// 		// This is similar to how Ethereum addresses are derived from public keys
+// 		if len(addressBytes) > 20 {
+// 			addressBytes = addressBytes[:20]
+// 		}
 
-// GetMinStakeForValidator returns the current minimum stake required for a validator
-func (bc *Blockchain) GetMinStakeForValidator() *big.Int {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
-	return new(big.Int).Set(bc.MinStakeForValidator) // Return a copy to prevent modification
-}
+// 		// Convert to 5-bit groups for Bech32 encoding
+// 		converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
+// 		if err != nil {
+// 			return "", fmt.Errorf("failed to convert bits: %v", err)
+// 		}
 
-// You might also want to add a setter method if you need to update this value dynamically
-func (bc *Blockchain) SetMinStakeForValidator(newMinStake *big.Int) {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
-	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
-}
+// 		// Encode to Bech32
+// 		bech32Address, err := bech32.Encode("tl1", converted)
+// 		if err != nil {
+// 			return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
+// 		}
 
-func ConvertToBech32Address(address string) (string, error) {
-	// Check if the address is already in Bech32 format
-	if strings.HasPrefix(address, "tl1") {
-		return address, nil
-	}
+// 		return bech32Address, nil
+// 	}
 
-	// Try to decode the address as hexadecimal
-	addressBytes, err := hex.DecodeString(address)
-	if err == nil {
-		// Take the first 20 bytes (40 characters of the hex string)
-		// This is similar to how Ethereum addresses are derived from public keys
-		if len(addressBytes) > 20 {
-			addressBytes = addressBytes[:20]
-		}
-
-		// Convert to 5-bit groups for Bech32 encoding
-		converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
-		if err != nil {
-			return "", fmt.Errorf("failed to convert bits: %v", err)
-		}
-
-		// Encode to Bech32
-		bech32Address, err := bech32.Encode("tl1", converted)
-		if err != nil {
-			return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
-		}
-
-		return bech32Address, nil
-	}
-
-	// If the address is not in hexadecimal format, try to use it directly
-	return address, nil
-}
+// 	// If the address is not in hexadecimal format, try to use it directly
+// 	return address, nil
+// }
 
 // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
@@ -273,8 +237,8 @@ func ConvertToBech32Address(address string) (string, error) {
 // 	// Initialize the map for public keys
 // 	publicKeyMap := make(map[string]*mldsa44.PublicKey)
 
-// 	// Initialize Stakeholders map with the genesis account
-// 	totalSupplyNano := utils.ThrylosToNano()
+// Initialize Stakeholders map with the genesis account
+// totalSupplyNano := utils.ThrylosToNano(InitialTotalSupply)
 
 // 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
 
@@ -538,36 +502,36 @@ func ConvertToBech32Address(address string) (string, error) {
 // 	return blockchain, bdb, nil
 // }
 
-// FIXME: The total supply is not correct, it needs to be improved
-func (bc *Blockchain) GetTotalSupply() int64 {
-	totalSupply := int64(0)
-	for _, balance := range bc.Stakeholders {
-		totalSupply += balance
-	}
-	return totalSupply
-}
+// // FIXME: The total supply is not correct, it needs to be improved
+// func (bc *Blockchain) GetTotalSupply() int64 {
+// 	totalSupply := int64(0)
+// 	for _, balance := range bc.Stakeholders {
+// 		totalSupply += balance
+// 	}
+// 	return totalSupply
+// }
 
-func (bc *Blockchain) GetEffectiveInflationRate() float64 {
-	currentTotalSupply := utils.NanoToThrylos(bc.GetTotalSupply())
-	// Calculate effective rate (will decrease as total supply grows)
-	effectiveRate := (utils.NanoToThrylos(config.AnnualStakeReward) / currentTotalSupply) * 100
-	return effectiveRate
-}
+// func (bc *Blockchain) GetEffectiveInflationRate() float64 {
+// 	currentTotalSupply := utils.NanoToThrylos(bc.GetTotalSupply())
+// 	// Calculate effective rate (will decrease as total supply grows)
+// 	effectiveRate := (utils.NanoToThrylos(config.AnnualStakeReward) / currentTotalSupply) * 100
+// 	return effectiveRate
+// }
 
-func contains(slice []string, item string) bool {
-	for _, a := range slice {
-		if a == item {
-			return true
-		}
-	}
-	return false
-}
+// func contains(slice []string, item string) bool {
+// 	for _, a := range slice {
+// 		if a == item {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
-func (bc *Blockchain) getActiveNodeCount() int {
-	// This is a placeholder. In a real implementation, you would track active nodes.
-	// For now, we'll return a constant value.
-	return 50
-}
+// func (bc *Blockchain) getActiveNodeCount() int {
+// 	// This is a placeholder. In a real implementation, you would track active nodes.
+// 	// For now, we'll return a constant value.
+// 	return 50
+// }
 
 // Example usage function
 // func (bc *Blockchain) CreateNextBlock(nodes ...*node.Node) (*Block, error) {
@@ -586,114 +550,114 @@ func (bc *Blockchain) getActiveNodeCount() int {
 // 	return bc.CreateBlockFromPendingTransactions(validator)
 // }
 
-func (bc *Blockchain) calculateAverageLatency() time.Duration {
-	// This is a placeholder. In a real implementation, you would measure actual network latency.
-	// For now, we'll return a constant value.
-	return 200 * time.Millisecond
-}
+// func (bc *Blockchain) calculateAverageLatency() time.Duration {
+// 	// This is a placeholder. In a real implementation, you would measure actual network latency.
+// 	// For now, we'll return a constant value.
+// 	return 200 * time.Millisecond
+// }
 
-// FIXME: Does this need to started here?
-func (bc *Blockchain) StartPeriodicValidatorUpdate(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	go func() {
-		for range ticker.C {
-			bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
-		}
-	}()
-}
+// // FIXME: Does this need to started here?
+// func (bc *Blockchain) StartPeriodicValidatorUpdate(interval time.Duration) {
+// 	ticker := time.NewTicker(interval)
+// 	go func() {
+// 		for range ticker.C {
+// 			bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
+// 		}
+// 	}()
+// }
 
-// When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
+// // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
 
-// ConvertProtoUTXOToShared converts a Protobuf-generated UTXO to your shared UTXO type.
-func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
-	return shared.UTXO{
-		ID:            protoUTXO.GetTransactionId(), // Assuming you have corresponding fields
-		TransactionID: protoUTXO.GetTransactionId(),
-		Index:         int(protoUTXO.GetIndex()), // Convert from int32 to int if necessary
-		OwnerAddress:  protoUTXO.GetOwnerAddress(),
-		Amount:        int64(protoUTXO.GetAmount()), // Convert from int64 to int if necessary
-	}
-}
+// // ConvertProtoUTXOToShared converts a Protobuf-generated UTXO to your shared UTXO type.
+// func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
+// 	return shared.UTXO{
+// 		ID:            protoUTXO.GetTransactionId(), // Assuming you have corresponding fields
+// 		TransactionID: protoUTXO.GetTransactionId(),
+// 		Index:         int(protoUTXO.GetIndex()), // Convert from int32 to int if necessary
+// 		OwnerAddress:  protoUTXO.GetOwnerAddress(),
+// 		Amount:        int64(protoUTXO.GetAmount()), // Convert from int64 to int if necessary
+// 	}
+// }
 
-func (bc *Blockchain) Status() string {
-	// Example status: return the number of blocks in the blockchain
-	return fmt.Sprintf("Current blockchain length: %d blocks", len(bc.Blocks))
-}
+// func (bc *Blockchain) Status() string {
+// 	// Example status: return the number of blocks in the blockchain
+// 	return fmt.Sprintf("Current blockchain length: %d blocks", len(bc.Blocks))
+// }
 
-func (bc *Blockchain) CreateInitialWalletUTXO(address string, initialBalance int64) error {
-	utxo := shared.UTXO{
-		OwnerAddress:  address,
-		Amount:        initialBalance,
-		TransactionID: fmt.Sprintf("genesis-%s", address),
-		IsSpent:       false,
-		Index:         0, // Use 0 for initial UTXO
-	}
+// func (bc *Blockchain) CreateInitialWalletUTXO(address string, initialBalance int64) error {
+// 	utxo := shared.UTXO{
+// 		OwnerAddress:  address,
+// 		Amount:        initialBalance,
+// 		TransactionID: fmt.Sprintf("genesis-%s", address),
+// 		IsSpent:       false,
+// 		Index:         0, // Use 0 for initial UTXO
+// 	}
 
-	return bc.Database.AddUTXO(utxo)
-}
+// 	return bc.Database.AddUTXO(utxo)
+// }
 
-func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
-	log.Printf("Fetching UTXOs for address: %s", address)
-	utxos, err := bc.Database.GetUTXOsForAddress(address)
-	if err != nil {
-		log.Printf("Failed to fetch UTXOs from database: %s", err)
-		return nil, err
-	}
-	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
-	return utxos, nil
-}
+// func (bc *Blockchain) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
+// 	log.Printf("Fetching UTXOs for address: %s", address)
+// 	utxos, err := bc.Database.GetUTXOsForAddress(address)
+// 	if err != nil {
+// 		log.Printf("Failed to fetch UTXOs from database: %s", err)
+// 		return nil, err
+// 	}
+// 	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
+// 	return utxos, nil
+// }
 
-func (bc *Blockchain) GetAllUTXOs() (map[string][]shared.UTXO, error) {
-	return bc.Database.GetAllUTXOs()
-}
+// func (bc *Blockchain) GetAllUTXOs() (map[string][]shared.UTXO, error) {
+// 	return bc.Database.GetAllUTXOs()
+// }
 
-func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
-	return bc.Database.GetUTXOsForUser(address)
-}
+// func (bc *Blockchain) GetUTXOsForUser(address string) ([]shared.UTXO, error) {
+// 	return bc.Database.GetUTXOsForUser(address)
+// }
 
-// Always deals with nanoTHRYLOS as int64
-func (bc *Blockchain) GetBalance(address string) (int64, error) {
-	var balance int64 = 0
-	utxos, err := bc.Database.GetUTXOsForAddress(address)
-	if err != nil {
-		return 0, err
-	}
+// // Always deals with nanoTHRYLOS as int64
+// func (bc *Blockchain) GetBalance(address string) (int64, error) {
+// 	var balance int64 = 0
+// 	utxos, err := bc.Database.GetUTXOsForAddress(address)
+// 	if err != nil {
+// 		return 0, err
+// 	}
 
-	for _, utxo := range utxos {
-		if !utxo.IsSpent {
-			balance += utxo.Amount
-		}
-	}
-	return balance, nil
-}
+// 	for _, utxo := range utxos {
+// 		if !utxo.IsSpent {
+// 			balance += utxo.Amount
+// 		}
+// 	}
+// 	return balance, nil
+// }
 
-// ConvertToThrylos converts nanoTHRYLOS to THRYLOS
-func ConvertToThrylos(nanoThrylos decimal.Decimal) decimal.Decimal {
-	return nanoThrylos.Div(decimal.NewFromInt(1e7))
-}
+// // ConvertToThrylos converts nanoTHRYLOS to THRYLOS
+// func ConvertToThrylos(nanoThrylos decimal.Decimal) decimal.Decimal {
+// 	return nanoThrylos.Div(decimal.NewFromInt(1e7))
+// }
 
-// ConvertToNanoThrylos converts THRYLOS to nanoTHRYLOS
-func ConvertToNanoThrylos(thrylos decimal.Decimal) decimal.Decimal {
-	return thrylos.Mul(decimal.NewFromInt(1e7))
-}
+// // ConvertToNanoThrylos converts THRYLOS to nanoTHRYLOS
+// func ConvertToNanoThrylos(thrylos decimal.Decimal) decimal.Decimal {
+// 	return thrylos.Mul(decimal.NewFromInt(1e7))
+// }
 
-func (bc *Blockchain) RegisterPublicKey(pubKey string) error {
-	// Convert the public key string to bytes, assuming pubKey is base64 encoded
-	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKey)
-	if err != nil {
-		return fmt.Errorf("error decoding public key: %v", err)
-	}
+// func (bc *Blockchain) RegisterPublicKey(pubKey string) error {
+// 	// Convert the public key string to bytes, assuming pubKey is base64 encoded
+// 	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKey)
+// 	if err != nil {
+// 		return fmt.Errorf("error decoding public key: %v", err)
+// 	}
 
-	// Create and parse MLDSA public key from bytes
-	mldsaPubKey := new(mldsa44.PublicKey)
-	err = mldsaPubKey.UnmarshalBinary(pubKeyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse MLDSA public key: %v", err)
-	}
+// 	// Create and parse MLDSA public key from bytes
+// 	mldsaPubKey := new(mldsa44.PublicKey)
+// 	err = mldsaPubKey.UnmarshalBinary(pubKeyBytes)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to parse MLDSA public key: %v", err)
+// 	}
 
-	// Assuming "publicKeyAddress" should be dynamically determined or correctly provided
-	return bc.Database.InsertOrUpdateMLDSAPublicKey("publicKeyAddress", mldsaPubKey)
-}
+// 	// Assuming "publicKeyAddress" should be dynamically determined or correctly provided
+// 	return bc.Database.InsertOrUpdateMLDSAPublicKey("publicKeyAddress", mldsaPubKey)
+// }
 
 // In blockchain.go, within your Blockchain struct definition
 // func (bc *Blockchain) RetrievePublicKey(ownerAddress string) (*mldsa44.PublicKey, error) {
@@ -739,59 +703,59 @@ func (bc *Blockchain) RegisterPublicKey(pubKey string) error {
 // 	return bc.ProcessPendingTransactions(validator)
 // }
 
-// Load all Validator public keys into Memory
-func (bc *Blockchain) LoadAllValidatorPublicKeys() error {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
+// // Load all Validator public keys into Memory
+// func (bc *Blockchain) LoadAllValidatorPublicKeys() error {
+// 	bc.Mu.Lock()
+// 	defer bc.Mu.Unlock()
 
-	log.Println("Loading all validator public keys")
+// 	log.Println("Loading all validator public keys")
 
-	for address := range bc.Stakeholders {
-		log.Printf("Attempting to load public key for stakeholder: %s", address)
-		pubKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
-		if err != nil {
-			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
-			continue
-		}
+// 	for address := range bc.Stakeholders {
+// 		log.Printf("Attempting to load public key for stakeholder: %s", address)
+// 		pubKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
+// 		if err != nil {
+// 			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
+// 			continue
+// 		}
 
-		if len(pubKeyBytes) > 0 {
-			// Create a new PublicKey instance
-			pubKey := new(mldsa44.PublicKey)
-			// Parse the bytes into the public key
-			err = pubKey.UnmarshalBinary(pubKeyBytes)
-			if err != nil {
-				log.Printf("Failed to parse public key for stakeholder %s: %v", address, err)
-				continue
-			}
+// 		if len(pubKeyBytes) > 0 {
+// 			// Create a new PublicKey instance
+// 			pubKey := new(mldsa44.PublicKey)
+// 			// Parse the bytes into the public key
+// 			err = pubKey.UnmarshalBinary(pubKeyBytes)
+// 			if err != nil {
+// 				log.Printf("Failed to parse public key for stakeholder %s: %v", address, err)
+// 				continue
+// 			}
 
-			// Store the pointer directly
-			bc.PublicKeyMap[address] = pubKey
-			log.Printf("Loaded public key for validator: %s", address)
-		}
-	}
+// 			// Store the pointer directly
+// 			bc.PublicKeyMap[address] = pubKey
+// 			log.Printf("Loaded public key for validator: %s", address)
+// 		}
+// 	}
 
-	log.Printf("Loaded public keys for %d validators", len(bc.PublicKeyMap))
-	return nil
-}
+// 	log.Printf("Loaded public keys for %d validators", len(bc.PublicKeyMap))
+// 	return nil
+// }
 
-func (bc *Blockchain) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
-	// Retrieve the public key from storage
-	storedPubKey, err := bc.Database.RetrieveValidatorPublicKey(validatorAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve public key for validator %s: %v", validatorAddress, err)
-	}
+// func (bc *Blockchain) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
+// 	// Retrieve the public key from storage
+// 	storedPubKey, err := bc.Database.RetrieveValidatorPublicKey(validatorAddress)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to retrieve public key for validator %s: %v", validatorAddress, err)
+// 	}
 
-	// Create a new MLDSA44 public key
-	publicKey := new(mldsa44.PublicKey)
+// 	// Create a new MLDSA44 public key
+// 	publicKey := new(mldsa44.PublicKey)
 
-	// Unmarshal the stored bytes into the public key
-	err = publicKey.UnmarshalBinary(storedPubKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal public key for validator %s: %v", validatorAddress, err)
-	}
+// 	// Unmarshal the stored bytes into the public key
+// 	err = publicKey.UnmarshalBinary(storedPubKey)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to unmarshal public key for validator %s: %v", validatorAddress, err)
+// 	}
 
-	return publicKey, nil
-}
+// 	return publicKey, nil
+// }
 
 // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // This method encapsulates the logic for building a block to be added to the blockchain.
@@ -871,127 +835,127 @@ func (bc *Blockchain) GetValidatorPublicKey(validatorAddress string) (*mldsa44.P
 // 	return nil
 // }
 
-func (bc *Blockchain) CheckValidatorKeyConsistency() error {
-	log.Println("Checking validator key consistency")
+// func (bc *Blockchain) CheckValidatorKeyConsistency() error {
+// 	log.Println("Checking validator key consistency")
 
-	allPublicKeys, err := bc.Database.GetAllValidatorPublicKeys()
-	if err != nil {
-		return fmt.Errorf("failed to retrieve all validator public keys: %v", err)
-	}
+// 	allPublicKeys, err := bc.Database.GetAllValidatorPublicKeys()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to retrieve all validator public keys: %v", err)
+// 	}
 
-	log.Printf("Total stored validator public keys: %d", len(allPublicKeys))
-	log.Printf("Total active validators: %d", len(bc.ActiveValidators))
+// 	log.Printf("Total stored validator public keys: %d", len(allPublicKeys))
+// 	log.Printf("Total active validators: %d", len(bc.ActiveValidators))
 
-	for address, storedPubKey := range allPublicKeys {
-		log.Printf("Checking consistency for validator: %s", address)
+// 	for address, storedPubKey := range allPublicKeys {
+// 		log.Printf("Checking consistency for validator: %s", address)
 
-		// Convert stored public key to bytes for logging
-		storedPubKeyBytes, err := storedPubKey.MarshalBinary()
-		if err != nil {
-			log.Printf("Failed to marshal stored public key for validator %s: %v", address, err)
-			continue
-		}
-		log.Printf("Stored public key for %s: %x", address, storedPubKeyBytes)
+// 		// Convert stored public key to bytes for logging
+// 		storedPubKeyBytes, err := storedPubKey.MarshalBinary()
+// 		if err != nil {
+// 			log.Printf("Failed to marshal stored public key for validator %s: %v", address, err)
+// 			continue
+// 		}
+// 		log.Printf("Stored public key for %s: %x", address, storedPubKeyBytes)
 
-		if bc.IsActiveValidator(address) {
-			log.Printf("Validator %s is active", address)
+// 		if bc.IsActiveValidator(address) {
+// 			log.Printf("Validator %s is active", address)
 
-			privateKey, bech32Address, err := bc.GetValidatorPrivateKey(address)
-			if err != nil {
-				log.Printf("Failed to retrieve private key for validator %s: %v", address, err)
-				continue
-			}
+// 			privateKey, bech32Address, err := bc.GetValidatorPrivateKey(address)
+// 			if err != nil {
+// 				log.Printf("Failed to retrieve private key for validator %s: %v", address, err)
+// 				continue
+// 			}
 
-			log.Printf("Retrieved private key for %s, Bech32 address: %s", address, bech32Address)
+// 			log.Printf("Retrieved private key for %s, Bech32 address: %s", address, bech32Address)
 
-			// Fixed: Use pointer type for the type assertion
-			derivedPublicKey := privateKey.Public().(*mldsa44.PublicKey)
+// 			// Fixed: Use pointer type for the type assertion
+// 			derivedPublicKey := privateKey.Public().(*mldsa44.PublicKey)
 
-			// Convert both keys to bytes for comparison
-			derivedPubKeyBytes, err := derivedPublicKey.MarshalBinary()
-			if err != nil {
-				return fmt.Errorf("failed to marshal derived public key for validator %s: %v", address, err)
-			}
+// 			// Convert both keys to bytes for comparison
+// 			derivedPubKeyBytes, err := derivedPublicKey.MarshalBinary()
+// 			if err != nil {
+// 				return fmt.Errorf("failed to marshal derived public key for validator %s: %v", address, err)
+// 			}
 
-			storedPubKeyBytes, err := storedPubKey.MarshalBinary()
-			if err != nil {
-				return fmt.Errorf("failed to marshal stored public key for validator %s: %v", address, err)
-			}
+// 			storedPubKeyBytes, err := storedPubKey.MarshalBinary()
+// 			if err != nil {
+// 				return fmt.Errorf("failed to marshal stored public key for validator %s: %v", address, err)
+// 			}
 
-			log.Printf("Derived public key for %s: %x", address, derivedPubKeyBytes)
+// 			log.Printf("Derived public key for %s: %x", address, derivedPubKeyBytes)
 
-			if !bytes.Equal(storedPubKeyBytes, derivedPubKeyBytes) {
-				log.Printf("Key mismatch for validator %s (Bech32: %s):", address, bech32Address)
-				log.Printf("  Stored public key:  %x", storedPubKeyBytes)
-				log.Printf("  Derived public key: %x", derivedPubKeyBytes)
-				return fmt.Errorf("key mismatch for active validator %s (Bech32: %s): stored public key does not match derived public key",
-					address, bech32Address)
-			}
+// 			if !bytes.Equal(storedPubKeyBytes, derivedPubKeyBytes) {
+// 				log.Printf("Key mismatch for validator %s (Bech32: %s):", address, bech32Address)
+// 				log.Printf("  Stored public key:  %x", storedPubKeyBytes)
+// 				log.Printf("  Derived public key: %x", derivedPubKeyBytes)
+// 				return fmt.Errorf("key mismatch for active validator %s (Bech32: %s): stored public key does not match derived public key",
+// 					address, bech32Address)
+// 			}
 
-			log.Printf("Keys consistent for active validator %s", address)
-		} else {
-			log.Printf("Validator %s is not active", address)
-		}
-	}
+// 			log.Printf("Keys consistent for active validator %s", address)
+// 		} else {
+// 			log.Printf("Validator %s is not active", address)
+// 		}
+// 	}
 
-	for _, activeAddress := range bc.ActiveValidators {
-		if _, exists := allPublicKeys[activeAddress]; !exists {
-			log.Printf("Active validator %s does not have a stored public key", activeAddress)
-			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
-		}
-	}
+// 	for _, activeAddress := range bc.ActiveValidators {
+// 		if _, exists := allPublicKeys[activeAddress]; !exists {
+// 			log.Printf("Active validator %s does not have a stored public key", activeAddress)
+// 			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
+// 		}
+// 	}
 
-	log.Println("Validator key consistency check completed")
-	return nil
-}
+// 	log.Println("Validator key consistency check completed")
+// 	return nil
+// }
 
-// Helper function to efficiently check salt uniqueness in all blocks
-func (bc *Blockchain) checkSaltInBlocks(salt []byte) bool {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
+// // Helper function to efficiently check salt uniqueness in all blocks
+// func (bc *Blockchain) checkSaltInBlocks(salt []byte) bool {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
 
-	// Create an efficient lookup for pending transaction salts
-	pendingSalts := make(map[string]bool)
-	for _, tx := range bc.PendingTransactions {
-		pendingSalts[string(tx.Salt)] = true
-	}
+// 	// Create an efficient lookup for pending transaction salts
+// 	pendingSalts := make(map[string]bool)
+// 	for _, tx := range bc.PendingTransactions {
+// 		pendingSalts[string(tx.Salt)] = true
+// 	}
 
-	// Check pending transactions first (faster in-memory check)
-	if pendingSalts[string(salt)] {
-		return true
-	}
+// 	// Check pending transactions first (faster in-memory check)
+// 	if pendingSalts[string(salt)] {
+// 		return true
+// 	}
 
-	// Check confirmed blocks
-	for _, block := range bc.Blocks {
-		for _, tx := range block.Transactions {
-			if bytes.Equal(tx.Salt, salt) {
-				return true
-			}
-		}
-	}
+// 	// Check confirmed blocks
+// 	for _, block := range bc.Blocks {
+// 		for _, tx := range block.Transactions {
+// 			if bytes.Equal(tx.Salt, salt) {
+// 				return true
+// 			}
+// 		}
+// 	}
 
-	return false
-}
+// 	return false
+// }
 
-// Helper function to verify transaction uniqueness using salt
-func verifyTransactionUniqueness(tx *thrylos.Transaction, blockchain *Blockchain) error {
-	if tx == nil {
-		return fmt.Errorf("nil transaction")
-	}
-	if len(tx.Salt) == 0 {
-		return fmt.Errorf("empty salt")
-	}
-	if len(tx.Salt) != 32 {
-		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
-	}
+// // Helper function to verify transaction uniqueness using salt
+// func verifyTransactionUniqueness(tx *thrylos.Transaction, blockchain *Blockchain) error {
+// 	if tx == nil {
+// 		return fmt.Errorf("nil transaction")
+// 	}
+// 	if len(tx.Salt) == 0 {
+// 		return fmt.Errorf("empty salt")
+// 	}
+// 	if len(tx.Salt) != 32 {
+// 		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
+// 	}
 
-	// Use the efficient helper function to check salt uniqueness
-	if blockchain.checkSaltInBlocks(tx.Salt) {
-		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
-	}
+// 	// Use the efficient helper function to check salt uniqueness
+// 	if blockchain.checkSaltInBlocks(tx.Salt) {
+// 		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // func (bc *Blockchain) SignBlock(block *Block, validatorAddress string) ([]byte, error) {
 // 	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(validatorAddress)
@@ -1014,78 +978,78 @@ func verifyTransactionUniqueness(tx *thrylos.Transaction, blockchain *Blockchain
 // 	return signature, nil
 // }
 
-func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmount int64) {
-	if _, ok := bc.Stakeholders[validatorAddress]; ok {
-		// Deduct the slashAmount from the stake
-		bc.Stakeholders[validatorAddress] -= slashAmount
-		if bc.Stakeholders[validatorAddress] <= 0 {
-			// Remove validator if their stake goes to zero or negative
-			delete(bc.Stakeholders, validatorAddress)
-		}
-	}
-}
+// func (bc *Blockchain) SlashMaliciousValidator(validatorAddress string, slashAmount int64) {
+// 	if _, ok := bc.Stakeholders[validatorAddress]; ok {
+// 		// Deduct the slashAmount from the stake
+// 		bc.Stakeholders[validatorAddress] -= slashAmount
+// 		if bc.Stakeholders[validatorAddress] <= 0 {
+// 			// Remove validator if their stake goes to zero or negative
+// 			delete(bc.Stakeholders, validatorAddress)
+// 		}
+// 	}
+// }
 
-func (bc *Blockchain) IsSlashed(validator string) bool {
-	// Check if validator is in slashed state
-	if stake, exists := bc.Stakeholders[validator]; exists {
-		return stake < bc.MinStakeForValidator.Int64() // Validator is slashed if below min stake
-	}
-	return false
-}
+// func (bc *Blockchain) IsSlashed(validator string) bool {
+// 	// Check if validator is in slashed state
+// 	if stake, exists := bc.Stakeholders[validator]; exists {
+// 		return stake < bc.MinStakeForValidator.Int64() // Validator is slashed if below min stake
+// 	}
+// 	return false
+// }
 
-func (bc *Blockchain) GetChainID() string {
-	return "0x1" // Mainnet (adjust as per your chain)
-}
+// func (bc *Blockchain) GetChainID() string {
+// 	return "0x1" // Mainnet (adjust as per your chain)
+// }
 
-func (bc *Blockchain) ResolveForks() {
-	var longestFork *Fork
-	longestLength := len(bc.Blocks)
-	for _, fork := range bc.Forks {
-		if len(fork.Blocks)+fork.Index > longestLength {
-			longestLength = len(fork.Blocks) + fork.Index
-			longestFork = fork
-		}
-	}
-	if longestFork != nil {
-		// Switch to the longest fork
-		bc.Blocks = append(bc.Blocks[:longestFork.Index], longestFork.Blocks...)
-	}
-	// Clear forks as the longest chain is now the main chain
-	bc.Forks = nil
-}
+// func (bc *Blockchain) ResolveForks() {
+// 	var longestFork *Fork
+// 	longestLength := len(bc.Blocks)
+// 	for _, fork := range bc.Forks {
+// 		if len(fork.Blocks)+fork.Index > longestLength {
+// 			longestLength = len(fork.Blocks) + fork.Index
+// 			longestFork = fork
+// 		}
+// 	}
+// 	if longestFork != nil {
+// 		// Switch to the longest fork
+// 		bc.Blocks = append(bc.Blocks[:longestFork.Index], longestFork.Blocks...)
+// 	}
+// 	// Clear forks as the longest chain is now the main chain
+// 	bc.Forks = nil
+// }
 
-// In Blockchain
-func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKeyBytes []byte, keyType string) error {
-	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
+// // In Blockchain
+// func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKeyBytes []byte, keyType string) error {
+// 	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
 
-	if len(publicKeyBytes) == 0 {
-		return fmt.Errorf("empty public key bytes provided")
-	}
-	log.Printf("PublicKey bytes: %x", publicKeyBytes)
+// 	if len(publicKeyBytes) == 0 {
+// 		return fmt.Errorf("empty public key bytes provided")
+// 	}
+// 	log.Printf("PublicKey bytes: %x", publicKeyBytes)
 
-	switch keyType {
-	case "MLDSA":
-		// Parse the bytes into an MLDSA public key
-		pubKey := new(mldsa44.PublicKey)
-		err := pubKey.UnmarshalBinary(publicKeyBytes)
-		if err != nil {
-			log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
-			return fmt.Errorf("failed to parse MLDSA public key: %v", err)
-		}
+// 	switch keyType {
+// 	case "MLDSA":
+// 		// Parse the bytes into an MLDSA public key
+// 		pubKey := new(mldsa44.PublicKey)
+// 		err := pubKey.UnmarshalBinary(publicKeyBytes)
+// 		if err != nil {
+// 			log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
+// 			return fmt.Errorf("failed to parse MLDSA public key: %v", err)
+// 		}
 
-		// Store the parsed key
-		err = bc.Database.InsertOrUpdateMLDSAPublicKey(address, pubKey)
-		if err != nil {
-			log.Printf("Failed to store MLDSA public key for address %s: %v", address, err)
-			return fmt.Errorf("failed to store MLDSA public key: %v", err)
-		}
+// 		// Store the parsed key
+// 		err = bc.Database.InsertOrUpdateMLDSAPublicKey(address, pubKey)
+// 		if err != nil {
+// 			log.Printf("Failed to store MLDSA public key for address %s: %v", address, err)
+// 			return fmt.Errorf("failed to store MLDSA public key: %v", err)
+// 		}
 
-		log.Printf("Successfully stored MLDSA public key for address %s", address)
-		return nil
-	default:
-		return fmt.Errorf("unsupported key type: %s", keyType)
-	}
-}
+// 		log.Printf("Successfully stored MLDSA public key for address %s", address)
+// 		return nil
+// 	default:
+// 		return fmt.Errorf("unsupported key type: %s", keyType)
+// 	}
+// }
 
 // func (bc *Blockchain) validateBlockTransactionSalts(block *Block) error {
 // 	seenSalts := make(map[string]bool)
@@ -1134,60 +1098,60 @@ func (bc *Blockchain) InsertOrUpdatePublicKey(address string, publicKeyBytes []b
 // 	return true
 // }
 
-func (bc *Blockchain) GetLastBlock() (*Block, int, error) {
-	// Query the last block data and index
-	blockData, lastIndex, err := bc.Database.GetLastBlockData()
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// Handle no rows returned, which means the blockchain is empty
-			return nil, 0, nil
-		}
-		return nil, 0, err
-	}
+// func (bc *Blockchain) GetLastBlock() (*Block, int, error) {
+// 	// Query the last block data and index
+// 	blockData, lastIndex, err := bc.Database.GetLastBlockData()
+// 	if err != nil {
+// 		if err == sql.ErrNoRows {
+// 			// Handle no rows returned, which means the blockchain is empty
+// 			return nil, 0, nil
+// 		}
+// 		return nil, 0, err
+// 	}
 
-	// Deserialize the block
-	var lastBlock Block
-	buffer := bytes.NewBuffer(blockData)
-	decoder := gob.NewDecoder(buffer)
-	err = decoder.Decode(&lastBlock)
-	if err != nil {
-		return nil, 0, err
-	}
+// 	// Deserialize the block
+// 	var lastBlock Block
+// 	buffer := bytes.NewBuffer(blockData)
+// 	decoder := gob.NewDecoder(buffer)
+// 	err = decoder.Decode(&lastBlock)
+// 	if err != nil {
+// 		return nil, 0, err
+// 	}
 
-	// Return the block along with its index
-	return &lastBlock, lastIndex, nil
-}
+// 	// Return the block along with its index
+// 	return &lastBlock, lastIndex, nil
+// }
 
-// addUTXO adds a new UTXO to the blockchain's UTXO set.
-func (bc *Blockchain) addUTXO(utxo shared.UTXO) error {
-	utxoKey := fmt.Sprintf("%s:%d", utxo.TransactionID, utxo.Index)
-	log.Printf("Adding UTXO with key: %s", utxoKey)
+// // addUTXO adds a new UTXO to the blockchain's UTXO set.
+// func (bc *Blockchain) addUTXO(utxo shared.UTXO) error {
+// 	utxoKey := fmt.Sprintf("%s:%d", utxo.TransactionID, utxo.Index)
+// 	log.Printf("Adding UTXO with key: %s", utxoKey)
 
-	if _, exists := bc.UTXOs[utxoKey]; !exists {
-		bc.UTXOs[utxoKey] = []*thrylos.UTXO{}
-	}
+// 	if _, exists := bc.UTXOs[utxoKey]; !exists {
+// 		bc.UTXOs[utxoKey] = []*thrylos.UTXO{}
+// 	}
 
-	thrylosUtxo := shared.ConvertSharedUTXOToProto(utxo)
-	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
+// 	thrylosUtxo := shared.ConvertSharedUTXOToProto(utxo)
+// 	bc.UTXOs[utxoKey] = append(bc.UTXOs[utxoKey], thrylosUtxo)
 
-	if err := bc.Database.AddUTXO(utxo); err != nil {
-		log.Printf("Failed to add UTXO to database: %s", err)
-		return err
-	}
+// 	if err := bc.Database.AddUTXO(utxo); err != nil {
+// 		log.Printf("Failed to add UTXO to database: %s", err)
+// 		return err
+// 	}
 
-	log.Printf("UTXO successfully added: %v", utxo)
-	return nil
-}
+// 	log.Printf("UTXO successfully added: %v", utxo)
+// 	return nil
+// }
 
-// removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.
-func (bc *Blockchain) removeUTXO(transactionID string, index int32) bool {
-	utxoKey := fmt.Sprintf("%s:%d", transactionID, index)
-	if _, exists := bc.UTXOs[utxoKey]; exists {
-		delete(bc.UTXOs, utxoKey)
-		return true
-	}
-	return false
-}
+// // removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.
+// func (bc *Blockchain) removeUTXO(transactionID string, index int32) bool {
+// 	utxoKey := fmt.Sprintf("%s:%d", transactionID, index)
+// 	if _, exists := bc.UTXOs[utxoKey]; exists {
+// 		delete(bc.UTXOs, utxoKey)
+// 		return true
+// 	}
+// 	return false
+// }
 
 // VerifyTransaction checks the validity of a transaction against the current state of the blockchain,
 // including signature verification and double spending checks. It's essential for maintaining the
@@ -1237,71 +1201,71 @@ func (bc *Blockchain) removeUTXO(transactionID string, index int32) bool {
 // 	return true, nil
 // }
 
-// Helper function to generate a random salt
-func generateSalt() ([]byte, error) {
-	salt := make([]byte, 32) // Using 32 bytes for salt
-	_, err := rand.Read(salt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate salt: %v", err)
-	}
-	return salt, nil
-}
+// // Helper function to generate a random salt
+// func generateSalt() ([]byte, error) {
+// 	salt := make([]byte, 32) // Using 32 bytes for salt
+// 	_, err := rand.Read(salt)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to generate salt: %v", err)
+// 	}
+// 	return salt, nil
+// }
 
-// AddPendingTransaction adds a new transaction to the pool of pending transactions.
-func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
-	// Generate and set salt if not already present
-	if len(tx.Salt) == 0 {
-		salt, err := generateSalt()
-		if err != nil {
-			return fmt.Errorf("failed to generate salt: %v", err)
-		}
-		tx.Salt = salt
-	}
+// // AddPendingTransaction adds a new transaction to the pool of pending transactions.
+// func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
+// 	// Generate and set salt if not already present
+// 	if len(tx.Salt) == 0 {
+// 		salt, err := generateSalt()
+// 		if err != nil {
+// 			return fmt.Errorf("failed to generate salt: %v", err)
+// 		}
+// 		tx.Salt = salt
+// 	}
 
-	// Verify salt uniqueness before adding to pending pool
-	if err := verifyTransactionUniqueness(tx, bc); err != nil {
-		return fmt.Errorf("transaction salt verification failed: %v", err)
-	}
+// 	// Verify salt uniqueness before adding to pending pool
+// 	if err := verifyTransactionUniqueness(tx, bc); err != nil {
+// 		return fmt.Errorf("transaction salt verification failed: %v", err)
+// 	}
 
-	// Propagate to all validators before proceeding
-	if err := bc.TransactionPropagator.PropagateTransaction(tx); err != nil {
-		return fmt.Errorf("failed to propagate transaction: %v", err)
-	}
-	log.Printf("Transaction %s propagated to all validators", tx.Id)
+// 	// Propagate to all validators before proceeding
+// 	if err := bc.TransactionPropagator.PropagateTransaction(tx); err != nil {
+// 		return fmt.Errorf("failed to propagate transaction: %v", err)
+// 	}
+// 	log.Printf("Transaction %s propagated to all validators", tx.Id)
 
-	// Start database transaction
-	txn, err := bc.Database.BeginTransaction()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
-	}
-	defer bc.Database.RollbackTransaction(txn)
+// 	// Start database transaction
+// 	txn, err := bc.Database.BeginTransaction()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to begin transaction: %v", err)
+// 	}
+// 	defer bc.Database.RollbackTransaction(txn)
 
-	// Store transaction with salt
-	txKey := []byte("transaction-" + tx.Id)
-	tx.Status = "pending"
-	txJSON, err := json.Marshal(tx)
-	if err != nil {
-		return fmt.Errorf("error marshaling transaction: %v", err)
-	}
+// 	// Store transaction with salt
+// 	txKey := []byte("transaction-" + tx.Id)
+// 	tx.Status = "pending"
+// 	txJSON, err := json.Marshal(tx)
+// 	if err != nil {
+// 		return fmt.Errorf("error marshaling transaction: %v", err)
+// 	}
 
-	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
-		return fmt.Errorf("error storing transaction: %v", err)
-	}
+// 	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
+// 		return fmt.Errorf("error storing transaction: %v", err)
+// 	}
 
-	if err := bc.Database.CommitTransaction(txn); err != nil {
-		return fmt.Errorf("error committing transaction: %v", err)
-	}
+// 	if err := bc.Database.CommitTransaction(txn); err != nil {
+// 		return fmt.Errorf("error committing transaction: %v", err)
+// 	}
 
-	bc.Mu.Lock()
-	bc.PendingTransactions = append(bc.PendingTransactions, tx)
-	totalPending := len(bc.PendingTransactions)
-	bc.Mu.Unlock()
+// 	bc.Mu.Lock()
+// 	bc.PendingTransactions = append(bc.PendingTransactions, tx)
+// 	totalPending := len(bc.PendingTransactions)
+// 	bc.Mu.Unlock()
 
-	log.Printf("Transaction %s with salt added to pending pool. Total pending: %d",
-		tx.Id, totalPending)
+// 	log.Printf("Transaction %s with salt added to pending pool. Total pending: %d",
+// 		tx.Id, totalPending)
 
-	return nil
-}
+// 	return nil
+// }
 
 // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 // func (bc *Blockchain) ProcessPendingTransactions(validator string) (*Block, error) {
@@ -1374,86 +1338,86 @@ func (bc *Blockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
 // 	return signedBlock, nil
 // }
 
-func (bc *Blockchain) GetActiveValidators() []string {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
-	return bc.ActiveValidators
-}
+// func (bc *Blockchain) GetActiveValidators() []string {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
+// 	return bc.ActiveValidators
+// }
 
-func (bc *Blockchain) GetStakeholders() map[string]int64 {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
-	return bc.Stakeholders
-}
+// func (bc *Blockchain) GetStakeholders() map[string]int64 {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
+// 	return bc.Stakeholders
+// }
 
-// First, ensure when creating transaction inputs we set the original transaction ID
-func (bc *Blockchain) processTransactionInBlock(txContext *shared.TransactionContext, tx *thrylos.Transaction) error {
-	// Mark input UTXOs as spent
-	for _, input := range tx.Inputs {
-		// Validate input fields
-		if input.TransactionId == "" {
-			return fmt.Errorf("input UTXO has no transaction_id field set")
-		}
+// // First, ensure when creating transaction inputs we set the original transaction ID
+// func (bc *Blockchain) processTransactionInBlock(txContext *shared.TransactionContext, tx *thrylos.Transaction) error {
+// 	// Mark input UTXOs as spent
+// 	for _, input := range tx.Inputs {
+// 		// Validate input fields
+// 		if input.TransactionId == "" {
+// 			return fmt.Errorf("input UTXO has no transaction_id field set")
+// 		}
 
-		utxo := shared.UTXO{
-			TransactionID: input.TransactionId, // This must be the genesis or previous transaction ID
-			Index:         int(input.Index),
-			OwnerAddress:  input.OwnerAddress,
-			Amount:        int64(input.Amount),
-			IsSpent:       false,
-		}
+// 		utxo := shared.UTXO{
+// 			TransactionID: input.TransactionId, // This must be the genesis or previous transaction ID
+// 			Index:         int(input.Index),
+// 			OwnerAddress:  input.OwnerAddress,
+// 			Amount:        int64(input.Amount),
+// 			IsSpent:       false,
+// 		}
 
-		// Debug logging
-		log.Printf("Processing input UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
-			utxo.TransactionID, utxo.Index, utxo.OwnerAddress, utxo.Amount)
+// 		// Debug logging
+// 		log.Printf("Processing input UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
+// 			utxo.TransactionID, utxo.Index, utxo.OwnerAddress, utxo.Amount)
 
-		if err := bc.Database.MarkUTXOAsSpent(txContext, utxo); err != nil {
-			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
-		}
-	}
+// 		if err := bc.Database.MarkUTXOAsSpent(txContext, utxo); err != nil {
+// 			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
+// 		}
+// 	}
 
-	// Create new UTXOs for outputs with the current transaction ID
-	for i, output := range tx.Outputs {
-		newUTXO := shared.UTXO{
-			TransactionID: tx.Id, // Use current transaction's ID for new UTXOs
-			Index:         i,
-			OwnerAddress:  output.OwnerAddress,
-			Amount:        int64(output.Amount),
-			IsSpent:       false,
-		}
+// 	// Create new UTXOs for outputs with the current transaction ID
+// 	for i, output := range tx.Outputs {
+// 		newUTXO := shared.UTXO{
+// 			TransactionID: tx.Id, // Use current transaction's ID for new UTXOs
+// 			Index:         i,
+// 			OwnerAddress:  output.OwnerAddress,
+// 			Amount:        int64(output.Amount),
+// 			IsSpent:       false,
+// 		}
 
-		// Debug logging
-		log.Printf("Creating new UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
-			newUTXO.TransactionID, newUTXO.Index, newUTXO.OwnerAddress, newUTXO.Amount)
+// 		// Debug logging
+// 		log.Printf("Creating new UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
+// 			newUTXO.TransactionID, newUTXO.Index, newUTXO.OwnerAddress, newUTXO.Amount)
 
-		if err := bc.Database.AddNewUTXO(txContext, newUTXO); err != nil {
-			return fmt.Errorf("failed to create new UTXO: %v", err)
-		}
-	}
+// 		if err := bc.Database.AddNewUTXO(txContext, newUTXO); err != nil {
+// 			return fmt.Errorf("failed to create new UTXO: %v", err)
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
-func (bc *Blockchain) notifyBalanceUpdates(tx *thrylos.Transaction) {
-	if bc.OnBalanceUpdate == nil {
-		return
-	}
+// func (bc *Blockchain) notifyBalanceUpdates(tx *thrylos.Transaction) {
+// 	if bc.OnBalanceUpdate == nil {
+// 		return
+// 	}
 
-	addresses := make(map[string]bool)
-	addresses[tx.Sender] = true
-	for _, output := range tx.Outputs {
-		addresses[output.OwnerAddress] = true
-	}
+// 	addresses := make(map[string]bool)
+// 	addresses[tx.Sender] = true
+// 	for _, output := range tx.Outputs {
+// 		addresses[output.OwnerAddress] = true
+// 	}
 
-	for address := range addresses {
-		balance, err := bc.GetBalance(address)
-		if err != nil {
-			log.Printf("Failed to get balance for %s: %v", address, err)
-			continue
-		}
-		bc.OnBalanceUpdate(address, balance)
-	}
-}
+// 	for address := range addresses {
+// 		balance, err := bc.GetBalance(address)
+// 		if err != nil {
+// 			log.Printf("Failed to get balance for %s: %v", address, err)
+// 			continue
+// 		}
+// 		bc.OnBalanceUpdate(address, balance)
+// 	}
+// }
 
 // func (bc *Blockchain) SimulateValidatorSigning(unsignedBlock *Block) (*Block, error) {
 // 	log.Printf("Simulating block signing for validator: %s", unsignedBlock.Validator)
@@ -1516,64 +1480,64 @@ func (bc *Blockchain) notifyBalanceUpdates(tx *thrylos.Transaction) {
 // 	return unsignedBlock, nil
 // }
 
-func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockHash []byte) error {
-	// Begin a new database transaction
-	txn, err := bc.Database.BeginTransaction()
-	if err != nil {
-		return fmt.Errorf("failed to begin database transaction: %v", err)
-	}
-	defer bc.Database.RollbackTransaction(txn)
+// func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockHash []byte) error {
+// 	// Begin a new database transaction
+// 	txn, err := bc.Database.BeginTransaction()
+// 	if err != nil {
+// 		return fmt.Errorf("failed to begin database transaction: %v", err)
+// 	}
+// 	defer bc.Database.RollbackTransaction(txn)
 
-	// Retrieve the existing transaction
-	txKey := []byte("transaction-" + txID)
-	txItem, err := txn.Txn.Get(txKey)
-	if err != nil {
-		// If transaction doesn't exist, create a new one
-		tx := &thrylos.Transaction{
-			Id:        txID,
-			Status:    status,
-			BlockHash: blockHash,
-			// Set other required fields that you have available
-		}
-		txJSON, err := json.Marshal(tx)
-		if err != nil {
-			return fmt.Errorf("error marshaling new transaction: %v", err)
-		}
-		if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
-			return fmt.Errorf("error storing new transaction: %v", err)
-		}
-	} else {
-		// Update existing transaction
-		var tx thrylos.Transaction
-		err = txItem.Value(func(val []byte) error {
-			return json.Unmarshal(val, &tx)
-		})
-		if err != nil {
-			return fmt.Errorf("error unmarshaling transaction: %v", err)
-		}
+// 	// Retrieve the existing transaction
+// 	txKey := []byte("transaction-" + txID)
+// 	txItem, err := txn.Txn.Get(txKey)
+// 	if err != nil {
+// 		// If transaction doesn't exist, create a new one
+// 		tx := &thrylos.Transaction{
+// 			Id:        txID,
+// 			Status:    status,
+// 			BlockHash: blockHash,
+// 			// Set other required fields that you have available
+// 		}
+// 		txJSON, err := json.Marshal(tx)
+// 		if err != nil {
+// 			return fmt.Errorf("error marshaling new transaction: %v", err)
+// 		}
+// 		if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
+// 			return fmt.Errorf("error storing new transaction: %v", err)
+// 		}
+// 	} else {
+// 		// Update existing transaction
+// 		var tx thrylos.Transaction
+// 		err = txItem.Value(func(val []byte) error {
+// 			return json.Unmarshal(val, &tx)
+// 		})
+// 		if err != nil {
+// 			return fmt.Errorf("error unmarshaling transaction: %v", err)
+// 		}
 
-		// Update the transaction status
-		tx.Status = status
-		tx.BlockHash = blockHash
+// 		// Update the transaction status
+// 		tx.Status = status
+// 		tx.BlockHash = blockHash
 
-		// Serialize and store the updated transaction
-		updatedTxJSON, err := json.Marshal(tx)
-		if err != nil {
-			return fmt.Errorf("error marshaling updated transaction: %v", err)
-		}
-		if err := bc.Database.SetTransaction(txn, txKey, updatedTxJSON); err != nil {
-			return fmt.Errorf("error updating transaction: %v", err)
-		}
-	}
+// 		// Serialize and store the updated transaction
+// 		updatedTxJSON, err := json.Marshal(tx)
+// 		if err != nil {
+// 			return fmt.Errorf("error marshaling updated transaction: %v", err)
+// 		}
+// 		if err := bc.Database.SetTransaction(txn, txKey, updatedTxJSON); err != nil {
+// 			return fmt.Errorf("error updating transaction: %v", err)
+// 		}
+// 	}
 
-	// Commit the transaction
-	if err := bc.Database.CommitTransaction(txn); err != nil {
-		return fmt.Errorf("error committing transaction update: %v", err)
-	}
+// 	// Commit the transaction
+// 	if err := bc.Database.CommitTransaction(txn); err != nil {
+// 		return fmt.Errorf("error committing transaction update: %v", err)
+// 	}
 
-	log.Printf("Transaction %s status updated to %s in block %x", txID, status, blockHash)
-	return nil
-}
+// 	log.Printf("Transaction %s status updated to %s in block %x", txID, status, blockHash)
+// 	return nil
+// }
 
 // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
 // Validate transactions with available UTXOs
@@ -1659,25 +1623,25 @@ func (bc *Blockchain) UpdateTransactionStatus(txID string, status string, blockH
 // 	}, nil
 // }
 
-// Function to convert Blockchain UTXOs to a format usable in shared validation logic
-func (bc *Blockchain) convertUTXOsToRequiredFormat() map[string][]shared.UTXO {
-	result := make(map[string][]shared.UTXO)
-	for key, utxos := range bc.UTXOs {
-		sharedUtxos := make([]shared.UTXO, len(utxos))
-		for i, utxo := range utxos {
-			sharedUtxos[i] = shared.UTXO{
-				TransactionID: utxo.TransactionId,
-				Index:         int(utxo.Index),
-				OwnerAddress:  utxo.OwnerAddress,
-				Amount:        int64(utxo.Amount),
-			}
-		}
-		result[key] = sharedUtxos
-	}
-	return result
-}
+// // Function to convert Blockchain UTXOs to a format usable in shared validation logic
+// func (bc *Blockchain) convertUTXOsToRequiredFormat() map[string][]shared.UTXO {
+// 	result := make(map[string][]shared.UTXO)
+// 	for key, utxos := range bc.UTXOs {
+// 		sharedUtxos := make([]shared.UTXO, len(utxos))
+// 		for i, utxo := range utxos {
+// 			sharedUtxos[i] = shared.UTXO{
+// 				TransactionID: utxo.TransactionId,
+// 				Index:         int(utxo.Index),
+// 				OwnerAddress:  utxo.OwnerAddress,
+// 				Amount:        int64(utxo.Amount),
+// 			}
+// 		}
+// 		result[key] = sharedUtxos
+// 	}
+// 	return result
+// }
 
-// Get the block and see how many transactions are in each block
+// // Get the block and see how many transactions are in each block
 
 // func (bc *Blockchain) GetBlockByID(id string) (*Block, error) {
 // 	// First, try to parse id as a block index
@@ -1721,15 +1685,15 @@ func (bc *Blockchain) convertUTXOsToRequiredFormat() map[string][]shared.UTXO {
 // 	return nil, errors.New("transaction not found")
 // }
 
-// This function should return the number of blocks in the blockchain.
+// // This function should return the number of blocks in the blockchain.
 
-func (bc *Blockchain) GetBlockCount() int {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
-	return len(bc.Blocks)
-}
+// func (bc *Blockchain) GetBlockCount() int {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
+// 	return len(bc.Blocks)
+// }
 
-// This function should return the number of transactions for a given address, which is often referred to as the "nonce."
+// // This function should return the number of transactions for a given address, which is often referred to as the "nonce."
 
 // func (bc *Blockchain) GetTransactionCount(address string) int {
 // 	bc.Mu.RLock()
@@ -1746,18 +1710,18 @@ func (bc *Blockchain) GetBlockCount() int {
 // 	return count
 // }
 
-func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
-	blockData, err := bc.Database.RetrieveBlock(blockNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
-	}
+// func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
+// 	blockData, err := bc.Database.RetrieveBlock(blockNumber)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
+// 	}
 
-	var block Block
-	if err := json.Unmarshal(blockData, &block); err != nil { // Deserialize here
-		return nil, fmt.Errorf("failed to deserialize block: %v", err)
-	}
-	return &block, nil
-}
+// 	var block Block
+// 	if err := json.Unmarshal(blockData, &block); err != nil { // Deserialize here
+// 		return nil, fmt.Errorf("failed to deserialize block: %v", err)
+// 	}
+// 	return &block, nil
+// }
 
 // func (bc *Blockchain) RegisterValidator(address string, pubKey string, bypassStakeCheck bool) error {
 // 	log.Printf("Entering RegisterValidator function for address: %s", address)
@@ -1845,75 +1809,75 @@ func (bc *Blockchain) GetBlock(blockNumber int) (*Block, error) {
 // 	return nil
 // }
 
-func (bc *Blockchain) StoreValidatorPrivateKey(address string, privKeyBytes []byte) error {
-	log.Printf("Storing private key for validator: %s", address)
+// func (bc *Blockchain) StoreValidatorPrivateKey(address string, privKeyBytes []byte) error {
+// 	log.Printf("Storing private key for validator: %s", address)
 
-	// Create and parse MLDSA private key
-	mldsaPrivKey := new(mldsa44.PrivateKey)
-	err := mldsaPrivKey.UnmarshalBinary(privKeyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse MLDSA private key for validator %s: %v", address, err)
-	}
+// 	// Create and parse MLDSA private key
+// 	mldsaPrivKey := new(mldsa44.PrivateKey)
+// 	err := mldsaPrivKey.UnmarshalBinary(privKeyBytes)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to parse MLDSA private key for validator %s: %v", address, err)
+// 	}
 
-	if err := bc.ValidatorKeys.StoreKey(address, mldsaPrivKey); err != nil {
-		log.Printf("Failed to store private key for validator %s: %v", address, err)
-		return fmt.Errorf("failed to store private key for validator %s: %v", address, err)
-	}
+// 	if err := bc.ValidatorKeys.StoreKey(address, mldsaPrivKey); err != nil {
+// 		log.Printf("Failed to store private key for validator %s: %v", address, err)
+// 		return fmt.Errorf("failed to store private key for validator %s: %v", address, err)
+// 	}
 
-	log.Printf("Private key for validator %s stored securely", address)
-	return nil
-}
+// 	log.Printf("Private key for validator %s stored securely", address)
+// 	return nil
+// }
 
-func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (*mldsa44.PrivateKey, string, error) {
-	log.Printf("Attempting to retrieve private key for validator: %s", validatorAddress)
+// func (bc *Blockchain) GetValidatorPrivateKey(validatorAddress string) (*mldsa44.PrivateKey, string, error) {
+// 	log.Printf("Attempting to retrieve private key for validator: %s", validatorAddress)
 
-	// Check if the validator is active
-	if !bc.IsActiveValidator(validatorAddress) {
-		log.Printf("Validator %s is not in the active validator list", validatorAddress)
-		return nil, "", fmt.Errorf("validator is not active: %s", validatorAddress)
-	}
+// 	// Check if the validator is active
+// 	if !bc.IsActiveValidator(validatorAddress) {
+// 		log.Printf("Validator %s is not in the active validator list", validatorAddress)
+// 		return nil, "", fmt.Errorf("validator is not active: %s", validatorAddress)
+// 	}
 
-	// Retrieve the private key from the ValidatorKeys store
-	privateKey, exists := bc.ValidatorKeys.GetKey(validatorAddress)
-	if !exists {
-		log.Printf("Failed to retrieve private key for validator %s", validatorAddress)
-		return nil, "", fmt.Errorf("failed to retrieve private key for validator %s", validatorAddress)
-	}
+// 	// Retrieve the private key from the ValidatorKeys store
+// 	privateKey, exists := bc.ValidatorKeys.GetKey(validatorAddress)
+// 	if !exists {
+// 		log.Printf("Failed to retrieve private key for validator %s", validatorAddress)
+// 		return nil, "", fmt.Errorf("failed to retrieve private key for validator %s", validatorAddress)
+// 	}
 
-	// Convert the validator address to Bech32 format
-	bech32Address, err := ConvertToBech32Address(validatorAddress)
-	if err != nil {
-		log.Printf("Failed to convert validator address %s to Bech32 format: %v", validatorAddress, err)
-		return privateKey, "", err
-	}
+// 	// Convert the validator address to Bech32 format
+// 	bech32Address, err := ConvertToBech32Address(validatorAddress)
+// 	if err != nil {
+// 		log.Printf("Failed to convert validator address %s to Bech32 format: %v", validatorAddress, err)
+// 		return privateKey, "", err
+// 	}
 
-	return privateKey, bech32Address, nil
-}
+// 	return privateKey, bech32Address, nil
+// }
 
-func generateBech32Address(publicKey *mldsa44.PublicKey) (string, error) {
-	// First marshal the public key to bytes
-	pubKeyBytes, err := publicKey.MarshalBinary()
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal public key: %v", err)
-	}
+// func generateBech32Address(publicKey *mldsa44.PublicKey) (string, error) {
+// 	// First marshal the public key to bytes
+// 	pubKeyBytes, err := publicKey.MarshalBinary()
+// 	if err != nil {
+// 		return "", fmt.Errorf("failed to marshal public key: %v", err)
+// 	}
 
-	// Generate SHA256 hash of the marshaled public key
-	hash := sha256.Sum256(pubKeyBytes)
+// 	// Generate SHA256 hash of the marshaled public key
+// 	hash := sha256.Sum256(pubKeyBytes)
 
-	// Take first 20 bytes of the hash for the address
-	converted, err := bech32.ConvertBits(hash[:20], 8, 5, true)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert bits for Bech32 address: %v", err)
-	}
+// 	// Take first 20 bytes of the hash for the address
+// 	converted, err := bech32.ConvertBits(hash[:20], 8, 5, true)
+// 	if err != nil {
+// 		return "", fmt.Errorf("failed to convert bits for Bech32 address: %v", err)
+// 	}
 
-	// Encode with tl1 prefix
-	bech32Address, err := bech32.Encode("tl1", converted)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode Bech32 address: %v", err)
-	}
+// 	// Encode with tl1 prefix
+// 	bech32Address, err := bech32.Encode("tl1", converted)
+// 	if err != nil {
+// 		return "", fmt.Errorf("failed to encode Bech32 address: %v", err)
+// 	}
 
-	return bech32Address, nil
-}
+// 	return bech32Address, nil
+// }
 
 // func (bc *Blockchain) EnsureTestValidatorRegistered(address string, publicKey mldsa44.PublicKey) error {
 // 	// Check if the validator is already registered
@@ -1939,56 +1903,56 @@ func generateBech32Address(publicKey *mldsa44.PublicKey) (string, error) {
 // 	return nil
 // }
 
-func (bc *Blockchain) TransferFunds(from, to string, amount int64) error {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
+// func (bc *Blockchain) TransferFunds(from, to string, amount int64) error {
+// 	bc.Mu.Lock()
+// 	defer bc.Mu.Unlock()
 
-	if from == "" {
-		from = bc.GenesisAccount // Default to the genesis account if 'from' is not specified
-	}
+// 	if from == "" {
+// 		from = bc.GenesisAccount // Default to the genesis account if 'from' is not specified
+// 	}
 
-	// Check if the sender has enough funds
-	if bc.Stakeholders[from] < amount {
-		return fmt.Errorf("insufficient funds")
-	}
+// 	// Check if the sender has enough funds
+// 	if bc.Stakeholders[from] < amount {
+// 		return fmt.Errorf("insufficient funds")
+// 	}
 
-	// Perform the transfer
-	bc.Stakeholders[from] -= amount
-	bc.Stakeholders[to] += amount
+// 	// Perform the transfer
+// 	bc.Stakeholders[from] -= amount
+// 	bc.Stakeholders[to] += amount
 
-	return nil
-}
+// 	return nil
+// }
 
-func (bc *Blockchain) UpdateActiveValidators(count int) {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
+// func (bc *Blockchain) UpdateActiveValidators(count int) {
+// 	bc.Mu.Lock()
+// 	defer bc.Mu.Unlock()
 
-	// Sort stakeholders by stake amount
-	type validatorStake struct {
-		address string
-		amount  int64
-	}
-	validators := make([]validatorStake, 0)
+// 	// Sort stakeholders by stake amount
+// 	type validatorStake struct {
+// 		address string
+// 		amount  int64
+// 	}
+// 	validators := make([]validatorStake, 0)
 
-	minValidatorStake := int64(40 * 1e7) // 40 THRYLOS minimum for validators
+// 	minValidatorStake := int64(40 * 1e7) // 40 THRYLOS minimum for validators
 
-	for addr, stake := range bc.Stakeholders {
-		if stake >= minValidatorStake { // Using fixed minimum validator stake
-			validators = append(validators, validatorStake{addr, stake})
-		}
-	}
+// 	for addr, stake := range bc.Stakeholders {
+// 		if stake >= minValidatorStake { // Using fixed minimum validator stake
+// 			validators = append(validators, validatorStake{addr, stake})
+// 		}
+// 	}
 
-	// Sort by stake amount (descending)
-	sort.Slice(validators, func(i, j int) bool {
-		return validators[i].amount > validators[j].amount
-	})
+// 	// Sort by stake amount (descending)
+// 	sort.Slice(validators, func(i, j int) bool {
+// 		return validators[i].amount > validators[j].amount
+// 	})
 
-	// Update active validators list
-	bc.ActiveValidators = make([]string, 0)
-	for i := 0; i < min(count, len(validators)); i++ {
-		bc.ActiveValidators = append(bc.ActiveValidators, validators[i].address)
-	}
-}
+// 	// Update active validators list
+// 	bc.ActiveValidators = make([]string, 0)
+// 	for i := 0; i < min(count, len(validators)); i++ {
+// 		bc.ActiveValidators = append(bc.ActiveValidators, validators[i].address)
+// 	}
+// }
 
 // func SharedToThrylos(tx *shared.Transaction) *thrylos.Transaction {
 // 	if tx == nil {
@@ -2022,23 +1986,23 @@ func (bc *Blockchain) UpdateActiveValidators(count int) {
 // 	}
 // }
 
-func ConvertSharedOutputs(outputs []shared.UTXO) []*thrylos.UTXO {
-	result := make([]*thrylos.UTXO, len(outputs))
-	for i, output := range outputs {
-		result[i] = &thrylos.UTXO{
-			TransactionId: output.TransactionID,
-			Index:         int32(output.Index),
-			OwnerAddress:  output.OwnerAddress,
-			Amount:        output.Amount,
-			IsSpent:       output.IsSpent,
-		}
-	}
-	return result
-}
+// func ConvertSharedOutputs(outputs []shared.UTXO) []*thrylos.UTXO {
+// 	result := make([]*thrylos.UTXO, len(outputs))
+// 	for i, output := range outputs {
+// 		result[i] = &thrylos.UTXO{
+// 			TransactionId: output.TransactionID,
+// 			Index:         int32(output.Index),
+// 			OwnerAddress:  output.OwnerAddress,
+// 			Amount:        output.Amount,
+// 			IsSpent:       output.IsSpent,
+// 		}
+// 	}
+// 	return result
+// }
 
-func ConvertSharedInputs(inputs []shared.UTXO) []*thrylos.UTXO {
-	return ConvertSharedOutputs(inputs) // Same conversion process
-}
+// func ConvertSharedInputs(inputs []shared.UTXO) []*thrylos.UTXO {
+// 	return ConvertSharedOutputs(inputs) // Same conversion process
+// }
 
 // Now we can update ProcessPoolTransaction to use these conversion functions
 // func (bc *Blockchain) ProcessPoolTransaction(tx *shared.Transaction) error {
@@ -2084,41 +2048,41 @@ func ConvertSharedInputs(inputs []shared.UTXO) []*thrylos.UTXO {
 // 	return bc.StakingService.GetPoolStats()
 // }
 
-func GenerateValidatorAddress() (string, error) {
-	// Generate a random 32-byte seed
-	seed := new([mldsa44.SeedSize]byte)
-	_, err := rand.Read(seed[:])
-	if err != nil {
-		return "", fmt.Errorf("failed to generate seed: %v", err)
-	}
+// func GenerateValidatorAddress() (string, error) {
+// 	// Generate a random 32-byte seed
+// 	seed := new([mldsa44.SeedSize]byte)
+// 	_, err := rand.Read(seed[:])
+// 	if err != nil {
+// 		return "", fmt.Errorf("failed to generate seed: %v", err)
+// 	}
 
-	// Generate ML-DSA-44 private and public keys from the seed
-	publicKey, privateKey := mldsa44.NewKeyFromSeed(seed)
-	_ = privateKey // Private key can be stored securely if needed
+// 	// Generate ML-DSA-44 private and public keys from the seed
+// 	publicKey, privateKey := mldsa44.NewKeyFromSeed(seed)
+// 	_ = privateKey // Private key can be stored securely if needed
 
-	// Serialize the public key
-	publicKeyBytes := publicKey.Bytes()
+// 	// Serialize the public key
+// 	publicKeyBytes := publicKey.Bytes()
 
-	// Hash the public key
-	hash := sha256.Sum256(publicKeyBytes)
+// 	// Hash the public key
+// 	hash := sha256.Sum256(publicKeyBytes)
 
-	// Use the first 20 bytes of the hash as the address bytes
-	addressBytes := hash[:20]
+// 	// Use the first 20 bytes of the hash as the address bytes
+// 	addressBytes := hash[:20]
 
-	// Convert to 5-bit groups for bech32 encoding
-	converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert bits: %v", err)
-	}
+// 	// Convert to 5-bit groups for bech32 encoding
+// 	converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
+// 	if err != nil {
+// 		return "", fmt.Errorf("failed to convert bits: %v", err)
+// 	}
 
-	// Encode using bech32
-	address, err := bech32.Encode("tl1", converted)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode address: %v", err)
-	}
+// 	// Encode using bech32
+// 	address, err := bech32.Encode("tl1", converted)
+// 	if err != nil {
+// 		return "", fmt.Errorf("failed to encode address: %v", err)
+// 	}
 
-	return address, nil
-}
+// 	return address, nil
+// }
 
 // func (bc *Blockchain) GenerateAndStoreValidatorKey() (string, error) {
 // 	address, err := GenerateValidatorAddress()
@@ -2154,100 +2118,100 @@ func GenerateValidatorAddress() (string, error) {
 // 	return address, nil
 // }
 
-// For generating multiple Validator Keys if necessary
-func (bc *Blockchain) GenerateAndStoreValidatorKeys(count int) ([]string, error) {
-	log.Printf("Starting to generate and store %d validator keys", count)
-	validatorAddresses := make([]string, 0, count)
+// // For generating multiple Validator Keys if necessary
+// func (bc *Blockchain) GenerateAndStoreValidatorKeys(count int) ([]string, error) {
+// 	log.Printf("Starting to generate and store %d validator keys", count)
+// 	validatorAddresses := make([]string, 0, count)
 
-	for i := 0; i < count; i++ {
-		log.Printf("Generating validator key %d of %d", i+1, count)
+// 	for i := 0; i < count; i++ {
+// 		log.Printf("Generating validator key %d of %d", i+1, count)
 
-		// Generate validator address
-		address, err := GenerateValidatorAddress()
-		if err != nil {
-			log.Printf("Failed to generate validator address: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to generate validator address: %v", err)
-		}
+// 		// Generate validator address
+// 		address, err := GenerateValidatorAddress()
+// 		if err != nil {
+// 			log.Printf("Failed to generate validator address: %v", err)
+// 			return validatorAddresses, fmt.Errorf("failed to generate validator address: %v", err)
+// 		}
 
-		// Generate MLDSA key pair directly
-		pubKey, privKey, err := mldsa44.GenerateKey(rand.Reader)
-		if err != nil {
-			log.Printf("Failed to generate MLDSA key pair: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to generate MLDSA key pair: %v", err)
-		}
+// 		// Generate MLDSA key pair directly
+// 		pubKey, privKey, err := mldsa44.GenerateKey(rand.Reader)
+// 		if err != nil {
+// 			log.Printf("Failed to generate MLDSA key pair: %v", err)
+// 			return validatorAddresses, fmt.Errorf("failed to generate MLDSA key pair: %v", err)
+// 		}
 
-		// Store the private key
-		err = bc.ValidatorKeys.StoreKey(address, privKey)
-		if err != nil {
-			log.Printf("Failed to store validator private key: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to store validator private key: %v", err)
-		}
+// 		// Store the private key
+// 		err = bc.ValidatorKeys.StoreKey(address, privKey)
+// 		if err != nil {
+// 			log.Printf("Failed to store validator private key: %v", err)
+// 			return validatorAddresses, fmt.Errorf("failed to store validator private key: %v", err)
+// 		}
 
-		// Store the public key in the database
-		err = bc.Database.StoreValidatorMLDSAPublicKey(address, pubKey)
-		if err != nil {
-			log.Printf("Failed to store validator public key: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to store validator public key: %v", err)
-		}
+// 		// Store the public key in the database
+// 		err = bc.Database.StoreValidatorMLDSAPublicKey(address, pubKey)
+// 		if err != nil {
+// 			log.Printf("Failed to store validator public key: %v", err)
+// 			return validatorAddresses, fmt.Errorf("failed to store validator public key: %v", err)
+// 		}
 
-		// Verify the key was stored correctly
-		publicKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
-		if err != nil {
-			log.Printf("Error retrieving validator public key immediately after storage: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to verify stored validator key: %v", err)
-		}
+// 		// Verify the key was stored correctly
+// 		publicKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
+// 		if err != nil {
+// 			log.Printf("Error retrieving validator public key immediately after storage: %v", err)
+// 			return validatorAddresses, fmt.Errorf("failed to verify stored validator key: %v", err)
+// 		}
 
-		// Parse the public key bytes into MLDSA public key for verification
-		verifyPubKey := new(mldsa44.PublicKey)
-		err = verifyPubKey.UnmarshalBinary(publicKeyBytes)
-		if err != nil {
-			log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
-			return validatorAddresses, fmt.Errorf("invalid public key format for address %s: %v", address, err)
-		}
+// 		// Parse the public key bytes into MLDSA public key for verification
+// 		verifyPubKey := new(mldsa44.PublicKey)
+// 		err = verifyPubKey.UnmarshalBinary(publicKeyBytes)
+// 		if err != nil {
+// 			log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
+// 			return validatorAddresses, fmt.Errorf("invalid public key format for address %s: %v", address, err)
+// 		}
 
-		// Verify the keys match
-		if !verifyPubKey.Equal(pubKey) {
-			log.Printf("Stored public key does not match generated key for address %s", address)
-			return validatorAddresses, fmt.Errorf("key verification failed for address %s", address)
-		}
+// 		// Verify the keys match
+// 		if !verifyPubKey.Equal(pubKey) {
+// 			log.Printf("Stored public key does not match generated key for address %s", address)
+// 			return validatorAddresses, fmt.Errorf("key verification failed for address %s", address)
+// 		}
 
-		log.Printf("Successfully verified stored validator public key for address: %s (Key size: %d bytes)",
-			address, len(publicKeyBytes))
+// 		log.Printf("Successfully verified stored validator public key for address: %s (Key size: %d bytes)",
+// 			address, len(publicKeyBytes))
 
-		// Add the verified key to the PublicKeyMap
-		bc.PublicKeyMap[address] = pubKey
+// 		// Add the verified key to the PublicKeyMap
+// 		bc.PublicKeyMap[address] = pubKey
 
-		log.Printf("Successfully generated and stored validator key %d: %s", i+1, address)
-		validatorAddresses = append(validatorAddresses, address)
-	}
+// 		log.Printf("Successfully generated and stored validator key %d: %s", i+1, address)
+// 		validatorAddresses = append(validatorAddresses, address)
+// 	}
 
-	log.Printf("Finished generating and storing %d validator keys", len(validatorAddresses))
-	return validatorAddresses, nil
-}
+// 	log.Printf("Finished generating and storing %d validator keys", len(validatorAddresses))
+// 	return validatorAddresses, nil
+// }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
+// func min(a, b int) int {
+// 	if a < b {
+// 		return a
+// 	}
+// 	return b
+// }
 
 // func (bc *Blockchain) validatorExists(address string) bool {
 // 	_, err := bc.RetrievePublicKey(address)
 // 	return err == nil
 // }
 
-func (bc *Blockchain) IsActiveValidator(address string) bool {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
+// func (bc *Blockchain) IsActiveValidator(address string) bool {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
 
-	for _, validator := range bc.ActiveValidators {
-		if validator == address {
-			return true
-		}
-	}
-	return false
-}
+// 	for _, validator := range bc.ActiveValidators {
+// 		if validator == address {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 // AddBlock adds a new block to the blockchain, with an optional timestamp.
 // If the timestamp is 0, the current system time is used as the block's timestamp.
@@ -2381,16 +2345,16 @@ func (bc *Blockchain) IsActiveValidator(address string) bool {
 // 	}
 // }
 
-// RewardValidator rewards the validator with new tokens
-func (bc *Blockchain) RewardValidator(validator string, reward int64) {
-	bc.Mu.Lock()
-	defer bc.Mu.Unlock()
+// // RewardValidator rewards the validator with new tokens
+// func (bc *Blockchain) RewardValidator(validator string, reward int64) {
+// 	bc.Mu.Lock()
+// 	defer bc.Mu.Unlock()
 
-	// Deduct reward from Genesis account
-	bc.Stakeholders[bc.GenesisAccount] -= reward
-	// Add reward to validator
-	bc.Stakeholders[validator] += reward
-}
+// 	// Deduct reward from Genesis account
+// 	bc.Stakeholders[bc.GenesisAccount] -= reward
+// 	// Add reward to validator
+// 	bc.Stakeholders[validator] += reward
+// }
 
 // VerifyPoSRules verifies the PoS rules for the given block
 // func (bc *Blockchain) VerifyPoSRules(block Block) bool {
@@ -2421,4 +2385,5 @@ func (bc *Blockchain) RewardValidator(validator string, reward int64) {
 // 		}
 // 	}
 // 	return true
+// }
 // }

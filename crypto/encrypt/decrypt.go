@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// // DecryptWithAES decrypts data using AES-256-CBC.
+// DecryptWithAES decrypts data using AES-256-CBC.
 func DecryptWithAES(key, ciphertext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

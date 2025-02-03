@@ -48,7 +48,6 @@ func ValidateTransaction(tx *shared.Transaction, availableUTXOs map[string][]sha
 		return fmt.Errorf("input sum (%d) does not match output sum (%d) plus gas fee (%d)",
 			inputSum, outputSum, tx.GasFee)
 	}
-
 	return nil
 }
 

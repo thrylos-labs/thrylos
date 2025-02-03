@@ -1,40 +1,41 @@
 package network
 
-import (
-	"time"
-)
+// import (
+// 	"sync"
 
-const (
-	// Time allowed to write a message to the peer.
-	writeWait = 10 * time.Second
+// 	"github.com/ethereum/go-ethereum/node"
+// 	"github.com/gorilla/websocket"
+// )
 
-	// Time allowed to read the next pong message from the peer.
-	pongWait = 60 * time.Second
+// const (
+// 	// Time allowed to write a message to the peer.
+// 	writeWait = 10 * time.Second
 
-	// Send pings to peer with this period. Must be less than pongWait.
-	pingPeriod = (pongWait * 9) / 10
+// 	// Time allowed to read the next pong message from the peer.
+// 	pongWait = 60 * time.Second
 
-	// Maximum message size allowed from peer.
-	maxMessageSize = 512
+// 	// Send pings to peer with this period. Must be less than pongWait.
+// 	pingPeriod = (pongWait * 9) / 10
 
-	// Maximum number of reconnection attempts
-	maxReconnectAttempts = 5
+// 	// Maximum message size allowed from peer.
+// 	maxMessageSize = 512
 
-	// Initial backoff delay
-	initialBackoff = 1 * time.Second
+// 	// Maximum number of reconnection attempts
+// 	maxReconnectAttempts = 5
 
-	// Maximum backoff delay
-	maxBackoff = 30 * time.Second
+// 	// Initial backoff delay
+// 	initialBackoff = 1 * time.Second
 
-	maxRetryAttempts = 3
-	retryDelay       = 500 * time.Millisecond
-	messageQueueSize = 100
-)
+// 	// Maximum backoff delay
+// 	maxBackoff = 30 * time.Second
 
-// NEEDS TO USE MESSAGES FOR INTERACTING WITH NODE
+// 	maxRetryAttempts = 3
+// 	retryDelay       = 500 * time.Millisecond
+// 	messageQueueSize = 100
+// )
 
 // type WebSocketManager struct {
-// 	// node        *node.Node
+// 	node        *node.Node
 // 	connections map[string]*WebSocketConnection
 // 	mutex       sync.RWMutex
 // 	upgrader    websocket.Upgrader

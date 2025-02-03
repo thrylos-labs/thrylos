@@ -1,8 +1,6 @@
 package chain
 
 import (
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -16,14 +14,14 @@ type BlockProducerConfig struct {
 	NetworkLoadFactor float64
 }
 
-type ModernBlockProducer struct {
-	config *BlockProducerConfig
-	// node          *Node
-	blockchain    *Blockchain
-	isProducing   atomic.Bool
-	lastBlockTime time.Time
-	mu            sync.RWMutex
-}
+// type ModernBlockProducer struct {
+// 	config *BlockProducerConfig
+// 	// node          *Node
+// 	blockchain    *Blockchain
+// 	isProducing   atomic.Bool
+// 	lastBlockTime time.Time
+// 	mu            sync.RWMutex
+// }
 
 // func NewBlockProducer(node *Node, blockchain *Blockchain) *ModernBlockProducer {
 // 	return &ModernBlockProducer{

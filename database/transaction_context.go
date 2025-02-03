@@ -1,11 +1,11 @@
 package database
 
-import "github.com/dgraph-io/badger"
+// import "github.com/dgraph-io/badger"
 
-type TransactionContext struct {
-	Txn *badger.Txn
-}
+// type TransactionContext struct {
+// 	Txn *badger.Txn
+// }
 
-func NewTransactionContext(txn *badger.Txn) *TransactionContext {
-	return &TransactionContext{Txn: txn}
-}
+// func NewTransactionContext(txn *badger.Txn) *TransactionContext {
+// 	return &TransactionContext{Txn: txn}
+// }

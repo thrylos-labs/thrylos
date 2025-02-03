@@ -1,18 +1,32 @@
 package main
 
-import (
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+// import (
+// 	"context"
+// 	"encoding/base64"
+// 	"encoding/json"
+// 	"errors"
+// 	"fmt"
+// 	"log"
+// 	"strings"
 
-	"github.com/thrylos-labs/thrylos"
-)
+// 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 
-type server struct {
-	thrylos.UnimplementedBlockchainServiceServer
-	// db           *database.BlockchainDB        // Include a pointer to BlockchainDB
-	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
-	// hasherPool   *XOFPool                      // Add the hasher pool here
+// 	"github.com/thrylos-labs/thrylos"
+// 	"github.com/thrylos-labs/thrylos/core/consensus/processor"
+// 	"github.com/thrylos-labs/thrylos/database"
+// 	"github.com/thrylos-labs/thrylos/shared"
+// 	"golang.org/x/crypto/blake2b"
+// 	"google.golang.org/grpc/codes"
+// 	"google.golang.org/grpc/status"
+// )
 
-}
+// type server struct {
+// 	thrylos.UnimplementedBlockchainServiceServer
+// 	db           *database.BlockchainDB        // Include a pointer to BlockchainDB
+// 	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
+// 	hasherPool   *XOFPool                      // Add the hasher pool here
+
+// }
 
 // func NewServer(db *database.BlockchainDB) *server {
 // 	pool := NewXOFPool(10) // Adjust the pool size based on expected load
@@ -24,8 +38,8 @@ type server struct {
 // 	}
 // }
 
-// server.go
-// server.go
+// // server.go
+// // server.go
 // func (s *server) GetBalance(ctx context.Context, req *thrylos.GetBalanceRequest) (*thrylos.BalanceResponse, error) {
 // 	if req.Address == "" {
 // 		return nil, status.Error(codes.InvalidArgument, "Address is required")

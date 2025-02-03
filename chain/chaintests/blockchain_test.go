@@ -1,19 +1,10 @@
 package chaintests
 
-import (
-	"crypto"
-	"log"
-	"testing"
-
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/joho/godotenv"
-)
-
-func loadEnvTest() {
-	if err := godotenv.Load("../.env.dev"); err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
-}
+// func loadEnvTest() {
+// 	if err := godotenv.Load("../.env.dev"); err != nil {
+// 		log.Fatalf("Error loading .env file: %v", err)
+// 	}
+// }
 
 // func TestNewBlockchain(t *testing.T) {
 // 	loadEnvTest() // Ensure environment variables are loaded before any Supabase operations
@@ -55,28 +46,28 @@ func loadEnvTest() {
 // 	}
 // }
 
-func TestMLDSA44Signature(t *testing.T) {
-	// Generate a new key pair
-	publicKey, privateKey, err := mldsa44.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("MLDSA44 key generation failed: %v", err)
-	}
+// func TestMLDSA44Signature(t *testing.T) {
+// 	// Generate a new key pair
+// 	publicKey, privateKey, err := mldsa44.GenerateKey(nil)
+// 	if err != nil {
+// 		t.Fatalf("MLDSA44 key generation failed: %v", err)
+// 	}
 
-	// Create a mock transaction (simplified representation)
-	tx := "mock transaction"
-	txBytes := []byte(tx)
+// 	// Create a mock transaction (simplified representation)
+// 	tx := "mock transaction"
+// 	txBytes := []byte(tx)
 
-	// Sign the transaction
-	// Note: MLDSA44 requires passing nil for the random source and crypto.Hash(0) for options
-	signature, err := privateKey.Sign(nil, txBytes, crypto.Hash(0))
-	if err != nil {
-		t.Fatalf("MLDSA44 signing failed: %v", err)
-	}
+// 	// Sign the transaction
+// 	// Note: MLDSA44 requires passing nil for the random source and crypto.Hash(0) for options
+// 	signature, err := privateKey.Sign(nil, txBytes, crypto.Hash(0))
+// 	if err != nil {
+// 		t.Fatalf("MLDSA44 signing failed: %v", err)
+// 	}
 
-	// Verify the signature using the scheme's Verify function
-	if !mldsa44.Verify(publicKey, txBytes, nil, signature) {
-		t.Fatal("MLDSA44 signature verification failed")
-	}
+// 	// Verify the signature using the scheme's Verify function
+// 	if !mldsa44.Verify(publicKey, txBytes, nil, signature) {
+// 		t.Fatal("MLDSA44 signature verification failed")
+// 	}
 
-	t.Log("MLDSA44 signature verification succeeded")
-}
+// 	t.Log("MLDSA44 signature verification succeeded")
+// }

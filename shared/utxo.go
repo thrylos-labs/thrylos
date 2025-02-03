@@ -33,7 +33,7 @@ type UTXO struct {
 // CreateUTXO creates a new UTXO instance with the given parameters.
 // CreateUTXO initializes a new UTXO with the specified attributes. This function is typically
 // called when a transaction is processed, and its outputs are being determined.
-func CreateUTXO(id string, index int, txID string, owner string, amount int64, isSpent bool) *UTXO
+func CreateUTXO(id string, index int, txID string, owner string, amount int64, isSpent bool) *UTXO {
 	fmt.Printf("Creating UTXO with ID: %s, TransactionID: %s, Index: %d, Owner: %s, Amount: %d\n", id, txID, index, owner, amount)
 
 	return &UTXO{

@@ -1,31 +1,34 @@
-package validators
+package validator
 
-import (
-	"sync"
-	"time"
-)
+// import (
+// 	"fmt"
+// 	"log"
+// 	"sync"
+// 	"time"
 
-// NEEDS TO UPDATE TO USE MESSAGES FROM NODE
+// 	"github.com/thrylos-labs/thrylos/core/chain"
+// 	"github.com/thrylos-labs/thrylos/core/node"
+// )
 
-// ValidatorSelector manages the selection and coordination of validators
-// for creating new blocks from pending transactions in the blockchain.
-// It ensures fair selection based on stake amounts and maintains the
-// synchronization of block creation across the network.
+// // ValidatorSelector manages the selection and coordination of validators
+// // for creating new blocks from pending transactions in the blockchain.
+// // It ensures fair selection based on stake amounts and maintains the
+// // synchronization of block creation across the network.
 
-type BlockchainValidatorInterface interface {
-	IsActiveValidator(address string) bool
-	GetActiveValidators() []string
-	GetStakeholders() map[string]int64
-}
+// type BlockchainValidatorInterface interface {
+// 	IsActiveValidator(address string) bool
+// 	GetActiveValidators() []string
+// 	GetStakeholders() map[string]int64
+// }
 
-// ValidatorSelector handles the selection of validators for block creation
-type ValidatorSelector struct {
-	blockchain       BlockchainValidatorInterface
-	mu               sync.RWMutex
-	lastSelectedTime time.Time
-	// voteCounter      *VoteCounter
-	// node             *node.Node // Add this if you need node-level access
-}
+// // ValidatorSelector handles the selection of validators for block creation
+// type ValidatorSelector struct {
+// 	blockchain       BlockchainValidatorInterface
+// 	mu               sync.RWMutex
+// 	lastSelectedTime time.Time
+// 	voteCounter      *VoteCounter
+// 	node             *node.Node // Add this if you need node-level access
+// }
 
 // func NewValidatorSelector(bc BlockchainValidatorInterface, node ...*Node) *ValidatorSelector {
 // 	var n *node.Node
@@ -40,7 +43,7 @@ type ValidatorSelector struct {
 // 	}
 // }
 
-// SelectNextValidator chooses the next validator to create a block
+// // SelectNextValidator chooses the next validator to create a block
 // func (vs *ValidatorSelector) SelectNextValidator() (string, error) {
 // 	vs.mu.Lock()
 // 	defer vs.mu.Unlock()
@@ -73,7 +76,7 @@ type ValidatorSelector struct {
 // 	return selectedValidator, nil
 // }
 
-// CreateBlockFromPendingTransactions handles the block creation process for a selected validator
+// // CreateBlockFromPendingTransactions handles the block creation process for a selected validator
 // func (bc *Blockchain) CreateBlockFromPendingTransactions(validator string) (*chain.Block, error) {
 // 	// Verify validator is active and eligible
 // 	if !bc.IsActiveValidator(validator) {

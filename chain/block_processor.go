@@ -28,11 +28,15 @@ package chain
 // 	return false
 // }
 
-// // StartBlockCreationTimer monitors for pending transactions and creates blocks
-// func (bpc *BlockProcessor) StartBlockCreationTimer() {
+// StartBlockCreationTimer monitors for pending transactions and creates blocks
+// func (node *Node) StartBlockCreationTimer() {
 // 	ticker := time.NewTicker(checkInterval)
 // 	var lastBlockTime time.Time
 
+// 	go func() {
+// 		for range ticker.C {
+// 			now := time.Now()
+// 			timeSinceLastBlock := now.Sub(lastBlockTime)
 // 	go func() {
 // 		for range ticker.C {
 // 			now := time.Now()
@@ -44,7 +48,20 @@ package chain
 // 			node.Mu.RLock()
 // 			hasPendingTx := len(node.PendingTransactions) > 0
 // 			node.Mu.RUnlock()
+// 			node.Mu.RLock()
+// 			hasPendingTx := len(node.PendingTransactions) > 0
+// 			node.Mu.RUnlock()
 
+// 			if hasPendingTx && timeSinceLastBlock >= targetBlockTime {
+// 				if err := node.TriggerBlockCreation(); err != nil {
+// 					log.Printf("Error creating block: %v", err)
+// 					continue
+// 				}
+// 				lastBlockTime = now
+// 			}
+// 		}
+// 	}()
+// }
 // 			if hasPendingTx && timeSinceLastBlock >= targetBlockTime {
 // 				if err := node.TriggerBlockCreation(); err != nil {
 // 					log.Printf("Error creating block: %v", err)
@@ -70,13 +87,29 @@ package chain
 // 	if validator == "" {
 // 		return fmt.Errorf("no validator available")
 // 	}
+// 	validator := node.Blockchain.GetCurrentValidator()
+// 	if validator == "" {
+// 		return fmt.Errorf("no validator available")
+// 	}
 
 // 	// Process in batches if needed
 // 	if pendingCount > batchSize {
 // 		batch := make([]*thrylos.Transaction, batchSize)
 // 		copy(batch, node.PendingTransactions[:batchSize])
 // 		node.PendingTransactions = node.PendingTransactions[batchSize:]
+// 	// Process in batches if needed
+// 	if pendingCount > batchSize {
+// 		batch := make([]*thrylos.Transaction, batchSize)
+// 		copy(batch, node.PendingTransactions[:batchSize])
+// 		node.PendingTransactions = node.PendingTransactions[batchSize:]
 
+// 		go func(transactions []*thrylos.Transaction) {
+// 			if _, err := node.Blockchain.ProcessPendingTransactionsWithBatch(validator, transactions); err != nil {
+// 				log.Printf("Error processing transaction batch: %v", err)
+// 			}
+// 		}(batch)
+// 		return nil
+// 	}
 // 		go func(transactions []*thrylos.Transaction) {
 // 			if _, err := node.Blockchain.ProcessPendingTransactionsWithBatch(validator, transactions); err != nil {
 // 				log.Printf("Error processing transaction batch: %v", err)
@@ -91,7 +124,15 @@ package chain
 // 	} else if block != nil {
 // 		log.Printf("Created block with %d transactions", len(block.Transactions))
 // 	}
+// 	// Process remaining under same lock
+// 	if block, err := node.Blockchain.ProcessPendingTransactions(validator); err != nil {
+// 		return fmt.Errorf("failed to process transactions: %w", err)
+// 	} else if block != nil {
+// 		log.Printf("Created block with %d transactions", len(block.Transactions))
+// 	}
 
+// 	return nil
+// }
 // 	return nil
 // }
 
@@ -108,13 +149,30 @@ package chain
 // 			return
 // 		}
 // 	}
+// 	// If this is not the counter node, validate and vote
+// 	if !node.IsVoteCounter {
+// 		if err := node.ValidateAndVoteForBlock(block); err != nil {
+// 			log.Printf("Failed to validate and vote for block: %v", err)
+// 			return
+// 		}
+// 	}
 
+// 	// Start new voting round for next block
+// 	activeValidators := node.Blockchain.GetActiveValidators()
 // 	// Start new voting round for next block
 // 	activeValidators := node.Blockchain.GetActiveValidators()
 
 // 	// Calculate required votes (2/3 of active validators)
 // 	requiredVotes := (2*len(activeValidators) + 2) / 3
+// 	// Calculate required votes (2/3 of active validators)
+// 	requiredVotes := (2*len(activeValidators) + 2) / 3
 
+// 	// Start voting process for eligible validators
+// 	votedValidators := 0
+// 	for _, validator := range activeValidators {
+// 		if node.isEligibleValidator(validator) {
+// 			node.BroadcastVote(validator, block.Index+1)
+// 			votedValidators++
 // 	// Start voting process for eligible validators
 // 	votedValidators := 0
 // 	for _, validator := range activeValidators {
@@ -135,7 +193,16 @@ package chain
 // 		log.Printf("Warning: Could not achieve 2/3 majority. Only got %d out of required %d votes",
 // 			votedValidators, requiredVotes)
 // 	}
+// 	if votedValidators < requiredVotes {
+// 		log.Printf("Warning: Could not achieve 2/3 majority. Only got %d out of required %d votes",
+// 			votedValidators, requiredVotes)
+// 	}
 
+// 	// Process transaction updates
+// 	addressesToUpdate := make(map[string]bool)
+// 	for _, tx := range block.Transactions {
+// 		balanceCache.Delete(tx.Sender)
+// 		addressesToUpdate[tx.Sender] = true
 // 	// Process transaction updates
 // 	addressesToUpdate := make(map[string]bool)
 // 	for _, tx := range block.Transactions {
@@ -146,10 +213,26 @@ package chain
 // 			balanceCache.Delete(output.OwnerAddress)
 // 			addressesToUpdate[output.OwnerAddress] = true
 // 		}
+// 		for _, output := range tx.Outputs {
+// 			balanceCache.Delete(output.OwnerAddress)
+// 			addressesToUpdate[output.OwnerAddress] = true
+// 		}
 
 // 		node.Blockchain.StateManager.UpdateState(tx.Sender, 0, nil)
 // 	}
+// 		node.Blockchain.StateManager.UpdateState(tx.Sender, 0, nil)
+// 	}
 
+// 	// Update balances for affected addresses
+// 	for address := range addressesToUpdate {
+// 		balance, err := node.GetBalance(address)
+// 		if err == nil {
+// 			if err := node.SendBalanceUpdate(address); err == nil {
+// 				log.Printf("Updated balance for %s to %d", address, balance)
+// 			}
+// 		}
+// 	}
+// }
 // 	// Update balances for affected addresses
 // 	for address := range addressesToUpdate {
 // 		balance, err := node.GetBalance(address)
@@ -171,6 +254,11 @@ package chain
 // 	}
 // 	return false
 // }
+// 	if stake, exists := stakeholders[validatorID]; exists {
+// 		return stake >= minStake.Int64()
+// 	}
+// 	return false
+// }
 
 // // GetCurrentValidator gets the current validator for block creation
 // func (bpc *BlockProcessor) GetCurrentValidator() string {
@@ -185,12 +273,27 @@ package chain
 // 		bc.Mu.Unlock()
 // 		bc.Mu.RLock()
 // 	}
+// 	if len(bc.ActiveValidators) == 0 {
+// 		log.Println("Warning: No active validators available. Attempting to add genesis account as validator.")
+// 		bc.Mu.RUnlock()
+// 		bc.Mu.Lock()
+// 		bc.ActiveValidators = append(bc.ActiveValidators, bc.GenesisAccount)
+// 		bc.Mu.Unlock()
+// 		bc.Mu.RLock()
+// 	}
 
 // 	if len(bc.ActiveValidators) == 0 {
 // 		log.Println("Error: Still no active validators available after adding genesis account.")
 // 		return ""
 // 	}
+// 	if len(bc.ActiveValidators) == 0 {
+// 		log.Println("Error: Still no active validators available after adding genesis account.")
+// 		return ""
+// 	}
 
+// 	currentTime := time.Now().UnixNano()
+// 	currentHeight := len(bc.Blocks)
+// 	combinedFactor := currentTime + int64(currentHeight)
 // 	currentTime := time.Now().UnixNano()
 // 	currentHeight := len(bc.Blocks)
 // 	combinedFactor := currentTime + int64(currentHeight)

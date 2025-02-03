@@ -4,9 +4,9 @@ import "time"
 
 // NEEDS TO UPDATE TO USE MESSAGES.GO FOR INTERACTION WITH NODE
 
-// Peer Management: Nodes add new peers to their network, avoiding duplicates, and adjust protocols (HTTP/HTTPS) as necessary.
-// Peer Discovery: Nodes discover new peers by requesting peer lists from known peers and integrating the discovered peers into their own peer list.
-// Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network.
+// // Peer Management: Nodes add new peers to their network, avoiding duplicates, and adjust protocols (HTTP/HTTPS) as necessary.
+// // Peer Discovery: Nodes discover new peers by requesting peer lists from known peers and integrating the discovered peers into their own peer list.
+// // Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network.
 
 type PeerConnection struct {
 	// Node      *Node // Add a reference to the Node

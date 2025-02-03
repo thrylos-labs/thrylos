@@ -1,14 +1,5 @@
 package chaintests
 
-import (
-	"fmt"
-	"testing"
-	"time"
-
-	"github.com/stretchr/testify/require"
-	thrylos "github.com/thrylos-labs/thrylos"
-)
-
 // func TestNewBlockchain1(t *testing.T) {
 // 	// Use a predefined valid Bech32 address for genesis
 // 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
@@ -294,49 +285,49 @@ import (
 // 	return tx
 // }
 
-// Helper function to create signature data
-func createSignatureData(tx *thrylos.Transaction) []byte {
-	signData := []byte(fmt.Sprintf("%s%d%s%d",
-		tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
+// // Helper function to create signature data
+// func createSignatureData(tx *thrylos.Transaction) []byte {
+// 	signData := []byte(fmt.Sprintf("%s%d%s%d",
+// 		tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
 
-	for _, input := range tx.Inputs {
-		signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
-			input.TransactionId, input.Index,
-			input.OwnerAddress, input.Amount))...)
-	}
+// 	for _, input := range tx.Inputs {
+// 		signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
+// 			input.TransactionId, input.Index,
+// 			input.OwnerAddress, input.Amount))...)
+// 	}
 
-	for _, output := range tx.Outputs {
-		signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
-			output.OwnerAddress, output.Index,
-			output.Amount))...)
-	}
+// 	for _, output := range tx.Outputs {
+// 		signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
+// 			output.OwnerAddress, output.Index,
+// 			output.Amount))...)
+// 	}
 
-	return signData
-}
+// 	return signData
+// }
 
-// Define the metrics struct
-type ShardMetrics struct {
-	accesses int64
-	modifies int64
-}
+// // Define the metrics struct
+// type ShardMetrics struct {
+// 	accesses int64
+// 	modifies int64
+// }
 
-type ShardMetricsData struct {
-	AccessCount  int64
-	ModifyCount  int64
-	TotalTxCount int64
-	AvgLatency   time.Duration
-	LoadFactor   float64
-}
+// type ShardMetricsData struct {
+// 	AccessCount  int64
+// 	ModifyCount  int64
+// 	TotalTxCount int64
+// 	AvgLatency   time.Duration
+// 	LoadFactor   float64
+// }
 
-func getScalingAction(needsSplit, needsMerge bool) string {
-	if needsSplit {
-		return "Split"
-	}
-	if needsMerge {
-		return "Merge"
-	}
-	return "None"
-}
+// func getScalingAction(needsSplit, needsMerge bool) string {
+// 	if needsSplit {
+// 		return "Split"
+// 	}
+// 	if needsMerge {
+// 		return "Merge"
+// 	}
+// 	return "None"
+// }
 
 // func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 // 	// Create test directory
@@ -668,65 +659,65 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 // 	}
 // }
 
-// Helper function to calculate and log metrics
-func calculateAndLogMetrics(t *testing.T, testName string, blockTimes, batchTimes []time.Duration,
-	shardMetrics map[int]struct{ accesses, modifies int64 }, startTime time.Time,
-	txsPerBlock int, expectedBlockTime, expectedMaxTime time.Duration) {
+// // Helper function to calculate and log metrics
+// func calculateAndLogMetrics(t *testing.T, testName string, blockTimes, batchTimes []time.Duration,
+// 	shardMetrics map[int]struct{ accesses, modifies int64 }, startTime time.Time,
+// 	txsPerBlock int, expectedBlockTime, expectedMaxTime time.Duration) {
 
-	var totalBlockTime, maxBlockTime time.Duration
-	var minBlockTime = time.Hour
-	var totalBatchTime, maxBatchTime time.Duration
-	var minBatchTime = time.Hour
+// 	var totalBlockTime, maxBlockTime time.Duration
+// 	var minBlockTime = time.Hour
+// 	var totalBatchTime, maxBatchTime time.Duration
+// 	var minBatchTime = time.Hour
 
-	// Calculate block timing metrics
-	for _, bt := range blockTimes {
-		totalBlockTime += bt
-		if bt > maxBlockTime {
-			maxBlockTime = bt
-		}
-		if bt < minBlockTime {
-			minBlockTime = bt
-		}
-	}
+// 	// Calculate block timing metrics
+// 	for _, bt := range blockTimes {
+// 		totalBlockTime += bt
+// 		if bt > maxBlockTime {
+// 			maxBlockTime = bt
+// 		}
+// 		if bt < minBlockTime {
+// 			minBlockTime = bt
+// 		}
+// 	}
 
-	// Calculate batch timing metrics
-	for _, bt := range batchTimes {
-		totalBatchTime += bt
-		if bt > maxBatchTime {
-			maxBatchTime = bt
-		}
-		if bt < minBatchTime {
-			minBatchTime = bt
-		}
-	}
+// 	// Calculate batch timing metrics
+// 	for _, bt := range batchTimes {
+// 		totalBatchTime += bt
+// 		if bt > maxBatchTime {
+// 			maxBatchTime = bt
+// 		}
+// 		if bt < minBatchTime {
+// 			minBatchTime = bt
+// 		}
+// 	}
 
-	avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
-	avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
-	totalTime := time.Since(startTime)
+// 	avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
+// 	avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
+// 	totalTime := time.Since(startTime)
 
-	// Log comprehensive metrics
-	t.Logf("\nDetailed metrics for %s:", testName)
-	t.Logf("Average block time: %v", avgBlockTime)
-	t.Logf("Minimum block time: %v", minBlockTime)
-	t.Logf("Maximum block time: %v", maxBlockTime)
-	t.Logf("Average batch time: %v", avgBatchTime)
-	t.Logf("Minimum batch time: %v", minBatchTime)
-	t.Logf("Maximum batch time: %v", maxBatchTime)
-	t.Logf("Total processing time: %v", totalTime)
-	t.Logf("Transactions processed: %d", len(blockTimes)*txsPerBlock)
-	t.Logf("Average TPS: %.2f", float64(len(blockTimes)*txsPerBlock)/totalTime.Seconds())
-	t.Logf("Effective batch TPS: %.2f", float64(txsPerBlock)/avgBatchTime.Seconds())
+// 	// Log comprehensive metrics
+// 	t.Logf("\nDetailed metrics for %s:", testName)
+// 	t.Logf("Average block time: %v", avgBlockTime)
+// 	t.Logf("Minimum block time: %v", minBlockTime)
+// 	t.Logf("Maximum block time: %v", maxBlockTime)
+// 	t.Logf("Average batch time: %v", avgBatchTime)
+// 	t.Logf("Minimum batch time: %v", minBatchTime)
+// 	t.Logf("Maximum batch time: %v", maxBatchTime)
+// 	t.Logf("Total processing time: %v", totalTime)
+// 	t.Logf("Transactions processed: %d", len(blockTimes)*txsPerBlock)
+// 	t.Logf("Average TPS: %.2f", float64(len(blockTimes)*txsPerBlock)/totalTime.Seconds())
+// 	t.Logf("Effective batch TPS: %.2f", float64(txsPerBlock)/avgBatchTime.Seconds())
 
-	// Log shard-specific metrics
-	t.Logf("\nShard metrics:")
-	for shardID, metrics := range shardMetrics {
-		t.Logf("Shard %d - Accesses: %d, Modifications: %d",
-			shardID, metrics.accesses, metrics.modifies)
-	}
+// 	// Log shard-specific metrics
+// 	t.Logf("\nShard metrics:")
+// 	for shardID, metrics := range shardMetrics {
+// 		t.Logf("Shard %d - Accesses: %d, Modifications: %d",
+// 			shardID, metrics.accesses, metrics.modifies)
+// 	}
 
-	// Verify expectations
-	require.Less(t, avgBlockTime, 2*expectedBlockTime,
-		"Average block time exceeds twice the target block time")
-	require.Less(t, totalTime, expectedMaxTime,
-		"Total processing time exceeds maximum allowed time")
-}
+// 	// Verify expectations
+// 	require.Less(t, avgBlockTime, 2*expectedBlockTime,
+// 		"Average block time exceeds twice the target block time")
+// 	require.Less(t, totalTime, expectedMaxTime,
+// 		"Total processing time exceeds maximum allowed time")
+// }

@@ -1,36 +1,36 @@
 package validatortests
 
 // Interface definition
-type BlockchainValidatorNewInterface interface {
-	IsActiveValidator(address string) bool
-	GetActiveValidators() []string
-	GetStakeholders() map[string]int64 // Add this method to interface
-}
+// type BlockchainValidatorNewInterface interface {
+// 	IsActiveValidator(address string) bool
+// 	GetActiveValidators() []string
+// 	GetStakeholders() map[string]int64 // Add this method to interface
+// }
 
-// Our test blockchain that implements needed interface
-type TestBlockchain struct {
-	ActiveValidators []string
-	Stakeholders     map[string]int64
-}
+// // Our test blockchain that implements needed interface
+// type TestBlockchain struct {
+// 	ActiveValidators []string
+// 	Stakeholders     map[string]int64
+// }
 
-func (tb *TestBlockchain) GetStakeholders() map[string]int64 {
-	return tb.Stakeholders
-}
+// func (tb *TestBlockchain) GetStakeholders() map[string]int64 {
+// 	return tb.Stakeholders
+// }
 
-func (tb *TestBlockchain) IsActiveValidator(address string) bool {
-	for _, v := range tb.ActiveValidators {
-		if v == address {
-			return true
-		}
-	}
-	return false
-}
+// func (tb *TestBlockchain) IsActiveValidator(address string) bool {
+// 	for _, v := range tb.ActiveValidators {
+// 		if v == address {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
-func (tb *TestBlockchain) GetActiveValidators() []string {
-	return tb.ActiveValidators
-}
+// func (tb *TestBlockchain) GetActiveValidators() []string {
+// 	return tb.ActiveValidators
+// }
 
-// Test version of Node with just what we need
+// // Test version of Node with just what we need
 // type TestNode struct {
 // 	Address    string
 // 	blockchain BlockchainValidatorInterface

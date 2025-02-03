@@ -1,9 +1,14 @@
 package network
 
+import (
+	"net/http"
+	"strings"
+)
+
 // Helper function to check if request is WebSocket
-// func isWebSocketRequest(r *http.Request) bool {
-// 	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
-// }
+func isWebSocketRequest(r *http.Request) bool {
+	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+}
 
 // func (r *Router) SetupRoutes() *mux.Router {
 // 	router := mux.NewRouter()
@@ -44,49 +49,49 @@ package network
 // 	return router
 // }
 
-// // func (r *Router) handleWebSocketConnection(w http.ResponseWriter, r *http.Request) {
-// // 	address := r.URL.Query().Get("address")
+// func (r *Router) handleWebSocketConnection(w http.ResponseWriter, r *http.Request) {
+// 	address := r.URL.Query().Get("address")
 
-// // 	// Configure the upgrader with more permissive settings
-// // 	upgrader := websocket.Upgrader{
-// // 		ReadBufferSize:  1024,
-// // 		WriteBufferSize: 1024,
-// // 		CheckOrigin: func(r *http.Request) bool {
-// // 			// Add more comprehensive origin checking if needed
-// // 			return true
-// // 		},
-// // 	}
+// 	// Configure the upgrader with more permissive settings
+// 	upgrader := websocket.Upgrader{
+// 		ReadBufferSize:  1024,
+// 		WriteBufferSize: 1024,
+// 		CheckOrigin: func(r *http.Request) bool {
+// 			// Add more comprehensive origin checking if needed
+// 			return true
+// 		},
+// 	}
 
-// // 	// Upgrade the connection
-// // 	ws, err := upgrader.Upgrade(w, r, nil)
-// // 	if err != nil {
-// // 		log.Printf("WebSocket upgrade failed: %v", err)
-// // 		return
-// // 	}
+// 	// Upgrade the connection
+// 	ws, err := upgrader.Upgrade(w, r, nil)
+// 	if err != nil {
+// 		log.Printf("WebSocket upgrade failed: %v", err)
+// 		return
+// 	}
 
-// // 	log.Printf("WebSocket connection established for address: %s", address)
+// 	log.Printf("WebSocket connection established for address: %s", address)
 
-// // 	// Create new connection with explicit configuration
-// // 	conn := NewWebSocketConnection(ws)
+// 	// Create new connection with explicit configuration
+// 	conn := NewWebSocketConnection(ws)
 
-// // 	// Store connection safely
-// // 	node.WebSocketMutex.Lock()
-// // 	// Clean up existing connection if it exists
-// // 	if existingConn, exists := node.WebSocketConnections[address]; exists {
-// // 		existingConn.close()
-// // 	}
-// // 	node.WebSocketConnections[address] = conn
-// // 	node.WebSocketMutex.Unlock()
+// 	// Store connection safely
+// 	node.WebSocketMutex.Lock()
+// 	// Clean up existing connection if it exists
+// 	if existingConn, exists := node.WebSocketConnections[address]; exists {
+// 		existingConn.close()
+// 	}
+// 	node.WebSocketConnections[address] = conn
+// 	node.WebSocketMutex.Unlock()
 
-// // 	// Send initial balance
-// // 	if err := node.SendBalanceUpdate(address); err != nil {
-// // 		log.Printf("Error sending initial balance: %v", err)
-// // 	}
+// 	// Send initial balance
+// 	if err := node.SendBalanceUpdate(address); err != nil {
+// 		log.Printf("Error sending initial balance: %v", err)
+// 	}
 
-// // 	// Start handlers
-// // 	go node.readPump(conn, address)
-// // 	go node.writePump(conn, address)
-// // }
+// 	// Start handlers
+// 	go node.readPump(conn, address)
+// 	go node.writePump(conn, address)
+// }
 
 // // Update the middleware to better handle WebSocket requests
 // func (r *Router) middlewareHandler() mux.MiddlewareFunc {
