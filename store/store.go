@@ -1,6 +1,7 @@
 package store
 
 import (
+	stdcrypto "crypto" // Alias for standard crypto
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,17 +35,8 @@ var (
 type store struct {
 	db            *Database
 	cache         *UTXOCache
-	encryptionKey []byte // The AES-256 key used for encryption and decryption
-}
-
-var globalUTXOCache *shared.UTXOCache
-
-func init() {
-	var err error
-	globalUTXOCache, err = shared.NewUTXOCache(1024, 10000, 0.01) // Adjust size and parameters as needed
-	if err != nil {
-		panic("Failed to create UTXO cache: " + err.Error())
-	}
+	utxos         map[string]shared.UTXO // Add this line
+	encryptionKey []byte                 // The AES-256 key used for encryption and decryption
 }
 
 // NewStore creates a new store instance with the provided BadgerDB instance and encryption key.
@@ -122,15 +115,9 @@ func (s *store) hashData(data []byte) []byte {
 // UTXO
 
 func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error {
-	utxo := shared.CreateUTXO(id, txID, index, owner, amount)
-	func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error {
-	utxo := shared.CreateUTXO(id, txID, index, owner, amount)
+	utxo := shared.CreateUTXO(id, index, txID, owner, amount, false)
+	db := s.db.GetDB()
 
-	// Marshal the UTXO object into JSON for storage.
-	utxoJSON, err := json.Marshal(utxo)
-	if err != nil {
-		return fmt.Errorf("error marshalling UTXO: %v", err)
-	}
 	// Marshal the UTXO object into JSON for storage.
 	utxoJSON, err := json.Marshal(utxo)
 	if err != nil {
@@ -139,26 +126,15 @@ func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amo
 
 	// Prepare the key for this UTXO entry in the database.
 	key := []byte("utxo-" + id)
-	// Prepare the key for this UTXO entry in the database.
-	key := []byte("utxo-" + id)
 
 	// Use BadgerDB transaction to put the UTXO data into the database.
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
-		return txn.Set(key, utxoJSON)
-	})
-	if err != nil {
-		return fmt.Errorf("error inserting UTXO into BadgerDB: %v", err)
-	}
-	// Use BadgerDB transaction to put the UTXO data into the database.
-	err = bdb.DB.Update(func(txn *badger.Txn) error {
+	err = db.Update(func(txn *badger.Txn) error {
 		return txn.Set(key, utxoJSON)
 	})
 	if err != nil {
 		return fmt.Errorf("error inserting UTXO into BadgerDB: %v", err)
 	}
 
-	return nil
-}
 	return nil
 }
 
@@ -175,20 +151,23 @@ func GenerateUTXOKey(ownerAddress string, transactionID string, index int) strin
 	return fmt.Sprintf("utxo-%s-%s-%d", ownerAddress, transactionID, index)
 }
 
-
 func (s *store) CreateUTXO(id, txID string, index int, address string, amount int64) (shared.UTXO, error) {
-	db := s.db.GetDB()
+	utxo := shared.CreateUTXO(id, index, txID, address, amount, false)
 
-	// Use the existing CreateUTXO method to create a UTXO object
-	utxo := shared.CreateUTXO(id, index, txID, address, amount, false) // Add `false` for isSpent
+	// Marshal UTXO to JSON
+	utxoJSON, err := json.Marshal(utxo)
+	if err != nil {
+		return shared.UTXO{}, fmt.Errorf("error marshalling UTXO: %v", err)
+	}
 
-	// 	// Check if the UTXO ID already exists to avoid duplicates
-	// 	if _, exists := bdb.utxos[id]; exists {
-	// 		return shared.UTXO{}, fmt.Errorf("UTXO with ID %s already exists", id)
-	// 	}
-
-	// Add the created UTXO to the map
-	db.utxos[id] = *utxo // Dereference the pointer
+	// Store in BadgerDB
+	key := []byte("utxo-" + id)
+	err = s.db.GetDB().Update(func(txn *badger.Txn) error {
+		return txn.Set(key, utxoJSON)
+	})
+	if err != nil {
+		return shared.UTXO{}, fmt.Errorf("error storing UTXO: %v", err)
+	}
 
 	return *utxo, nil
 }
@@ -640,7 +619,7 @@ func (s *store) SendTransaction(fromAddress, toAddress string, amount int, privK
 	}
 
 	// Step 4: Sign the encrypted data
-	signature, err := rsa.SignPSS(rand.Reader, privKey, crypto.SHA256, s.hashData(encryptedData), nil)
+	signature, err := rsa.SignPSS(rand.Reader, privKey, stdcrypto.SHA256, s.hashData(encryptedData), nil)
 	if err != nil {
 		return false, fmt.Errorf("error signing transaction: %v", err)
 	}
@@ -817,7 +796,6 @@ func (s *store) CreateAndSignTransaction(txID string, inputs, outputs []shared.U
 	return tx, nil     // Return pointer
 }
 
-
 func (s *store) TransactionExists(txn *shared.TransactionContext, txID string) (bool, error) {
 	if txn == nil || txn.Txn == nil {
 		return false, fmt.Errorf("invalid transaction context")
@@ -838,7 +816,9 @@ func (s *store) TransactionExists(txn *shared.TransactionContext, txID string) (
 func (s *store) RetrievePublicKeyFromAddress(address string) (*mldsa44.PublicKey, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
 	var publicKeyData []byte
-	err := bdb.DB.View(func(txn *badger.Txn) error {
+	db := s.db.GetDB()
+
+	err := db.View(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte("publicKey-" + address))
 		if err != nil {
 			if err == badger.ErrKeyNotFound {
@@ -882,7 +862,6 @@ func (s *store) RetrievePublicKeyFromAddress(address string) (*mldsa44.PublicKey
 	return pubKey, nil
 }
 
-
 // BLOCK
 
 func (s *store) InsertBlock(blockData []byte, blockNumber int) error {
@@ -902,7 +881,6 @@ func (s *store) InsertBlock(blockData []byte, blockNumber int) error {
 	log.Printf("Block %d inserted successfully", blockNumber)
 	return nil
 }
-
 
 func (s *store) GetLatestBlockData() ([]byte, error) {
 	var latestBlockData []byte
@@ -1334,7 +1312,6 @@ func (s *store) RetrieveMLDSAPublicKey(address string) ([]byte, error) {
 	return publicKeyData, nil
 }
 
-
 // VALIDATOR
 
 const validatorPublicKeyPrefix = "validatorPubKey-"
@@ -1406,10 +1383,11 @@ func (s *store) RetrieveValidatorPublicKey(validatorAddress string) ([]byte, err
 
 func (s *store) GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error) {
 	log.Println("Retrieving all validator public keys")
+	db := s.db.GetDB()
 
 	publicKeys := make(map[string]mldsa44.PublicKey)
 
-	err := bdb.DB.View(func(txn *badger.Txn) error {
+	err := db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.PrefetchSize = 10
 		it := txn.NewIterator(opts)
@@ -1423,7 +1401,8 @@ func (s *store) GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error
 			err := item.Value(func(val []byte) error {
 				// Create a new MLDSA public key
 				pubKey := new(mldsa44.PublicKey)
-				err := pubKey.UnmarshalBinary(val)
+				var err error
+				err = pubKey.UnmarshalBinary(mldsaKeyBytes)
 				if err != nil {
 					return fmt.Errorf("failed to parse MLDSA public key for key %s: %v", string(key), err)
 				}
@@ -1565,8 +1544,6 @@ func (s *store) GetBalance(address string, utxos map[string][]shared.UTXO) (int6
 	return balance, nil
 }
 
-
-
 // ADDRESS
 
 func (s *store) SanitizeAndFormatAddress(address string) (string, error) {
@@ -1584,4 +1561,3 @@ func (s *store) SanitizeAndFormatAddress(address string) (string, error) {
 
 	return formattedAddress, nil
 }
-
