@@ -198,42 +198,7 @@ package database
 // }
 
 // // fetching of UTXOs from BadgerDB
-// // GetUTXOsForAddress fetches UTXOs for a given address.
-// func (bdb *BlockchainDB) GetUTXOsForAddress(address string) ([]shared.UTXO, error) {
-// 	var utxos []shared.UTXO
-// 	err := bdb.DB.View(func(txn *badger.Txn) error {
-// 		it := txn.NewIterator(badger.DefaultIteratorOptions)
-// 		defer it.Close()
-
-// 		prefix := []byte(fmt.Sprintf("utxo-%s-", address))
-// 		log.Printf("Searching for UTXOs with prefix: %s", string(prefix))
-
-// 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-// 			item := it.Item()
-// 			err := item.Value(func(val []byte) error {
-// 				var utxo shared.UTXO
-// 				if err := json.Unmarshal(val, &utxo); err != nil {
-// 					return err
-// 				}
-// 				log.Printf("Found UTXO: %+v", utxo)
-// 				if !utxo.IsSpent {
-// 					utxos = append(utxos, utxo)
-// 					log.Printf("Added unspent UTXO: %+v", utxo)
-// 				} else {
-// 					log.Printf("Skipped spent UTXO: %+v", utxo)
-// 				}
-// 				return nil
-// 			})
-// 			if err != nil {
-// 				return err
-// 			}
-// 		}
-// 		return nil
-// 	})
-
-// 	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
-// 	return utxos, err
-// }
+// GetUTXOsForAddress fetches UTXOs for a given address.
 
 // // fetchUTXOs performs the actual fetching of UTXOs from BadgerDB.
 // func fetchUTXOs(txn *badger.Txn, address string, utxos *[]shared.UTXO) error {
@@ -466,33 +431,6 @@ package database
 // 	return gcm.Open(nil, nonce, ciphertext, nil)
 // }
 
-// func (bdb *BlockchainDB) RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error) {
-// 	var publicKey []byte
-// 	err := bdb.DB.View(func(txn *badger.Txn) error {
-// 		key := []byte("validatorPubKey-" + validatorAddress)
-// 		log.Printf("Retrieving public key for validator: %s, key: %s", validatorAddress, key)
-// 		item, err := txn.Get(key)
-// 		if err != nil {
-// 			log.Printf("Error retrieving public key for validator %s: %v", validatorAddress, err)
-// 			return err
-// 		}
-// 		publicKey, err = item.ValueCopy(nil)
-// 		return err
-// 	})
-
-// 	if err != nil {
-// 		if err == badger.ErrKeyNotFound {
-// 			log.Printf("Public key not found for validator %s", validatorAddress)
-// 			return nil, fmt.Errorf("public key not found for validator %s", validatorAddress)
-// 		}
-// 		log.Printf("Error retrieving public key for validator %s: %v", validatorAddress, err)
-// 		return nil, fmt.Errorf("error retrieving public key for validator %s: %v", validatorAddress, err)
-// 	}
-
-// 	log.Printf("Retrieved public key for validator %s: %x", validatorAddress, publicKey)
-// 	return publicKey, nil
-// }
-
 // const validatorPublicKeyPrefix = "validatorPubKey-"
 
 // // StoreValidatorPublicKey stores a validator's ML-DSA44 public key
@@ -689,54 +627,6 @@ package database
 // 	log.Printf("Final balance for %s: %d nanoTHRYLOS (%.7f THRYLOS)",
 // 		address, balance, float64(balance)/1e7)
 // 	return balance, nil
-// }
-
-// func (db *BlockchainDB) BeginTransaction() (*shared.TransactionContext, error) {
-// 	txn := db.DB.NewTransaction(true)
-// 	return shared.NewTransactionContext(txn), nil
-// }
-
-// func (db *BlockchainDB) CommitTransaction(txn *shared.TransactionContext) error {
-// 	return txn.Txn.Commit()
-// }
-
-// func (db *BlockchainDB) RollbackTransaction(txn *shared.TransactionContext) error {
-// 	txn.Txn.Discard()
-// 	return nil
-// }
-
-// func (db *BlockchainDB) SetTransaction(txn *shared.TransactionContext, key []byte, value []byte) error {
-// 	if txn == nil || txn.Txn == nil {
-// 		return fmt.Errorf("invalid transaction context")
-// 	}
-// 	if len(key) == 0 {
-// 		return fmt.Errorf("key cannot be empty")
-// 	}
-// 	return txn.Txn.Set(key, value)
-// }
-
-// // AddTransaction stores a new transaction in the database. It serializes transaction inputs,
-// // outputs, and the signature for persistent storage.
-// func (bdb *BlockchainDB) AddTransaction(tx *thrylos.Transaction) error {
-// 	txn := bdb.DB.NewTransaction(true)
-// 	defer txn.Discard()
-
-// 	txJSON, err := json.Marshal(tx)
-// 	if err != nil {
-// 		return fmt.Errorf("error marshaling transaction: %v", err)
-// 	}
-
-// 	key := []byte("transaction-" + tx.Id)
-
-// 	if err := txn.Set(key, txJSON); err != nil {
-// 		return fmt.Errorf("error storing transaction in BadgerDB: %v", err)
-// 	}
-
-// 	if err := txn.Commit(); err != nil {
-// 		return fmt.Errorf("transaction commit failed: %v", err)
-// 	}
-
-// 	return nil
 // }
 
 // func (bdb *BlockchainDB) GetUTXOsByAddress(address string) (map[string][]shared.UTXO, error) {
@@ -1028,75 +918,6 @@ package database
 // 		return fmt.Sprintf("utxo-%s-%d", address, index)
 // 	}
 // 	return fmt.Sprintf("utxo-%s-%s-%d", address, transactionID, index)
-// }
-
-// func (bdb *BlockchainDB) MarkUTXOAsSpent(txContext *shared.TransactionContext, utxo shared.UTXO) error {
-// 	// Ensure we have all required fields
-// 	if utxo.OwnerAddress == "" {
-// 		return fmt.Errorf("owner address is required")
-// 	}
-// 	if utxo.TransactionID == "" {
-// 		return fmt.Errorf("transaction ID is required")
-// 	}
-
-// 	// Construct the key using the transaction ID from the input
-// 	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
-// 	log.Printf("Marking UTXO as spent - Key: %s, TransactionID: %s, Amount: %d, Owner: %s",
-// 		key, utxo.TransactionID, utxo.Amount, utxo.OwnerAddress)
-
-// 	// Get the existing UTXO
-// 	item, err := txContext.Txn.Get([]byte(key))
-// 	if err != nil {
-// 		if err == badger.ErrKeyNotFound {
-// 			return fmt.Errorf("UTXO not found: %s", key)
-// 		}
-// 		return fmt.Errorf("error retrieving UTXO: %v", err)
-// 	}
-
-// 	var existingUTXO shared.UTXO
-// 	err = item.Value(func(val []byte) error {
-// 		return json.Unmarshal(val, &existingUTXO)
-// 	})
-// 	if err != nil {
-// 		return fmt.Errorf("error unmarshaling UTXO: %v", err)
-// 	}
-
-// 	// Verify this UTXO isn't already spent
-// 	if existingUTXO.IsSpent {
-// 		return fmt.Errorf("UTXO is already spent: %s", key)
-// 	}
-
-// 	// Mark as spent
-// 	existingUTXO.IsSpent = true
-
-// 	// Save back
-// 	updatedValue, err := json.Marshal(existingUTXO)
-// 	if err != nil {
-// 		return fmt.Errorf("error marshaling updated UTXO: %v", err)
-// 	}
-
-// 	err = txContext.Txn.Set([]byte(key), updatedValue)
-// 	if err != nil {
-// 		return fmt.Errorf("error saving updated UTXO: %v", err)
-// 	}
-
-// 	log.Printf("Successfully marked UTXO as spent - Key: %s", key)
-// 	return nil
-// }
-
-// func (bdb *BlockchainDB) AddNewUTXO(txContext *shared.TransactionContext, utxo shared.UTXO) error {
-// 	// Ensure TransactionID is set
-// 	if utxo.TransactionID == "" {
-// 		return fmt.Errorf("cannot add UTXO without TransactionID")
-// 	}
-
-// 	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
-// 	val, err := json.Marshal(utxo)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to marshal UTXO: %v", err)
-// 	}
-
-// 	return txContext.Txn.Set([]byte(key), val)
 // }
 
 // func GenerateUTXOKey(ownerAddress string, transactionID string, index int) string {
