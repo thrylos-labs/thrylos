@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/btcsuite/btcutil/bech32"
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
+
+	"github.com/btcsuite/btcutil/bech32"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 )

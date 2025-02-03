@@ -6,6 +6,7 @@ import (
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 )
 
@@ -41,14 +42,25 @@ func (p *PublicKey) Unmarshal(data []byte) error {
 	return p.pk.UnmarshalBinary(d)
 }
 
-func (p *PublicKey) Verify(data []byte, signature *Signature) error {
+func (p *PublicKey) Verify(data []byte, signature *crypto.Signature) error {
 	if signature == nil {
 		return errors.New("signature cannot be nil")
 	}
-	if !mldsa.Verify(&p.pk, data, nil, signature.Bytes()) {
+	mldsaSig, ok := (*signature).(*Signature)
+	if !ok {
+		return errors.New("invalid signature type")
+	}
+	if !mldsa.Verify(&p.pk, data, nil, mldsaSig.Bytes()) {
 		return errors.New("invalid signature")
 	}
 	return nil
+}
+
+func (p *PublicKey) Equal(other *crypto.PublicKey) bool {
+	if other == nil {
+		return false
+	}
+	return bytes.Equal(p.Bytes(), (*other).Bytes())
 }
 
 func (p *PublicKey) Address() (*address.Address, error) {

@@ -777,23 +777,17 @@ func (s *store) CreateAndSignTransaction(txID string, inputs, outputs []shared.U
 	hasher, _ := blake2b.New256(nil)
 	hasher.Write(txBytes)
 	hashedTx := hasher.Sum(nil)
-	// Hash the serialized transaction using BLAKE2b
-	hasher, _ := blake2b.New256(nil)
-	hasher.Write(txBytes)
-	hashedTx := hasher.Sum(nil)
 
 	// Sign the hashed transaction
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, hashedTx[:])
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, stdcrypto.SHA256, hashedTx[:])
 	if err != nil {
 		return tx, fmt.Errorf("error signing transaction: %v", err) // Return pointer
 	}
 
-	// Create a mldsa44.Signature object from the raw signature bytes
-	sig := mldsa44.Signature{sig: signature}
+	sig := mldsa44.NewSignature(signature)
 
-	// Set the signature on the transaction
-	tx.Signature = sig // Assign the mldsa44.Signature object
-	return tx, nil     // Return pointer
+	tx.Signature = sig
+	return tx, nil
 }
 
 func (s *store) TransactionExists(txn *shared.TransactionContext, txID string) (bool, error) {
@@ -852,7 +846,7 @@ func (s *store) RetrievePublicKeyFromAddress(address string) (*mldsa44.PublicKey
 
 	// Parse the bytes into an MLDSA public key
 	pubKey := new(mldsa44.PublicKey)
-	err = pubKey.UnmarshalBinary(mldsaKeyBytes)
+	err = pubKey.Unmarshal(mldsaKeyBytes)
 	if err != nil {
 		log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
 		return nil, fmt.Errorf("failed to parse MLDSA public key: %v", err)
@@ -867,8 +861,9 @@ func (s *store) RetrievePublicKeyFromAddress(address string) (*mldsa44.PublicKey
 func (s *store) InsertBlock(blockData []byte, blockNumber int) error {
 	key := fmt.Sprintf("block-%d", blockNumber)
 	log.Printf("Inserting block %d into database", blockNumber)
+	db := s.db.GetDB()
 
-	err := bdb.DB.Update(func(txn *badger.Txn) error {
+	err := db.Update(func(txn *badger.Txn) error {
 		log.Printf("Storing data at key: %s", key)
 		return txn.Set([]byte(key), blockData)
 	})
@@ -1188,7 +1183,7 @@ func (s *store) GetPublicKeyWithCaching(address string) (*mldsa44.PublicKey, err
 		return cachedKey.(*mldsa44.PublicKey), nil
 	}
 
-	key, err := bdb.RetrievePublicKeyFromAddress(address)
+	key, err := s.RetrievePublicKeyFromAddress(address)
 	if err != nil {
 		return nil, err
 	}
@@ -1198,13 +1193,15 @@ func (s *store) GetPublicKeyWithCaching(address string) (*mldsa44.PublicKey, err
 }
 
 func (s *store) PublicKeyExists(address string) (bool, error) {
-	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
+	db := s.db.GetDB()
+
+	formattedAddress, err := s.SanitizeAndFormatAddress(address)
 	if err != nil {
 		return false, fmt.Errorf("error sanitizing address: %v", err)
 	}
 
 	exists := false
-	err = bdb.DB.View(func(txn *badger.Txn) error {
+	err = db.View(func(txn *badger.Txn) error {
 		_, err := txn.Get([]byte("publicKey-" + formattedAddress))
 		if err == badger.ErrKeyNotFound {
 			// Key not found, publicKey does not exist
@@ -1227,8 +1224,9 @@ func (s *store) PublicKeyExists(address string) (bool, error) {
 
 func (s *store) InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mldsa44.PublicKey) error {
 	log.Printf("Attempting to insert/update MLDSA public key for address: %s", address)
+	db := s.db.GetDB()
 
-	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
+	formattedAddress, err := s.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Error sanitizing address %s: %v", address, err)
 		return err
@@ -1236,7 +1234,7 @@ func (s *store) InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mld
 	log.Printf("Sanitized and formatted address: %s", formattedAddress)
 
 	// Convert MLDSA public key to bytes
-	publicKeyBytes, err := mldsaPublicKey.MarshalBinary()
+	publicKeyBytes, err := mldsaPublicKey.Marshal()
 	if err != nil {
 		log.Printf("Failed to marshal MLDSA public key for address %s: %v", formattedAddress, err)
 		return fmt.Errorf("failed to marshal MLDSA public key: %v", err)
@@ -1251,7 +1249,7 @@ func (s *store) InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mld
 	log.Printf("Marshalled public key data length: %d bytes", len(data))
 
 	// Start a new transaction for the database operation
-	txn := bdb.DB.NewTransaction(true)
+	txn := db.NewTransaction(true)
 	defer txn.Discard() // Ensure that the transaction is discarded if not committed
 
 	log.Printf("Started new transaction for address: %s", formattedAddress)
@@ -1277,8 +1275,9 @@ func (s *store) InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mld
 
 func (s *store) RetrieveMLDSAPublicKey(address string) ([]byte, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", address)
+	db := s.db.GetDB()
 
-	formattedAddress, err := bdb.SanitizeAndFormatAddress(address)
+	formattedAddress, err := s.SanitizeAndFormatAddress(address)
 	if err != nil {
 		log.Printf("Error sanitizing and formatting address %s: %v", address, err)
 		return nil, err
@@ -1286,7 +1285,7 @@ func (s *store) RetrieveMLDSAPublicKey(address string) ([]byte, error) {
 	log.Printf("Formatted address: %s", formattedAddress)
 
 	var publicKeyData []byte
-	err = bdb.DB.View(func(txn *badger.Txn) error {
+	err = db.View(func(txn *badger.Txn) error {
 		key := []byte(validatorPublicKeyPrefix + formattedAddress)
 		log.Printf("Attempting to retrieve data for key: %s", string(key))
 
@@ -1402,7 +1401,7 @@ func (s *store) GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error
 				// Create a new MLDSA public key
 				pubKey := new(mldsa44.PublicKey)
 				var err error
-				err = pubKey.UnmarshalBinary(mldsaKeyBytes)
+				err = pubKey.Unmarshal(val) // Use val instead of mldsaKeyBytes since we're in the Value callback
 				if err != nil {
 					return fmt.Errorf("failed to parse MLDSA public key for key %s: %v", string(key), err)
 				}
@@ -1430,13 +1429,15 @@ func (s *store) GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error
 
 // StoreValidatorPublicKey stores a validator's ML-DSA44 public key
 func (s *store) StoreValidatorPublicKey(validatorAddress string, publicKeyBytes []byte) error {
+	db := s.db.GetDB()
+
 	if !strings.HasPrefix(validatorAddress, "tl1") {
 		log.Printf("Invalid address format for validator %s: must start with 'tl1'", validatorAddress)
 		return fmt.Errorf("invalid address format: must start with 'tl1'")
 	}
 
 	// We'll store the bytes directly since they're already in the correct format
-	return bdb.DB.Update(func(txn *badger.Txn) error {
+	return db.Update(func(txn *badger.Txn) error {
 		key := []byte(validatorPublicKeyPrefix + validatorAddress)
 		log.Printf("Storing public key for validator: %s, key: %s", validatorAddress, key)
 		err := txn.Set(key, publicKeyBytes)
@@ -1451,18 +1452,18 @@ func (s *store) StoreValidatorPublicKey(validatorAddress string, publicKeyBytes 
 
 // Helper function for when you have an ML-DSA44 key
 func (s *store) StoreValidatorMLDSAPublicKey(validatorAddress string, publicKey *mldsa44.PublicKey) error {
-	publicKeyBytes, err := publicKey.MarshalBinary()
+	publicKeyBytes, err := publicKey.Marshal()
 	if err != nil {
 		return fmt.Errorf("failed to marshal public key: %v", err)
 	}
-	return bdb.StoreValidatorPublicKey(validatorAddress, publicKeyBytes)
+	return s.StoreValidatorPublicKey(validatorAddress, publicKeyBytes)
 }
 
 // And for retrieving as ML-DSA44 key
 func (s *store) GetValidatorMLDSAPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
 	var pubKey mldsa44.PublicKey
-
-	err := bdb.DB.View(func(txn *badger.Txn) error {
+	db := s.db.GetDB()
+	err := db.View(func(txn *badger.Txn) error {
 		key := []byte(validatorPublicKeyPrefix + validatorAddress)
 		item, err := txn.Get(key)
 		if err != nil {
@@ -1470,7 +1471,7 @@ func (s *store) GetValidatorMLDSAPublicKey(validatorAddress string) (*mldsa44.Pu
 		}
 
 		return item.Value(func(val []byte) error {
-			return pubKey.UnmarshalBinary(val)
+			return pubKey.Unmarshal(val)
 		})
 	})
 

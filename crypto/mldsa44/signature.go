@@ -6,30 +6,44 @@ import (
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/thrylos-labs/thrylos/crypto"
 )
 
 type Signature struct {
 	sig []byte
 }
 
+func NewSignature(sig []byte) *Signature {
+	return &Signature{sig: sig}
+}
+
 func (s *Signature) Bytes() []byte {
 	return s.sig
 }
 
-func (s *Signature) Verify(pubKey *PublicKey, data []byte) error {
+func (s *Signature) Verify(pubKey *crypto.PublicKey, data []byte) error {
 	if s == nil {
 		return errors.New("signature cannot be nil")
 	}
-	if !mldsa.Verify(&pubKey.pk, data, nil, s.Bytes()) {
+	mldsaPubKey, ok := (*pubKey).(*PublicKey)
+	if !ok {
+		return errors.New("invalid public key type")
+	}
+	if !mldsa.Verify(&mldsaPubKey.pk, data, nil, s.Bytes()) {
 		return errors.New("invalid signature")
 	}
 	return nil
 }
-func (s *Signature) VerifyWithSalt(pubKey *PublicKey, data, salt []byte) error {
+
+func (s *Signature) VerifyWithSalt(pubKey *crypto.PublicKey, data, salt []byte) error {
 	if s == nil {
 		return errors.New("signature cannot be nil")
 	}
-	if !mldsa.Verify(&pubKey.pk, data, salt, s.Bytes()) {
+	mldsaPubKey, ok := (*pubKey).(*PublicKey)
+	if !ok {
+		return errors.New("invalid public key type")
+	}
+	if !mldsa.Verify(&mldsaPubKey.pk, data, salt, s.Bytes()) {
 		return errors.New("invalid signature")
 	}
 	return nil
@@ -47,6 +61,10 @@ func (s *Signature) Unmarshal(data []byte) error {
 	return cbor.Unmarshal(data, s.sig)
 }
 
-func (s *Signature) Equal(other Signature) bool {
-	return bytes.Equal(s.Bytes(), other.Bytes())
+func (s *Signature) Equal(other crypto.Signature) bool {
+	otherSig, ok := other.(crypto.Signature)
+	if !ok {
+		return false
+	}
+	return bytes.Equal(s.Bytes(), otherSig.Bytes())
 }
