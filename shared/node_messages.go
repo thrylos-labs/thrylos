@@ -18,21 +18,37 @@ import "sync"
 type MessageType string
 
 const (
-	GetBalance           MessageType = "GET_BALANCE"
-	GetUTXOs             MessageType = "GET_UTXOS"
-	UpdateState          MessageType = "UPDATE_STATE"
-	ProcessBlock         MessageType = "PROCESS_BLOCK"
-	ValidateBlock        MessageType = "VALIDATE_BLOCK"
-	AddUTXO              MessageType = "ADD_UTXO"
-	ValidateDAGTx        MessageType = "VALIDATE_DAG_TX"
-	UpdateDAGState       MessageType = "UPDATE_DAG_STATE"
-	GetDAGTips           MessageType = "GET_DAG_TIPS"
-	ProcessTransaction   MessageType = "PROCESS_TRANSACTION"
-	UpdateProcessorState MessageType = "UPDATE_PROCESSOR_STATE"
-	GetStakingStats      MessageType = "GET_STAKING_STATS"
-	CreateStake          MessageType = "CREATE_STAKE"
-	UpdatePeerList       MessageType = "UPDATE_PEER_LIST"
-	// Add more message types as needed
+	// Balance related
+	GetBalance  MessageType = "GET_BALANCE"
+	GetUTXOs    MessageType = "GET_UTXOS"
+	AddUTXO     MessageType = "ADD_UTXO"
+	UpdateState MessageType = "UPDATE_STATE"
+
+	// Transaction related
+	ProcessTransaction         MessageType = "PROCESS_TRANSACTION"
+	GetPendingTransactionCount MessageType = "GET_PENDING_TX_COUNT"
+	GetPendingTransactionBatch MessageType = "GET_PENDING_TX_BATCH"
+	UpdateProcessorState       MessageType = "UPDATE_PROCESSOR_STATE"
+
+	// Block related
+	ProcessBlock      MessageType = "PROCESS_BLOCK"
+	ValidateBlock     MessageType = "VALIDATE_BLOCK"
+	HasBlock          MessageType = "HAS_BLOCK"
+	GetConsensusTime  MessageType = "GET_CONSENSUS_TIME"
+	GetPendingTxCount MessageType = "GET_PENDING_TX_COUNT"
+	GetPendingTxBatch MessageType = "GET_PENDING_TX_BATCH"
+	BroadcastVote     MessageType = "BROADCAST_VOTE"
+
+	// DAG related
+	ValidateDAGTx  MessageType = "VALIDATE_DAG_TX"
+	UpdateDAGState MessageType = "UPDATE_DAG_STATE"
+	GetDAGTips     MessageType = "GET_DAG_TIPS"
+
+	// Node state related
+	GetStakingStats MessageType = "GET_STAKING_STATS"
+	CreateStake     MessageType = "CREATE_STAKE"
+	UpdatePeerList  MessageType = "UPDATE_PEER_LIST"
+	IsCounterNode   MessageType = "IS_COUNTER_NODE"
 )
 
 // Message represents a generic message in the system
@@ -49,6 +65,26 @@ type Response struct {
 }
 
 // Request types
+
+type PendingTransactionBatchRequest struct {
+	BatchSize int
+}
+
+type PendingTransactionCountResponse struct {
+	Count int
+	Error error
+}
+
+type PendingTransactionBatchResponse struct {
+	Transactions []*Transaction
+	Error        error
+}
+
+type IsCounterNodeResponse struct {
+	IsCounter bool
+	Error     error
+}
+
 type UTXORequest struct {
 	Address string
 }

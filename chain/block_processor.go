@@ -1,9 +1,20 @@
 package chain
 
+// import (
+// 	"fmt"
+// 	"log"
+// 	"sync"
+// 	"sync/atomic"
+// 	"time"
+
+// 	thrylos "github.com/thrylos-labs/thrylos"
+// 	"github.com/thrylos-labs/thrylos/shared"
+// )
+
 // type BlockProcessor struct {
 // 	config        *BlockProducerConfig
-// 	node          *Node
 // 	blockchain    *Blockchain
+// 	messageBus    *shared.MessageBus
 // 	isProducing   atomic.Bool
 // 	lastBlockTime time.Time
 // 	mu            sync.RWMutex
@@ -15,21 +26,35 @@ package chain
 // 	batchSize     = 100                    // Maximum transactions per batch
 // )
 
-// // HasBlock checks whether a block with the specified hash exists in the node's blockchain.
-// func (bpc *BlockProcessor) HasBlock(blockHash []byte) bool {
-// 	log.Printf("Searching for block with hash: %s", hex.EncodeToString(blockHash))
-// 	for _, block := range n.Blockchain.Blocks {
-// 		if bytes.Equal(block.Hash, blockHash) {
-// 			log.Printf("Block found: %s", hex.EncodeToString(block.Hash))
-// 			return true
-// 		}
+// func NewBlockProcessor(config *BlockProducerConfig, blockchain *Blockchain, messageBus *shared.MessageBus) *BlockProcessor {
+// 	bp := &BlockProcessor{
+// 		config:     config,
+// 		blockchain: blockchain,
+// 		messageBus: messageBus,
 // 	}
-// 	log.Println("Block not found")
-// 	return false
+// 	return bp
 // }
 
-// StartBlockCreationTimer monitors for pending transactions and creates blocks
-// func (node *Node) StartBlockCreationTimer() {
+// // HasBlock checks whether a block with the specified hash exists in the node's blockchain.
+// func (bp *BlockProcessor) HasBlock(blockHash []byte) bool {
+// 	responseCh := make(chan shared.Response)
+// 	bp.messageBus.Publish(shared.Message{
+// 		Type:       shared.HasBlock,
+// 		Data:       blockHash,
+// 		ResponseCh: responseCh,
+// 	})
+
+// 	response := <-responseCh
+// 	if response.Error != nil {
+// 		log.Printf("Error checking block existence: %v", response.Error)
+// 		return false
+// 	}
+
+// 	return response.Data.(bool)
+// }
+
+// // StartBlockCreationTimer monitors for pending transactions and creates blocks
+// func (bp *BlockProcessor) StartBlockCreationTimer() {
 // 	ticker := time.NewTicker(checkInterval)
 // 	var lastBlockTime time.Time
 
@@ -37,33 +62,27 @@ package chain
 // 		for range ticker.C {
 // 			now := time.Now()
 // 			timeSinceLastBlock := now.Sub(lastBlockTime)
-// 	go func() {
-// 		for range ticker.C {
-// 			now := time.Now()
-// 			timeSinceLastBlock := now.Sub(lastBlockTime)
 
-// 			// Get current block time from the blockchain's consensus manager
-// 			targetBlockTime := node.Blockchain.ConsensusManager.GetCurrentBlockTime()
+// 			// Get current block time through message bus
+// 			timeCh := make(chan shared.Response)
+// 			bp.messageBus.Publish(shared.Message{
+// 				Type:       shared.GetConsensusTime,
+// 				ResponseCh: timeCh,
+// 			})
+// 			timeResponse := <-timeCh
+// 			targetBlockTime := timeResponse.Data.(time.Duration)
 
-// 			node.Mu.RLock()
-// 			hasPendingTx := len(node.PendingTransactions) > 0
-// 			node.Mu.RUnlock()
-// 			node.Mu.RLock()
-// 			hasPendingTx := len(node.PendingTransactions) > 0
-// 			node.Mu.RUnlock()
+// 			// Check pending transactions through message bus
+// 			pendingCh := make(chan shared.Response)
+// 			bp.messageBus.Publish(shared.Message{
+// 				Type:       shared.GetPendingTxCount,
+// 				ResponseCh: pendingCh,
+// 			})
+// 			pendingResponse := <-pendingCh
+// 			hasPendingTx := pendingResponse.Data.(bool)
 
 // 			if hasPendingTx && timeSinceLastBlock >= targetBlockTime {
-// 				if err := node.TriggerBlockCreation(); err != nil {
-// 					log.Printf("Error creating block: %v", err)
-// 					continue
-// 				}
-// 				lastBlockTime = now
-// 			}
-// 		}
-// 	}()
-// }
-// 			if hasPendingTx && timeSinceLastBlock >= targetBlockTime {
-// 				if err := node.TriggerBlockCreation(); err != nil {
+// 				if err := bp.TriggerBlockCreation(); err != nil {
 // 					log.Printf("Error creating block: %v", err)
 // 					continue
 // 				}
@@ -74,58 +93,38 @@ package chain
 // }
 
 // // TriggerBlockCreation initiates the block creation process
-// func (bpc *BlockProcessor) TriggerBlockCreation() error {
-// 	node.Mu.Lock()
-// 	defer node.Mu.Unlock()
+// func (bp *BlockProcessor) TriggerBlockCreation() error {
+// 	bp.mu.Lock()
+// 	defer bp.mu.Unlock()
 
-// 	pendingCount := len(node.PendingTransactions)
+// 	// Use BlockProcessor's GetCurrentValidator method
+// 	validator := bp.GetCurrentValidator()
+// 	if validator == "" {
+// 		return fmt.Errorf("no validator available")
+// 	}
+
+// 	// Get pending transactions count directly from blockchain
+// 	pendingCount := len(bp.blockchain.PendingTransactions)
 // 	if pendingCount == 0 {
 // 		return nil
 // 	}
 
-// 	validator := node.Blockchain.GetCurrentValidator()
-// 	if validator == "" {
-// 		return fmt.Errorf("no validator available")
-// 	}
-// 	validator := node.Blockchain.GetCurrentValidator()
-// 	if validator == "" {
-// 		return fmt.Errorf("no validator available")
-// 	}
-
 // 	// Process in batches if needed
 // 	if pendingCount > batchSize {
 // 		batch := make([]*thrylos.Transaction, batchSize)
-// 		copy(batch, node.PendingTransactions[:batchSize])
-// 		node.PendingTransactions = node.PendingTransactions[batchSize:]
-// 	// Process in batches if needed
-// 	if pendingCount > batchSize {
-// 		batch := make([]*thrylos.Transaction, batchSize)
-// 		copy(batch, node.PendingTransactions[:batchSize])
-// 		node.PendingTransactions = node.PendingTransactions[batchSize:]
+// 		copy(batch, bp.blockchain.PendingTransactions[:batchSize])
+// 		bp.blockchain.PendingTransactions = bp.blockchain.PendingTransactions[batchSize:]
 
 // 		go func(transactions []*thrylos.Transaction) {
-// 			if _, err := node.Blockchain.ProcessPendingTransactionsWithBatch(validator, transactions); err != nil {
-// 				log.Printf("Error processing transaction batch: %v", err)
-// 			}
-// 		}(batch)
-// 		return nil
-// 	}
-// 		go func(transactions []*thrylos.Transaction) {
-// 			if _, err := node.Blockchain.ProcessPendingTransactionsWithBatch(validator, transactions); err != nil {
+// 			if _, err := bp.blockchain.ProcessPendingTransactionsWithBatch(validator, transactions); err != nil {
 // 				log.Printf("Error processing transaction batch: %v", err)
 // 			}
 // 		}(batch)
 // 		return nil
 // 	}
 
-// 	// Process remaining under same lock
-// 	if block, err := node.Blockchain.ProcessPendingTransactions(validator); err != nil {
-// 		return fmt.Errorf("failed to process transactions: %w", err)
-// 	} else if block != nil {
-// 		log.Printf("Created block with %d transactions", len(block.Transactions))
-// 	}
-// 	// Process remaining under same lock
-// 	if block, err := node.Blockchain.ProcessPendingTransactions(validator); err != nil {
+// 	// Process remaining transactions
+// 	if block, err := bp.blockchain.ProcessPendingTransactions(validator); err != nil {
 // 		return fmt.Errorf("failed to process transactions: %w", err)
 // 	} else if block != nil {
 // 		log.Printf("Created block with %d transactions", len(block.Transactions))
@@ -133,54 +132,53 @@ package chain
 
 // 	return nil
 // }
-// 	return nil
-// }
 
-// // ProcessConfirmedTransactions handles newly confirmed transactions in a block
-// // ProcessConfirmedTransactions handles newly confirmed transactions in a block
-// func (bpc *BlockProcessor) ProcessConfirmedTransactions(block *Block) {
-// 	// Clear old votes first
-// 	node.VoteCounter.ClearOldVotes()
+// func (bp *BlockProcessor) ProcessConfirmedTransactions(block *shared.Block) {
+// 	// Use message bus for node-related operations
+// 	isCounterCh := make(chan shared.Response)
+// 	bp.messageBus.Publish(shared.Message{
+// 		Type:       shared.IsCounterNode,
+// 		ResponseCh: isCounterCh,
+// 	})
+// 	isCounterResponse := <-isCounterCh
+// 	isCounter := isCounterResponse.Data.(bool)
 
-// 	// If this is not the counter node, validate and vote
-// 	if !node.IsVoteCounter {
-// 		if err := node.ValidateAndVoteForBlock(block); err != nil {
-// 			log.Printf("Failed to validate and vote for block: %v", err)
+// 	if !isCounter {
+// 		// Validate block through message bus
+// 		voteCh := make(chan shared.Response)
+// 		bp.messageBus.Publish(shared.Message{
+// 			Type:       shared.ValidateBlock,
+// 			Data:       block,
+// 			ResponseCh: voteCh,
+// 		})
+// 		if voteResponse := <-voteCh; voteResponse.Error != nil {
+// 			log.Printf("Failed to validate block: %v", voteResponse.Error)
 // 			return
 // 		}
 // 	}
-// 	// If this is not the counter node, validate and vote
-// 	if !node.IsVoteCounter {
-// 		if err := node.ValidateAndVoteForBlock(block); err != nil {
-// 			log.Printf("Failed to validate and vote for block: %v", err)
-// 			return
-// 		}
-// 	}
 
-// 	// Start new voting round for next block
-// 	activeValidators := node.Blockchain.GetActiveValidators()
-// 	// Start new voting round for next block
-// 	activeValidators := node.Blockchain.GetActiveValidators()
-
-// 	// Calculate required votes (2/3 of active validators)
-// 	requiredVotes := (2*len(activeValidators) + 2) / 3
-// 	// Calculate required votes (2/3 of active validators)
+// 	// Get active validators directly from blockchain
+// 	activeValidators := bp.blockchain.GetActiveValidators()
 // 	requiredVotes := (2*len(activeValidators) + 2) / 3
 
-// 	// Start voting process for eligible validators
+// 	// Start voting process
 // 	votedValidators := 0
 // 	for _, validator := range activeValidators {
-// 		if node.isEligibleValidator(validator) {
-// 			node.BroadcastVote(validator, block.Index+1)
-// 			votedValidators++
-// 	// Start voting process for eligible validators
-// 	votedValidators := 0
-// 	for _, validator := range activeValidators {
-// 		if node.isEligibleValidator(validator) {
-// 			node.BroadcastVote(validator, block.Index+1)
+// 		if bp.isEligibleValidator(validator) {
+// 			// Send vote through message bus
+// 			bp.messageBus.Publish(shared.Message{
+// 				Type: shared.UpdateState,
+// 				Data: struct {
+// 					Validator string
+// 					BlockNum  int64
+// 				}{
+// 					Validator: validator,
+// 					BlockNum:  block.Index + 1,
+// 				},
+// 				ResponseCh: make(chan shared.Response),
+// 			})
 // 			votedValidators++
 
-// 			// Check if we have reached super majority
 // 			if votedValidators >= requiredVotes {
 // 				log.Printf("Achieved 2/3 majority with %d out of %d validators for block %d",
 // 					votedValidators, len(activeValidators), block.Index+1)
@@ -189,123 +187,93 @@ package chain
 // 		}
 // 	}
 
-// 	if votedValidators < requiredVotes {
-// 		log.Printf("Warning: Could not achieve 2/3 majority. Only got %d out of required %d votes",
-// 			votedValidators, requiredVotes)
-// 	}
-// 	if votedValidators < requiredVotes {
-// 		log.Printf("Warning: Could not achieve 2/3 majority. Only got %d out of required %d votes",
-// 			votedValidators, requiredVotes)
-// 	}
-
 // 	// Process transaction updates
 // 	addressesToUpdate := make(map[string]bool)
 // 	for _, tx := range block.Transactions {
-// 		balanceCache.Delete(tx.Sender)
-// 		addressesToUpdate[tx.Sender] = true
-// 	// Process transaction updates
-// 	addressesToUpdate := make(map[string]bool)
-// 	for _, tx := range block.Transactions {
-// 		balanceCache.Delete(tx.Sender)
-// 		addressesToUpdate[tx.Sender] = true
-
+// 		// Using correct field 'SenderAddress' from the shared.Transaction struct
+// 		senderAddr := tx.SenderAddress.String() // Convert address.Address to string
+// 		addressesToUpdate[senderAddr] = true
 // 		for _, output := range tx.Outputs {
-// 			balanceCache.Delete(output.OwnerAddress)
-// 			addressesToUpdate[output.OwnerAddress] = true
-// 		}
-// 		for _, output := range tx.Outputs {
-// 			balanceCache.Delete(output.OwnerAddress)
 // 			addressesToUpdate[output.OwnerAddress] = true
 // 		}
 
-// 		node.Blockchain.StateManager.UpdateState(tx.Sender, 0, nil)
-// 	}
-// 		node.Blockchain.StateManager.UpdateState(tx.Sender, 0, nil)
+// 		// Update state through message bus since it's node-related
+// 		bp.messageBus.Publish(shared.Message{
+// 			Type: shared.UpdateState,
+// 			Data: shared.UpdateStateRequest{
+// 				Address: senderAddr,
+// 				Balance: 0,
+// 			},
+// 			ResponseCh: make(chan shared.Response),
+// 		})
 // 	}
 
-// 	// Update balances for affected addresses
+// 	// Update balances for affected addresses through message bus
 // 	for address := range addressesToUpdate {
-// 		balance, err := node.GetBalance(address)
-// 		if err == nil {
-// 			if err := node.SendBalanceUpdate(address); err == nil {
-// 				log.Printf("Updated balance for %s to %d", address, balance)
-// 			}
-// 		}
-// 	}
-// }
-// 	// Update balances for affected addresses
-// 	for address := range addressesToUpdate {
-// 		balance, err := node.GetBalance(address)
-// 		if err == nil {
-// 			if err := node.SendBalanceUpdate(address); err == nil {
-// 				log.Printf("Updated balance for %s to %d", address, balance)
-// 			}
+// 		balanceCh := make(chan shared.Response)
+// 		bp.messageBus.Publish(shared.Message{
+// 			Type:       shared.GetBalance,
+// 			Data:       address,
+// 			ResponseCh: balanceCh,
+// 		})
+
+// 		if response := <-balanceCh; response.Error == nil {
+// 			balance := response.Data.(int64)
+// 			bp.messageBus.Publish(shared.Message{
+// 				Type: shared.UpdateState,
+// 				Data: shared.UpdateStateRequest{
+// 					Address: address,
+// 					Balance: balance,
+// 				},
+// 				ResponseCh: make(chan shared.Response),
+// 			})
+// 			log.Printf("Updated balance for %s to %d", address, balance)
 // 		}
 // 	}
 // }
 
-// func (bpc *BlockProcessor) isEligibleValidator(validatorID string) bool {
-// 	// Check if validator meets stake requirements and other criteria
-// 	stakeholders := node.Blockchain.GetStakeholders()
-// 	minStake := node.Blockchain.GetMinStakeForValidator()
+// func (bp *BlockProcessor) isEligibleValidator(validatorID string) bool {
+// 	// Get stake requirements directly from blockchain
+// 	stakeholders := bp.blockchain.GetStakeholders()
+// 	minStake := bp.blockchain.GetMinStakeForValidator()
 
 // 	if stake, exists := stakeholders[validatorID]; exists {
 // 		return stake >= minStake.Int64()
 // 	}
 // 	return false
 // }
-// 	if stake, exists := stakeholders[validatorID]; exists {
-// 		return stake >= minStake.Int64()
-// 	}
-// 	return false
+
+// func (bp *BlockProcessor) GetBlockCount() int {
+// 	return bp.blockchain.GetBlockCount()
 // }
 
 // // GetCurrentValidator gets the current validator for block creation
-// func (bpc *BlockProcessor) GetCurrentValidator() string {
-// 	bc.Mu.RLock()
-// 	defer bc.Mu.RUnlock()
+// func (bp *BlockProcessor) GetCurrentValidator() string {
+// 	bp.blockchain.Mu.RLock()
+// 	defer bp.blockchain.Mu.RUnlock()
 
-// 	if len(bc.ActiveValidators) == 0 {
+// 	if len(bp.blockchain.ActiveValidators) == 0 {
 // 		log.Println("Warning: No active validators available. Attempting to add genesis account as validator.")
-// 		bc.Mu.RUnlock()
-// 		bc.Mu.Lock()
-// 		bc.ActiveValidators = append(bc.ActiveValidators, bc.GenesisAccount)
-// 		bc.Mu.Unlock()
-// 		bc.Mu.RLock()
-// 	}
-// 	if len(bc.ActiveValidators) == 0 {
-// 		log.Println("Warning: No active validators available. Attempting to add genesis account as validator.")
-// 		bc.Mu.RUnlock()
-// 		bc.Mu.Lock()
-// 		bc.ActiveValidators = append(bc.ActiveValidators, bc.GenesisAccount)
-// 		bc.Mu.Unlock()
-// 		bc.Mu.RLock()
+// 		bp.blockchain.Mu.RUnlock()
+// 		bp.blockchain.Mu.Lock()
+// 		bp.blockchain.ActiveValidators = append(bp.blockchain.ActiveValidators, bp.blockchain.GenesisAccount)
+// 		bp.blockchain.Mu.Unlock()
+// 		bp.blockchain.Mu.RLock()
 // 	}
 
-// 	if len(bc.ActiveValidators) == 0 {
-// 		log.Println("Error: Still no active validators available after adding genesis account.")
-// 		return ""
-// 	}
-// 	if len(bc.ActiveValidators) == 0 {
+// 	if len(bp.blockchain.ActiveValidators) == 0 {
 // 		log.Println("Error: Still no active validators available after adding genesis account.")
 // 		return ""
 // 	}
 
 // 	currentTime := time.Now().UnixNano()
-// 	currentHeight := len(bc.Blocks)
-// 	combinedFactor := currentTime + int64(currentHeight)
-// 	currentTime := time.Now().UnixNano()
-// 	currentHeight := len(bc.Blocks)
+// 	currentHeight := len(bp.blockchain.Blocks)
 // 	combinedFactor := currentTime + int64(currentHeight)
 
-// 	index := combinedFactor % int64(len(bc.ActiveValidators))
-// 	selectedValidator := bc.ActiveValidators[index]
+// 	index := combinedFactor % int64(len(bp.blockchain.ActiveValidators))
+// 	selectedValidator := bp.blockchain.ActiveValidators[index]
 
-// 	log.Printf("Selected validator: %s (index: %d out of %d)", selectedValidator, index, len(bc.ActiveValidators))
+// 	log.Printf("Selected validator: %s (index: %d out of %d)", selectedValidator, index, len(bp.blockchain.ActiveValidators))
 
 // 	return selectedValidator
-// }
-
-// func (bpc *BlockProcessor) GetBlockCount() int {
-// 	return node.Blockchain.GetBlockCount()
 // }

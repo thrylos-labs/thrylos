@@ -1,13 +1,13 @@
 package chain
 
-// type BlockchainStats struct {
-// 	NumberOfBlocks       int   `json:"number_of_blocks"`
-// 	NumberOfTransactions int   `json:"number_of_transactions"`
-// 	TotalStake           int64 `json:"total_stake"`
-// 	NumberOfPeers        int   `json:"number_of_peers"`
-// }
+type BlockchainStats struct {
+	NumberOfBlocks       int   `json:"number_of_blocks"`
+	NumberOfTransactions int   `json:"number_of_transactions"`
+	TotalStake           int64 `json:"total_stake"`
+	NumberOfPeers        int   `json:"number_of_peers"`
+}
 
-// // Stats collector for the blockchain
+// Stats collector for the blockchain
 // type StatsCollector struct {
 // 	blockchain *Blockchain
 // }

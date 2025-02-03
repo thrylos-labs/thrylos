@@ -17,7 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dgraph-io/badger"
+	"github.com/dgraph-io/badger/v3" // Update to v3
+
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"

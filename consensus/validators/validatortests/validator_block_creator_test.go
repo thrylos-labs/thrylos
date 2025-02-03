@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // MockBlockchainForValidator implements the test blockchain
@@ -13,7 +13,7 @@ type MockBlockchainForValidator struct {
 	PendingTxs       []*thrylos.Transaction
 	PropagatedTxs    map[string][]string
 	Stakeholders     map[string]int64
-	Blocks           []*chain.Block
+	Blocks           []*shared.Block
 	mu               sync.RWMutex
 }
 
