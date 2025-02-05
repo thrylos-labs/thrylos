@@ -19,116 +19,127 @@ import (
 // Verifying with a Different Public Key Than the One Used for Signing
 
 func TestSignatureVerificationWithDifferentPublicKey(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// Generate first key pair
+	publicKey1, privateKey1, err := mldsa44.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Error generating RSA key: %v", err)
-	}
-	differentPrivateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("Error generating a different RSA key: %v", err)
+		t.Fatalf("Error generating first MLDSA44 key pair: %v", err)
 	}
 
-	// Use the public key from a different key pair for verification
-	differentPublicKey := &differentPrivateKey.PublicKey
-
-	serializedData := `{"ID":"tx1", ... }` // Simplified serialized data
-	hashed := sha256.Sum256([]byte(serializedData))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+	// Generate second key pair (different keys)
+	publicKey2, _, err := mldsa44.GenerateKey(rand.Reader)
 	if err != nil {
+		t.Fatalf("Error generating second MLDSA44 key pair: %v", err)
+	}
+
+	// Create test data
+	serializedData := []byte(`{"ID":"tx1"}`)
+
+	// Sign with first private key
+	signature := make([]byte, mldsa44.SignatureSize)
+	if err := mldsa44.SignTo(privateKey1, serializedData, nil, false, signature); err != nil {
 		t.Fatalf("Error signing data: %v", err)
 	}
 
-	// Attempt to verify the signature with a different public key
-	err = rsa.VerifyPKCS1v15(differentPublicKey, crypto.SHA256, hashed[:], signature)
-	if err == nil {
-		t.Errorf("Signature verification erroneously succeeded with a different public key")
+	// Verify with second public key (should fail)
+	if mldsa44.Verify(publicKey2, serializedData, nil, signature) {
+		t.Error("Signature verification erroneously succeeded with a different public key")
 	} else {
 		t.Log("Correctly failed to verify signature with a different public key")
+	}
+
+	// Verify with correct public key (should succeed)
+	if !mldsa44.Verify(publicKey1, serializedData, nil, signature) {
+		t.Error("Signature verification failed with correct public key")
 	}
 }
 
 // 2. Altering the Serialized Data After Signing but Before Verification
 func TestSignatureVerificationWithAlteredData(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	publicKey, privateKey, err := mldsa44.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Error generating RSA key: %v", err)
+		t.Fatalf("Error generating MLDSA44 key: %v", err)
 	}
-	publicKey := &privateKey.PublicKey
 
-	serializedData := `{"ID":"tx1", ... }` // Original serialized data
-	hashed := sha256.Sum256([]byte(serializedData))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
-	if err != nil {
+	// Original data
+	originalData := []byte(`{"ID":"tx1"}`)
+
+	// Sign original data
+	signature := make([]byte, mldsa44.SignatureSize)
+	if err := mldsa44.SignTo(privateKey, originalData, nil, false, signature); err != nil {
 		t.Fatalf("Error signing data: %v", err)
 	}
 
-	// Alter the serialized data
-	alteredSerializedData := `{"ID":"tx1", "altered": true, ... }`
-	alteredHashed := sha256.Sum256([]byte(alteredSerializedData))
+	// Alter the data
+	alteredData := []byte(`{"ID":"tx1","altered":true}`)
 
 	// Attempt to verify the signature with altered data
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, alteredHashed[:], signature)
-	if err == nil {
-		t.Errorf("Signature verification erroneously succeeded with altered data")
+	if mldsa44.Verify(publicKey, alteredData, nil, signature) {
+		t.Error("Signature verification erroneously succeeded with altered data")
 	} else {
 		t.Log("Correctly failed to verify signature with altered data")
+	}
+
+	// Verify original data still works
+	if !mldsa44.Verify(publicKey, originalData, nil, signature) {
+		t.Error("Signature verification failed with original unaltered data")
 	}
 }
 
 // 3. Testing with Invalid or Corrupted Signatures
 func TestSignatureVerificationWithInvalidSignature(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	publicKey, privateKey, err := mldsa44.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Error generating RSA key: %v", err)
+		t.Fatalf("Error generating MLDSA44 key: %v", err)
 	}
-	publicKey := &privateKey.PublicKey
 
-	serializedData := `{"ID":"tx1", ... }` // Simplified serialized data
-	hashed := sha256.Sum256([]byte(serializedData))
+	data := []byte(`{"ID":"tx1"}`)
 
-	// Generate a valid signature
-	validSignature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
-	if err != nil {
+	// Generate valid signature
+	validSignature := make([]byte, mldsa44.SignatureSize)
+	if err := mldsa44.SignTo(privateKey, data, nil, false, validSignature); err != nil {
 		t.Fatalf("Error signing data: %v", err)
 	}
 
-	// Corrupt the signature by altering its contents
-	invalidSignature := validSignature
+	// Create corrupted signature by modifying bytes
+	invalidSignature := make([]byte, len(validSignature))
+	copy(invalidSignature, validSignature)
 	invalidSignature[0] ^= 0xFF // Flip bits in the first byte
 
-	// Attempt to verify the signature with the corrupted data
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], invalidSignature)
-	if err == nil {
-		t.Errorf("Signature verification erroneously succeeded with an invalid signature")
+	// Verify with corrupted signature
+	if mldsa44.Verify(publicKey, data, nil, invalidSignature) {
+		t.Error("Signature verification erroneously succeeded with corrupted signature")
 	} else {
-		t.Log("Correctly failed to verify signature with an invalid signature")
+		t.Log("Correctly failed to verify corrupted signature")
+	}
+
+	// Verify original signature still works
+	if !mldsa44.Verify(publicKey, data, nil, validSignature) {
+		t.Error("Signature verification failed with valid signature")
 	}
 }
 
 // setupBlockchain initializes a blockchain with predefined data for testing.
 
 func TestSignatureVerificationSimplified(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	publicKey, privateKey, err := mldsa44.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Error generating keys: %v", err)
+		t.Fatalf("Error generating MLDSA44 key: %v", err)
 	}
-	publicKey := &privateKey.PublicKey
 
-	// Simulate transaction data
-	data := "Test data"
-	hashed := sha256.Sum256([]byte(data))
+	// Test data
+	data := []byte("Test data")
 
-	// Sign the hashed data
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
-	if err != nil {
+	// Sign the data
+	signature := make([]byte, mldsa44.SignatureSize)
+	if err := mldsa44.SignTo(privateKey, data, nil, false, signature); err != nil {
 		t.Fatalf("Error signing data: %v", err)
 	}
 
 	// Verify the signature
-	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature); err != nil {
-		t.Errorf("Failed to verify signature: %v", err)
+	if !mldsa44.Verify(publicKey, data, nil, signature) {
+		t.Error("Failed to verify signature")
 	} else {
-		t.Log("Signature verification succeeded.")
+		t.Log("Signature verification succeeded")
 	}
 }
 
