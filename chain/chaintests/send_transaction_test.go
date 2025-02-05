@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/shared"
 
@@ -139,7 +140,7 @@ func (mn *MockNode) signAndProcessTransaction(tx *shared.Transaction) error {
 	}
 
 	// Verify input amounts match output amounts
-	var totalInput, totalOutput int64
+	var totalInput, totalOutput amount.Amount
 	for _, input := range tx.Inputs {
 		totalInput += input.Amount
 	}
@@ -148,7 +149,7 @@ func (mn *MockNode) signAndProcessTransaction(tx *shared.Transaction) error {
 	}
 
 	// Convert GasFee to int64 for comparison
-	gasFee := int64(tx.GasFee)
+	gasFee := amount.Amount(tx.GasFee)
 
 	if totalInput != totalOutput+gasFee {
 		return fmt.Errorf("input amount (%d) must equal output amount (%d) plus gas fee (%d)",

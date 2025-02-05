@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
@@ -30,8 +31,8 @@ type Store interface {
 	SetTransaction(txn *TransactionContext, key []byte, value []byte) error
 	AddTransaction(tx *thrylos.Transaction) error
 	SendTransaction(fromAddress, toAddress string, amount int, privKey *rsa.PrivateKey) (bool, error)
-	CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error
-	CreateUTXO(id, txID string, index int, address string, amount int64) (UTXO, error)
+	CreateAndStoreUTXO(id, txID string, index int, owner string, amount float64) error
+	CreateUTXO(id, txID string, index int, address string, amount float64) (UTXO, error)
 	GetUTXOsForUser(address string) ([]UTXO, error)
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error
 	AddUTXO(utxo UTXO) error
@@ -68,6 +69,6 @@ type Store interface {
 	GetValidatorMLDSAPublicKey(validatorAddress string) (*mldsa44.PublicKey, error)
 
 	Bech32AddressExists(bech32Address string) (bool, error)
-	GetBalance(address string, utxos map[string][]UTXO) (int64, error)
+	GetBalance(address string, utxos map[string][]UTXO) (amount.Amount, error)
 	SanitizeAndFormatAddress(address string) (string, error)
 }

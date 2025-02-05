@@ -5,6 +5,7 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
@@ -19,7 +20,7 @@ func ValidateTransaction(tx *shared.Transaction, availableUTXOs map[string][]sha
 	}
 
 	// Blockchain-specific validation
-	inputSum := int64(0)
+	inputSum := amount.Amount(0)
 	for _, input := range tx.Inputs {
 		// Construct the key used to find the UTXOs for this input
 		utxoKey := input.Key() // Use the standardized Key() method from shared.UTXO
@@ -38,13 +39,13 @@ func ValidateTransaction(tx *shared.Transaction, availableUTXOs map[string][]sha
 	}
 
 	// Calculate output sum
-	outputSum := int64(0)
+	outputSum := amount.Amount(0)
 	for _, output := range tx.Outputs {
 		outputSum += output.Amount
 	}
 
 	// Validate balance including gas fee
-	if inputSum != outputSum+int64(tx.GasFee) {
+	if inputSum != outputSum+amount.Amount(tx.GasFee) {
 		return fmt.Errorf("input sum (%d) does not match output sum (%d) plus gas fee (%d)",
 			inputSum, outputSum, tx.GasFee)
 	}
@@ -64,7 +65,7 @@ func ConvertToThrylosTransaction(tx *shared.Transaction) (*thrylos.Transaction, 
 			TransactionId: input.TransactionID,
 			Index:         int32(input.Index),
 			OwnerAddress:  input.OwnerAddress,
-			Amount:        input.Amount,
+			Amount:        input.Amount.ToNanoTHR(),
 		}
 	}
 
@@ -74,7 +75,7 @@ func ConvertToThrylosTransaction(tx *shared.Transaction) (*thrylos.Transaction, 
 			TransactionId: output.TransactionID,
 			Index:         int32(output.Index),
 			OwnerAddress:  output.OwnerAddress,
-			Amount:        output.Amount,
+			Amount:        output.Amount.ToNanoTHR(),
 		}
 	}
 
