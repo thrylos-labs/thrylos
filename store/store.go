@@ -27,17 +27,14 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-var (
-	db   *badger.DB
-	once sync.Once
-)
-
 type store struct {
 	db            *Database
 	cache         *UTXOCache
 	utxos         map[string]shared.UTXO // Add this line
 	encryptionKey []byte                 // The AES-256 key used for encryption and decryption
 }
+
+var globalUTXOCache *UTXOCache
 
 // NewStore creates a new store instance with the provided BadgerDB instance and encryption key.
 func NewStore(dbPath string, encryptionKey []byte) (shared.Store, error) { // Changed return type to include error
@@ -62,6 +59,16 @@ func NewStore(dbPath string, encryptionKey []byte) (shared.Store, error) { // Ch
 	var _ shared.Store = (*store)(nil)
 
 	return s, nil
+}
+
+// GetUTXO retrieves a UTXO by its key.
+func GetUTXO(txID string, index int) (*shared.UTXO, error) {
+	key := fmt.Sprintf("%s-%d", txID, index)
+	utxo, exists := globalUTXOCache.Get(key)
+	if !exists {
+		return nil, fmt.Errorf("UTXO not found")
+	}
+	return utxo, nil
 }
 
 // ENCRYPT AND DECRYPT

@@ -1,18 +1,24 @@
 package mldsa44
 
-// func TestKeyGeneration(t *testing.T) {
-// 	pk, sk, err := mldsa.GenerateKey(nil)
-// 	if err != nil {
-// 		t.Fatalf("Failed to generate keys: %v", err)
-// 	}
+import (
+	"testing"
 
-// 	privKey := &PrivateKey{sk: *sk}
-// 	pubKey := privKey.PublicKey()
+	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
+)
 
-// 	if !pubKey.pk.Equal(&PublicKey{pk: *pk}) {
-// 		t.Errorf("Public key mismatch")
-// 	}
-// }
+func TestKeyGeneration(t *testing.T) {
+	pk, sk, err := mldsa.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("Failed to generate keys: %v", err)
+	}
+
+	privKey := &PrivateKey{sk: *sk}
+	pubKey := privKey.PublicKey()
+
+	if !pubKey.pk.Equal(&PublicKey{pk: *pk}) {
+		t.Errorf("Public key mismatch")
+	}
+}
 
 // func TestSigningAndVerification(t *testing.T) {
 // 	pk, sk, err := mldsa.GenerateKey(nil)

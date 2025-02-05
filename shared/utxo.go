@@ -3,14 +3,11 @@ package shared
 import (
 	"encoding/json"
 	"fmt"
-	"sync"
 
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/fxamacker/cbor/v2"
-	lru "github.com/hashicorp/golang-lru"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/willf/bloom"
 )
 
 // UTXO is placed in the shared package because:
@@ -109,47 +106,6 @@ func GetAllUTXOs() map[string]UTXO {
 	return allUTXOs
 }
 
-type UTXOCache struct {
-	cache *lru.Cache
-	mu    sync.Mutex
-	bf    *bloom.BloomFilter
-}
-
-func NewUTXOCache(size int, bloomSize uint, falsePositiveRate float64) (*UTXOCache, error) {
-	c, err := lru.New(size)
-	if err != nil {
-		return nil, err
-	}
-	bf := bloom.NewWithEstimates(bloomSize, falsePositiveRate)
-	return &UTXOCache{cache: c, bf: bf}, nil
-}
-
-func (uc *UTXOCache) Get(key string) (*UTXO, bool) {
-	uc.mu.Lock()
-	defer uc.mu.Unlock()
-	if !uc.bf.TestString(key) {
-		return nil, false
-	}
-	value, ok := uc.cache.Get(key)
-	if !ok {
-		return nil, false
-	}
-	return value.(*UTXO), true
-}
-
-func (uc *UTXOCache) Add(key string, utxo *UTXO) {
-	uc.mu.Lock()
-	defer uc.mu.Unlock()
-	uc.cache.Add(key, utxo)
-	uc.bf.AddString(key)
-}
-
-func (uc *UTXOCache) Remove(key string) {
-	uc.mu.Lock()
-	defer uc.mu.Unlock()
-	uc.cache.Remove(key)
-}
-
 // ConvertSharedUTXOToProto converts a shared.UTXO to a protobuf UTXO message.
 func ConvertSharedUTXOToProto(u UTXO) *thrylos.UTXO {
 	return &thrylos.UTXO{
@@ -170,19 +126,6 @@ func GetUTXOsForUser(user string, allUTXOs map[string]UTXO) []UTXO {
 		}
 	}
 	return userUTXOs
-}
-
-// Assuming the UTXOCache is a global variable or accessible somehow in your server structure
-var globalUTXOCache *UTXOCache
-
-// GetUTXO retrieves a UTXO by its key.
-func GetUTXO(txID string, index int) (*UTXO, error) {
-	key := fmt.Sprintf("%s-%d", txID, index)
-	utxo, exists := globalUTXOCache.Get(key)
-	if !exists {
-		return nil, fmt.Errorf("UTXO not found")
-	}
-	return utxo, nil
 }
 
 // MarshalJSON customizes the JSON representation of the UTXO struct. This can be useful for

@@ -42,6 +42,7 @@ func NewDatabase(path string) (*Database, error) {
 	})
 	return d, err
 }
+
 func (d *Database) GetDB() *badger.DB {
 	return d.db
 }
