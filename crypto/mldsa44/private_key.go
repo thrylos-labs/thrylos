@@ -11,6 +11,12 @@ type PrivateKey struct {
 	sk mldsa.PrivateKey
 }
 
+func NewPrivateKey(key mldsa.PrivateKey) *PrivateKey {
+	return &PrivateKey{
+		sk: key,
+	}
+}
+
 func (p *PrivateKey) Bytes() []byte {
 	return p.sk.Bytes()
 }

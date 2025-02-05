@@ -23,9 +23,8 @@ type BlockchainDB struct {
 	encryptionKey []byte
 }
 
-func NewBlockchainDB(database *Database, encryptionKey []byte) *BlockchainDB {
-	return &BlockchainDB{
-		Database:      database,
+func NewBlockchainDB(database *Database, encryptionKey []byte) *store {
+	return &store{
 		encryptionKey: encryptionKey,
 	}
 }

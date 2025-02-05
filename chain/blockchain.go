@@ -1,5 +1,27 @@
 package chain
 
+import (
+	"bytes"
+	"encoding/gob"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/btcsuite/btcutil/bech32"
+	cloudflareMLDSA "github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/consensus/validator"
+	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
+	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/store"
+	"github.com/thrylos-labs/thrylos/utils"
+)
+
 // // other necessary imports
 
 // NewTransaction creates a new transaction
@@ -8,14 +30,14 @@ package chain
 // 	Stake   int
 // }
 
-// type BlockchainConfig struct {
-// 	DataDir           string
-// 	AESKey            []byte
-// 	GenesisAccount    string
-// 	TestMode          bool
-// 	DisableBackground bool
-// 	StateManager      *shared.StateManager
-// }
+type BlockchainConfig struct {
+	DataDir           string
+	AESKey            []byte
+	GenesisAccount    string
+	TestMode          bool
+	DisableBackground bool
+	StateManager      *shared.StateManager
+}
 
 // const (
 // 	keyLen    = 32 // AES-256
@@ -94,9 +116,9 @@ package chain
 // 	return &privKey, nil
 // }
 
-// type BlockchainImpl struct {
-// 	*shared.Blockchain
-// }
+type BlockchainImpl struct {
+	*shared.Blockchain
+}
 
 // // // GetMinStakeForValidator returns the current minimum stake required for a validator
 // func (bc *BlockchainImpl) GetMinStakeForValidator() *big.Int {
@@ -112,322 +134,389 @@ package chain
 // 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
 // }
 
-// func ConvertToBech32Address(address string) (string, error) {
-// 	// Check if the address is already in Bech32 format
-// 	if strings.HasPrefix(address, "tl1") {
-// 		return address, nil
-// 	}
+func ConvertToBech32Address(address string) (string, error) {
+	// Check if the address is already in Bech32 format
+	if strings.HasPrefix(address, "tl1") {
+		return address, nil
+	}
 
-// 	// Try to decode the address as hexadecimal
-// 	addressBytes, err := hex.DecodeString(address)
-// 	if err == nil {
-// 		// Take the first 20 bytes (40 characters of the hex string)
-// 		// This is similar to how Ethereum addresses are derived from public keys
-// 		if len(addressBytes) > 20 {
-// 			addressBytes = addressBytes[:20]
-// 		}
+	// Try to decode the address as hexadecimal
+	addressBytes, err := hex.DecodeString(address)
+	if err == nil {
+		// Take the first 20 bytes (40 characters of the hex string)
+		// This is similar to how Ethereum addresses are derived from public keys
+		if len(addressBytes) > 20 {
+			addressBytes = addressBytes[:20]
+		}
 
-// 		// Convert to 5-bit groups for Bech32 encoding
-// 		converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
-// 		if err != nil {
-// 			return "", fmt.Errorf("failed to convert bits: %v", err)
-// 		}
+		// Convert to 5-bit groups for Bech32 encoding
+		converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
+		if err != nil {
+			return "", fmt.Errorf("failed to convert bits: %v", err)
+		}
 
-// 		// Encode to Bech32
-// 		bech32Address, err := bech32.Encode("tl1", converted)
-// 		if err != nil {
-// 			return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
-// 		}
+		// Encode to Bech32
+		bech32Address, err := bech32.Encode("tl1", converted)
+		if err != nil {
+			return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
+		}
 
-// 		return bech32Address, nil
-// 	}
+		return bech32Address, nil
+	}
 
-// 	// If the address is not in hexadecimal format, try to use it directly
-// 	return address, nil
-// }
+	// If the address is not in hexadecimal format, try to use it directly
+	return address, nil
+}
+
+func convertToBlockchainPublicKey(cloudflareKey *cloudflareMLDSA.PublicKey) (*mldsa44.PublicKey, error) {
+	if cloudflareKey == nil {
+		return nil, fmt.Errorf("cloudflare public key is nil")
+	}
+	return mldsa44.NewPublicKey(*cloudflareKey), nil
+}
+
+func convertToBlockchainPrivateKey(cloudflareKey *cloudflareMLDSA.PrivateKey) *mldsa44.PrivateKey {
+	if cloudflareKey == nil {
+		return nil
+	}
+	return mldsa44.NewPrivateKey(*cloudflareKey)
+}
+
+func convertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
+	if tx == nil {
+		return nil
+	}
+
+	// Convert inputs
+	inputs := make([]shared.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		inputs[i] = shared.UTXO{
+			TransactionID: input.TransactionId,
+			Index:         int(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        input.Amount,
+			IsSpent:       input.IsSpent,
+		}
+	}
+
+	// Convert outputs
+	outputs := make([]shared.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		outputs[i] = shared.UTXO{
+			TransactionID: output.TransactionId,
+			Index:         int(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        output.Amount,
+			IsSpent:       output.IsSpent,
+		}
+	}
+
+	// For genesis transaction, we might need special handling of some fields
+	sharedTx := &shared.Transaction{
+		ID:               tx.Id,
+		Timestamp:        tx.Timestamp,
+		Inputs:           inputs,
+		Outputs:          outputs,
+		EncryptedInputs:  tx.EncryptedInputs,
+		EncryptedOutputs: tx.EncryptedOutputs,
+		EncryptedAESKey:  tx.EncryptedAesKey,
+		PreviousTxIds:    tx.PreviousTxIds,
+		GasFee:           int(tx.Gasfee),
+		BlockHash:        string(tx.BlockHash),
+		Salt:             tx.Salt,
+		Status:           tx.Status,
+		// For genesis transaction, we might leave these nil
+		// SenderAddress and SenderPublicKey will be nil for genesis
+		// Signature is provided as bytes
+		Signature: nil, // For genesis, we use the provided signature bytes
+	}
+
+	return sharedTx
+}
 
 // // // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
 // // // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-// func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.Store, error) {
-// 	// Initialize the database
-// 	db, err := store.NewDatabase(config.DataDir)
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
-// 	}
-// 	bdb := store.NewBlockchainDB(db, config.AESKey)
-// 	log.Println("BlockchainDB created")
+func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.Store, error) {
+	// Initialize the database
+	db, err := store.NewDatabase(config.DataDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
+	}
+	bdb := store.NewBlockchainDB(db, config.AESKey)
+	log.Println("BlockchainDB created")
 
-// 	// Create the genesis block
-// 	genesis := NewGenesisBlock()
-// 	log.Println("Genesis block created")
+	// Create the genesis block
+	genesis := NewGenesisBlock()
+	log.Println("Genesis block created")
 
-// 	// Initialize the map for public keys
-// 	publicKeyMap := make(map[string]*mldsa44.PublicKey)
+	// Initialize the map for public keys
+	publicKeyMap := make(map[string]*mldsa44.PublicKey)
 
-// 	// Initialize Stakeholders map with the genesis account
-// 	totalSupplyNano := utils.ThrylosToNano()
+	// Initialize Stakeholders map with the genesis account
+	totalSupplyNano := utils.ThrylosToNano()
 
-// 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
+	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
 
-// 	// Convert the genesis account address to Bech32 format
-// 	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to convert genesis account to Bech32: %v", err)
-// 	}
+	// Convert the genesis account address to Bech32 format
+	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert genesis account to Bech32: %v", err)
+	}
 
-// 	// Use bech32GenesisAccount instead of genesisAccount from here on
-// 	stakeholdersMap := make(map[string]int64)
-// 	stakeholdersMap[bech32GenesisAccount] = totalSupplyNano // Genesis holds total supply including staking reserve
+	// Use bech32GenesisAccount instead of genesisAccount from here on
+	stakeholdersMap := make(map[string]int64)
+	stakeholdersMap[bech32GenesisAccount] = totalSupplyNano // Genesis holds total supply including staking reserve
 
-// 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
+	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
 
-// 	// Generate a new key pair for the genesis account
-// 	log.Println("Generating key pair for genesis account")
-// 	genesisPublicKey, genesisPrivateKey, err := mldsa44.GenerateKey(nil)
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
-// 	}
-// 	log.Println("Genesis account key pair generated successfully")
+	// Generate a new key pair for the genesis account
+	log.Println("Generating key pair for genesis account")
+	cloudflarePublicKey, genesisPrivateKey, err := cloudflareMLDSA.GenerateKey(nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
+	}
+	log.Println("Genesis account key pair generated successfully")
 
-// 	log.Println("Storing public key for genesis account")
-// 	err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, genesisPublicKey)
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
-// 	}
-// 	log.Println("Genesis account public key stored successfully")
+	// Convert the cloudflare public key to blockchain format
+	blockchainPublicKey, err := convertToBlockchainPublicKey(cloudflarePublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to convert genesis public key: %v", err)
+	}
 
-// 	// Create genesis transaction
-// 	// Create genesis transaction
-// 	genesisTx := &thrylos.Transaction{
-// 		Id:        "genesis_tx_" + bech32GenesisAccount,
-// 		Timestamp: time.Now().Unix(),
-// 		Outputs: []*thrylos.UTXO{{
-// 			OwnerAddress: config.GenesisAccount,
-// 			Amount:       totalSupplyNano,
-// 		}},
-// 		Signature:       []byte("genesis_signature"), // Keep as is since it's genesis
-// 		SenderPublicKey: nil,                         // No need for genesis
-// 	}
+	log.Println("Storing public key for genesis account")
+	err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
+	}
+	log.Println("Genesis account public key stored successfully")
 
-// 	// Initialize UTXO map with the genesis transaction
-// 	utxoMap := make(map[string][]*thrylos.UTXO)
-// 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
-// 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
+	// Create genesis transaction
+	// Create genesis transaction
+	genesisTx := &thrylos.Transaction{
+		Id:        "genesis_tx_" + bech32GenesisAccount,
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress: config.GenesisAccount,
+			Amount:       totalSupplyNano,
+		}},
+		Signature:       []byte("genesis_signature"), // Keep as is since it's genesis
+		SenderPublicKey: nil,                         // No need for genesis
+	}
 
-// 	genesis.Transactions = []*thrylos.Transaction{genesisTx}
+	// Initialize UTXO map with the genesis transaction
+	utxoMap := make(map[string][]*thrylos.UTXO)
+	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
+	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-// 	stateNetwork := shared.NewDefaultNetwork()
-// 	stateManager := state.NewStateManager(stateNetwork, 4)
+	genesis.Transactions = []*shared.Transaction{convertToSharedTransaction(genesisTx)}
 
-// 	blockchain := &BlockchainImpl{
-// 		Blocks:              []*shared.Block{genesis},
-// 		Genesis:             genesis,
-// 		Stakeholders:        stakeholdersMap,
-// 		Database:            bdb,
-// 		PublicKeyMap:        publicKeyMap,
-// 		UTXOs:               utxoMap,
-// 		Forks:               make([]*shared.Fork, 0),
-// 		GenesisAccount:      bech32GenesisAccount,
-// 		PendingTransactions: make([]*thrylos.Transaction, 0),
-// 		ActiveValidators:    make([]string, 0),
-// 		StateNetwork:        stateNetwork,
-// 		ValidatorKeys:       validators.NewValidatorKeyStore(),
-// 		TestMode:            config.TestMode,
-// 		StateManager:        stateManager,
-// 	}
+	stateNetwork := shared.NewDefaultNetwork()
+	// stateManager := state.NewStateManager(stateNetwork, 4)
 
-// 	// Now store the private key for the genesis account
-// 	log.Println("Storing private key for genesis account")
-// 	blockchain.ValidatorKeys.StoreKey(bech32GenesisAccount, genesisPrivateKey)
+	// Create and initialize validatorKeys before blockchain creation
+	validatorKeys := validator.NewValidatorKeyStore()
 
-// 	// Verify that the key was stored correctly
-// 	// Verify that the key was stored correctly
-// 	storedKey, exists := blockchain.ValidatorKeys.GetKey(bech32GenesisAccount)
-// 	if !exists {
-// 		return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
-// 	}
+	// Convert and store the private key
+	log.Println("Storing private key for genesis account")
+	blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
+	validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
 
-// 	// Marshal both keys to bytes for comparison
-// 	storedKeyBytes, err := storedKey.MarshalBinary()
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to marshal stored private key: %v", err)
-// 	}
+	// Verify that the key was stored correctly
+	storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
+	if !exists {
+		return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
+	}
 
-// 	genesisPrivateKeyBytes, err := genesisPrivateKey.MarshalBinary()
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to marshal genesis private key: %v", err)
-// 	}
+	// Compare keys using the Equal method that's already defined
+	if !storedKey.Equal(blockchainPrivateKey) {
+		return nil, nil, fmt.Errorf("stored key does not match original key")
+	}
 
-// 	// Compare the marshaled bytes
-// 	if !bytes.Equal(storedKeyBytes, genesisPrivateKeyBytes) {
-// 		return nil, nil, fmt.Errorf("failed to store genesis account private key: stored key does not match original")
-// 	}
-// 	log.Println("Genesis account private key stored and verified successfully")
+	log.Println("Genesis account private key stored and verified successfully")
 
-// 	// Add the genesis public key to the publicKeyMap
-// 	blockchain.PublicKeyMap[bech32GenesisAccount] = genesisPublicKey
-// 	log.Println("Genesis account public key added to publicKeyMap")
+	sharedBlockchain := &shared.Blockchain{
+		Blocks:              []*shared.Block{genesis},
+		Genesis:             genesis,
+		Stakeholders:        stakeholdersMap,
+		Database:            bdb,
+		PublicKeyMap:        publicKeyMap,
+		UTXOs:               utxoMap,
+		Forks:               make([]*shared.Fork, 0),
+		GenesisAccount:      bech32GenesisAccount,
+		PendingTransactions: make([]*thrylos.Transaction, 0),
+		ActiveValidators:    make([]string, 0),
+		StateNetwork:        stateNetwork,
+		ValidatorKeys:       validatorKeys,
+		TestMode:            config.TestMode,
+		// StateManager:        stateManager,
+	}
 
-// 	// When logging the genesis account
-// 	log.Printf("Genesis account %s initialized with total supply: %d", bech32GenesisAccount, totalSupplyNano)
+	// Add the blockchain public key to the publicKeyMap
+	publicKeyMap[bech32GenesisAccount] = blockchainPublicKey
+	log.Println("Genesis account public key added to publicKeyMap")
 
-// 	// Set the minimum stake for validators
-// 	//FIXME: we need to harmonise the minimum stake amount in one service
-// 	blockchain.MinStakeForValidator = big.NewInt(staking.MinimumStakeAmount)
+	// Create and return the BlockchainImpl
+	blockchain := &BlockchainImpl{
+		Blockchain: sharedBlockchain,
+	}
 
-// 	// Initialize ConsensusManager which provides sufficient consensus management
-// 	blockchain.ConsensusManager = consensus.NewConsensusManager(blockchain)
+	// Set the minimum stake for validators
+	//FIXME: we need to harmonise the minimum stake amount in one service
+	// blockchain.MinStakeForValidator = big.NewInt(staking.MinimumStakeAmount)
 
-// 	log.Println("Generating and storing validator keys")
-// 	validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
-// 	if err != nil {
-// 		log.Printf("Warning: Failed to generate validator keys: %v", err)
-// 		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
-// 	}
-// 	log.Println("Validator keys generated and stored")
+	// Initialize ConsensusManager which provides sufficient consensus management
+	// blockchain.ConsensusManager = consensus.NewConsensusManager(blockchain)
 
-// 	// Add generated validators to ActiveValidators list
-// 	blockchain.ActiveValidators = append(blockchain.ActiveValidators, validatorAddresses...)
-// 	log.Printf("Added %d validators to ActiveValidators list", len(validatorAddresses))
+	log.Println("Generating and storing validator keys")
+	// validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
+	if err != nil {
+		log.Printf("Warning: Failed to generate validator keys: %v", err)
+		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
+	}
+	log.Println("Validator keys generated and stored")
 
-// 	// Add genesis account as a validator if it's not already included
-// 	if !contains(blockchain.ActiveValidators, bech32GenesisAccount) {
-// 		blockchain.ActiveValidators = append(blockchain.ActiveValidators, bech32GenesisAccount)
-// 		log.Printf("Added genesis account to ActiveValidators list")
-// 	}
+	// Add generated validators to ActiveValidators list
+	// blockchain.ActiveValidators = append(blockchain.ActiveValidators, validatorAddresses...)
+	// log.Printf("Added %d validators to ActiveValidators list", len(validatorAddresses))
 
-// 	log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
+	// Add genesis account as a validator if it's not already included
+	// if !contains(blockchain.ActiveValidators, bech32GenesisAccount) {
+	// 	blockchain.ActiveValidators = append(blockchain.ActiveValidators, bech32GenesisAccount)
+	// 	log.Printf("Added genesis account to ActiveValidators list")
+	// }
 
-// 	// Add this check
-// 	log.Println("Verifying stored validator keys")
-// 	keys, err := db.Blockchain.GetAllValidatorPublicKeys()
-// 	if err != nil {
-// 		log.Printf("Failed to retrieve all validator public keys: %v", err)
-// 		return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
-// 	}
-// 	log.Printf("Retrieved %d validator public keys", len(keys))
+	log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
 
-// 	log.Println("Loading all validator public keys")
-// 	err = blockchain.LoadAllValidatorPublicKeys()
-// 	if err != nil {
-// 		log.Printf("Warning: Failed to load all validator public keys: %v", err)
-// 	}
-// 	log.Println("Validator public keys loaded")
+	// Add this check
+	log.Println("Verifying stored validator keys")
+	keys, err := db.Blockchain.GetAllValidatorPublicKeys()
+	if err != nil {
+		log.Printf("Failed to retrieve all validator public keys: %v", err)
+		return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
+	}
+	log.Printf("Retrieved %d validator public keys", len(keys))
 
-// 	log.Println("Checking validator key consistency")
-// 	blockchain.CheckValidatorKeyConsistency()
-// 	log.Println("Validator key consistency check completed")
+	log.Println("Loading all validator public keys")
+	// err = blockchain.LoadAllValidatorPublicKeys()
+	if err != nil {
+		log.Printf("Warning: Failed to load all validator public keys: %v", err)
+	}
+	log.Println("Validator public keys loaded")
 
-// 	// Start periodic validator update in a separate goroutine
-// 	go func() {
-// 		log.Println("Starting periodic validator update")
-// 		blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
-// 	}()
+	log.Println("Checking validator key consistency")
+	// blockchain.CheckValidatorKeyConsistency()
+	log.Println("Validator key consistency check completed")
 
-// 	// Serialize and store the genesis block
-// 	var buf bytes.Buffer
-// 	encoder := gob.NewEncoder(&buf)
-// 	if err := encoder.Encode(genesis); err != nil {
-// 		return nil, nil, fmt.Errorf("failed to serialize genesis block: %v", err)
-// 	}
-// 	if err := db.Blockchain.InsertBlock(buf.Bytes(), 0); err != nil {
-// 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-// 	}
+	// Start periodic validator update in a separate goroutine
+	go func() {
+		log.Println("Starting periodic validator update")
+		blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
+	}()
 
-// 	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
+	// Serialize and store the genesis block
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	if err := encoder.Encode(genesis); err != nil {
+		return nil, nil, fmt.Errorf("failed to serialize genesis block: %v", err)
+	}
+	if err := db.Blockchain.InsertBlock(buf.Bytes(), 0); err != nil {
+		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+	}
 
-// 	log.Println("NewBlockchain initialization completed successfully")
+	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
 
-// 	// Add after state sync loop start and before return
-// 	blockchain.StateManager.StartStateSyncLoop()
-// 	log.Println("State synchronization loop started")
+	log.Println("NewBlockchain initialization completed successfully")
 
-// 	// Add shutdown handler
-// 	go func() {
-// 		c := make(chan os.Signal, 1)
-// 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-// 		<-c
-// 		log.Println("Stopping state synchronization...")
-// 		blockchain.StateManager.StopStateSyncLoop()
-// 	}()
+	// Add after state sync loop start and before return
+	// blockchain.StateManager.StartStateSyncLoop()
+	log.Println("State synchronization loop started")
 
-// 	// Initialize staking service with proper configuration
-// 	log.Println("Initialize staking service...")
-// 	blockchain.StakingService = NewStakingService(blockchain)
+	// Add shutdown handler
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		log.Println("Stopping state synchronization...")
+		// blockchain.StateManager.StopStateSyncLoop()
+	}()
 
-// 	log.Printf("Staking service initialized with:")
-// 	log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
-// 	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
-// 	log.Printf("- Current total supply: 120M THRYLOS")
+	// Initialize staking service with proper configuration
+	log.Println("Initialize staking service...")
+	// blockchain.StakingService = staking.NewStakingService(blockchain)
 
-// 	log.Println("Initializing transaction propagator...")
-// 	blockchain.TransactionPropagator = NewTransactionPropagator(blockchain)
-// 	log.Println("Transaction propagator initialized successfully")
+	log.Printf("Staking service initialized with:")
+	// log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
+	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
+	log.Printf("- Current total supply: 120M THRYLOS")
 
-// 	// Modify background process initialization based on DisableBackground flag
-// 	if !config.DisableBackground {
-// 		go func() {
-// 			log.Println("Starting daily staking reward distribution process")
-// 			for {
-// 				if err := blockchain.StakingService.DistributeRewards(); err != nil {
-// 					log.Printf("Error distributing staking rewards: %v", err)
-// 				}
-// 				// Sleep for 1 hour instead of 1 minute since we only need to check daily
-// 				// This reduces unnecessary checks while ensuring we don't miss the 24-hour mark
-// 				time.Sleep(time.Hour)
-// 			}
-// 		}()
+	log.Println("Initializing transaction propagator...")
+	// blockchain.TransactionPropagator = network.NewTransactionPropagator(blockchain)
+	log.Println("Transaction propagator initialized successfully")
 
-// 		// Start periodic validator update in a separate goroutine
-// 		go func() {
-// 			log.Println("Starting periodic validator update")
-// 			blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
-// 		}()
+	// Modify background process initialization based on DisableBackground flag
+	if !config.DisableBackground {
+		go func() {
+			log.Println("Starting daily staking reward distribution process")
+			for {
+				// if err := blockchain.StakingService.DistributeRewards(); err != nil {
+				// 	log.Printf("Error distributing staking rewards: %v", err)
+				// }
+				// Sleep for 1 hour instead of 1 minute since we only need to check daily
+				// This reduces unnecessary checks while ensuring we don't miss the 24-hour mark
+				time.Sleep(time.Hour)
+			}
+		}()
 
-// 		// Start state synchronization loop
-// 		blockchain.StateManager.StartStateSyncLoop()
-// 		log.Println("State synchronization loop started")
+		// Start periodic validator update in a separate goroutine
+		// go func() {
+		// 	log.Println("Starting periodic validator update")
+		// 	blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
+		// }()
 
-// 		// Add shutdown handler
-// 		go func() {
-// 			c := make(chan os.Signal, 1)
-// 			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-// 			<-c
-// 			log.Println("Stopping state synchronization...")
-// 			blockchain.StateManager.StopStateSyncLoop()
-// 		}()
+		// Start state synchronization loop
+		// blockchain.StateManager.StartStateSyncLoop()
+		log.Println("State synchronization loop started")
 
-// 		// Start block creation routine
-// 		go func() {
-// 			log.Println("Starting block creation process")
-// 			ticker := time.NewTicker(10 * time.Second) // Or whatever interval is appropriate
-// 			defer ticker.Stop()
+		// Add shutdown handler
+		// go func() {
+		// 	c := make(chan os.Signal, 1)
+		// 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		// 	<-c
+		// 	log.Println("Stopping state synchronization...")
+		// 	blockchain.StateManager.StopStateSyncLoop()
+		// }()
 
-// 			for {
-// 				select {
-// 				case <-ticker.C:
-// 					// Check if there are pending transactions
-// 					if len(blockchain.PendingTransactions) > 0 {
-// 						block, err := blockchain.CreateNextBlock()
-// 						if err != nil {
-// 							log.Printf("Failed to create new block: %v", err)
-// 							continue
-// 						}
-// 						log.Printf("Successfully created new block %d with %d transactions",
-// 							block.Index, len(block.Transactions))
+		// Start block creation routine
+		go func() {
+			log.Println("Starting block creation process")
+			ticker := time.NewTicker(10 * time.Second) // Or whatever interval is appropriate
+			defer ticker.Stop()
 
-// 					}
-// 				}
-// 			}
-// 		}()
-// 	} else {
-// 		// In test mode, log that background processes are disabled
-// 		log.Println("Background processes disabled for testing")
-// 	}
+			for {
+				select {
+				case <-ticker.C:
+					// Check if there are pending transactions
+					if len(blockchain.PendingTransactions) > 0 {
+						// block, err := blockchain.CreateNextBlock()
+						if err != nil {
+							log.Printf("Failed to create new block: %v", err)
+							continue
+						}
+						// log.Printf("Successfully created new block %d with %d transactions",
+						// 	block.Index, len(block.Transactions))
 
-// 	log.Println("NewBlockchain initialization completed successfully")
-// 	return blockchain, bdb, nil
-// }
+					}
+				}
+			}
+		}()
+	} else {
+		// In test mode, log that background processes are disabled
+		log.Println("Background processes disabled for testing")
+	}
+
+	log.Println("NewBlockchain initialization completed successfully")
+	return blockchain, bdb, nil
+}
 
 // // // // FIXME: The total supply is not correct, it needs to be improved
 // func (bc *BlockchainImpl) GetTotalSupply() int64 {
@@ -477,21 +566,21 @@ package chain
 // 	return bc.CreateBlockFromPendingTransactions(validator)
 // }
 
-// func (bc *BlockchainImpl) calculateAverageLatency() time.Duration {
-// 	// This is a placeholder. In a real implementation, you would measure actual network latency.
-// 	// For now, we'll return a constant value.
-// 	return 200 * time.Millisecond
-// }
+func (bc *BlockchainImpl) calculateAverageLatency() time.Duration {
+	// This is a placeholder. In a real implementation, you would measure actual network latency.
+	// For now, we'll return a constant value.
+	return 200 * time.Millisecond
+}
 
-// // FIXME: Does this need to started here?
-// func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
-// 	ticker := time.NewTicker(interval)
-// 	go func() {
-// 		for range ticker.C {
-// 			bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
-// 		}
-// 	}()
-// }
+// FIXME: Does this need to started here?
+func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			// bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
+		}
+	}()
+}
 
 // // // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
 
