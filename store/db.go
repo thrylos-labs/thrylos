@@ -19,13 +19,17 @@ type Database struct {
 }
 
 type BlockchainDB struct {
-	Database      *Database
-	encryptionKey []byte
+	ValidatorStore *ValidatorKeyStoreImpl
+	Database       *Database
+	encryptionKey  []byte
 }
 
 func NewBlockchainDB(database *Database, encryptionKey []byte) *store {
+	validatorStore := NewValidatorKeyStore(database, encryptionKey)
+
 	return &store{
-		encryptionKey: encryptionKey,
+		encryptionKey:  encryptionKey,
+		validatorStore: validatorStore, // match the field name exactly
 	}
 }
 

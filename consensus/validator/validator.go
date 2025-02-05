@@ -2,6 +2,7 @@ package validator
 
 import (
 	thrycrypto "github.com/thrylos-labs/thrylos/crypto" // aliased to avoid confusion
+	"github.com/thrylos-labs/thrylos/store"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/amount"
@@ -11,10 +12,6 @@ import (
 
 type ValidatorImpl struct {
 	*shared.Validator
-}
-
-type ValidatorKeyStoreImpl struct {
-	*shared.ValidatorKeyStore
 }
 
 func NewValidator(publicKey thrycrypto.PublicKey, number int32, stake amount.Amount) *shared.Validator {
@@ -41,6 +38,6 @@ func (v *ValidatorImpl) Unmarshal(data []byte) error {
 	return cbor.Unmarshal(data, v)
 }
 
-func NewValidatorKeyStore() *shared.ValidatorKeyStore {
-	return shared.NewValidatorKeyStore()
+func NewValidatorKeyStore(db *store.Database) shared.ValidatorKeyStore {
+	return store.NewValidatorKeyStore(db)
 }
