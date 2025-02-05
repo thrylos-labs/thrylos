@@ -63,7 +63,7 @@ type Blockchain struct {
 
 	OnNewBlock func(*Block) // Callback function for when a new block is added
 
-	ValidatorKeys          *ValidatorKeyStore
+	ValidatorKeys          ValidatorKeyStore // Changed from *ValidatorKeyStore to ValidatorKeyStore
 	TestMode               bool
 	OnTransactionProcessed func(*thrylos.Transaction)
 	OnBalanceUpdate        func(address string, balance int64)

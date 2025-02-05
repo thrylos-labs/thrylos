@@ -28,10 +28,11 @@ import (
 )
 
 type store struct {
-	db            *Database
-	cache         *UTXOCache
-	utxos         map[string]shared.UTXO // Add this line
-	encryptionKey []byte                 // The AES-256 key used for encryption and decryption
+	db             *Database
+	cache          *UTXOCache
+	validatorStore shared.ValidatorKeyStore // Note lowercase first letter for internal field
+	utxos          map[string]shared.UTXO   // Add this line
+	encryptionKey  []byte                   // The AES-256 key used for encryption and decryption
 }
 
 var globalUTXOCache *UTXOCache

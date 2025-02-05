@@ -314,7 +314,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	// stateManager := state.NewStateManager(stateNetwork, 4)
 
 	// Create and initialize validatorKeys before blockchain creation
-	validatorKeys := validator.NewValidatorKeyStore()
+	validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey) // Use config.AESKey instead of encryptionKey
 
 	// Convert and store the private key
 	log.Println("Storing private key for genesis account")
