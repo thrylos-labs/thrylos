@@ -58,6 +58,7 @@ type Store interface {
 	GetPublicKeyWithCaching(address string) (*mldsa44.PublicKey, error)
 	PublicKeyExists(address string) (bool, error)
 	InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mldsa44.PublicKey) error
+
 	RetrieveMLDSAPublicKey(address string) ([]byte, error)
 
 	GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error)
