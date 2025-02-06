@@ -7,13 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
 type BalanceNotifier interface {
 	SendBalanceUpdate(address string) error
-	NotifyBalanceUpdate(address string, balance int64)
+	NotifyBalanceUpdate(address string, balance amount.Amount)
 }
 
 type Manager struct {
@@ -68,12 +69,12 @@ func (m *Manager) SendBalanceUpdate(address string) error {
 	return m.notifier.SendBalanceUpdate(address)
 }
 
-func (m *Manager) NotifyBalanceUpdate(address string, balance int64) {
+func (m *Manager) NotifyBalanceUpdate(address string, balance amount.Amount) {
 	m.notifier.NotifyBalanceUpdate(address, balance)
 }
 
 type cachedBalance struct {
-	value     int64
+	value     amount.Amount
 	timestamp time.Time
 }
 
@@ -117,7 +118,7 @@ func (q *BalanceUpdateQueue) balanceUpdateWorker() {
 	}
 }
 
-func (m *Manager) GetBalance(address string) (int64, error) {
+func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 	// Check cache first
 	if cached, ok := m.cache.Load(address); ok {
 		cachedBal := cached.(cachedBalance)
@@ -147,7 +148,7 @@ func (m *Manager) GetBalance(address string) (int64, error) {
 		return 0, fmt.Errorf("invalid UTXO response format")
 	}
 
-	var total int64
+	var total amount.Amount
 	for _, utxo := range utxos {
 		if !utxo.IsSpent {
 			total += utxo.Amount
@@ -156,7 +157,7 @@ func (m *Manager) GetBalance(address string) (int64, error) {
 
 	if total == 0 {
 		initialBalanceThrylos := 70.0
-		initialBalanceNano := ThrylosToNano(initialBalanceThrylos)
+		initialBalanceNano, _ := amount.NewAmount(initialBalanceThrylos)
 
 		newUtxo := shared.UTXO{
 			OwnerAddress:  address,

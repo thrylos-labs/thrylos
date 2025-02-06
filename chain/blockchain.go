@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcutil/bech32"
 	cloudflareMLDSA "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/consensus/validator"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
 	"github.com/thrylos-labs/thrylos/shared"
@@ -194,7 +195,7 @@ func convertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
 			TransactionID: input.TransactionId,
 			Index:         int(input.Index),
 			OwnerAddress:  input.OwnerAddress,
-			Amount:        input.Amount,
+			Amount:        amount.Amount(input.Amount),
 			IsSpent:       input.IsSpent,
 		}
 	}
@@ -206,7 +207,7 @@ func convertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
 			TransactionID: output.TransactionId,
 			Index:         int(output.Index),
 			OwnerAddress:  output.OwnerAddress,
-			Amount:        output.Amount,
+			Amount:        amount.Amount(output.Amount),
 			IsSpent:       output.IsSpent,
 		}
 	}

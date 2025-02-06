@@ -20,6 +20,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos"
 
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
@@ -119,7 +120,7 @@ func (s *store) hashData(data []byte) []byte {
 
 // UTXO
 
-func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amount int64) error {
+func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amount float64) error {
 	utxo := shared.CreateUTXO(id, index, txID, owner, amount, false)
 	db := s.db.GetDB()
 
@@ -156,7 +157,7 @@ func GenerateUTXOKey(ownerAddress string, transactionID string, index int) strin
 	return fmt.Sprintf("utxo-%s-%s-%d", ownerAddress, transactionID, index)
 }
 
-func (s *store) CreateUTXO(id, txID string, index int, address string, amount int64) (shared.UTXO, error) {
+func (s *store) CreateUTXO(id, txID string, index int, address string, amount float64) (shared.UTXO, error) {
 	utxo := shared.CreateUTXO(id, index, txID, address, amount, false)
 
 	// Marshal UTXO to JSON
@@ -1523,8 +1524,8 @@ func (s *store) Bech32AddressExists(bech32Address string) (bool, error) {
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.
 // This function is useful for determining the spendable balance of a blockchain account.
-func (s *store) GetBalance(address string, utxos map[string][]shared.UTXO) (int64, error) {
-	var balance int64
+func (s *store) GetBalance(address string, utxos map[string][]shared.UTXO) (amount.Amount, error) {
+	var balance amount.Amount
 	userUTXOs, ok := utxos[address]
 	if !ok {
 		log.Printf("No UTXOs found for address: %s", address)

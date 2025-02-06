@@ -1,6 +1,10 @@
 package shared
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/thrylos-labs/thrylos/amount"
+)
 
 // The message system is mainly for:
 
@@ -100,7 +104,7 @@ type AddUTXORequest struct {
 
 type UpdateStateRequest struct {
 	Address string
-	Balance int64
+	Balance amount.Amount
 }
 
 type UpdateProcessorStateRequest struct {
