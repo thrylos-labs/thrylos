@@ -38,26 +38,23 @@ type store struct {
 var globalUTXOCache *UTXOCache
 
 // NewStore creates a new store instance with the provided BadgerDB instance and encryption key.
-func NewStore(dbPath string, encryptionKey []byte) (shared.Store, error) { // Changed return type to include error
-	db, err := NewDatabase(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open BadgerDB: %v", err) // Return error instead of fatal
+// NewStore creates a new store instance
+func NewStore(database *Database, encryptionKey []byte) (shared.Store, error) {
+	if database == nil {
+		return nil, fmt.Errorf("database cannot be nil")
 	}
 
 	c, err := NewUTXOCache(1024, 10000, 0.01)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create UTXO cache: %v", err) // Return error instead of fatal
+		return nil, fmt.Errorf("failed to create UTXO cache: %v", err)
 	}
 
 	s := &store{
-		db:            db,
+		db:            database,
 		cache:         c,
 		utxos:         make(map[string]shared.UTXO),
 		encryptionKey: encryptionKey,
 	}
-
-	// Verify interface implementation at compile time
-	var _ shared.Store = (*store)(nil)
 
 	return s, nil
 }

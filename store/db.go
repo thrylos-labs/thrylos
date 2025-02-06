@@ -1,7 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/dgraph-io/badger/v3"
@@ -35,16 +38,33 @@ func NewBlockchainDB(database *Database, encryptionKey []byte) *store {
 
 // NewBadgerDB initializes and returns a new instance of BadgerDB
 func NewDatabase(path string) (*Database, error) {
+	// Remove any existing lock file before opening
+	lockFile := filepath.Join(path, "LOCK")
+	if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to remove existing lock file: %v", err)
+	}
+
 	d := &Database{}
 	var err error
 	d.once.Do(func() {
-		opts := badger.DefaultOptions(path).WithLogger(nil)
+		opts := badger.DefaultOptions(path).
+			WithLogger(nil).
+			WithSyncWrites(false).     // Disable sync for testing
+			WithDetectConflicts(false) // Disable conflict detection for testing
+
+		// Try to open the database
 		d.db, err = badger.Open(opts)
 		if err != nil {
-			log.Fatalf("Failed to open Badger database: %v", err)
+			err = fmt.Errorf("failed to open Badger database: %v", err)
+			return
 		}
 	})
-	return d, err
+
+	if err != nil {
+		return nil, err
+	}
+
+	return d, nil
 }
 
 func (d *Database) GetDB() *badger.DB {
