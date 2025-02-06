@@ -20,6 +20,7 @@ import (
 	"github.com/dgraph-io/badger/v3" // Update to v3
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/utils"
@@ -132,7 +133,7 @@ func (tx *Transaction) ValidateStructure() error {
 	}
 
 	// Validate amounts
-	outputSum := int64(0)
+	outputSum := amount.Amount(0)
 	for _, output := range tx.Outputs {
 		if output.Amount <= 0 {
 			return fmt.Errorf("invalid output amount: %d", output.Amount)
