@@ -24,9 +24,9 @@ package chaintests
 // }
 
 // // Helper function to handle block creation and signing
-// func createAndSignBlock(t *testing.T, blockchain *chain.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
+// func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
 // 	// Create block
-// 	block := &chain.Block{
+// 	block := &shared.Block{
 // 		Index:        int32(len(blockchain.Blocks)),
 // 		Timestamp:    time.Now().Unix(),
 // 		Transactions: txs,
