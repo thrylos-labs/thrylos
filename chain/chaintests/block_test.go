@@ -18,8 +18,9 @@ import (
 )
 
 func TestGenesisBlockCreation(t *testing.T) {
-	// Set the environment variable needed for the test
-	os.Setenv("GENESIS_ACCOUNT", "dummy_genesis_account_value")
+	// Set a properly formatted genesis account address
+	genesisAccount := "tl1dummy_genesis_account_value" // Changed to start with tl1
+	os.Setenv("GENESIS_ACCOUNT", genesisAccount)
 	defer os.Unsetenv("GENESIS_ACCOUNT")
 
 	// Create a temporary directory for blockchain data with a unique suffix
@@ -28,18 +29,13 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatalf("Failed to create temporary directory: %v", err)
 	}
 
-	// Enhanced cleanup function that handles BadgerDB lock files
+	// Rest of cleanup function remains the same
 	cleanup := func() {
-		// Give some time for any pending operations to complete
 		time.Sleep(100 * time.Millisecond)
-
-		// Remove lock file first
 		lockFile := filepath.Join(tempDir, "LOCK")
 		if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
 			t.Logf("Warning: Failed to remove lock file: %v", err)
 		}
-
-		// Remove manifest files
 		manifestFiles, err := filepath.Glob(filepath.Join(tempDir, "MANIFEST*"))
 		if err == nil {
 			for _, f := range manifestFiles {
@@ -48,17 +44,11 @@ func TestGenesisBlockCreation(t *testing.T) {
 				}
 			}
 		}
-
-		// Give some time for file handles to be released
 		time.Sleep(100 * time.Millisecond)
-
-		// Finally remove the directory
 		if err := os.RemoveAll(tempDir); err != nil {
 			t.Logf("Warning: Failed to remove temp directory: %v", err)
 		}
 	}
-
-	// Ensure cleanup runs at the end
 	defer cleanup()
 
 	// Generate a dummy AES key for testing
@@ -67,7 +57,7 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
+	genesisAccount = os.Getenv("GENESIS_ACCOUNT")
 	if genesisAccount == "" {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 	}
@@ -91,7 +81,7 @@ func TestGenesisBlockCreation(t *testing.T) {
 	if closer, ok := store.(interface{ Close() }); ok {
 		defer func() {
 			closer.Close()
-			time.Sleep(100 * time.Millisecond) // Give time for close operation to complete
+			time.Sleep(100 * time.Millisecond)
 		}()
 	}
 
