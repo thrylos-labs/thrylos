@@ -302,7 +302,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	log.Println("Genesis account key pair generated successfully")
 
 	// Create and initialize validatorKeys before blockchain creation
-	validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey)
+	//validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey)
 
 	if !config.TestMode {
 		// Generate a new key pair for the genesis account
@@ -319,49 +319,44 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 			return nil, nil, fmt.Errorf("failed to convert genesis public key: %v", err)
 		}
 
-		log.Println("Storing public key for genesis account")
-		err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
-		}
-		log.Println("Genesis account public key stored successfully")
+		// log.Println("Storing public key for genesis account")
+		// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
+		// if err != nil {
+		// 	return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
+		// }
+		// log.Println("Genesis account public key stored successfully")
 
-		// Store private key
-		log.Println("Storing private key for genesis account")
-		blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
-		validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
+		// // Store private key
+		// log.Println("Storing private key for genesis account")
+		// blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
+		// validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
 
-		// Verify key storage
-		storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
-		if !exists {
-			return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
-		}
-		if !storedKey.Equal(blockchainPrivateKey) {
-			return nil, nil, fmt.Errorf("stored key does not match original key")
-		}
-		log.Println("Genesis account private key stored and verified successfully")
+		// // Verify key storage
+		// storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
+		// if !exists {
+		// 	return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
+		// }
+		// if !storedKey.Equal(blockchainPrivateKey) {
+		// 	return nil, nil, fmt.Errorf("stored key does not match original key")
+		// }
+		// log.Println("Genesis account private key stored and verified successfully")
 
 		// Verify validator keys
-		log.Println("Verifying stored validator keys")
-		keys, err := db.Blockchain.GetAllValidatorPublicKeys()
-		if err != nil {
-			log.Printf("Failed to retrieve all validator public keys: %v", err)
-			return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
-		}
-		log.Printf("Retrieved %d validator public keys", len(keys))
+		// log.Println("Verifying stored validator keys")
+		// keys, err := db.Blockchain.GetAllValidatorPublicKeys()
+		// if err != nil {
+		// 	log.Printf("Failed to retrieve all validator public keys: %v", err)
+		// 	return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
+		// }
+		// log.Printf("Retrieved %d validator public keys", len(keys))
 	}
 
-<<<<<<< HEAD
 	// log.Println("Storing public key for genesis account")
 	// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
 	// if err != nil {
 	// 	return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
 	// }
 	// log.Println("Genesis account public key stored successfully")
-=======
-	// Continue with blockchain initialization
-	publicKeyMap[bech32GenesisAccount] = blockchainPublicKey
->>>>>>> 46ea4bfe2b8bcba7c19f28b819ce4a384adef4a3
 
 	// Create genesis transaction
 	genesisTx := &thrylos.Transaction{
