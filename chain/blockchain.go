@@ -2,8 +2,10 @@ package chain
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/gob"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -993,52 +995,52 @@ func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
 // }
 
 // // // Helper function to efficiently check salt uniqueness in all blocks
-// func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
-// 	bc.Mu.RLock()
-// 	defer bc.Mu.RUnlock()
+func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
+	bc.Mu.RLock()
+	defer bc.Mu.RUnlock()
 
-// 	// Create an efficient lookup for pending transaction salts
-// 	pendingSalts := make(map[string]bool)
-// 	for _, tx := range bc.PendingTransactions {
-// 		pendingSalts[string(tx.Salt)] = true
-// 	}
+	// Create an efficient lookup for pending transaction salts
+	pendingSalts := make(map[string]bool)
+	for _, tx := range bc.PendingTransactions {
+		pendingSalts[string(tx.Salt)] = true
+	}
 
-// 	// Check pending transactions first (faster in-memory check)
-// 	if pendingSalts[string(salt)] {
-// 		return true
-// 	}
+	// Check pending transactions first (faster in-memory check)
+	if pendingSalts[string(salt)] {
+		return true
+	}
 
-// 	// Check confirmed blocks
-// 	for _, block := range bc.Blocks {
-// 		for _, tx := range block.Transactions {
-// 			if bytes.Equal(tx.Salt, salt) {
-// 				return true
-// 			}
-// 		}
-// 	}
+	// Check confirmed blocks
+	for _, block := range bc.Blocks {
+		for _, tx := range block.Transactions {
+			if bytes.Equal(tx.Salt, salt) {
+				return true
+			}
+		}
+	}
 
-// 	return false
-// }
+	return false
+}
 
 // // // Helper function to verify transaction uniqueness using salt
-// func verifyTransactionUniqueness(tx *thrylos.Transaction, blockchain *BlockchainImpl) error {
-// 	if tx == nil {
-// 		return fmt.Errorf("nil transaction")
-// 	}
-// 	if len(tx.Salt) == 0 {
-// 		return fmt.Errorf("empty salt")
-// 	}
-// 	if len(tx.Salt) != 32 {
-// 		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
-// 	}
+func verifyTransactionUniqueness(tx *thrylos.Transaction, blockchain *BlockchainImpl) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if len(tx.Salt) == 0 {
+		return fmt.Errorf("empty salt")
+	}
+	if len(tx.Salt) != 32 {
+		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
+	}
 
-// 	// Use the efficient helper function to check salt uniqueness
-// 	if blockchain.checkSaltInBlocks(tx.Salt) {
-// 		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
-// 	}
+	// Use the efficient helper function to check salt uniqueness
+	if blockchain.checkSaltInBlocks(tx.Salt) {
+		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
+	}
 
-// 	return nil
-// }
+	return nil
+}
 
 // func (bc *BlockchainImpl) SignBlock(block *shared.Block, validatorAddress string) ([]byte, error) {
 // 	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(validatorAddress)
@@ -1286,70 +1288,70 @@ func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
 // }
 
 // // // Helper function to generate a random salt
-// func generateSalt() ([]byte, error) {
-// 	salt := make([]byte, 32) // Using 32 bytes for salt
-// 	_, err := rand.Read(salt)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to generate salt: %v", err)
-// 	}
-// 	return salt, nil
-// }
+func generateSalt() ([]byte, error) {
+	salt := make([]byte, 32) // Using 32 bytes for salt
+	_, err := rand.Read(salt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate salt: %v", err)
+	}
+	return salt, nil
+}
 
 // // // AddPendingTransaction adds a new transaction to the pool of pending transactions.
-// func (bc *BlockchainImpl) AddPendingTransaction(tx *thrylos.Transaction) error {
-// 	// Generate and set salt if not already present
-// 	if len(tx.Salt) == 0 {
-// 		salt, err := generateSalt()
-// 		if err != nil {
-// 			return fmt.Errorf("failed to generate salt: %v", err)
-// 		}
-// 		tx.Salt = salt
-// 	}
+func (bc *BlockchainImpl) AddPendingTransaction(tx *thrylos.Transaction) error {
+	// Generate and set salt if not already present
+	if len(tx.Salt) == 0 {
+		salt, err := generateSalt()
+		if err != nil {
+			return fmt.Errorf("failed to generate salt: %v", err)
+		}
+		tx.Salt = salt
+	}
 
-// 	// Verify salt uniqueness before adding to pending pool
-// 	if err := verifyTransactionUniqueness(tx, bc); err != nil {
-// 		return fmt.Errorf("transaction salt verification failed: %v", err)
-// 	}
+	// Verify salt uniqueness before adding to pending pool
+	if err := verifyTransactionUniqueness(tx, bc); err != nil {
+		return fmt.Errorf("transaction salt verification failed: %v", err)
+	}
 
-// 	// Propagate to all validators before proceeding
-// 	if err := bc.TransactionPropagator.PropagateTransaction(tx); err != nil {
-// 		return fmt.Errorf("failed to propagate transaction: %v", err)
-// 	}
-// 	log.Printf("Transaction %s propagated to all validators", tx.Id)
+	// Propagate to all validators before proceeding
+	if err := bc.TransactionPropagator.PropagateTransaction(tx); err != nil {
+		return fmt.Errorf("failed to propagate transaction: %v", err)
+	}
+	log.Printf("Transaction %s propagated to all validators", tx.Id)
 
-// 	// Start database transaction
-// 	txn, err := bc.Database.BeginTransaction()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to begin transaction: %v", err)
-// 	}
-// 	defer bc.Database.RollbackTransaction(txn)
+	// Start database transaction
+	txn, err := bc.Database.BeginTransaction()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer bc.Database.RollbackTransaction(txn)
 
-// 	// Store transaction with salt
-// 	txKey := []byte("transaction-" + tx.Id)
-// 	tx.Status = "pending"
-// 	txJSON, err := json.Marshal(tx)
-// 	if err != nil {
-// 		return fmt.Errorf("error marshaling transaction: %v", err)
-// 	}
+	// Store transaction with salt
+	txKey := []byte("transaction-" + tx.Id)
+	tx.Status = "pending"
+	txJSON, err := json.Marshal(tx)
+	if err != nil {
+		return fmt.Errorf("error marshaling transaction: %v", err)
+	}
 
-// 	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
-// 		return fmt.Errorf("error storing transaction: %v", err)
-// 	}
+	if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
+		return fmt.Errorf("error storing transaction: %v", err)
+	}
 
-// 	if err := bc.Database.CommitTransaction(txn); err != nil {
-// 		return fmt.Errorf("error committing transaction: %v", err)
-// 	}
+	if err := bc.Database.CommitTransaction(txn); err != nil {
+		return fmt.Errorf("error committing transaction: %v", err)
+	}
 
-// 	bc.Mu.Lock()
-// 	bc.PendingTransactions = append(bc.PendingTransactions, tx)
-// 	totalPending := len(bc.PendingTransactions)
-// 	bc.Mu.Unlock()
+	bc.Mu.Lock()
+	bc.PendingTransactions = append(bc.PendingTransactions, tx)
+	totalPending := len(bc.PendingTransactions)
+	bc.Mu.Unlock()
 
-// 	log.Printf("Transaction %s with salt added to pending pool. Total pending: %d",
-// 		tx.Id, totalPending)
+	log.Printf("Transaction %s with salt added to pending pool. Total pending: %d",
+		tx.Id, totalPending)
 
-// 	return nil
-// }
+	return nil
+}
 
 // // // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 // func (bc *BlockchainImpl) ProcessPendingTransactions(validator string) (*shared.Block, error) {

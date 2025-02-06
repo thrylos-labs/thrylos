@@ -173,7 +173,7 @@ package processor
 
 // 	// Add to pending pool
 // 	log.Printf("Adding to pending pool [%s]", txID)
-// 	if err := n.AddPendingTransaction(tx); err != nil {
+// 	if err := node.blockchain.AddPendingTransaction(tx); err != nil {
 // 		log.Printf("ERROR: Failed to add [%s] to pending pool: %v", txID, err)
 // 		return fmt.Errorf("pending addition failed: %v", err)
 // 	}

@@ -3,12 +3,10 @@ package chaintests
 import (
 	"crypto/rand"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcutil/bech32"
-	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/crypto/address"
@@ -17,29 +15,6 @@ import (
 
 	"github.com/thrylos-labs/thrylos/shared"
 )
-
-func TestNewBlockchain1(t *testing.T) {
-	// Use a predefined valid Bech32 address for genesis
-	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
-
-	tempDir, err := os.MkdirTemp("", "blockchain-test-")
-	require.NoError(t, err, "Failed to create temp directory")
-	defer os.RemoveAll(tempDir)
-
-	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-		DataDir:           tempDir,
-		AESKey:            []byte("test-key"),
-		GenesisAccount:    genesisAddress,
-		TestMode:          true,
-		DisableBackground: true,
-	})
-	require.NoError(t, err, "Failed to create blockchain")
-
-	// Additional assertions
-	require.NotNil(t, blockchain, "Blockchain should not be nil")
-	require.Equal(t, genesisAddress, blockchain.GenesisAccount, "Genesis account should match")
-	require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
-}
 
 // Helper function to handle block creation and signing
 func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
@@ -130,7 +105,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 // 	require.NoError(t, err, "Failed to create blockchain")
 
 // 	// Generate MLDSA key pair
-// 	publicKey, privateKey, err := mldsa44.GenerateKey(rand.Reader)
+// 	publicKey, privateKey, err := mldsa.GenerateKey(nil)
 // 	require.NoError(t, err, "Failed to generate MLDSA key pair")
 
 // 	err = blockchain.Database.InsertOrUpdateMLDSAPublicKey(genesisAddress, publicKey)
@@ -275,7 +250,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 // 	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
 // }
 
-// func createRealisticTransaction(t *testing.T, blockchain *chain.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
+// func createRealisticTransaction(t *testing.T, blockchain *shared.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
 // 	h := fnv.New32a()
 // 	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
 // 	shardID := int(h.Sum32() % uint32(numShards))
@@ -430,7 +405,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 // 	// Create and register validators
 // 	for i := 0; i < validatorCount; i++ {
 // 		// GenerateKey returns pointers
-// 		publicKey, privateKey, err := mldsa44.GenerateKey(nil)
+// 		publicKey, privateKey, err := mldsa.GenerateKey(nil)
 // 		require.NoError(t, err, "Failed to generate validator key pair")
 
 // 		address := fmt.Sprintf("tl11validator%d", i)
@@ -534,7 +509,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 // 						defer wg.Done()
 // 						for tx := range txChan {
 // 							start := time.Now()
-// 							err := network.ProcessIncomingTransaction(tx)
+// 							err := processor.ProcessIncomingTransaction(tx)
 // 							require.NoError(t, err)
 
 // 							resultChan <- struct {
@@ -602,7 +577,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 // 				currentValidator := validators[validatorIndex]
 // 				time.Sleep(consensusDelay)
 
-// 				block := &chain.Block{
+// 				block := &shared.Block{
 // 					Index:        int32(initialHeight + i),
 // 					Timestamp:    time.Now().Unix(),
 // 					Transactions: allTxs,
@@ -610,7 +585,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 // 					PrevHash:     prevHash,
 // 				}
 
-// 				err := block.InitializeVerkleTree()
+// 				err := chain.InitializeVerkleTree(block)
 // 				require.NoError(t, err)
 
 // 				block.Hash = block.ComputeHash()

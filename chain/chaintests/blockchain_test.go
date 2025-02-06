@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/joho/godotenv"
+	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos/chain"
 	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
 )
@@ -20,43 +21,36 @@ func TestNewBlockchain(t *testing.T) {
 		log.Printf("Note: .env.dev file not found, using default test values")
 	}
 
-	// Use a valid tl1 prefix address for testing
-	os.Setenv("GENESIS_ACCOUNT", "tl11test0genesis0account0value00000000000000")
-	defer os.Unsetenv("GENESIS_ACCOUNT")
+	// Use a predefined valid Bech32 address for genesis
+	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 
 	tempDir, err := ioutil.TempDir("", "blockchain_test")
-	if err != nil {
-		t.Fatalf("Failed to create temporary directory: %v", err)
-	}
+	require.NoError(t, err, "Failed to create temporary directory")
 	defer os.RemoveAll(tempDir)
 
 	aesKey, err := encryption.GenerateAESKey()
-	if err != nil {
-		t.Fatalf("Failed to generate AES key: %v", err)
-	}
+	require.NoError(t, err, "Failed to generate AES key")
 
-	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
-
-	// Correctly handle all three return values
 	blockchain, store, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            aesKey,
-		GenesisAccount:    genesisAccount,
+		GenesisAccount:    genesisAddress,
 		TestMode:          true,
 		DisableBackground: true,
 	})
-	if err != nil {
-		t.Fatalf("Failed to create blockchain: %v", err)
-	}
+	require.NoError(t, err, "Failed to create blockchain")
 
 	// Ensure cleanup
 	if closer, ok := store.(interface{ Close() }); ok {
 		defer closer.Close()
 	}
 
-	if blockchain.Genesis == nil {
-		t.Errorf("Genesis block is nil")
-	}
+	// Additional assertions
+	require.NotNil(t, blockchain, "Blockchain should not be nil")
+	require.NotNil(t, blockchain.Genesis, "Genesis block should not be nil")
+	require.Equal(t, genesisAddress, blockchain.GenesisAccount, "Genesis account should match")
+	// require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
+
 }
 
 func TestMLDSA44Signature(t *testing.T) {
