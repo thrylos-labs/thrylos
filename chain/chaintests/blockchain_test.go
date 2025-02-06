@@ -13,14 +13,12 @@ import (
 	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
 )
 
-func loadEnvTest() {
-	if err := godotenv.Load("../.env.dev"); err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
-}
-
 func TestNewBlockchain(t *testing.T) {
-	loadEnvTest() // Ensure environment variables are loaded before any Supabase operations
+	// Try to load env but don't fail if it doesn't exist
+	err := godotenv.Load(".env.dev")
+	if err != nil {
+		log.Printf("Note: .env.dev file not found, using default test values")
+	}
 
 	// Use a valid tl1 prefix address for testing
 	os.Setenv("GENESIS_ACCOUNT", "tl11test0genesis0account0value00000000000000")
@@ -40,7 +38,7 @@ func TestNewBlockchain(t *testing.T) {
 	genesisAccount := os.Getenv("GENESIS_ACCOUNT")
 
 	// Correctly handle all three return values
-	blockchain, db, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+	blockchain, store, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            aesKey,
 		GenesisAccount:    genesisAccount,
@@ -51,8 +49,10 @@ func TestNewBlockchain(t *testing.T) {
 		t.Fatalf("Failed to create blockchain: %v", err)
 	}
 
-	// Optionally, you can use `db` here if needed
-	_ = db // Suppress "declared but not used" warning if you do not use `db`
+	// Ensure cleanup
+	if closer, ok := store.(interface{ Close() }); ok {
+		defer closer.Close()
+	}
 
 	if blockchain.Genesis == nil {
 		t.Errorf("Genesis block is nil")
