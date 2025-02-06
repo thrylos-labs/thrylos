@@ -1,3 +1,5 @@
 package chain
 
-//Let us put here everyting related to transaction poll, etc
+type TxPool struct {
+	// Let us put here everyting related to transaction poll, etc
+}
