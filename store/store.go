@@ -2,14 +2,11 @@ package store
 
 import (
 	stdcrypto "crypto" // Alias for standard crypto
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"regexp"
 	"strconv"
@@ -23,6 +20,8 @@ import (
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
+	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
 	"github.com/thrylos-labs/thrylos/shared"
 	"golang.org/x/crypto/blake2b"
@@ -71,54 +70,6 @@ func GetUTXO(txID string, index int) (*shared.UTXO, error) {
 		return nil, fmt.Errorf("UTXO not found")
 	}
 	return utxo, nil
-}
-
-// ENCRYPT AND DECRYPT
-
-// encryptData encrypts data using AES-256 GCM.
-func (s *store) encryptData(data []byte) ([]byte, error) {
-	block, err := aes.NewCipher(s.encryptionKey)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-
-	return gcm.Seal(nonce, nonce, data, nil), nil
-}
-
-// decryptData decrypts data using AES-256 GCM.
-func (s *store) decryptData(encryptedData []byte) ([]byte, error) {
-	block, err := aes.NewCipher(s.encryptionKey)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(encryptedData) < gcm.NonceSize() {
-		return nil, fmt.Errorf("invalid encrypted data")
-	}
-
-	nonce, ciphertext := encryptedData[:gcm.NonceSize()], encryptedData[gcm.NonceSize():]
-	return gcm.Open(nil, nonce, ciphertext, nil)
-}
-
-func (s *store) hashData(data []byte) []byte {
-	hasher, _ := blake2b.New256(nil)
-	hasher.Write(data)
-	return hasher.Sum(nil)
 }
 
 // UTXO
@@ -622,13 +573,14 @@ func (s *store) SendTransaction(fromAddress, toAddress string, amount int, privK
 	}
 
 	// Step 3: Encrypt the transaction data
-	encryptedData, err := s.encryptData(jsonData)
+	encryptedData, err := encryption.EncryptWithAES(s.encryptionKey, jsonData)
 	if err != nil {
 		return false, fmt.Errorf("error encrypting transaction data: %v", err)
 	}
 
 	// Step 4: Sign the encrypted data
-	signature, err := rsa.SignPSS(rand.Reader, privKey, stdcrypto.SHA256, s.hashData(encryptedData), nil)
+	h := hash.NewHash(encryptedData)
+	signature, err := rsa.SignPSS(rand.Reader, privKey, stdcrypto.SHA256, h.Bytes(), nil)
 	if err != nil {
 		return false, fmt.Errorf("error signing transaction: %v", err)
 	}

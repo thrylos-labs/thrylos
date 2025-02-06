@@ -17,14 +17,14 @@ type Store interface {
 	GetLastBlockNumber() (int, error)
 	GetBlock(blockNumber uint32) (*Block, error)
 	GetPublicKey(addr address.Address) (crypto.PublicKey, error)
-	// GetValidator(addr address.Address) (*Validator, error)
+	GetValidator(addr address.Address) (*Validator, error)
+	SaveValidator(v *Validator) error
 	RetrieveValidatorPublicKey(validatorAddress string) ([]byte, error)
 	BeginTransaction() (*TransactionContext, error)
 	RollbackTransaction(txn *TransactionContext) error
 	MarkUTXOAsSpent(txContext *TransactionContext, utxo UTXO) error
 	SaveTransaction(tx *Transaction) error
 	SaveBlock(blk *Block) error
-	// UpdateValidator(v *Validator) error
 	AddNewUTXO(txContext *TransactionContext, utxo UTXO) error
 	CommitTransaction(txn *TransactionContext) error
 	GetUTXOsForAddress(address string) ([]UTXO, error)
@@ -61,12 +61,6 @@ type Store interface {
 	InsertOrUpdateMLDSAPublicKey(address string, mldsaPublicKey *mldsa44.PublicKey) error
 
 	RetrieveMLDSAPublicKey(address string) ([]byte, error)
-
-	GetAllValidatorPublicKeys() (map[string]mldsa44.PublicKey, error)
-	StoreValidatorPublicKey(validatorAddress string, publicKeyBytes []byte) error
-
-	StoreValidatorMLDSAPublicKey(validatorAddress string, publicKey *mldsa44.PublicKey) error
-	GetValidatorMLDSAPublicKey(validatorAddress string) (*mldsa44.PublicKey, error)
 
 	Bech32AddressExists(bech32Address string) (bool, error)
 	GetBalance(address string, utxos map[string][]UTXO) (amount.Amount, error)
