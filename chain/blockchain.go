@@ -242,7 +242,24 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
-	bdb := store.NewBlockchainDB(db, config.AESKey)
+
+	// Create the store instance with the database
+	storeInstance, err := store.NewStore(db, config.AESKey)
+	if err != nil {
+		db.Close() // Clean up if store creation fails
+		return nil, nil, fmt.Errorf("failed to create store: %v", err)
+	}
+
+	// Create BlockchainDB using the same database instance
+	blockchainDB := store.NewBlockchainDB(db, config.AESKey)
+	if blockchainDB == nil {
+		db.Close() // Clean up if BlockchainDB creation fails
+		return nil, nil, fmt.Errorf("failed to create blockchain database")
+	}
+
+	// Use storeInstance where shared.Store is needed
+	db.Blockchain = storeInstance // This sets the store implementation
+
 	log.Println("BlockchainDB created")
 
 	// Create the genesis block
@@ -338,7 +355,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 		Blocks:              []*shared.Block{genesis},
 		Genesis:             genesis,
 		Stakeholders:        stakeholdersMap,
-		Database:            bdb,
+		Database:            blockchainDB, // Changed from bdb to blockchainDB
 		PublicKeyMap:        publicKeyMap,
 		UTXOs:               utxoMap,
 		Forks:               make([]*shared.Fork, 0),
@@ -515,7 +532,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	}
 
 	log.Println("NewBlockchain initialization completed successfully")
-	return blockchain, bdb, nil
+	return blockchain, storeInstance, nil // Return the store instance instead of bdb
 }
 
 // // // // FIXME: The total supply is not correct, it needs to be improved

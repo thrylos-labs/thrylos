@@ -1,7 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/dgraph-io/badger/v3"
@@ -19,32 +22,70 @@ type Database struct {
 }
 
 type BlockchainDB struct {
+	*store         // Embed the store to inherit its methods
 	ValidatorStore *ValidatorKeyStoreImpl
 	Database       *Database
 	encryptionKey  []byte
 }
 
-func NewBlockchainDB(database *Database, encryptionKey []byte) *store {
+func NewBlockchainDB(database *Database, encryptionKey []byte) *BlockchainDB {
+	// Create the store instance using the existing database
+	storeInstance, err := NewStore(database, encryptionKey)
+	if err != nil {
+		log.Printf("Failed to create store: %v", err)
+		return nil
+	}
+
+	// Set the Blockchain field in Database
+	database.Blockchain = storeInstance
+
+	// Create validator store
 	validatorStore := NewValidatorKeyStore(database, encryptionKey)
 
-	return &store{
+	// Type assert to get the concrete store implementation
+	concreteStore, ok := storeInstance.(*store)
+	if !ok {
+		log.Printf("Failed to convert store to concrete implementation")
+		return nil
+	}
+
+	return &BlockchainDB{
+		store:          concreteStore,
+		ValidatorStore: validatorStore,
+		Database:       database,
 		encryptionKey:  encryptionKey,
-		validatorStore: validatorStore, // match the field name exactly
 	}
 }
 
 // NewBadgerDB initializes and returns a new instance of BadgerDB
 func NewDatabase(path string) (*Database, error) {
+	// Remove any existing lock file before opening
+	lockFile := filepath.Join(path, "LOCK")
+	if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to remove existing lock file: %v", err)
+	}
+
 	d := &Database{}
 	var err error
 	d.once.Do(func() {
-		opts := badger.DefaultOptions(path).WithLogger(nil)
+		opts := badger.DefaultOptions(path).
+			WithLogger(nil).
+			WithSyncWrites(false).     // Disable sync for testing
+			WithDetectConflicts(false) // Disable conflict detection for testing
+
+		// Try to open the database
 		d.db, err = badger.Open(opts)
 		if err != nil {
-			log.Fatalf("Failed to open Badger database: %v", err)
+			err = fmt.Errorf("failed to open Badger database: %v", err)
+			return
 		}
 	})
-	return d, err
+
+	if err != nil {
+		return nil, err
+	}
+
+	return d, nil
 }
 
 func (d *Database) GetDB() *badger.DB {

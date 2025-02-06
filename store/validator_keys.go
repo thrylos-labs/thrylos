@@ -4,7 +4,6 @@ import (
 	"sync"
 
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
-	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // ValidatorKeyStoreImpl implements the shared.ValidatorKeyStore interface
@@ -17,11 +16,11 @@ type ValidatorKeyStoreImpl struct {
 
 // NewValidatorKeyStore creates and initializes a new ValidatorKeyStore
 // In store/validator_store.go
-func NewValidatorKeyStore(db *Database, encryptionKey []byte) shared.ValidatorKeyStore {
+func NewValidatorKeyStore(database *Database, encryptionKey []byte) *ValidatorKeyStoreImpl {
 	return &ValidatorKeyStoreImpl{
 		keys:          make(map[string]*mldsa44.PrivateKey),
 		mu:            sync.RWMutex{},
-		db:            db,
+		db:            database,
 		encryptionKey: encryptionKey,
 	}
 }
