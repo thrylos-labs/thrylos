@@ -22,38 +22,17 @@ type Database struct {
 }
 
 type BlockchainDB struct {
-	*store         // Embed the store to inherit its methods
-	ValidatorStore *ValidatorKeyStoreImpl
-	Database       *Database
-	encryptionKey  []byte
+	//ValidatorStore *ValidatorKeyStoreImpl
+	Database      *Database
+	encryptionKey []byte
 }
 
-func NewBlockchainDB(database *Database, encryptionKey []byte) *BlockchainDB {
-	// Create the store instance using the existing database
-	storeInstance, err := NewStore(database, encryptionKey)
-	if err != nil {
-		log.Printf("Failed to create store: %v", err)
-		return nil
-	}
+func NewBlockchainDB(database *Database, encryptionKey []byte) *store {
+	//validatorStore := NewValidatorKeyStore(database, encryptionKey)
 
-	// Set the Blockchain field in Database
-	database.Blockchain = storeInstance
-
-	// Create validator store
-	validatorStore := NewValidatorKeyStore(database, encryptionKey)
-
-	// Type assert to get the concrete store implementation
-	concreteStore, ok := storeInstance.(*store)
-	if !ok {
-		log.Printf("Failed to convert store to concrete implementation")
-		return nil
-	}
-
-	return &BlockchainDB{
-		store:          concreteStore,
-		ValidatorStore: validatorStore,
-		Database:       database,
-		encryptionKey:  encryptionKey,
+	return &store{
+		encryptionKey: encryptionKey,
+		//validatorStore: validatorStore, // match the field name exactly
 	}
 }
 

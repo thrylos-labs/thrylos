@@ -1,5 +1,20 @@
 package node
 
+import (
+	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/config"
+	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/state"
+)
+
+type Node struct {
+	config    *config.Config
+	store     *shared.Store
+	state     *state.State
+	txPool    *chain.TxPool
+	validator *shared.Validator
+}
+
 // a central component that coordinates between different parts of the system.
 
 // Node defines a blockchain node with its properties and capabilities within the network. It represents both

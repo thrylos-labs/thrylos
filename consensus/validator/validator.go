@@ -2,42 +2,62 @@ package validator
 
 import (
 	thrycrypto "github.com/thrylos-labs/thrylos/crypto" // aliased to avoid confusion
-	"github.com/thrylos-labs/thrylos/store"
+	"github.com/thrylos-labs/thrylos/shared"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/shared"
 )
 
-type ValidatorImpl struct {
-	*shared.Validator
+type validator struct {
+	index      int32                 `cbor:"2,keyasint"`
+	privateKey thrycrypto.PrivateKey `cbor:"1,keyasint"`
+	stake      amount.Amount         `cbor:"3,keyasint"`
 }
 
-func NewValidator(publicKey thrycrypto.PublicKey, number int32, stake amount.Amount) *shared.Validator {
-	return &shared.Validator{
-		PublicKey: publicKey,
-		Number:    number,
-		Stake:     stake,
+func NewValidator(privateKey thrycrypto.PrivateKey, index int32, stake amount.Amount) shared.Validator {
+	return &validator{
+		index:      index,
+		privateKey: privateKey,
+		stake:      stake,
 	}
 }
 
-func (v *ValidatorImpl) Address() *address.Address {
-	addr, err := v.PublicKey.Address()
+func NewValidatorFromBytes(validatorData []byte) shared.Validator {
+	v := validator{}
+	err := cbor.Unmarshal(validatorData, v)
+	if err != nil {
+		return nil
+	}
+	return v
+}
+func (v validator) Index() int32 {
+	return v.index
+}
+func (v validator) PrivateKey() *thrycrypto.PrivateKey {
+	return &v.privateKey
+}
+func (v validator) PublicKey() *thrycrypto.PublicKey {
+	pub := v.privateKey.PublicKey()
+	return pub
+}
+
+func (v validator) Address() *address.Address {
+	pub := v.privateKey.PublicKey()
+	addr, err := (*pub).Address()
 	if err != nil {
 		return address.NullAddress()
 	}
 	return addr
 }
+func (v validator) Stake() amount.Amount {
+	return v.stake
+}
 
-func (v *ValidatorImpl) Marshal() ([]byte, error) {
+func (v validator) Marshal() ([]byte, error) {
 	return cbor.Marshal(v)
 }
 
-func (v *ValidatorImpl) Unmarshal(data []byte) error {
+func (v validator) Unmarshal(data []byte) error {
 	return cbor.Unmarshal(data, v)
-}
-
-func NewValidatorKeyStore(db *store.Database, encryptionKey []byte) shared.ValidatorKeyStore {
-    return store.NewValidatorKeyStore(db, encryptionKey)
 }

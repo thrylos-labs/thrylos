@@ -29,7 +29,7 @@ type UTXO struct {
 // CreateUTXO initializes a new UTXO with the specified attributes. This function is typically
 // called when a transaction is processed, and its outputs are being determined.
 func CreateUTXO(id string, index int, txID string, owner string, coinAmount float64, isSpent bool) *UTXO {
-	fmt.Printf("Creating UTXO with ID: %s, TransactionID: %s, Index: %d, Owner: %s, Amount: %d\n", id, txID, index, owner, coinAmount)
+	fmt.Printf("Creating UTXO with ID: %s, TransactionID: %s, Index: %d, Owner: %s, Amount: %f\n", id, txID, index, owner, coinAmount)
 
 	formatedAmount, err := amount.NewAmount(coinAmount)
 	if err != nil {
