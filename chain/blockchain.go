@@ -189,7 +189,7 @@ func convertToBlockchainPrivateKey(cloudflareKey *cloudflareMLDSA.PrivateKey) *m
 	return mldsa44.NewPrivateKey(*cloudflareKey)
 }
 
-func convertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
+func ConvertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
 	if tx == nil {
 		return nil
 	}
@@ -372,7 +372,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-	genesis.Transactions = []*shared.Transaction{convertToSharedTransaction(genesisTx)}
+	genesis.Transactions = []*shared.Transaction{ConvertToSharedTransaction(genesisTx)}
 
 	stateNetwork := shared.NewDefaultNetwork()
 	// stateManager := state.NewStateManager(stateNetwork, 4)

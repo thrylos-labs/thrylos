@@ -1,75 +1,114 @@
 package chaintests
 
-// func TestNewBlockchain1(t *testing.T) {
-// 	// Use a predefined valid Bech32 address for genesis
-// 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
+import (
+	"crypto/rand"
+	"fmt"
+	"os"
+	"testing"
+	"time"
 
-// 	tempDir, err := os.MkdirTemp("", "blockchain-test-")
-// 	require.NoError(t, err, "Failed to create temp directory")
-// 	defer os.RemoveAll(tempDir)
+	"github.com/btcsuite/btcutil/bech32"
+	"github.com/stretchr/testify/require"
+	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
+	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
 
-// 	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-// 		DataDir:           tempDir,
-// 		AESKey:            []byte("test-key"),
-// 		GenesisAccount:    genesisAddress,
-// 		TestMode:          true,
-// 		DisableBackground: true,
-// 	})
-// 	require.NoError(t, err, "Failed to create blockchain")
+	"github.com/thrylos-labs/thrylos/shared"
+)
 
-// 	// Additional assertions
-// 	require.NotNil(t, blockchain, "Blockchain should not be nil")
-// 	require.Equal(t, genesisAddress, blockchain.GenesisAccount, "Genesis account should match")
-// 	require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
-// }
+func TestNewBlockchain1(t *testing.T) {
+	// Use a predefined valid Bech32 address for genesis
+	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 
-// // Helper function to handle block creation and signing
-// func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
-// 	// Create block
-// 	block := &shared.Block{
-// 		Index:        int32(len(blockchain.Blocks)),
-// 		Timestamp:    time.Now().Unix(),
-// 		Transactions: txs,
-// 		Validator:    validator,
-// 		PrevHash:     prevHash,
-// 	}
+	tempDir, err := os.MkdirTemp("", "blockchain-test-")
+	require.NoError(t, err, "Failed to create temp directory")
+	defer os.RemoveAll(tempDir)
 
-// 	// Initialize Verkle tree
-// 	if err := block.InitializeVerkleTree(); err != nil {
-// 		return fmt.Errorf("failed to initialize Verkle tree: %v", err)
-// 	}
+	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+		DataDir:           tempDir,
+		AESKey:            []byte("test-key"),
+		GenesisAccount:    genesisAddress,
+		TestMode:          true,
+		DisableBackground: true,
+	})
+	require.NoError(t, err, "Failed to create blockchain")
 
-// 	// Compute hash
-// 	block.Hash = block.ComputeHash()
+	// Additional assertions
+	require.NotNil(t, blockchain, "Blockchain should not be nil")
+	require.Equal(t, genesisAddress, blockchain.GenesisAccount, "Genesis account should match")
+	require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
+}
 
-// 	// Generate a random salt for the signature
-// 	salt := make([]byte, 32)
-// 	if _, err := rand.Read(salt); err != nil {
-// 		return fmt.Errorf("failed to generate signature salt: %v", err)
-// 	}
+// Helper function to handle block creation and signing
+func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
+	// Convert transactions using existing function
+	sharedTxs := make([]*shared.Transaction, len(txs))
+	for i, tx := range txs {
+		sharedTxs[i] = chain.ConvertToSharedTransaction(tx)
+	}
 
-// 	// The MLDSA-44 signing method might be something like:
-// 	// - Sign
-// 	// - SignMessage
-// 	// - CreateSignature
-// 	// Let me know what's available and I'll update this part
+	// Create hash.Hash from []byte using the proper conversion method
+	blockHash, err := hash.FromBytes(prevHash)
+	if err != nil {
+		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
+	}
 
-// 	// For now, let's try the standard crypto.Signer interface:
-// 	signature, err := validatorKey.Sign(rand.Reader, append(block.Hash, salt...), nil)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to create signature: %v", err)
-// 	}
+	// Validate the validator address
+	if !address.Validate(validator) {
+		return fmt.Errorf("invalid validator address format: %s", validator)
+	}
 
-// 	block.Signature = signature
-// 	block.Salt = salt
+	// Convert validator string to Address
+	_, validatorBytes, err := bech32.Decode(validator)
+	if err != nil {
+		return fmt.Errorf("failed to decode validator address: %v", err)
+	}
 
-// 	// Add block to blockchain
-// 	blockchain.Mu.Lock()
-// 	blockchain.Blocks = append(blockchain.Blocks, block)
-// 	blockchain.Mu.Unlock()
+	var validatorAddr address.Address
+	copy(validatorAddr[:], validatorBytes)
 
-// 	return nil
-// }
+	// Create block with proper types
+	block := &shared.Block{
+		Index:              int64(len(blockchain.Blocks)),
+		Timestamp:          time.Now().Unix(),
+		Transactions:       sharedTxs,
+		Validator:          validator,
+		PrevHash:           blockHash,
+		ValidatorAddress:   validatorAddr,
+		ValidatorPublicKey: nil, // This needs to be set based on your requirements
+	}
+
+	// Initialize Verkle tree
+	if err := chain.InitializeVerkleTree(block); err != nil {
+		return fmt.Errorf("failed to initialize Verkle tree: %v", err)
+	}
+
+	// Compute hash
+	chain.ComputeBlockHash(block)
+
+	// Generate a random salt for the signature
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("failed to generate signature salt: %v", err)
+	}
+
+	// Sign the block
+	signatureData := append(block.Hash[:], salt...)
+	signature := validatorKey.Sign(signatureData)
+
+	// Set the signature on the block
+	block.Signature = signature
+	block.Salt = salt
+
+	// Add block to blockchain
+	blockchain.Mu.Lock()
+	blockchain.Blocks = append(blockchain.Blocks, block)
+	blockchain.Mu.Unlock()
+
+	return nil
+}
 
 // func TestBlockTimeToFinality(t *testing.T) {
 // 	// Create test directory
