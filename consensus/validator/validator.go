@@ -38,6 +38,6 @@ func (v *ValidatorImpl) Unmarshal(data []byte) error {
 	return cbor.Unmarshal(data, v)
 }
 
-func NewValidatorKeyStore(db *store.Database) shared.ValidatorKeyStore {
-	return store.NewValidatorKeyStore(db)
+func NewValidatorKeyStore(db *store.Database, encryptionKey []byte) shared.ValidatorKeyStore {
+    return store.NewValidatorKeyStore(db, encryptionKey)
 }
