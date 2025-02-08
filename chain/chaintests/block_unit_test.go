@@ -6,18 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcutil/bech32"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/chain"
-	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
-	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
 
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Helper function to handle block creation and signing
-func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
+func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validatorKey *crypto.PrivateKey, prevHash []byte) error {
 	// Convert transactions using existing function
 	sharedTxs := make([]*shared.Transaction, len(txs))
 	for i, tx := range txs {
@@ -30,28 +28,12 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
 	}
 
-	// Validate the validator address
-	if !address.Validate(validator) {
-		return fmt.Errorf("invalid validator address format: %s", validator)
-	}
-
-	// Convert validator string to Address
-	_, validatorBytes, err := bech32.Decode(validator)
-	if err != nil {
-		return fmt.Errorf("failed to decode validator address: %v", err)
-	}
-
-	var validatorAddr address.Address
-	copy(validatorAddr[:], validatorBytes)
-
 	// Create block with proper types
 	block := &shared.Block{
 		Index:              int64(len(blockchain.Blocks)),
 		Timestamp:          time.Now().Unix(),
 		Transactions:       sharedTxs,
-		Validator:          validator,
 		PrevHash:           blockHash,
-		ValidatorAddress:   validatorAddr,
 		ValidatorPublicKey: nil, // This needs to be set based on your requirements
 	}
 
@@ -71,7 +53,7 @@ func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thry
 
 	// Sign the block
 	signatureData := append(block.Hash[:], salt...)
-	signature := validatorKey.Sign(signatureData)
+	signature := (*validatorKey).Sign(signatureData)
 
 	// Set the signature on the block
 	block.Signature = signature

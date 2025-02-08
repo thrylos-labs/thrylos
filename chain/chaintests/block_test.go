@@ -11,6 +11,7 @@ import (
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/encryption"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
 )
 
 func TestGenesisBlockCreation(t *testing.T) {
@@ -53,16 +54,20 @@ func TestGenesisBlockCreation(t *testing.T) {
 		t.Fatalf("Failed to generate AES key: %v", err)
 	}
 
-	genesisAccount = os.Getenv("GENESIS_ACCOUNT")
+	genesisAccount = os.Getenv("GENESIS_ACCOUNT") //I assume the genesis account is the private key
 	if genesisAccount == "" {
 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
+	}
+	priv, err := crypto.NewPrivateKeyFromBytes([]byte(genesisAccount))
+	if err != nil {
+		t.Fatal("Error converting the genesis account into a private key.")
 	}
 
 	// Initialize the blockchain with the temporary directory
 	blockchain, store, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            aesKey,
-		GenesisAccount:    genesisAccount,
+		GenesisAccount:    priv,
 		TestMode:          true,
 		DisableBackground: true,
 	})
@@ -88,5 +93,22 @@ func TestGenesisBlockCreation(t *testing.T) {
 }
 
 func TestBlockCreation(t *testing.T) {
-	privateKey := crypto.GeneratePrivateKey()
+	privateKey, err := crypto.NewPrivateKey()
+	if err != nil {
+		t.Fatalf("Failed to generate private key: %v", err)
+	}
+	//stakeAmount := amount.Amount(100)
+	index := int64(1)
+	prevHash := hash.NewHash([]byte("previous-hash"))
+	pubKey := privateKey.PublicKey()
+	//val := validator.NewValidator(privateKey, index, stakeAmount)
+	//tx:= shared.NewTransaction()
+	b, err := chain.NewBlock(index, prevHash, nil, pubKey)
+	if err != nil {
+		t.Logf("error creating a block: %v", err)
+	}
+	err = chain.Verify(b)
+	if err != nil {
+		t.Logf("error verifing the block... this should fail because the block has no transaction: %v", err)
+	}
 }

@@ -3,7 +3,6 @@ package chain
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -379,13 +378,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 		blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
 	}()
 
-	// Serialize and store the genesis block
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	if err := encoder.Encode(genesis); err != nil {
-		return nil, nil, fmt.Errorf("failed to serialize genesis block: %v", err)
-	}
-	if err := db.Blockchain.InsertBlock(buf.Bytes(), 0); err != nil {
+	if err := db.Blockchain.SaveBlock(genesis); err != nil {
 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 

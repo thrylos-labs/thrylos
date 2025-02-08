@@ -24,6 +24,16 @@ func NewPrivateKey() (PrivateKey, error) {
 	}, nil
 }
 
+func NewPrivateKeyFromBytes(keyData []byte) (PrivateKey, error) {
+	var priv privateKey
+	err := priv.Unmarshal(keyData)
+	if err != nil {
+		log.Fatalf("failed to unmarshal the private key data: %v", err)
+		return nil, err
+	}
+	return &priv, nil
+}
+
 func (p privateKey) Bytes() []byte {
 	return p.privKey.Bytes()
 }
