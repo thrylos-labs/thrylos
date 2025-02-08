@@ -20,7 +20,7 @@ import (
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
+	"github.com/thrylos-labs/thrylos/crypto/encryption"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
 	"github.com/thrylos-labs/thrylos/shared"

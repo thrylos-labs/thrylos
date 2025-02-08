@@ -5,7 +5,6 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 )
 
@@ -20,11 +19,10 @@ type Block struct {
 	Hash               hash.Hash        `cbor:"5,keyasint,omitempty"`
 	Transactions       []*Transaction   `cbor:"6,keyasint"`
 	Data               string           `cbor:"7,keyasint,omitempty"`
-	ValidatorAddress   address.Address  `cbor:"8,keyasint"`
-	ValidatorPublicKey crypto.PublicKey `cbor:"9,keyasint"`
-	Signature          crypto.Signature `cbor:"10,keyasint,omitempty"`
-	Salt               []byte           `cbor:"11,keyasint"`
-	Validator          string           `cbor:"12,keyasint"`
+	ValidatorPublicKey crypto.PublicKey `cbor:"8,keyasint"`
+	Signature          crypto.Signature `cbor:"9,keyasint,omitempty"`
+	Salt               []byte           `cbor:"10,keyasint"`
+	Validator          string           `cbor:"11,keyasint"`
 }
 
 // Basic methods that don't require chain-specific logic

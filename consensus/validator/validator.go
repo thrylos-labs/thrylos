@@ -1,7 +1,7 @@
 package validator
 
 import (
-	thrycrypto "github.com/thrylos-labs/thrylos/crypto" // aliased to avoid confusion
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/shared"
 
 	"github.com/fxamacker/cbor/v2"
@@ -10,12 +10,12 @@ import (
 )
 
 type validator struct {
-	index      int32                 `cbor:"2,keyasint"`
-	privateKey thrycrypto.PrivateKey `cbor:"1,keyasint"`
-	stake      amount.Amount         `cbor:"3,keyasint"`
+	index      int32             `cbor:"2,keyasint"`
+	privateKey crypto.PrivateKey `cbor:"1,keyasint"`
+	stake      amount.Amount     `cbor:"3,keyasint"`
 }
 
-func NewValidator(privateKey thrycrypto.PrivateKey, index int32, stake amount.Amount) shared.Validator {
+func NewValidator(privateKey crypto.PrivateKey, index int32, stake amount.Amount) shared.Validator {
 	return &validator{
 		index:      index,
 		privateKey: privateKey,
@@ -34,17 +34,17 @@ func NewValidatorFromBytes(validatorData []byte) shared.Validator {
 func (v validator) Index() int32 {
 	return v.index
 }
-func (v validator) PrivateKey() *thrycrypto.PrivateKey {
+func (v validator) PrivateKey() *crypto.PrivateKey {
 	return &v.privateKey
 }
-func (v validator) PublicKey() *thrycrypto.PublicKey {
+func (v validator) PublicKey() *crypto.PublicKey {
 	pub := v.privateKey.PublicKey()
-	return pub
+	return &pub
 }
 
 func (v validator) Address() *address.Address {
 	pub := v.privateKey.PublicKey()
-	addr, err := (*pub).Address()
+	addr, err := (pub).Address()
 	if err != nil {
 		return address.NullAddress()
 	}

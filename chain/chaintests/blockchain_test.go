@@ -11,7 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos/chain"
-	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
+	"github.com/thrylos-labs/thrylos/crypto/encryption"
 )
 
 func TestNewBlockchain(t *testing.T) {

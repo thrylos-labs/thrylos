@@ -4,21 +4,17 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/gob"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/btcsuite/btcutil/bech32"
-	cloudflareMLDSA "github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
-	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/store"
 	"github.com/thrylos-labs/thrylos/utils"
@@ -35,7 +31,7 @@ import (
 type BlockchainConfig struct {
 	DataDir           string
 	AESKey            []byte
-	GenesisAccount    string
+	GenesisAccount    crypto.PrivateKey
 	TestMode          bool
 	DisableBackground bool
 	StateManager      *shared.StateManager
@@ -136,60 +132,6 @@ type BlockchainImpl struct {
 // 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
 // }
 
-var (
-	cloudflarePublicKey *cloudflareMLDSA.PublicKey
-	genesisPrivateKey   *cloudflareMLDSA.PrivateKey
-	blockchainPublicKey *mldsa44.PublicKey
-)
-
-func ConvertToBech32Address(address string) (string, error) {
-	// Check if the address is already in Bech32 format
-	if strings.HasPrefix(address, "tl1") {
-		return address, nil
-	}
-
-	// Try to decode the address as hexadecimal
-	addressBytes, err := hex.DecodeString(address)
-	if err == nil {
-		// Take the first 20 bytes (40 characters of the hex string)
-		// This is similar to how Ethereum addresses are derived from public keys
-		if len(addressBytes) > 20 {
-			addressBytes = addressBytes[:20]
-		}
-
-		// Convert to 5-bit groups for Bech32 encoding
-		converted, err := bech32.ConvertBits(addressBytes, 8, 5, true)
-		if err != nil {
-			return "", fmt.Errorf("failed to convert bits: %v", err)
-		}
-
-		// Encode to Bech32
-		bech32Address, err := bech32.Encode("tl1", converted)
-		if err != nil {
-			return "", fmt.Errorf("failed to encode address to Bech32: %v", err)
-		}
-
-		return bech32Address, nil
-	}
-
-	// If the address is not in hexadecimal format, try to use it directly
-	return address, nil
-}
-
-func convertToBlockchainPublicKey(cloudflareKey *cloudflareMLDSA.PublicKey) (*mldsa44.PublicKey, error) {
-	if cloudflareKey == nil {
-		return nil, fmt.Errorf("cloudflare public key is nil")
-	}
-	return mldsa44.NewPublicKey(*cloudflareKey), nil
-}
-
-func convertToBlockchainPrivateKey(cloudflareKey *cloudflareMLDSA.PrivateKey) *mldsa44.PrivateKey {
-	if cloudflareKey == nil {
-		return nil
-	}
-	return mldsa44.NewPrivateKey(*cloudflareKey)
-}
-
 func ConvertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
 	if tx == nil {
 		return nil
@@ -276,28 +218,30 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	log.Println("Genesis block created")
 
 	// Initialize the map for public keys
-	publicKeyMap := make(map[string]*mldsa44.PublicKey)
+	publicKeyMap := make(map[string]*crypto.PublicKey)
 
 	// Initialize Stakeholders map with the genesis account
 	totalSupplyNano := utils.ThrylosToNano()
 
 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
 
-	// Convert the genesis account address to Bech32 format
-	bech32GenesisAccount, err := ConvertToBech32Address(config.GenesisAccount)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to convert genesis account to Bech32: %v", err)
-	}
-
 	// Use bech32GenesisAccount instead of genesisAccount from here on
 	stakeholdersMap := make(map[string]int64)
-	stakeholdersMap[bech32GenesisAccount] = totalSupplyNano // Genesis holds total supply including staking reserve
+	addr, _ := config.GenesisAccount.PublicKey().Address()
+	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
 
 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
 
 	// Generate a new key pair for the genesis account
 	log.Println("Generating key pair for genesis account")
-	cloudflarePublicKey, _, err := cloudflareMLDSA.GenerateKey(nil)
+
+	privKey, err := crypto.NewPrivateKey()
+	if err != nil {
+		log.Printf("error generating private key for the genesis account: %v", err)
+		return nil, nil, err
+	}
+
+	pubKey := privKey.PublicKey()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
 	}
@@ -305,53 +249,6 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 
 	// Create and initialize validatorKeys before blockchain creation
 	//validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey)
-
-	if !config.TestMode {
-		// Generate a new key pair for the genesis account
-		log.Println("Generating key pair for genesis account")
-		cloudflarePublicKey, genesisPrivateKey, err = cloudflareMLDSA.GenerateKey(nil)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
-		}
-		log.Println("Genesis account key pair generated successfully")
-
-		// Convert the cloudflare public key to blockchain format
-		blockchainPublicKey, err = convertToBlockchainPublicKey(cloudflarePublicKey)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to convert genesis public key: %v", err)
-		}
-
-		// log.Println("Storing public key for genesis account")
-		// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
-		// if err != nil {
-		// 	return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
-		// }
-		// log.Println("Genesis account public key stored successfully")
-
-		// // Store private key
-		// log.Println("Storing private key for genesis account")
-		// blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
-		// validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
-
-		// // Verify key storage
-		// storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
-		// if !exists {
-		// 	return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
-		// }
-		// if !storedKey.Equal(blockchainPrivateKey) {
-		// 	return nil, nil, fmt.Errorf("stored key does not match original key")
-		// }
-		// log.Println("Genesis account private key stored and verified successfully")
-
-		// Verify validator keys
-		// log.Println("Verifying stored validator keys")
-		// keys, err := db.Blockchain.GetAllValidatorPublicKeys()
-		// if err != nil {
-		// 	log.Printf("Failed to retrieve all validator public keys: %v", err)
-		// 	return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
-		// }
-		// log.Printf("Retrieved %d validator public keys", len(keys))
-	}
 
 	// log.Println("Storing public key for genesis account")
 	// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
@@ -362,10 +259,10 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 
 	// Create genesis transaction
 	genesisTx := &thrylos.Transaction{
-		Id:        "genesis_tx_" + bech32GenesisAccount,
+		Id:        "genesis_tx_" + addr.String(),
 		Timestamp: time.Now().Unix(),
 		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: config.GenesisAccount,
+			OwnerAddress: addr.String(),
 			Amount:       totalSupplyNano,
 		}},
 		Signature:       []byte("genesis_signature"), // Keep as is since it's genesis
@@ -411,7 +308,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 		PublicKeyMap:        publicKeyMap,
 		UTXOs:               utxoMap,
 		Forks:               make([]*shared.Fork, 0),
-		GenesisAccount:      bech32GenesisAccount,
+		GenesisAccount:      privKey,
 		PendingTransactions: make([]*thrylos.Transaction, 0),
 		ActiveValidators:    make([]string, 0),
 		StateNetwork:        stateNetwork,
@@ -421,7 +318,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 	}
 
 	// Add the blockchain public key to the publicKeyMap
-	publicKeyMap[bech32GenesisAccount] = blockchainPublicKey
+	publicKeyMap[addr.String()] = &pubKey
 	log.Println("Genesis account public key added to publicKeyMap")
 
 	// Create and return the BlockchainImpl
