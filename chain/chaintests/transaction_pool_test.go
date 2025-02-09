@@ -1,14 +1,15 @@
-package chain
+package chaintests
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
 func TestAddTransaction(t *testing.T) {
-	pool := NewTxPool()
+	pool := chain.NewTxPool()
 	tx := &shared.Transaction{ID: "tx1"}
 
 	err := pool.AddTransaction(tx)
@@ -20,7 +21,7 @@ func TestAddTransaction(t *testing.T) {
 }
 
 func TestRemoveTransaction(t *testing.T) {
-	pool := NewTxPool()
+	pool := chain.NewTxPool()
 	tx := &shared.Transaction{ID: "tx1"}
 
 	err := pool.AddTransaction(tx)
@@ -35,7 +36,7 @@ func TestRemoveTransaction(t *testing.T) {
 }
 
 func TestGetTransaction(t *testing.T) {
-	pool := NewTxPool()
+	pool := chain.NewTxPool()
 	tx := &shared.Transaction{ID: "tx1"}
 
 	err := pool.AddTransaction(tx)
@@ -51,7 +52,7 @@ func TestGetTransaction(t *testing.T) {
 }
 
 func TestGetAllTransactions(t *testing.T) {
-	pool := NewTxPool()
+	pool := chain.NewTxPool()
 	tx1 := &shared.Transaction{ID: "tx1"}
 	tx2 := &shared.Transaction{ID: "tx2"}
 
@@ -68,7 +69,7 @@ func TestGetAllTransactions(t *testing.T) {
 }
 
 func TestBroadcastTransaction(t *testing.T) {
-	pool := NewTxPool()
+	pool := chain.NewTxPool()
 	tx := &shared.Transaction{ID: "tx1"}
 
 	err := pool.BroadcastTransaction(tx)
@@ -76,7 +77,7 @@ func TestBroadcastTransaction(t *testing.T) {
 }
 
 func TestSize(t *testing.T) {
-	pool := NewTxPool()
+	pool := chain.NewTxPool()
 	assert.Equal(t, 0, pool.Size())
 
 	tx := &shared.Transaction{ID: "tx1"}

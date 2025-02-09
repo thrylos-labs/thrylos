@@ -4,10 +4,17 @@ import (
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
+// UTXOCache is a specialized wrapper around LRUCache that handles UTXO-specific operations.
+// It provides type-safe methods for storing and retrieving UTXOs while utilizing the
+// underlying LRU cache's memory management and bloom filter optimization.
+
+// If a UTXO definitely doesn't exist, the bloom filter tells us immediately
+
 type UTXOCache struct {
 	cache *LRUCache
 }
 
+// UTXOCache is a specialized wrapper using LRUCache to store UTXOs
 func NewUTXOCache(size int, bloomSize uint, falsePositiveRate float64) (*UTXOCache, error) {
 	c, err := NewLRUCache(size, bloomSize, falsePositiveRate)
 	if err != nil {
