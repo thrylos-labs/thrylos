@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/shared"
 	// other necessary imports
@@ -16,13 +15,12 @@ import (
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
 
-func NewBlock(index int64, prevHash hash.Hash, transactions []*shared.Transaction, validatorAddress address.Address, validatorPublicKey crypto.PublicKey) (*shared.Block, error) {
+func NewBlock(index int64, prevHash hash.Hash, transactions []*shared.Transaction, validatorPublicKey crypto.PublicKey) (*shared.Block, error) {
 	block := &shared.Block{
 		Index:              index,
 		Timestamp:          time.Now().Unix(),
 		PrevHash:           prevHash,
 		Transactions:       transactions,
-		ValidatorAddress:   validatorAddress,
 		ValidatorPublicKey: validatorPublicKey,
 	}
 
@@ -38,12 +36,11 @@ func NewBlock(index int64, prevHash hash.Hash, transactions []*shared.Transactio
 // is the first block in the blockchain, serving as the foundation upon which the entire chain is built.
 func NewGenesisBlock() *shared.Block {
 	block := &shared.Block{
-		Index:            0,
-		Timestamp:        time.Now().Unix(),
-		VerkleRoot:       []byte{}, // Or some predefined value, since it's a special case.
-		PrevHash:         hash.NullHash(),
-		Hash:             hash.NullHash(),
-		ValidatorAddress: *address.NullAddress(),
+		Index:      0,
+		Timestamp:  time.Now().Unix(),
+		VerkleRoot: []byte{}, // Or some predefined value, since it's a special case.
+		PrevHash:   hash.NullHash(),
+		Hash:       hash.NullHash(),
 	}
 	ComputeBlockHash(block)
 	return block

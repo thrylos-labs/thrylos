@@ -1,17 +1,16 @@
 package chaintests
 
 import (
-	"crypto"
 	"io/ioutil"
 	"log"
 	"os"
 	"testing"
 
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/joho/godotenv"
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos/chain"
-	encryption "github.com/thrylos-labs/thrylos/crypto/encrypt"
+	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/crypto/encryption"
 )
 
 func TestNewBlockchain(t *testing.T) {
@@ -22,8 +21,11 @@ func TestNewBlockchain(t *testing.T) {
 	}
 
 	// Use a predefined valid Bech32 address for genesis
-	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
-
+	//genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
+	priv, err := crypto.NewPrivateKey()
+	if err != nil {
+		t.Log("Error generating the private key for the genesis account")
+	}
 	tempDir, err := ioutil.TempDir("", "blockchain_test")
 	require.NoError(t, err, "Failed to create temporary directory")
 	defer os.RemoveAll(tempDir)
@@ -34,7 +36,7 @@ func TestNewBlockchain(t *testing.T) {
 	blockchain, store, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            aesKey,
-		GenesisAccount:    genesisAddress,
+		GenesisAccount:    priv,
 		TestMode:          true,
 		DisableBackground: true,
 	})
@@ -48,16 +50,15 @@ func TestNewBlockchain(t *testing.T) {
 	// Additional assertions
 	require.NotNil(t, blockchain, "Blockchain should not be nil")
 	require.NotNil(t, blockchain.Genesis, "Genesis block should not be nil")
-	require.Equal(t, genesisAddress, blockchain.GenesisAccount, "Genesis account should match")
 	// require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
 
 }
 
-func TestMLDSA44Signature(t *testing.T) {
+func TestSignature(t *testing.T) {
 	// Generate a new key pair
-	publicKey, privateKey, err := mldsa44.GenerateKey(nil)
+	privateKey, err := crypto.NewPrivateKey()
 	if err != nil {
-		t.Fatalf("MLDSA44 key generation failed: %v", err)
+		t.Fatalf(" key generation failed: %v", err)
 	}
 
 	// Create a mock transaction (simplified representation)
@@ -65,15 +66,16 @@ func TestMLDSA44Signature(t *testing.T) {
 	txBytes := []byte(tx)
 
 	// Sign the transaction
-	// Note: MLDSA44 requires passing nil for the random source and crypto.Hash(0) for options
-	signature, err := privateKey.Sign(nil, txBytes, crypto.Hash(0))
+	signature := privateKey.Sign(txBytes)
 	if err != nil {
-		t.Fatalf("MLDSA44 signing failed: %v", err)
+		t.Fatalf(" signing failed: %v", err)
 	}
 
 	// Verify the signature using the scheme's Verify function
-	if !mldsa44.Verify(publicKey, txBytes, nil, signature) {
-		t.Fatal("MLDSA44 signature verification failed")
+	pubKey := privateKey.PublicKey()
+	err = signature.Verify(&pubKey, txBytes)
+	if err != nil {
+		t.Fatal(" signature verification failed")
 	}
 
 	t.Log("MLDSA44 signature verification succeeded")

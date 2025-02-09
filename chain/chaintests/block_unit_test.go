@@ -1,7 +1,6 @@
 package chaintests
 
 import (
-	"crypto"
 	"crypto/rand"
 	"fmt"
 	"hash/fnv"
@@ -9,23 +8,18 @@ import (
 	"testing"
 	"time"
 
-	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
-
-	"github.com/btcsuite/btcutil/bech32"
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
-	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
-	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
 
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
 // Helper function to handle block creation and signing
-// Change the function signature to accept *chain.BlockchainImpl instead of *shared.Blockchain
-func createAndSignBlock(t *testing.T, blockchain *chain.BlockchainImpl, txs []*thrylos.Transaction, validator string, validatorKey *mldsa44.PrivateKey, prevHash []byte) error {
+func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validatorKey *crypto.PrivateKey, prevHash []byte) error {
 	// Convert transactions using existing function
 	sharedTxs := make([]*shared.Transaction, len(txs))
 	for i, tx := range txs {
@@ -38,28 +32,12 @@ func createAndSignBlock(t *testing.T, blockchain *chain.BlockchainImpl, txs []*t
 		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
 	}
 
-	// Validate the validator address
-	if !address.Validate(validator) {
-		return fmt.Errorf("invalid validator address format: %s", validator)
-	}
-
-	// Convert validator string to Address
-	_, validatorBytes, err := bech32.Decode(validator)
-	if err != nil {
-		return fmt.Errorf("failed to decode validator address: %v", err)
-	}
-
-	var validatorAddr address.Address
-	copy(validatorAddr[:], validatorBytes)
-
 	// Create block with proper types
 	block := &shared.Block{
 		Index:              int64(len(blockchain.Blocks)),
 		Timestamp:          time.Now().Unix(),
 		Transactions:       sharedTxs,
-		Validator:          validator,
 		PrevHash:           blockHash,
-		ValidatorAddress:   validatorAddr,
 		ValidatorPublicKey: nil, // This needs to be set based on your requirements
 	}
 
@@ -75,7 +53,9 @@ func createAndSignBlock(t *testing.T, blockchain *chain.BlockchainImpl, txs []*t
 		return fmt.Errorf("failed to generate signature salt: %v", err)
 	}
 	signatureData := append(block.Hash[:], salt...)
-	signature := validatorKey.Sign(signatureData)
+
+	//*validatorKey
+	signature := (*validatorKey).Sign(signatureData)
 
 	// Assign the signature object directly since it implements crypto.Signature
 	block.Signature = signature
@@ -95,32 +75,24 @@ func TestBlockTimeToFinality(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Use predefined genesis account
-	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
+	privKey, err := crypto.NewPrivateKey()
+	require.NoError(t, err, "Failed to generate private key")
+	pubKey := privKey.PublicKey()
+	genesisAddress, err := privKey.PublicKey().Address()
+	require.NoError(t, err, "Failed to get genesis address")
 
 	// Initialize blockchain
 	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 		DataDir:           tempDir,
 		AESKey:            []byte("test-key"),
-		GenesisAccount:    genesisAddress,
+		GenesisAccount:    privKey,
 		TestMode:          true,
 		DisableBackground: true,
 	})
 	require.NoError(t, err, "Failed to create blockchain")
 
-	// Generate MLDSA key pair
-	publicKey, privateKey, err := mldsa.GenerateKey(nil)
-	require.NoError(t, err, "Failed to generate MLDSA key pair")
-
-	wrappedPublicKey := mldsa44.NewPublicKey(*publicKey) // Assuming you have a NewPublicKey constructor
-
-	err = blockchain.Database.InsertOrUpdateMLDSAPublicKey(genesisAddress, wrappedPublicKey)
+	err = blockchain.Database.SavePublicKey(pubKey)
 	require.NoError(t, err, "Failed to store MLDSA public key")
-
-	// Convert the Circl MLDSA private key to your custom type
-	wrappedPrivateKey := mldsa44.NewPrivateKey(*privateKey)
-
-	err = blockchain.ValidatorKeys.StoreKey(genesisAddress, wrappedPrivateKey)
-	require.NoError(t, err, "Failed to store MLDSA private key")
 
 	// Get genesis transaction
 	blockchain.Mu.RLock()
@@ -170,19 +142,19 @@ func TestBlockTimeToFinality(t *testing.T) {
 				tx := &thrylos.Transaction{
 					Id:        fmt.Sprintf("test-tx-%d", i),
 					Timestamp: time.Now().Unix(),
-					Sender:    genesisAddress,
+					Sender:    genesisAddress.String(),
 					Gasfee:    gasAmount,
 					Inputs: []*thrylos.UTXO{
 						{
 							TransactionId: genesisTx.ID,
 							Index:         int32(i),
-							OwnerAddress:  genesisAddress,
+							OwnerAddress:  genesisAddress.String(),
 							Amount:        inputAmount,
 						},
 					},
 					Outputs: []*thrylos.UTXO{
 						{
-							OwnerAddress: genesisAddress,
+							OwnerAddress: genesisAddress.String(),
 							Amount:       outputAmount,
 							Index:        0,
 						},
@@ -203,20 +175,18 @@ func TestBlockTimeToFinality(t *testing.T) {
 						output.Amount))...)
 				}
 
-				signature, err := privateKey.Sign(rand.Reader, signData, crypto.Hash(0))
+				signature := privKey.Sign(signData)
 				require.NoError(t, err, "Failed to sign transaction")
-				tx.Signature = signature
+				tx.Signature = signature.Bytes()
 
 				// Create and sign block
 				blockStart := time.Now()
 
-				// Convert the Circl private key to your custom type
-				wrappedPrivateKey := mldsa44.NewPrivateKey(*privateKey)
-
 				// Convert hash.Hash to []byte
 				prevHashBytes := prevHash.Bytes() // Assuming Hash type has a Bytes() method
 
-				err = createAndSignBlock(t, blockchain, []*thrylos.Transaction{tx}, genesisAddress, wrappedPrivateKey, prevHashBytes)
+				//b:= (blockchain).(*shared.Blockchain)
+				err = createAndSignBlock(t, blockchain.Blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
 				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
 				blockTime := time.Since(blockStart)
 
@@ -307,7 +277,7 @@ func createRealisticTransaction(t *testing.T, blockchain *shared.Blockchain, sen
 	require.True(t, exists, "Failed to get sender's private key")
 
 	// Sign using the correct method signature
-	signature := mldsaPrivKey.Sign(signData)
+	signature := (*mldsaPrivKey).Sign(signData)
 	require.NotNil(t, signature, "Failed to sign transaction")
 
 	tx.Signature = signature.Bytes() // Using the Bytes() method to get the raw signature

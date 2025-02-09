@@ -1,11 +1,8 @@
 package chaintests
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"time"
@@ -198,17 +195,6 @@ func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Tran
 
 	// Return a slice containing the signed transaction.
 	return []shared.Transaction{tx}
-}
-
-// signTransactionData signs the transaction data with the provided RSA private key and returns the base64-encoded signature.
-func signTransactionData(data []byte, privateKey *rsa.PrivateKey) (string, error) {
-	hashedData := sha256.Sum256(data)
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashedData[:])
-	if err != nil {
-		return "", err
-	}
-	encodedSignature := base64.StdEncoding.EncodeToString(signature)
-	return encodedSignature, nil
 }
 
 func TestTransactionSigningAndVerification1(t *testing.T) {

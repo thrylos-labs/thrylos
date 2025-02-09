@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/crypto/mldsa44"
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/network"
 )
 
@@ -51,9 +51,9 @@ type Blockchain struct {
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
 	Database Store // Updated the type to interface
 
-	PublicKeyMap map[string]*mldsa44.PublicKey // To store public keys
+	PublicKeyMap map[string]*crypto.PublicKey // To store public keys
 
-	GenesisAccount string // Add this to store the genesis account address
+	GenesisAccount crypto.PrivateKey // Add this to store the genesis account address
 
 	ConsensusManager *ConsensusManager
 
