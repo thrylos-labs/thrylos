@@ -109,6 +109,6 @@ func TestBlockCreation(t *testing.T) {
 	}
 	err = chain.Verify(b)
 	if err != nil {
-		t.Logf("error verifing the block... this should fail because the block has no transaction: %v", err)
+		t.Logf("error verifing the block... this should fail because the block has no transactions: %v", err)
 	}
 }
