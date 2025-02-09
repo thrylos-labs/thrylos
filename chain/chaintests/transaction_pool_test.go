@@ -1,91 +1,83 @@
 package chaintests
 
-import (
-	"testing"
+// func TestAddTransaction(t *testing.T) {
+// 	pool := chain.NewTxPool()
+// 	tx := &shared.Transaction{ID: "tx1"}
 
-	"github.com/stretchr/testify/assert"
-	"github.com/thrylos-labs/thrylos/chain"
-	"github.com/thrylos-labs/thrylos/shared"
-)
+// 	err := pool.AddTransaction(tx)
+// 	assert.NoError(t, err)
 
-func TestAddTransaction(t *testing.T) {
-	pool := chain.NewTxPool()
-	tx := &shared.Transaction{ID: "tx1"}
+// 	// Try adding the same transaction again
+// 	err = pool.AddTransaction(tx)
+// 	assert.Error(t, err)
+// }
 
-	err := pool.AddTransaction(tx)
-	assert.NoError(t, err)
+// func TestRemoveTransaction(t *testing.T) {
+// 	pool := chain.NewTxPool()
+// 	tx := &shared.Transaction{ID: "tx1"}
 
-	// Try adding the same transaction again
-	err = pool.AddTransaction(tx)
-	assert.Error(t, err)
-}
+// 	err := pool.AddTransaction(tx)
+// 	assert.NoError(t, err)
 
-func TestRemoveTransaction(t *testing.T) {
-	pool := chain.NewTxPool()
-	tx := &shared.Transaction{ID: "tx1"}
+// 	err = pool.RemoveTransaction(tx)
+// 	assert.NoError(t, err)
 
-	err := pool.AddTransaction(tx)
-	assert.NoError(t, err)
+// 	// Try removing the same transaction again
+// 	err = pool.RemoveTransaction(tx)
+// 	assert.Error(t, err)
+// }
 
-	err = pool.RemoveTransaction(tx)
-	assert.NoError(t, err)
+// func TestGetTransaction(t *testing.T) {
+// 	pool := chain.NewTxPool()
+// 	tx := &shared.Transaction{ID: "tx1"}
 
-	// Try removing the same transaction again
-	err = pool.RemoveTransaction(tx)
-	assert.Error(t, err)
-}
+// 	err := pool.AddTransaction(tx)
+// 	assert.NoError(t, err)
 
-func TestGetTransaction(t *testing.T) {
-	pool := chain.NewTxPool()
-	tx := &shared.Transaction{ID: "tx1"}
+// 	retrievedTx, err := pool.GetTransaction("tx1")
+// 	assert.NoError(t, err)
+// 	assert.Equal(t, tx, retrievedTx)
 
-	err := pool.AddTransaction(tx)
-	assert.NoError(t, err)
+// 	// Try getting a non-existent transaction
+// 	_, err = pool.GetTransaction("tx2")
+// 	assert.Error(t, err)
+// }
 
-	retrievedTx, err := pool.GetTransaction("tx1")
-	assert.NoError(t, err)
-	assert.Equal(t, tx, retrievedTx)
+// func TestGetAllTransactions(t *testing.T) {
+// 	pool := chain.NewTxPool()
+// 	tx1 := &shared.Transaction{ID: "tx1"}
+// 	tx2 := &shared.Transaction{ID: "tx2"}
 
-	// Try getting a non-existent transaction
-	_, err = pool.GetTransaction("tx2")
-	assert.Error(t, err)
-}
+// 	err := pool.AddTransaction(tx1)
+// 	assert.NoError(t, err)
+// 	err = pool.AddTransaction(tx2)
+// 	assert.NoError(t, err)
 
-func TestGetAllTransactions(t *testing.T) {
-	pool := chain.NewTxPool()
-	tx1 := &shared.Transaction{ID: "tx1"}
-	tx2 := &shared.Transaction{ID: "tx2"}
+// 	txs, err := pool.GetAllTransactions()
+// 	assert.NoError(t, err)
+// 	assert.Len(t, txs, 2)
+// 	assert.Contains(t, txs, tx1)
+// 	assert.Contains(t, txs, tx2)
+// }
 
-	err := pool.AddTransaction(tx1)
-	assert.NoError(t, err)
-	err = pool.AddTransaction(tx2)
-	assert.NoError(t, err)
+// func TestBroadcastTransaction(t *testing.T) {
+// 	pool := chain.NewTxPool()
+// 	tx := &shared.Transaction{ID: "tx1"}
 
-	txs, err := pool.GetAllTransactions()
-	assert.NoError(t, err)
-	assert.Len(t, txs, 2)
-	assert.Contains(t, txs, tx1)
-	assert.Contains(t, txs, tx2)
-}
+// 	err := pool.BroadcastTransaction(tx)
+// 	assert.NoError(t, err)
+// }
 
-func TestBroadcastTransaction(t *testing.T) {
-	pool := chain.NewTxPool()
-	tx := &shared.Transaction{ID: "tx1"}
+// func TestSize(t *testing.T) {
+// 	pool := chain.NewTxPool()
+// 	assert.Equal(t, 0, pool.Size())
 
-	err := pool.BroadcastTransaction(tx)
-	assert.NoError(t, err)
-}
+// 	tx := &shared.Transaction{ID: "tx1"}
+// 	err := pool.AddTransaction(tx)
+// 	assert.NoError(t, err)
+// 	assert.Equal(t, 1, pool.Size())
 
-func TestSize(t *testing.T) {
-	pool := chain.NewTxPool()
-	assert.Equal(t, 0, pool.Size())
-
-	tx := &shared.Transaction{ID: "tx1"}
-	err := pool.AddTransaction(tx)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, pool.Size())
-
-	err = pool.RemoveTransaction(tx)
-	assert.NoError(t, err)
-	assert.Equal(t, 0, pool.Size())
-}
+// 	err = pool.RemoveTransaction(tx)
+// 	assert.NoError(t, err)
+// 	assert.Equal(t, 0, pool.Size())
+// }

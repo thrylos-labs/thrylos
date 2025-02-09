@@ -161,26 +161,37 @@ package processor
 // 		log.Printf("Transaction [%s] already exists in DAG", txID)
 // 	}
 
-// 	// Process DAG first
-// 	log.Printf("Processing DAG for transaction [%s]", txID)
-// 	if err := dagManager.AddTransaction(tx); err != nil {
-// 		if !strings.Contains(err.Error(), "transaction already exists") {
-// 			log.Printf("ERROR: DAG processing failed for [%s]: %v", txID, err)
-// 			return fmt.Errorf("DAG processing failed: %v", err)
+// 	// Add to transaction pool
+// 	log.Printf("Adding to transaction pool [%s]", txID)
+// 	if err := node.blockchain.txPool.AddTransaction(tx); err != nil {
+// 		if !errors.Is(err, ErrTxAlreadyExists) {
+// 			log.Printf("ERROR: Failed to add [%s] to transaction pool: %v", txID, err)
+// 			return fmt.Errorf("pool addition failed: %v", err)
 // 		}
-// 		log.Printf("Transaction [%s] already exists in DAG", txID)
+// 		log.Printf("Transaction [%s] already exists in pool", txID)
 // 	}
 
-// 	// Add to pending pool
-// 	log.Printf("Adding to pending pool [%s]", txID)
-// 	if err := node.blockchain.AddPendingTransaction(tx); err != nil {
-// 		log.Printf("ERROR: Failed to add [%s] to pending pool: %v", txID, err)
-// 		return fmt.Errorf("pending addition failed: %v", err)
+// 	// Update transaction status
+// 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, TxStatusPending, nil); err != nil {
+// 		log.Printf("Warning: Error updating transaction status: %v", err)
+// 	}
+
+// 	// Check pool size and trigger block creation if needed
+// 	poolSize := node.blockchain.txPool.Size()
+// 	if poolSize == 1 {
+// 		go node.TriggerBlockCreation()
+// 	}
+
+// 	// Clear balance cache
+// 	balanceCache.Delete(tx.Sender)
+// 	for _, output := range tx.Outputs {
+// 		balanceCache.Delete(output.OwnerAddress)
 // 	}
 
 // 	// Process through ModernProcessor
 // 	log.Printf("Adding to ModernProcessor [%s]", txID)
-// 	if err := n.ModernProcessor.AddTransaction(tx); err != nil {
+// 	if err := mp.AddTransaction(tx); err != nil {
+// 		mp.txPool.RemoveTransaction(tx)
 // 		log.Printf("ERROR: ModernProcessor failed for [%s]: %v", txID, err)
 // 		return fmt.Errorf("modern processing failed: %v", err)
 // 	}

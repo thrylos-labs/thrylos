@@ -474,10 +474,10 @@ package network
 // 		return nil, fmt.Errorf("validation timeout")
 // 	}
 
-// Create transaction data
-// var transactionData shared.Transaction
-// transactionData.ID = payload["id"].(string)
-// transactionData.Sender = sender
+// 	// Create transaction data
+// 	var transactionData shared.Transaction
+// 	transactionData.ID = payload["id"].(string)
+// 	transactionData.Sender = sender
 
 // 	// Process numeric fields
 // 	if gasFeeFloat, ok := payload["gasfee"].(float64); ok {
@@ -564,7 +564,7 @@ package network
 // 			return
 // 		}
 
-// 		if err := node.ProcessIncomingTransaction(thrylosTx); err != nil {
+// 		if err := processor.ProcessIncomingTransaction(thrylosTx); err != nil {
 // 			validationComplete <- fmt.Errorf("failed to process transaction: %v", err)
 // 			return
 // 		}

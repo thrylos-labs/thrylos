@@ -6,6 +6,8 @@ import (
 	"github.com/gballet/go-verkle"
 )
 
+// Acts as an organized way to store and verify transaction data
+
 const (
 	KeySize       = 32 // Standard key size for Verkle trees
 	LeafValueSize = 32 // Define LeafValueSize if it's standard for leaf values in Verkle trees

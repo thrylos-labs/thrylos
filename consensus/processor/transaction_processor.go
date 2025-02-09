@@ -1,9 +1,5 @@
 package processor
 
-import (
-	"sync"
-)
-
 // Gas fee constants
 const (
 	BaseGasFee = 1000  // Base fee in microTHRYLOS (0.001 THRYLOS)
@@ -11,16 +7,16 @@ const (
 )
 
 // Staking transaction types
-const (
-	TxTypeStake   = "stake"
-	TxTypeUnstake = "unstake"
-)
+// const (
+// 	TxTypeStake   = "stake"
+// 	TxTypeUnstake = "unstake"
+// )
 
-type TransactionStatus struct {
-	ProcessedByModern bool
-	ConfirmedByDAG    bool
-	sync.Mutex
-}
+// type TransactionStatus struct {
+// 	ProcessedByModern bool
+// 	ConfirmedByDAG    bool
+// 	sync.Mutex
+// }
 
 // func (n *Node) handleProcessedTransaction(tx *thrylos.Transaction) {
 // 	txID := tx.GetId()
@@ -570,80 +566,6 @@ type TransactionStatus struct {
 // 	TxStatusRejected   = "rejected"   // Transaction was rejected (invalid)
 // 	TxStatusProcessing = "processing" // Transaction is being processed
 // )
-
-// // Then update the AddPendingTransaction function to use the constant:
-// func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
-// 	node.Blockchain.Mu.Lock()
-// 	defer node.Blockchain.Mu.Unlock()
-// // Then update the AddPendingTransaction function to use the constant:
-// func (node *Node) AddPendingTransaction(tx *thrylos.Transaction) error {
-// 	node.Blockchain.Mu.Lock()
-// 	defer node.Blockchain.Mu.Unlock()
-
-// 	if tx == nil {
-// 		return fmt.Errorf("cannot add nil transaction")
-// 	}
-// 	if tx == nil {
-// 		return fmt.Errorf("cannot add nil transaction")
-// 	}
-
-// 	log.Printf("=== Starting AddPendingTransaction ===")
-// 	log.Printf("Transaction ID: %s", tx.Id)
-// 	log.Printf("=== Starting AddPendingTransaction ===")
-// 	log.Printf("Transaction ID: %s", tx.Id)
-
-// 	for _, pendingTx := range node.Blockchain.PendingTransactions {
-// 		if pendingTx.Id == tx.Id {
-// 			log.Printf("Warning: Transaction %s already exists in pending pool, skipping", tx.Id)
-// 			return nil
-// 		}
-// 	}
-// 	for _, pendingTx := range node.Blockchain.PendingTransactions {
-// 		if pendingTx.Id == tx.Id {
-// 			log.Printf("Warning: Transaction %s already exists in pending pool, skipping", tx.Id)
-// 			return nil
-// 		}
-// 	}
-
-// 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
-// 	pendingCount := len(node.Blockchain.PendingTransactions)
-// 	node.Blockchain.PendingTransactions = append(node.Blockchain.PendingTransactions, tx)
-// 	pendingCount := len(node.Blockchain.PendingTransactions)
-
-// 	// Use the constant instead of string literal
-// 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, TxStatusPending, nil); err != nil {
-// 		log.Printf("Warning: Error updating transaction status: %v", err)
-// 	}
-// 	// Use the constant instead of string literal
-// 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, TxStatusPending, nil); err != nil {
-// 		log.Printf("Warning: Error updating transaction status: %v", err)
-// 	}
-
-// 	if pendingCount == 1 {
-// 		go node.TriggerBlockCreation()
-// 	}
-// 	if pendingCount == 1 {
-// 		go node.TriggerBlockCreation()
-// 	}
-
-// 	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
-// 		tx.Id, pendingCount)
-// 	log.Printf("Transaction %s successfully added to pending pool. Total pending: %d",
-// 		tx.Id, pendingCount)
-
-// 	balanceCache.Delete(tx.Sender)
-// 	for _, output := range tx.Outputs {
-// 		balanceCache.Delete(output.OwnerAddress)
-// 	}
-// 	balanceCache.Delete(tx.Sender)
-// 	for _, output := range tx.Outputs {
-// 		balanceCache.Delete(output.OwnerAddress)
-// 	}
-
-// 	return nil
-// }
-// 	return nil
-// }
 
 // func (node *Node) GetPendingTransactions() []*thrylos.Transaction {
 // 	return node.PendingTransactions
