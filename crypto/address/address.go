@@ -13,7 +13,7 @@ import (
 
 const (
 	AddressSize   = 32
-	AddressPrefix = "tl"
+	AddressPrefix = "tl1"
 )
 
 type Address [AddressSize]byte
