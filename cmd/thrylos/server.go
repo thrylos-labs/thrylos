@@ -4,11 +4,12 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 
 	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/chain"
 )
 
 type server struct {
 	thrylos.UnimplementedBlockchainServiceServer
-	// db           *database.BlockchainDB        // Include a pointer to BlockchainDB
+	blockchain   *chain.BlockchainImpl
 	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
 	// hasherPool   *XOFPool                      // Add the hasher pool here
 

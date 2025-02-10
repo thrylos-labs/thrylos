@@ -13,6 +13,7 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/store"
 	"github.com/thrylos-labs/thrylos/utils"
@@ -181,6 +182,10 @@ func ConvertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
 	}
 
 	return sharedTx
+}
+
+func (bc *BlockchainImpl) Status() string {
+	return fmt.Sprintf("Height: %d, Blocks: %d", len(bc.Blocks)-1, len(bc.Blocks))
 }
 
 // // // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
@@ -2266,23 +2271,27 @@ func generateSalt() ([]byte, error) {
 // // // CheckChainIntegrity verifies the entire blockchain for hash integrity and chronological order,
 // // // ensuring that no blocks have been altered or inserted maliciously. It's a safeguard against tampering
 // // // and a key component in the blockchain's security mechanisms.
-// func (bc *BlockchainImpl) CheckChainIntegrity() bool {
-// 	for i := 1; i < len(bc.Blocks); i++ {
-// 		prevBlock := bc.Blocks[i-1]
-// 		currentBlock := bc.Blocks[i]
+func (bc *BlockchainImpl) CheckChainIntegrity() bool {
+	for i := 1; i < len(bc.Blocks); i++ {
+		prevBlock := bc.Blocks[i-1]
+		currentBlock := bc.Blocks[i]
 
-// 		if !bytes.Equal(currentBlock.PrevHash, prevBlock.Hash) {
-// 			fmt.Printf("Invalid previous hash in block %d. Expected %x, got %x\n",
-// 				currentBlock.Index, prevBlock.Hash, currentBlock.PrevHash)
-// 			return false
-// 		}
+		if !currentBlock.PrevHash.Equal(prevBlock.Hash) {
+			fmt.Printf("Invalid previous hash in block %d\n", currentBlock.Index)
+			return false
+		}
 
-// 		computedHash := currentBlock.ComputeHash()
-// 		if !bytes.Equal(currentBlock.Hash, computedHash) {
-// 			fmt.Printf("Invalid hash in block %d. Expected %x, got %x\n",
-// 				currentBlock.Index, computedHash, currentBlock.Hash)
-// 			return false
-// 		}
-// 	}
-// 	return true
-// }
+		blockBytes, err := SerializeForSigning(currentBlock)
+		if err != nil {
+			fmt.Printf("Failed to serialize block %d: %v\n", currentBlock.Index, err)
+			return false
+		}
+		computedHash := hash.NewHash(blockBytes)
+
+		if !currentBlock.Hash.Equal(computedHash) {
+			fmt.Printf("Invalid hash in block %d\n", currentBlock.Index)
+			return false
+		}
+	}
+	return true
+}

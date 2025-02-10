@@ -20,7 +20,7 @@ package node
 // 		}
 // 	}()
 
-// 	// Add vote synchronization
+// 	// 	// Add vote synchronization
 // 	tickerVoteSync := time.NewTicker(30 * time.Second)
 // 	go func() {
 // 		for {

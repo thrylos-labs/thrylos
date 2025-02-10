@@ -1,14 +1,9 @@
 package network
 
-import (
-	"net/http"
-	"strings"
-)
-
 // Helper function to check if request is WebSocket
-func isWebSocketRequest(r *http.Request) bool {
-	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
-}
+// func isWebSocketRequest(r *http.Request) bool {
+// 	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
+// }
 
 // func (r *Router) SetupRoutes() *mux.Router {
 // 	router := mux.NewRouter()
