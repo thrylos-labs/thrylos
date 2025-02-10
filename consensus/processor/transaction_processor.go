@@ -7,10 +7,10 @@ const (
 )
 
 // Staking transaction types
-// const (
-// 	TxTypeStake   = "stake"
-// 	TxTypeUnstake = "unstake"
-// )
+const (
+	TxTypeStake   = "stake"
+	TxTypeUnstake = "unstake"
+)
 
 // type TransactionStatus struct {
 // 	ProcessedByModern bool

@@ -5,7 +5,7 @@ package stakingtests
 // 	stakingPeriodStartTime := time.Date(2025, 1, 4, 0, 0, 0, 0, time.UTC).Unix()
 // 	stakingPeriodEndTime := time.Date(2025, 1, 5, 0, 0, 0, 0, time.UTC).Unix()
 
-// 	blockchain := &chain.Blockchain{
+// 	blockchain := &shared.Blockchain{
 // 		Stakeholders: make(map[string]int64),
 // 	}
 

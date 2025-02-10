@@ -1,8 +1,12 @@
 package state
 
-// type StateManagerImpl struct {
-// 	*shared.StateManager
-// }
+import (
+	"github.com/thrylos-labs/thrylos/shared"
+)
+
+type StateManagerImpl struct {
+	*shared.StateManager
+}
 
 // func (sm *StateManagerImpl) StopStateSyncLoop() {
 // 	close(sm.stopChan)

@@ -11,6 +11,9 @@ import (
 	"github.com/thrylos-labs/thrylos/shared"
 )
 
+// The DAG (Directed Acyclic Graph) processor organises transactions into a structure where each new transaction approves a few previous ones.
+// Transactions validate each other instead of waiting for blocks, which makes the system faster as transactions are processed in parallel instead of waiting for a single queue.
+
 const (
 	MaxReferences         = 3    // Maximum number of previous transactions a new transaction can reference
 	MinReferences         = 2    // Minimum number of references required

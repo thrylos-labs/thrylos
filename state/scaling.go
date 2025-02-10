@@ -1,15 +1,12 @@
 package state
 
-// import (
-// 	"log"
-// 	"time"
+import (
+	"github.com/thrylos-labs/thrylos/shared"
+)
 
-// 	"github.com/thrylos-labs/thrylos/shared"
-// )
-
-// type ShardScalingImpl struct {
-// 	*shared.ShardScaling
-// }
+type ShardScalingImpl struct {
+	*shared.ShardScaling
+}
 
 // func NewShardScaling() *ShardScalingImpl {
 // 	return &ShardScaling{

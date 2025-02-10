@@ -3,7 +3,6 @@ package chaintests
 import (
 	"crypto/rand"
 	"fmt"
-	"hash/fnv"
 	"os"
 	"testing"
 	"time"
@@ -235,98 +234,98 @@ func generateAddressForShard(shardID int, nonce int, numShards int) string {
 	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
 }
 
-func createRealisticTransaction(t *testing.T, blockchain *shared.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
-	h := fnv.New32a()
-	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
-	shardID := int(h.Sum32() % uint32(numShards))
+// func createRealisticTransaction(t *testing.T, blockchain *shared.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
+// 	h := fnv.New32a()
+// 	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
+// 	shardID := int(h.Sum32() % uint32(numShards))
 
-	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
+// 	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
 
-	// Rest of the function remains the same
-	inputAmount := int64(5000 + (nonce % 1000))
-	gasAmount := int32(processor.BaseGasFee)
-	outputAmount := inputAmount - int64(gasAmount)
+// 	// Rest of the function remains the same
+// 	inputAmount := int64(5000 + (nonce % 1000))
+// 	gasAmount := int32(processor.BaseGasFee)
+// 	outputAmount := inputAmount - int64(gasAmount)
 
-	tx := &thrylos.Transaction{
-		Id:        fmt.Sprintf("tx-%d-%d", time.Now().UnixNano(), nonce),
-		Timestamp: time.Now().Unix(),
-		Sender:    sender,
-		Gasfee:    gasAmount,
-		Inputs: []*thrylos.UTXO{
-			{
-				TransactionId: fmt.Sprintf("prev-tx-%d", nonce),
-				Index:         int32(nonce),
-				OwnerAddress:  sender,
-				Amount:        inputAmount,
-			},
-		},
-		Outputs: []*thrylos.UTXO{
-			{
-				OwnerAddress: recipientAddress,
-				Amount:       outputAmount,
-				Index:        0,
-			},
-		},
-	}
+// 	tx := &thrylos.Transaction{
+// 		Id:        fmt.Sprintf("tx-%d-%d", time.Now().UnixNano(), nonce),
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    sender,
+// 		Gasfee:    gasAmount,
+// 		Inputs: []*thrylos.UTXO{
+// 			{
+// 				TransactionId: fmt.Sprintf("prev-tx-%d", nonce),
+// 				Index:         int32(nonce),
+// 				OwnerAddress:  sender,
+// 				Amount:        inputAmount,
+// 			},
+// 		},
+// 		Outputs: []*thrylos.UTXO{
+// 			{
+// 				OwnerAddress: recipientAddress,
+// 				Amount:       outputAmount,
+// 				Index:        0,
+// 			},
+// 		},
+// 	}
 
-	// Create signature data
-	signData := createSignatureData(tx)
+// 	// Create signature data
+// 	signData := createSignatureData(tx)
 
-	// Get sender's private key
-	mldsaPrivKey, exists := blockchain.ValidatorKeys.GetKey(sender)
-	require.True(t, exists, "Failed to get sender's private key")
+// 	// Get sender's private key
+// 	mldsaPrivKey, exists := blockchain.ValidatorKeys.GetKey(sender)
+// 	require.True(t, exists, "Failed to get sender's private key")
 
-	// Sign using the correct method signature
-	signature := (*mldsaPrivKey).Sign(signData)
-	require.NotNil(t, signature, "Failed to sign transaction")
+// 	// Sign using the correct method signature
+// 	signature := (*mldsaPrivKey).Sign(signData)
+// 	require.NotNil(t, signature, "Failed to sign transaction")
 
-	tx.Signature = signature.Bytes() // Using the Bytes() method to get the raw signature
-	return tx
-}
+// 	tx.Signature = signature.Bytes() // Using the Bytes() method to get the raw signature
+// 	return tx
+// }
 
-// Helper function to create signature data
-func createSignatureData(tx *thrylos.Transaction) []byte {
-	signData := []byte(fmt.Sprintf("%s%d%s%d",
-		tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
+// // Helper function to create signature data
+// func createSignatureData(tx *thrylos.Transaction) []byte {
+// 	signData := []byte(fmt.Sprintf("%s%d%s%d",
+// 		tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
 
-	for _, input := range tx.Inputs {
-		signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
-			input.TransactionId, input.Index,
-			input.OwnerAddress, input.Amount))...)
-	}
+// 	for _, input := range tx.Inputs {
+// 		signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
+// 			input.TransactionId, input.Index,
+// 			input.OwnerAddress, input.Amount))...)
+// 	}
 
-	for _, output := range tx.Outputs {
-		signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
-			output.OwnerAddress, output.Index,
-			output.Amount))...)
-	}
+// 	for _, output := range tx.Outputs {
+// 		signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
+// 			output.OwnerAddress, output.Index,
+// 			output.Amount))...)
+// 	}
 
-	return signData
-}
+// 	return signData
+// }
 
-// Define the metrics struct
-type ShardMetrics struct {
-	accesses int64
-	modifies int64
-}
+// // Define the metrics struct
+// type ShardMetrics struct {
+// 	accesses int64
+// 	modifies int64
+// }
 
-type ShardMetricsData struct {
-	AccessCount  int64
-	ModifyCount  int64
-	TotalTxCount int64
-	AvgLatency   time.Duration
-	LoadFactor   float64
-}
+// type ShardMetricsData struct {
+// 	AccessCount  int64
+// 	ModifyCount  int64
+// 	TotalTxCount int64
+// 	AvgLatency   time.Duration
+// 	LoadFactor   float64
+// }
 
-func getScalingAction(needsSplit, needsMerge bool) string {
-	if needsSplit {
-		return "Split"
-	}
-	if needsMerge {
-		return "Merge"
-	}
-	return "None"
-}
+// func getScalingAction(needsSplit, needsMerge bool) string {
+// 	if needsSplit {
+// 		return "Split"
+// 	}
+// 	if needsMerge {
+// 		return "Merge"
+// 	}
+// 	return "None"
+// }
 
 // func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 // 	// Create test directory
@@ -353,29 +352,41 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 // 	stateManager := state.NewStateManager(networkHandler, numShards)
 // 	defer stateManager.StopStateSyncLoop()
 
+// 	privKey, err := crypto.NewPrivateKey()
+// 	if err != nil {
+// 		t.Fatalf("Failed to generate private key: %v", err)
+// 	}
+
 // 	// Initialize blockchain with genesis account and state manager
 // 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 // 	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
 // 		DataDir:           tempDir,
 // 		AESKey:            []byte("test-key"),
-// 		GenesisAccount:    genesisAddress,
+// 		GenesisAccount:    privKey,
 // 		TestMode:          true,
 // 		DisableBackground: true,
-// 		StateManager:      stateManager,
+// 		StateManager:      stateManager.StateManager,
 // 	})
 // 	require.NoError(t, err, "Failed to create blockchain")
 
-// 	// Initialize batch processor
 // 	node := &node.Node{
-// 		Blockchain:   blockchain,
-// 		BlockTrigger: make(chan struct{}, 1),
+// 		config:     &config.Config{},
+// 		state:      state.NewState(),
+// 		txPool:     shared.NewTxPool(),
+// 		validator:  shared.NewValidator(),
+// 		blockchain: blockchain,
+// 		messageCh:  make(chan shared.Message, 100), // Message channel for node communication
 // 	}
 
+// 	// Start message handler for node
+// 	go node.handleMessages()
+
 // 	// Initialize DAG Manager first
-// 	node.DAGManager = processor.NewDAGManager(node)
+// 	dagManager := processor.NewDAGManager()
+// 	node.DAGManager = dagManager
 
 // 	// Initialize ModernProcessor instead of BatchProcessor
-// 	node.ModernProcessor = processor.NewModernProcessor(node)
+// 	node.ModernProcessor = processor.NewModernProcessor()
 // 	node.ModernProcessor.Start()
 
 // 	// Setup validators

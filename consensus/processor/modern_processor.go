@@ -1,5 +1,7 @@
 package processor
 
+// With the modern processor transactions are assigned to workers (parallel processors) each worker processes transactions in a specific shard, which makes it more scalable.
+
 // type ModernProcessor struct {
 // 	workerCount    int
 // 	workers        []*txWorker

@@ -313,7 +313,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 		StateNetwork:        stateNetwork,
 		//ValidatorKeys:       validatorKeys,
 		TestMode: config.TestMode,
-		// StateManager:        stateManager,
+		// StateManager: shared.StateManager
 	}
 
 	// Add the blockchain public key to the publicKeyMap

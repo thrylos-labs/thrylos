@@ -1,101 +1,7 @@
 package network
 
-// import (
-// 	"sync"
-
-// 	"github.com/ethereum/go-ethereum/node"
-// 	"github.com/gorilla/websocket"
-// )
-
-// const (
-// 	// Time allowed to write a message to the peer.
-// 	writeWait = 10 * time.Second
-
-// 	// Time allowed to read the next pong message from the peer.
-// 	pongWait = 60 * time.Second
-
-// 	// Send pings to peer with this period. Must be less than pongWait.
-// 	pingPeriod = (pongWait * 9) / 10
-
-// 	// Maximum message size allowed from peer.
-// 	maxMessageSize = 512
-
-// 	// Maximum number of reconnection attempts
-// 	maxReconnectAttempts = 5
-
-// 	// Initial backoff delay
-// 	initialBackoff = 1 * time.Second
-
-// 	// Maximum backoff delay
-// 	maxBackoff = 30 * time.Second
-
-// 	maxRetryAttempts = 3
-// 	retryDelay       = 500 * time.Millisecond
-// 	messageQueueSize = 100
-// )
-
-// type WebSocketManager struct {
-// 	node        *node.Node
-// 	connections map[string]*WebSocketConnection
-// 	mutex       sync.RWMutex
-// 	upgrader    websocket.Upgrader
-// }
-
-// func NewWebSocketManager(node *node.Node) *WebSocketManager {
-// 	return &WebSocketManager{
-// 		node:        node,
-// 		connections: make(map[string]*WebSocketConnection),
-// 		upgrader: websocket.Upgrader{
-// 			CheckOrigin: func(r *http.Request) bool {
-// 				origin := r.Header.Get("Origin")
-// 				allowedOrigins := []string{"http://localhost:3000", "https://node.thrylos.org"}
-// 				for _, allowedOrigin := range allowedOrigins {
-// 					if origin == allowedOrigin {
-// 						return true
-// 					}
-// 				}
-// 				return false
-// 			},
-// 		},
-// 	}
-// }
-
-// type MessageItem struct {
-// 	data    []byte
-// 	retries int
-// 	created time.Time
-// }
-
-// type Subscription struct {
-// 	Type      string                 `json:"type"`
-// 	Addresses []string               `json:"addresses,omitempty"`
-// 	Options   map[string]interface{} `json:"options,omitempty"`
-// }
-
-// // Add ConnectionStatus struct
-// type ConnectionStatus struct {
-// 	Address         string    `json:"address"`
-// 	Connected       bool      `json:"connected"`
-// 	LastConnected   time.Time `json:"lastConnected"`
-// 	ReconnectCount  int       `json:"reconnectCount"`
-// 	QueueSize       int       `json:"queueSize"`
-// 	IsReconnecting  bool      `json:"isReconnecting"`
-// 	LastMessageSent time.Time `json:"lastMessageSent"`
-// }
-
-// // WebSocketConnection represents an active WebSocket connection
-// type WebSocketConnection struct {
-// 	ws              *websocket.Conn
-// 	send            chan []byte
-// 	messageQueue    []*MessageItem
-// 	queueMutex      sync.Mutex
-// 	reconnectCount  int
-// 	lastConnectTime time.Time
-// 	isReconnecting  bool
-// 	done            chan struct{}
-// 	subscriptions   []*Subscription
-// 	subscriptionID  int64
-// 	mutex           sync.RWMutex
+// type WebsocketImpl struct {
+// 	*shared.WebSocketManager
 // }
 
 // func (m *WebSocketManager) handleWebSocketSubscription(w http.ResponseWriter, r *http.Request, params []interface{}) {
@@ -114,13 +20,43 @@ package network
 // 		return
 // 	}
 
+// 	responseCh := make(chan shared.Response)
+
 // 	switch sub.Type {
 // 	case "balance":
-// 		node.subscribeToBalance(sub)
+// 		// Handle multiple addresses
+// 		for _, addr := range sub.Addresses {
+// 			shared.GetMessageBus().Publish(shared.Message{
+// 				Type:       shared.GetBalance,
+// 				Data:       shared.UTXORequest{Address: addr},
+// 				ResponseCh: responseCh,
+// 			})
+
+// 			response := <-responseCh
+// 			if response.Error != nil {
+// 				log.Printf("Balance subscription error for address %s: %v", addr, response.Error)
+// 				continue
+// 			}
+// 		}
 // 	case "transactions":
-// 		node.subscribeToTransactions(sub)
+// 		shared.GetMessageBus().Publish(shared.Message{
+// 			Type:       shared.ProcessTransaction,
+// 			Data:       sub,
+// 			ResponseCh: responseCh,
+// 		})
 // 	case "blocks":
-// 		node.subscribeToBlocks(sub)
+// 		shared.GetMessageBus().Publish(shared.Message{
+// 			Type:       shared.ProcessBlock,
+// 			Data:       sub,
+// 			ResponseCh: responseCh,
+// 		})
+// 	}
+
+// 	// Handle response if needed
+// 	response := <-responseCh
+// 	if response.Error != nil {
+// 		log.Printf("Subscription error: %v", response.Error)
+// 		return
 // 	}
 // }
 
@@ -143,9 +79,9 @@ package network
 // 	}
 
 // 	m.mutex.Lock()
-// 	defer node.WebSocketMutex.Unlock()
+// 	defer m.mutex.Unlock()
 
-// 	// Close the websocket connection if it exists
+// 	// Close the websocket connection
 // 	if conn.ws != nil {
 // 		conn.ws.WriteControl(
 // 			websocket.CloseMessage,
@@ -169,7 +105,7 @@ package network
 // 		close(conn.send)
 // 	}
 
-// 	delete(node.WebSocketConnections, address)
+// 	delete(m.connections, address)
 // 	log.Printf("WebSocket connection closed for address: %s", address)
 // }
 
@@ -246,19 +182,18 @@ package network
 
 // 	switch unsub.Type {
 // 	case "balance":
-// 		node.unsubscribeFromBalance(unsub.Addresses)
+// 		m.unsubscribeFromBalance(unsub.Addresses)
 // 	case "transactions":
-// 		node.unsubscribeFromTransactions(unsub.Addresses)
+// 		m.unsubscribeFromTransactions(unsub.Addresses)
 // 	case "blocks":
-// 		node.unsubscribeFromBlocks(unsub.Addresses)
+// 		m.unsubscribeFromBlocks(unsub.Addresses)
 // 	}
 // }
 
 // func (m *WebSocketManager) unsubscribeFromBalance(addresses []string) {
 // 	for _, address := range addresses {
 // 		m.mutex.Lock()
-// 		if conn, exists := node.WebSocketConnections[address]; exists {
-// 			// Remove balance subscriptions
+// 		if conn, exists := m.connections[address]; exists {
 // 			var remainingSubs []*Subscription
 // 			for _, sub := range conn.subscriptions {
 // 				if sub.Type != "balance" {
@@ -266,16 +201,25 @@ package network
 // 				}
 // 			}
 // 			conn.subscriptions = remainingSubs
+
+// 			// Notify through message bus
+// 			responseCh := make(chan shared.Response)
+// 			shared.GetMessageBus().Publish(shared.Message{
+// 				Type: shared.UpdateState,
+// 				Data: shared.UpdateStateRequest{
+// 					Address: address,
+// 				},
+// 				ResponseCh: responseCh,
+// 			})
 // 		}
-// 		node.WebSocketMutex.Unlock()
+// 		m.mutex.Unlock()
 // 	}
 // }
 
 // func (m *WebSocketManager) unsubscribeFromTransactions(addresses []string) {
-// 	// Implementation similar to unsubscribeFromBalance
 // 	for _, address := range addresses {
 // 		m.mutex.Lock()
-// 		if conn, exists := node.WebSocketConnections[address]; exists {
+// 		if conn, exists := m.connections[address]; exists {
 // 			var remainingSubs []*Subscription
 // 			for _, sub := range conn.subscriptions {
 // 				if sub.Type != "transactions" {
@@ -283,16 +227,25 @@ package network
 // 				}
 // 			}
 // 			conn.subscriptions = remainingSubs
+
+// 			responseCh := make(chan shared.Response)
+// 			shared.GetMessageBus().Publish(shared.Message{
+// 				Type: shared.ProcessTransaction,
+// 				Data: shared.UpdateProcessorStateRequest{
+// 					TransactionID: address,
+// 					State:         "unsubscribed",
+// 				},
+// 				ResponseCh: responseCh,
+// 			})
 // 		}
-// 		node.WebSocketMutex.Unlock()
+// 		m.mutex.Unlock()
 // 	}
 // }
 
 // func (m *WebSocketManager) unsubscribeFromBlocks(addresses []string) {
-// 	// Implementation similar to unsubscribeFromBalance
 // 	for _, address := range addresses {
 // 		m.mutex.Lock()
-// 		if conn, exists := node.WebSocketConnections[address]; exists {
+// 		if conn, exists := m.connections[address]; exists {
 // 			var remainingSubs []*Subscription
 // 			for _, sub := range conn.subscriptions {
 // 				if sub.Type != "blocks" {
@@ -300,33 +253,59 @@ package network
 // 				}
 // 			}
 // 			conn.subscriptions = remainingSubs
+
+// 			responseCh := make(chan shared.Response)
+// 			shared.GetMessageBus().Publish(shared.Message{
+// 				Type: shared.ProcessBlock,
+// 				Data: shared.UpdateProcessorStateRequest{
+// 					TransactionID: address,
+// 					State:         "unsubscribed",
+// 				},
+// 				ResponseCh: responseCh,
+// 			})
 // 		}
-// 		node.WebSocketMutex.Unlock()
+// 		m.mutex.Unlock()
 // 	}
 // }
 
 // // Add placeholder implementations for these methods
 // func (m *WebSocketManager) subscribeToTransactions(sub *Subscription) {
-// 	// Implementation for transaction subscriptions
 // 	for _, address := range sub.Addresses {
 // 		m.mutex.Lock()
-// 		if conn, exists := node.WebSocketConnections[address]; exists {
+// 		if conn, exists := m.connections[address]; exists {
 // 			conn.subscriptions = append(conn.subscriptions, sub)
-// 			// Initialize transaction monitoring for this address
+
+// 			responseCh := make(chan shared.Response)
+// 			shared.GetMessageBus().Publish(shared.Message{
+// 				Type: shared.ProcessTransaction,
+// 				Data: shared.UpdateProcessorStateRequest{
+// 					TransactionID: address,
+// 					State:         "subscribed",
+// 				},
+// 				ResponseCh: responseCh,
+// 			})
 // 		}
-// 		node.WebSocketMutex.Unlock()
+// 		m.mutex.Unlock()
 // 	}
 // }
 
 // func (m *WebSocketManager) subscribeToBlocks(sub *Subscription) {
-// 	// Implementation for block subscriptions
 // 	for _, address := range sub.Addresses {
 // 		m.mutex.Lock()
-// 		if conn, exists := node.WebSocketConnections[address]; exists {
+// 		if conn, exists := m.connections[address]; exists {
 // 			conn.subscriptions = append(conn.subscriptions, sub)
-// 			// Initialize block monitoring for this address
+
+// 			responseCh := make(chan shared.Response)
+// 			shared.GetMessageBus().Publish(shared.Message{
+// 				Type: shared.ProcessBlock,
+// 				Data: shared.UpdateProcessorStateRequest{
+// 					TransactionID: address,
+// 					State:         "subscribed",
+// 				},
+// 				ResponseCh: responseCh,
+// 			})
 // 		}
-// 		node.WebSocketMutex.Unlock()
+// 		m.mutex.Unlock()
 // 	}
 // }
 
@@ -363,18 +342,17 @@ package network
 // 	}
 // }
 
+// // Update message type for connection status
 // func (m *WebSocketManager) handleReconnection(address string) {
-// 	// Add mutex lock for reading connection
-// 	node.WebSocketMutex.RLock()
-// 	conn, exists := node.WebSocketConnections[address]
-// 	node.WebSocketMutex.RUnlock()
+// 	m.mutex.RLock()
+// 	conn, exists := m.connections[address]
+// 	m.mutex.RUnlock()
 
 // 	if !exists || conn == nil {
 // 		log.Printf("No valid connection found for address: %s", address)
 // 		return
 // 	}
 
-// 	// Check if we're already trying to reconnect
 // 	if conn.isReconnecting {
 // 		log.Printf("Already attempting to reconnect for address: %s", address)
 // 		return
@@ -382,11 +360,10 @@ package network
 
 // 	if conn.reconnectCount >= maxReconnectAttempts {
 // 		log.Printf("Max reconnection attempts reached for %s", address)
-// 		node.closeWebSocket(conn, address)
+// 		m.closeWebSocket(conn, address)
 // 		return
 // 	}
 
-// 	// Calculate backoff duration with exponential increase
 // 	backoff := initialBackoff * time.Duration(1<<uint(conn.reconnectCount))
 // 	if backoff > maxBackoff {
 // 		backoff = maxBackoff
@@ -400,10 +377,19 @@ package network
 
 // 	time.Sleep(backoff)
 
-// 	// Attempt to establish new connection
-// 	if err := node.reestablishConnection(address); err != nil {
+// 	// Notify about connection status
+// 	responseCh := make(chan shared.Response)
+// 	shared.GetMessageBus().Publish(shared.Message{
+// 		Type: shared.UpdateState,
+// 		Data: shared.UpdateStateRequest{
+// 			Address: address,
+// 			Balance: 0, // Use appropriate balance value if needed
+// 		},
+// 		ResponseCh: responseCh,
+// 	})
+
+// 	if err := m.reestablishConnection(address); err != nil {
 // 		log.Printf("Reconnection failed for %s: %v", address, err)
-// 		// Reset isReconnecting flag before attempting again
 // 		conn.isReconnecting = false
 // 		go m.handleReconnection(address)
 // 	} else {
@@ -415,42 +401,50 @@ package network
 
 // func (m *WebSocketManager) reestablishConnection(address string) error {
 // 	m.mutex.Lock()
-// 	defer node.WebSocketMutex.Unlock()
+// 	defer m.mutex.Unlock()
 
-// 	conn, exists := node.WebSocketConnections[address]
+// 	conn, exists := m.connections[address]
 // 	if !exists {
 // 		return fmt.Errorf("no connection found for address: %s", address)
 // 	}
 
-// 	// Ensure old connection is properly closed
 // 	if conn.ws != nil {
 // 		conn.close()
 // 	}
 
-// 	// Create a new WebSocket connection
 // 	dialer := websocket.Dialer{
 // 		HandshakeTimeout: 10 * time.Second,
 // 		Subprotocols:     []string{"thrylos-protocol"},
 // 	}
 
-// 	// Create request header
 // 	header := http.Header{}
 // 	header.Add("Origin", "http://localhost:3000")
 // 	header.Add("Sec-WebSocket-Protocol", "thrylos-protocol")
 
-// 	wsURL := fmt.Sprintf("ws://%s/ws/balance?address=%s", node.serverHost, address)
+// 	// Get server host through message bus
+// 	responseCh := make(chan shared.Response)
+// 	shared.GetMessageBus().Publish(shared.Message{
+// 		Type:       shared.IsCounterNode,
+// 		ResponseCh: responseCh,
+// 	})
+// 	response := <-responseCh
+
+// 	serverHost, ok := response.Data.(string)
+// 	if !ok {
+// 		return fmt.Errorf("failed to get server host")
+// 	}
+
+// 	wsURL := fmt.Sprintf("ws://%s/ws/balance?address=%s", serverHost, address)
 // 	ws, _, err := dialer.Dial(wsURL, header)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to establish WebSocket connection: %v", err)
 // 	}
 
-// 	// Create new connection instance
 // 	newConn := NewWebSocketConnection(ws)
-// 	node.WebSocketConnections[address] = newConn
+// 	m.connections[address] = newConn
 
-// 	// Start new pumps
-// 	go node.writePump(newConn, address)
-// 	go node.readPump(newConn, address)
+// 	go m.writePump(newConn, address)
+// 	go m.readPump(newConn, address)
 
 // 	return nil
 // }
@@ -480,8 +474,7 @@ package network
 // 		return
 // 	}
 
-// 	// Upgrade connection with error handling
-// 	ws, err := upgrader.Upgrade(w, r, nil)
+// 	ws, err := m.upgrader.Upgrade(w, r, nil)
 // 	if err != nil {
 // 		log.Printf("Failed to upgrade to WebSocket: %v", err)
 // 		http.Error(w, "WebSocket upgrade failed", http.StatusInternalServerError)
@@ -489,29 +482,36 @@ package network
 // 	}
 
 // 	m.mutex.Lock()
-// 	// Clean up existing connection if it exists
-// 	if existingConn, exists := node.WebSocketConnections[address]; exists {
+// 	if existingConn, exists := m.connections[address]; exists {
 // 		if existingConn != nil {
 // 			close(existingConn.done)
 // 			if existingConn.ws != nil {
 // 				existingConn.ws.Close()
 // 			}
 // 		}
-// 		delete(node.WebSocketConnections, address)
+// 		delete(m.connections, address)
 // 	}
 
-// 	// Create new connection
 // 	conn := NewWebSocketConnection(ws)
-// 	node.WebSocketConnections[address] = conn
-// 	node.WebSocketMutex.Unlock()
+// 	m.connections[address] = conn
+// 	m.mutex.Unlock()
 
-// 	// Start the read/write pumps
-// 	go node.writePump(conn, address)
-// 	go node.readPump(conn, address)
+// 	go m.writePump(conn, address)
+// 	go m.readPump(conn, address)
 
-// 	// Send initial balance update with error handling
-// 	if err := node.SendBalanceUpdate(address); err != nil {
-// 		log.Printf("Error sending initial balance update for address %s: %v", address, err)
+// 	// Send initial balance update using message bus
+// 	responseCh := make(chan shared.Response)
+// 	shared.GetMessageBus().Publish(shared.Message{
+// 		Type: shared.GetBalance,
+// 		Data: shared.UTXORequest{
+// 			Address: address,
+// 		},
+// 		ResponseCh: responseCh,
+// 	})
+
+// 	response := <-responseCh
+// 	if response.Error != nil {
+// 		log.Printf("Error sending initial balance update for address %s: %v", address, response.Error)
 // 	}
 // }
 
@@ -522,7 +522,7 @@ package network
 // 		if !conn.isReconnecting {
 // 			// Gracefully close before reconnecting
 // 			conn.close()
-// 			go node.handleReconnection(address)
+// 			go m.handleReconnection(address)
 // 		}
 // 	}()
 
@@ -556,8 +556,8 @@ package network
 // func (m *WebSocketManager) readPump(conn *WebSocketConnection, address string) {
 // 	defer func() {
 // 		m.mutex.Lock()
-// 		delete(node.WebSocketConnections, address)
-// 		node.WebSocketMutex.Unlock()
+// 		delete(m.connections, address)
+// 		m.mutex.Unlock()
 // 		conn.ws.Close()
 // 	}()
 
@@ -577,18 +577,29 @@ package network
 // 			break
 // 		}
 
-// 		// Process message if needed
-// 		log.Printf("Received message from %s: %s", address, string(message))
+// 		// Process message through message bus
+// 		responseCh := make(chan shared.Response)
+// 		shared.GetMessageBus().Publish(shared.Message{
+// 			Type:       shared.ProcessTransaction,
+// 			Data:       message,
+// 			ResponseCh: responseCh,
+// 		})
+
+// 		response := <-responseCh
+// 		if response.Error != nil {
+// 			log.Printf("Error processing message from %s: %v", address, response.Error)
+// 		}
 // 	}
 // }
 
 // func (m *WebSocketManager) HandleBlockchainEvent(address string) {
-// 	node.WebSocketMutex.RLock()
-// 	_, exists := node.WebSocketConnections[address]
-// 	node.WebSocketMutex.RUnlock()
+// 	m.mutex.RLock()
+// 	_, exists := m.connections[address]
+// 	m.mutex.RUnlock()
 
 // 	if exists {
-// 		if err := node.SendBalanceUpdate(address); err != nil {
+// 		// Send balance update using message bus
+// 		if err := m.SendBalanceUpdate(address); err != nil {
 // 			log.Printf("Error sending balance update for address %s: %v", address, err)
 // 		} else {
 // 			log.Printf("Balance update sent for address %s", address)
@@ -599,9 +610,23 @@ package network
 // // SendBalanceUpdate sends a balance update through the websocket
 // // In your Go backend, modify SendBalanceUpdate:
 // func (m *WebSocketManager) SendBalanceUpdate(address string) error {
-// 	balance, err := m.node.GetBalance(address)
-// 	if err != nil {
-// 		return err
+// 	responseCh := make(chan shared.Response)
+// 	shared.GetMessageBus().Publish(shared.Message{
+// 		Type: shared.GetBalance,
+// 		Data: shared.UTXORequest{
+// 			Address: address,
+// 		},
+// 		ResponseCh: responseCh,
+// 	})
+
+// 	response := <-responseCh
+// 	if response.Error != nil {
+// 		return response.Error
+// 	}
+
+// 	balance, ok := response.Data.(int64)
+// 	if !ok {
+// 		return fmt.Errorf("invalid balance data type")
 // 	}
 
 // 	notification := map[string]interface{}{
@@ -682,15 +707,27 @@ package network
 // 		return
 // 	}
 
-// 	node.WebSocketMutex.RLock()
-// 	conn, exists := node.WebSocketConnections[address]
-// 	node.WebSocketMutex.RUnlock()
+// 	m.mutex.RLock()
+// 	conn, exists := m.connections[address]
+// 	m.mutex.RUnlock()
 
-// 	// Get current balance
-// 	balance, err := m.node.GetBalance(address)
-// 	if err != nil {
-// 		log.Printf("Error getting balance for %s: %v", address, err)
+// 	// Get balance through message bus
+// 	responseCh := make(chan shared.Response)
+// 	shared.GetMessageBus().Publish(shared.Message{
+// 		Type: shared.GetBalance,
+// 		Data: shared.UTXORequest{
+// 			Address: address,
+// 		},
+// 		ResponseCh: responseCh,
+// 	})
+
+// 	response := <-responseCh
+// 	var balance int64
+// 	if response.Error != nil {
+// 		log.Printf("Error getting balance for %s: %v", address, response.Error)
 // 		balance = 0
+// 	} else {
+// 		balance, _ = response.Data.(int64)
 // 	}
 
 // 	balanceThrylos := float64(balance) / 1e7
