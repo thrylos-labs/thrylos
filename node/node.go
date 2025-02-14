@@ -1,55 +1,42 @@
 package node
 
-import (
-	"sync"
-
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/balance"
-	"github.com/thrylos-labs/thrylos/config"
-	"github.com/thrylos-labs/thrylos/consensus/processor"
-	"github.com/thrylos-labs/thrylos/consensus/validator"
-	"github.com/thrylos-labs/thrylos/state"
-	"github.com/thrylos-labs/thrylos/types"
-)
-
-type Node struct {
-	config     *config.Config
-	store      *types.Store
-	state      *state.State
-	txPool     *types.TxPool
-	validator  *types.Validator
-	blockchain *types.Blockchain
-	DAGManager *processor.DAGManager
-	// ModernProcessor      *processor.ModernProcessor
-	messageCh           chan types.Message
-	BalanceManager      *balance.Manager
-	Database            types.Store
-	StateManager        *types.StateManager
-	PendingTransactions []*thrylos.Transaction
-	PublicKeyMap        map[string]mldsa44.PublicKey
-	chainID             string
-	ResponsibleUTXOs    map[string]types.UTXO
-	GasEstimateURL      string
-	Mu                  sync.RWMutex
-	// WebSocketConnections map[string]*network.WebSocketConnection
-	WebSocketMutex sync.RWMutex
-	// balanceUpdateQueue   *BalanceUpdateQueue
-	// blockProducer        *chain.ModernBlockProducer
-	// StakingService       *staking.StakingService
-	serverHost   string
-	useSSL       bool
-	BlockTrigger chan struct{}
-	// Peers        map[string]*network.PeerConnection
-	PeerMu      sync.RWMutex
-	MaxInbound  int
-	MaxOutbound int
-	txStatusMap sync.Map
-	VoteCounter *validator.VoteCounter
-	// ValidatorSelector    *validators.ValidatorSelector
-	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
-	VoteCounterAddress string // Address of the designated vote counter
-}
+// type Node struct {
+// 	config     *config.Config
+// 	store      *types.Store
+// 	state      *state.State
+// 	txPool     *types.TxPool
+// 	validator  *types.Validator
+// 	blockchain *types.Blockchain
+// 	DAGManager *processor.DAGManager
+// 	// ModernProcessor      *processor.ModernProcessor
+// 	messageCh           chan types.Message
+// 	BalanceManager      *balance.Manager
+// 	Database            types.Store
+// 	StateManager        *types.StateManager
+// 	PendingTransactions []*thrylos.Transaction
+// 	PublicKeyMap        map[string]mldsa44.PublicKey
+// 	chainID             string
+// 	ResponsibleUTXOs    map[string]types.UTXO
+// 	GasEstimateURL      string
+// 	Mu                  sync.RWMutex
+// 	// WebSocketConnections map[string]*network.WebSocketConnection
+// 	WebSocketMutex sync.RWMutex
+// 	// balanceUpdateQueue   *BalanceUpdateQueue
+// 	// blockProducer        *chain.ModernBlockProducer
+// 	// StakingService       *staking.StakingService
+// 	serverHost   string
+// 	useSSL       bool
+// 	BlockTrigger chan struct{}
+// 	// Peers        map[string]*network.PeerConnection
+// 	PeerMu      sync.RWMutex
+// 	MaxInbound  int
+// 	MaxOutbound int
+// 	txStatusMap sync.Map
+// 	VoteCounter *validator.VoteCounter
+// 	// ValidatorSelector    *validators.ValidatorSelector
+// 	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
+// 	VoteCounterAddress string // Address of the designated vote counter
+// }
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.

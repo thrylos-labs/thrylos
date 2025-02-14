@@ -7,12 +7,11 @@ package chaintests
 // 		log.Printf("Note: .env.dev file not found, using default test values")
 // 	}
 
-// 	// Use a predefined valid Bech32 address for genesis
-// 	//genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 // 	priv, err := crypto.NewPrivateKey()
 // 	if err != nil {
-// 		t.Log("Error generating the private key for the genesis account")
+// 		t.Fatal("Error generating the private key for the genesis account")
 // 	}
+
 // 	tempDir, err := ioutil.TempDir("", "blockchain_test")
 // 	require.NoError(t, err, "Failed to create temporary directory")
 // 	defer os.RemoveAll(tempDir)
@@ -36,9 +35,8 @@ package chaintests
 
 // 	// Additional assertions
 // 	require.NotNil(t, blockchain, "Blockchain should not be nil")
-// 	require.NotNil(t, blockchain.Genesis, "Genesis block should not be nil")
-// 	// require.Greater(t, len(blockchain.ActiveValidators), 0, "Should have active validators")
-
+// 	require.NotNil(t, blockchain.Blockchain, "Blockchain.Blockchain should not be nil")
+// 	require.NotNil(t, blockchain.Blockchain.Genesis, "Genesis block should not be nil")
 // }
 
 // func TestSignature(t *testing.T) {

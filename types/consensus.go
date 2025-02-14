@@ -15,8 +15,8 @@ type BlockchainInterface interface {
 	RetrievePublicKey(validator string) ([]byte, error)
 	GetMinStakeForValidator() *big.Int
 	Stakeholders() map[string]int64
-	AddPendingTransaction(tx *Transaction) error
 	GetActiveValidators() []string // Add this method to the interface
+
 }
 
 type ConsensusManager struct {

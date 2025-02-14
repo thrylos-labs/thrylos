@@ -8,7 +8,6 @@ import (
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/types"
-	// other necessary imports
 )
 
 // NewBlock creates a new block with the specified parameters, including the index, transactions,

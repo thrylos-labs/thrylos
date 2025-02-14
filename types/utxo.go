@@ -1,4 +1,3 @@
-// types/utxo.go
 package types
 
 import (

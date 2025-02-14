@@ -12,9 +12,7 @@ import (
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/types"
-	"github.com/thrylos-labs/thrylos/utils"
 )
 
 func ConvertToThrylosTransaction(tx *types.Transaction) (*thrylos.Transaction, error) {
@@ -332,52 +330,52 @@ func convertOutputsToJSON(outputs []*thrylos.UTXO) []map[string]interface{} {
 }
 
 // ConvertSharedToThrylos converts a shared.Transaction to a thrylos.Transaction.
-func ValidateAndConvertTransaction(
-	tx *thrylos.Transaction,
-	db types.Store, // Changed from BlockchainDBInterface to types.Store
-	publicKey *mldsa44.PublicKey,
-	estimator utils.GasEstimator,
-	balance int64,
-) error {
-	if tx == nil {
-		return fmt.Errorf("transaction is nil")
-	}
-	if db == nil {
-		return fmt.Errorf("database interface is nil")
-	}
-	if estimator == nil {
-		return fmt.Errorf("gas estimator is nil")
-	}
-	if publicKey == nil {
-		return fmt.Errorf("public key is nil")
-	}
+// func ValidateAndConvertTransaction(
+// 	tx *thrylos.Transaction,
+// 	db types.Store, // Changed from BlockchainDBInterface to types.Store
+// 	publicKey *mldsa44.PublicKey,
+// 	estimator utils.GasEstimator,
+// 	balance int64,
+// ) error {
+// 	if tx == nil {
+// 		return fmt.Errorf("transaction is nil")
+// 	}
+// 	if db == nil {
+// 		return fmt.Errorf("database interface is nil")
+// 	}
+// 	if estimator == nil {
+// 		return fmt.Errorf("gas estimator is nil")
+// 	}
+// 	if publicKey == nil {
+// 		return fmt.Errorf("public key is nil")
+// 	}
 
-	// Validate sender exists in system
-	if tx.Sender == "" {
-		return fmt.Errorf("transaction sender is empty")
-	}
+// 	// Validate sender exists in system
+// 	if tx.Sender == "" {
+// 		return fmt.Errorf("transaction sender is empty")
+// 	}
 
-	// Verify the public key matches the sender's address
-	derivedAddress, err := deriveAddressFromPublicKey(publicKey)
-	if err != nil {
-		return fmt.Errorf("failed to derive address from public key: %v", err)
-	}
-	if derivedAddress != tx.Sender {
-		return fmt.Errorf("public key does not match sender address")
-	}
+// 	// Verify the public key matches the sender's address
+// 	derivedAddress, err := deriveAddressFromPublicKey(publicKey)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to derive address from public key: %v", err)
+// 	}
+// 	if derivedAddress != tx.Sender {
+// 		return fmt.Errorf("public key does not match sender address")
+// 	}
 
-	// Convert and validate the rest of the transaction
-	sharedTx, err := ConvertThrylosTransactionToLocal(tx)
-	if err != nil {
-		return fmt.Errorf("failed to convert transaction to shared type: %v", err)
-	}
+// 	// Convert and validate the rest of the transaction
+// 	localTx, err := ConvertThrylosTransactionToLocal(tx)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to convert transaction to shared type: %v", err)
+// 	}
 
-	if err := shared.ValidateTransactionBalance(&sharedTx); err != nil { // Fixed this line
-		return fmt.Errorf("invalid transaction: %v", err)
-	}
+// 	if err := shared.ValidateTransactionBalance(&localTx); err != nil {
+// 		return fmt.Errorf("invalid transaction: %v", err)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func deriveAddressFromPublicKey(publicKey *mldsa44.PublicKey) (string, error) {
 	// Get the public key bytes

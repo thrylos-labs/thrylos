@@ -25,6 +25,197 @@ package chain
 
 // var ErrInvalidKeySize = errors.New("invalid key size")
 
+// func (b *BlockchainImpl) ProcessIncomingTransaction(tx *types.Transaction) error {
+// 	// Convert the transaction type and handle both return values
+// 	thrylosTx, err := ConvertToThrylosTransaction(tx)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to convert transaction: %w", err)
+// 	}
+// 	if thrylosTx == nil {
+// 		return fmt.Errorf("converted transaction is nil")
+// 	}
+
+// 	return b.modernProcessor.ProcessIncomingTransaction(b.dagManager, thrylosTx)
+// }
+
+// // // // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
+// // // // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
+// func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, types.Store, error) {
+// 	// Initialize the database
+// 	database, err := store.NewDatabase(config.DataDir)
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
+// 	}
+
+// 	// Create the store instance
+// 	storeInstance, err := store.NewStore(database, config.AESKey)
+// 	if err != nil {
+// 		database.Close() // Clean up if store creation fails
+// 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
+// 	}
+
+// 	// Create BlockchainDB using the store instance
+// 	blockchainDB := store.NewBlockchainDB(database, config.AESKey)
+// 	if blockchainDB == nil {
+// 		database.Close() // Clean up if BlockchainDB creation fails
+// 		return nil, nil, fmt.Errorf("failed to create blockchain database")
+// 	}
+
+// 	log.Println("BlockchainDB created")
+
+// 	// Create the genesis block
+// 	genesis := NewGenesisBlock()
+// 	log.Println("Genesis block created")
+
+// 	// Initialize the map for public keys
+// 	publicKeyMap := make(map[string]*crypto.PublicKey)
+
+// 	// Initialize Stakeholders map with the genesis account
+// 	totalSupplyNano := utils.ThrylosToNano()
+
+// 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
+
+// 	stakeholdersMap := make(map[string]int64)
+// 	addr, _ := config.GenesisAccount.PublicKey().Address()
+// 	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
+
+// 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
+
+// 	// Generate a new key pair for the genesis account
+// 	log.Println("Generating key pair for genesis account")
+
+// 	privKey, err := crypto.NewPrivateKey()
+// 	if err != nil {
+// 		log.Printf("error generating private key for the genesis account: %v", err)
+// 		return nil, nil, err
+// 	}
+
+// 	pubKey := privKey.PublicKey()
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
+// 	}
+// 	log.Println("Genesis account key pair generated successfully")
+
+// 	// Create genesis transaction
+// 	genesisTx := &thrylos.Transaction{
+// 		Id:        "genesis_tx_" + addr.String(),
+// 		Timestamp: time.Now().Unix(),
+// 		Outputs: []*thrylos.UTXO{{
+// 			OwnerAddress: addr.String(),
+// 			Amount:       totalSupplyNano,
+// 		}},
+// 		Signature:       []byte("genesis_signature"),
+// 		SenderPublicKey: nil,
+// 	}
+
+// 	// Initialize UTXO map with the genesis transaction
+// 	utxoMap := make(map[string][]*thrylos.UTXO)
+// 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
+// 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
+
+// 	genesis.Transactions = []*types.Transaction{ConvertToSharedTransaction(genesisTx)}
+
+// 	stateNetwork := network.NewDefaultNetwork()
+// 	// stateManager := state.NewStateManager(stateNetwork, 4)
+
+// 	log.Println("Genesis account private key stored and verified successfully")
+
+// 	// Create initial blockchain instance
+// 	temp := &BlockchainImpl{
+// 		Blockchain: &types.Blockchain{
+// 			Blocks:              []*types.Block{genesis},
+// 			Genesis:             genesis,
+// 			Stakeholders:        stakeholdersMap,
+// 			Database:            blockchainDB,
+// 			PublicKeyMap:        publicKeyMap,
+// 			UTXOs:               utxoMap,
+// 			Forks:               make([]*types.Fork, 0),
+// 			GenesisAccount:      privKey,
+// 			PendingTransactions: make([]*thrylos.Transaction, 0),
+// 			ActiveValidators:    make([]string, 0),
+// 			StateNetwork:        stateNetwork,
+// 			TestMode:            config.TestMode,
+// 		},
+// 	}
+
+// 	// Create the propagator
+// 	propagator := &types.TransactionPropagator{
+// 		Blockchain: temp,
+// 		Mu:         sync.RWMutex{},
+// 	}
+// 	// Create the transaction pool
+// 	temp.txPool = NewTxPool(database, propagator)
+
+// 	// Add the blockchain public key to the publicKeyMap
+// 	publicKeyMap[addr.String()] = &pubKey
+// 	log.Println("Genesis account public key added to publicKeyMap")
+
+// 	// Commented out validator key generation check to avoid error
+// 	/*
+// 	   if err != nil {
+// 	       log.Printf("Warning: Failed to generate validator keys: %v", err)
+// 	       return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
+// 	   }
+// 	*/
+
+// 	// log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
+
+// 	// Save genesis block
+// 	if err := database.Blockchain.SaveBlock(genesis); err != nil {
+// 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+// 	}
+
+// 	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
+
+// 	log.Println("NewBlockchain initialization completed successfully")
+
+// 	// Add shutdown handler for clean termination
+// 	go func() {
+// 		c := make(chan os.Signal, 1)
+// 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+// 		<-c
+// 		log.Println("Stopping blockchain...")
+// 	}()
+
+// 	if !config.DisableBackground {
+// 		// Start block creation routine
+// 		go func() {
+// 			log.Println("Starting block creation process")
+// 			ticker := time.NewTicker(10 * time.Second)
+// 			defer ticker.Stop()
+
+// 			for {
+// 				select {
+// 				case <-ticker.C:
+// 					// First fetch transactions from the pool
+// 					txs, err := temp.txPool.GetAllTransactions()
+// 					if err != nil {
+// 						log.Printf("Error getting transactions from pool: %v", err)
+// 						continue
+// 					}
+
+// 					// then process each of them through the modern transaction processor
+// 					if len(txs) > 0 {
+// 						log.Printf("Processing %d transactions from pool", len(txs))
+// 						for _, tx := range txs {
+// 							err := temp.ProcessIncomingTransaction(tx)
+// 							if err != nil {
+// 								log.Printf("Error processing transaction: %v", err)
+// 								continue
+// 							}
+// 						}
+// 					}
+// 				}
+// 			}
+// 		}()
+// 	} else {
+// 		log.Println("Background processes disabled for testing")
+// 	}
+
+// 	log.Println("NewBlockchain initialization completed successfully")
+// 	return temp, storeInstance, nil
+// }
+
 // func deriveKey(password []byte, salt []byte) ([]byte, error) {
 // 	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
 // }
@@ -95,25 +286,40 @@ package chain
 // }
 
 // type BlockchainImpl struct {
-// 	Blockchain *types.Blockchain // embedded field
-// 	txPool     *types.txPool
+// 	Blockchain      *types.Blockchain
+// 	modernProcessor *processor.ModernProcessor
+// 	txPool          types.TxPool // Not *types.TxPool
+// 	dagManager      *processor.DAGManager
+// }
+
+// // Add these helper methods to BlockchainImpl to properly access embedded fields:
+// func (bc *BlockchainImpl) GetGenesis() *types.Block {
+// 	return bc.Blockchain.Genesis
+// }
+
+// func (bc *BlockchainImpl) GetActiveValidators() []string {
+// 	return bc.Blockchain.ActiveValidators
+// }
+
+// func (bc *BlockchainImpl) GetBlocks() []*types.Block {
+// 	return bc.Blockchain.Blocks
 // }
 
 // // // GetMinStakeForValidator returns the current minimum stake required for a validator
-// func (bc *BlockchainImpl) GetMinStakeForValidator() *big.Int {
-// 	bc.Mu.RLock()
-// 	defer bc.Mu.RUnlock()
-// 	return new(big.Int).Set(bc.MinStakeForValidator) // Return a copy to prevent modification
-// }
+// // func (bc *BlockchainImpl) GetMinStakeForValidator() *big.Int {
+// // 	bc.Mu.RLock()
+// // 	defer bc.Mu.RUnlock()
+// // 	return new(big.Int).Set(bc.MinStakeForValidator) // Return a copy to prevent modification
+// // }
 
-// // // You might also want to add a setter method if you need to update this value dynamically
-// func (bc *BlockchainImpl) SetMinStakeForValidator(newMinStake *big.Int) {
-// 	bc.Mu.Lock()
-// 	defer bc.Mu.Unlock()
-// 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
-// }
+// // // // You might also want to add a setter method if you need to update this value dynamically
+// // func (bc *BlockchainImpl) SetMinStakeForValidator(newMinStake *big.Int) {
+// // 	bc.Mu.Lock()
+// // 	defer bc.Mu.Unlock()
+// // 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
+// // }
 
-// func ConvertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
+// func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
 // 	if tx == nil {
 // 		return nil
 // 	}
@@ -167,296 +373,6 @@ package chain
 
 // func (bc *BlockchainImpl) Status() string {
 // 	return fmt.Sprintf("Height: %d, Blocks: %d", len(bc.Blocks)-1, len(bc.Blocks))
-// }
-
-// // // // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
-// // // // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-// func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.Store, error) {
-
-// 	// Initialize the database
-// 	db, err := store.NewDatabase(config.DataDir)
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
-// 	}
-
-// 	// Create the store instance with the database
-// 	storeInstance, err := store.NewStore(db, config.AESKey)
-// 	if err != nil {
-// 		db.Close() // Clean up if store creation fails
-// 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
-// 	}
-
-// 	// Create BlockchainDB using the same database instance
-// 	blockchainDB := store.NewBlockchainDB(db, config.AESKey)
-// 	if blockchainDB == nil {
-// 		db.Close() // Clean up if BlockchainDB creation fails
-// 		return nil, nil, fmt.Errorf("failed to create blockchain database")
-// 	}
-
-// 	// Use storeInstance where shared.Store is needed
-// 	db.Blockchain = storeInstance // This sets the store implementation
-
-// 	log.Println("BlockchainDB created")
-
-// 	// Create the genesis block
-// 	genesis := NewGenesisBlock()
-// 	log.Println("Genesis block created")
-
-// 	// Initialize the map for public keys
-// 	publicKeyMap := make(map[string]*crypto.PublicKey)
-
-// 	// Initialize Stakeholders map with the genesis account
-// 	totalSupplyNano := utils.ThrylosToNano()
-
-// 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
-
-// 	// Use bech32GenesisAccount instead of genesisAccount from here on
-// 	stakeholdersMap := make(map[string]int64)
-// 	addr, _ := config.GenesisAccount.PublicKey().Address()
-// 	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
-
-// 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
-
-// 	// Generate a new key pair for the genesis account
-// 	log.Println("Generating key pair for genesis account")
-
-// 	privKey, err := crypto.NewPrivateKey()
-// 	if err != nil {
-// 		log.Printf("error generating private key for the genesis account: %v", err)
-// 		return nil, nil, err
-// 	}
-
-// 	pubKey := privKey.PublicKey()
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
-// 	}
-// 	log.Println("Genesis account key pair generated successfully")
-
-// 	// Create and initialize validatorKeys before blockchain creation
-// 	//validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey)
-
-// 	// log.Println("Storing public key for genesis account")
-// 	// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
-// 	// if err != nil {
-// 	// 	return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
-// 	// }
-// 	// log.Println("Genesis account public key stored successfully")
-
-// 	// Create genesis transaction
-// 	genesisTx := &thrylos.Transaction{
-// 		Id:        "genesis_tx_" + addr.String(),
-// 		Timestamp: time.Now().Unix(),
-// 		Outputs: []*thrylos.UTXO{{
-// 			OwnerAddress: addr.String(),
-// 			Amount:       totalSupplyNano,
-// 		}},
-// 		Signature:       []byte("genesis_signature"), // Keep as is since it's genesis
-// 		SenderPublicKey: nil,                         // No need for genesis
-// 	}
-
-// 	// Initialize UTXO map with the genesis transaction
-// 	utxoMap := make(map[string][]*thrylos.UTXO)
-// 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
-// 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
-
-// 	genesis.Transactions = []*shared.Transaction{ConvertToSharedTransaction(genesisTx)}
-
-// 	stateNetwork := shared.NewDefaultNetwork()
-// 	// stateManager := state.NewStateManager(stateNetwork, 4)
-
-// 	// // Create and initialize validatorKeys before blockchain creation
-// 	// validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey) // Use config.AESKey instead of encryptionKey
-
-// 	// // Convert and store the private key
-// 	// log.Println("Storing private key for genesis account")
-// 	// blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
-// 	// validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
-
-// 	// // Verify that the key was stored correctly
-// 	// storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
-// 	// if !exists {
-// 	// 	return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
-// 	// }
-
-// 	// // Compare keys using the Equal method that's already defined
-// 	// if !storedKey.Equal(blockchainPrivateKey) {
-// 	// 	return nil, nil, fmt.Errorf("stored key does not match original key")
-// 	// }
-
-// 	log.Println("Genesis account private key stored and verified successfully")
-
-// 	blockchain := &BlockchainImpl{
-// 		Blockchain: &types.Blockchain{ // Add & here to create a pointer
-// 			Blocks:              []*types.Block{genesis},
-// 			Genesis:             genesis,
-// 			Stakeholders:        stakeholdersMap,
-// 			Database:            blockchainDB,
-// 			PublicKeyMap:        publicKeyMap,
-// 			UTXOs:               utxoMap,
-// 			Forks:               make([]*types.Fork, 0),
-// 			GenesisAccount:      privKey,
-// 			PendingTransactions: make([]*thrylos.Transaction, 0),
-// 			ActiveValidators:    make([]string, 0),
-// 			StateNetwork:        stateNetwork,
-// 			TestMode:            config.TestMode,
-// 		},
-// 		txPool: newTxPool(),
-// 	}
-
-// 	// Add the blockchain public key to the publicKeyMap
-// 	publicKeyMap[addr.String()] = &pubKey
-// 	log.Println("Genesis account public key added to publicKeyMap")
-
-// 	// Set the minimum stake for validators
-// 	//FIXME: we need to harmonise the minimum stake amount in one service
-// 	// blockchain.MinStakeForValidator = big.NewInt(staking.MinimumStakeAmount)
-
-// 	// Initialize ConsensusManager which provides sufficient consensus management
-// 	// blockchain.ConsensusManager = consensus.NewConsensusManager(blockchain)
-
-// 	log.Println("Generating and storing validator keys")
-// 	// validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
-// 	if err != nil {
-// 		log.Printf("Warning: Failed to generate validator keys: %v", err)
-// 		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
-// 	}
-// 	log.Println("Validator keys generated and stored")
-
-// 	// Add generated validators to ActiveValidators list
-// 	// blockchain.ActiveValidators = append(blockchain.ActiveValidators, validatorAddresses...)
-// 	// log.Printf("Added %d validators to ActiveValidators list", len(validatorAddresses))
-
-// 	// Add genesis account as a validator if it's not already included
-// 	// if !contains(blockchain.ActiveValidators, bech32GenesisAccount) {
-// 	// 	blockchain.ActiveValidators = append(blockchain.ActiveValidators, bech32GenesisAccount)
-// 	// 	log.Printf("Added genesis account to ActiveValidators list")
-// 	// }
-
-// 	log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
-
-// 	// Add this check
-// 	// log.Println("Verifying stored validator keys")
-// 	// keys, err := db.Blockchain.GetAllValidatorPublicKeys()
-// 	// if err != nil {
-// 	// 	log.Printf("Failed to retrieve all validator public keys: %v", err)
-// 	// 	return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
-// 	// }
-// 	// log.Printf("Retrieved %d validator public keys", len(keys))
-
-// 	// log.Println("Loading all validator public keys")
-// 	// // err = blockchain.LoadAllValidatorPublicKeys()
-// 	// if err != nil {
-// 	// 	log.Printf("Warning: Failed to load all validator public keys: %v", err)
-// 	// }
-// 	// log.Println("Validator public keys loaded")
-
-// 	// log.Println("Checking validator key consistency")
-// 	// // blockchain.CheckValidatorKeyConsistency()
-// 	log.Println("Validator key consistency check completed")
-
-// 	// Start periodic validator update in a separate goroutine
-// 	go func() {
-// 		log.Println("Starting periodic validator update")
-// 		blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
-// 	}()
-
-// 	if err := db.Blockchain.SaveBlock(genesis); err != nil {
-// 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-// 	}
-
-// 	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
-
-// 	log.Println("NewBlockchain initialization completed successfully")
-
-// 	// Add after state sync loop start and before return
-// 	// blockchain.StateManager.StartStateSyncLoop()
-// 	log.Println("State synchronization loop started")
-
-// 	// Add shutdown handler
-// 	go func() {
-// 		c := make(chan os.Signal, 1)
-// 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-// 		<-c
-// 		log.Println("Stopping state synchronization...")
-// 		// blockchain.StateManager.StopStateSyncLoop()
-// 	}()
-
-// 	// Initialize staking service with proper configuration
-// 	log.Println("Initialize staking service...")
-// 	// blockchain.StakingService = staking.NewStakingService(blockchain)
-
-// 	log.Printf("Staking service initialized with:")
-// 	// log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
-// 	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
-// 	log.Printf("- Current total supply: 120M THRYLOS")
-
-// 	log.Println("Initializing transaction propagator...")
-// 	// blockchain.TransactionPropagator = network.NewTransactionPropagator(blockchain)
-// 	log.Println("Transaction propagator initialized successfully")
-
-// 	// Modify background process initialization based on DisableBackground flag
-// 	if !config.DisableBackground {
-// 		go func() {
-// 			log.Println("Starting daily staking reward distribution process")
-// 			for {
-// 				// if err := blockchain.StakingService.DistributeRewards(); err != nil {
-// 				// 	log.Printf("Error distributing staking rewards: %v", err)
-// 				// }
-// 				// Sleep for 1 hour instead of 1 minute since we only need to check daily
-// 				// This reduces unnecessary checks while ensuring we don't miss the 24-hour mark
-// 				time.Sleep(time.Hour)
-// 			}
-// 		}()
-
-// 		// Start periodic validator update in a separate goroutine
-// 		// go func() {
-// 		// 	log.Println("Starting periodic validator update")
-// 		// 	blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
-// 		// }()
-
-// 		// Start state synchronization loop
-// 		// blockchain.StateManager.StartStateSyncLoop()
-// 		log.Println("State synchronization loop started")
-
-// 		// Add shutdown handler
-// 		// go func() {
-// 		// 	c := make(chan os.Signal, 1)
-// 		// 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-// 		// 	<-c
-// 		// 	log.Println("Stopping state synchronization...")
-// 		// 	blockchain.StateManager.StopStateSyncLoop()
-// 		// }()
-
-// 		// Start block creation routine
-// 		go func() {
-// 			log.Println("Starting block creation process")
-// 			ticker := time.NewTicker(10 * time.Second) // Or whatever interval is appropriate
-// 			defer ticker.Stop()
-
-// 			for {
-// 				select {
-// 				case <-ticker.C:
-// 					// Check if there are pending transactions
-// 					if len(blockchain.PendingTransactions) > 0 {
-// 						// block, err := blockchain.CreateNextBlock()
-// 						if err != nil {
-// 							log.Printf("Failed to create new block: %v", err)
-// 							continue
-// 						}
-// 						// log.Printf("Successfully created new block %d with %d transactions",
-// 						// 	block.Index, len(block.Transactions))
-
-// 					}
-// 				}
-// 			}
-// 		}()
-// 	} else {
-// 		// In test mode, log that background processes are disabled
-// 		log.Println("Background processes disabled for testing")
-// 	}
-
-// 	log.Println("NewBlockchain initialization completed successfully")
-// 	return blockchain, storeInstance, nil // Return the store instance instead of bdb
 // }
 
 // // // // // FIXME: The total supply is not correct, it needs to be improved

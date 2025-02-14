@@ -2,9 +2,22 @@ package chain
 
 // Holds pending transactions before they're added to blocks
 
-// NewTxPool creates a new transaction pool
-// func NewTxPool(db *store.Database, propagator *types.TransactionPropagator) *types.TxPool {
-// 	return &types.TxPool{
+// type txPoolImpl struct {
+// 	mu           sync.RWMutex
+// 	transactions map[string]*list.Element
+// 	order        *list.List
+// 	db           *types.Store
+// 	propagator   *types.TransactionPropagator
+// }
+
+// type txEntry struct {
+// 	txID string
+// 	tx   *types.Transaction
+// }
+
+// // Constructor that returns the interface type
+// func NewTxPool(db *store.Database, propagator *types.TransactionPropagator) types.TxPool {
+// 	return &txPoolImpl{
 // 		transactions: make(map[string]*list.Element),
 // 		order:        list.New(),
 // 		db:           &db.Blockchain,
@@ -13,7 +26,7 @@ package chain
 // }
 
 // // AddTransaction adds a transaction to the pool
-// func (p *types.TxPool) AddTransaction(tx *types.Transaction) error {
+// func (p *txPoolImpl) AddTransaction(tx *types.Transaction) error {
 // 	p.mu.Lock()
 // 	defer p.mu.Unlock()
 
@@ -77,7 +90,7 @@ package chain
 // }
 
 // // // // Helper function to verify transaction uniqueness using salt
-// func (p *txPool) verifyTransactionUniqueness(tx *shared.Transaction) error {
+// func (p *txPoolImpl) verifyTransactionUniqueness(tx *types.Transaction) error {
 // 	if tx == nil {
 // 		return fmt.Errorf("nil transaction")
 // 	}
@@ -97,7 +110,7 @@ package chain
 // }
 
 // // Additional helper methods as needed
-// func (p *txPool) GetTransactionStatus(txID string) (string, error) {
+// func (p *txPoolImpl) GetTransactionStatus(txID string) (string, error) {
 // 	p.mu.RLock()
 // 	defer p.mu.RUnlock()
 
@@ -108,7 +121,7 @@ package chain
 // 	return "", fmt.Errorf("transaction not found")
 // }
 
-// func (p *types.TxPool) UpdateTransactionStatus(txID string, status string) error {
+// func (p *txPoolImpl) UpdateTransactionStatus(txID string, status string) error {
 // 	p.mu.Lock()
 // 	defer p.mu.Unlock()
 
@@ -121,7 +134,7 @@ package chain
 // }
 
 // // RemoveTransaction removes a transaction from the pool
-// func (p *types.TxPool) RemoveTransaction(tx *types.Transaction) error {
+// func (p *txPoolImpl) RemoveTransaction(tx *types.Transaction) error {
 // 	p.mu.Lock()
 // 	defer p.mu.Unlock()
 
@@ -138,7 +151,7 @@ package chain
 // }
 
 // // GetTransaction retrieves a transaction from the pool by its ID
-// func (p *txPool) GetTransaction(txID string) (*shared.Transaction, error) {
+// func (p *txPoolImpl) GetTransaction(txID string) (*types.Transaction, error) {
 // 	p.mu.RLock()
 // 	defer p.mu.RUnlock()
 
@@ -154,7 +167,7 @@ package chain
 // }
 
 // // GetFirstTransaction retrieves the first transaction added to the pool
-// func (p *txPool) GetFirstTransaction() (*shared.Transaction, error) {
+// func (p *txPoolImpl) GetFirstTransaction() (*types.Transaction, error) {
 // 	p.mu.RLock()
 // 	defer p.mu.RUnlock()
 
@@ -168,11 +181,11 @@ package chain
 // }
 
 // // GetAllTransactions retrieves all transactions from the pool
-// func (p *txPool) GetAllTransactions() ([]*types.Transaction, error) {
+// func (p *txPoolImpl) GetAllTransactions() ([]*types.Transaction, error) {
 // 	p.mu.RLock()
 // 	defer p.mu.RUnlock()
 
-// 	txs := make([]*shared.Transaction, 0, p.order.Len())
+// 	txs := make([]*types.Transaction, 0, p.order.Len())
 // 	for e := p.order.Front(); e != nil; e = e.Next() {
 // 		entry := e.Value.(*txEntry)
 // 		txs = append(txs, entry.tx)
@@ -183,14 +196,14 @@ package chain
 // }
 
 // // BroadcastTransaction broadcasts a transaction to the network
-// func (p *txPool) BroadcastTransaction(tx *shared.Transaction) error {
+// func (p *txPoolImpl) BroadcastTransaction(tx *types.Transaction) error {
 // 	// Broadcast the transaction to the network, will be implemented, e.g by transmitting the transaction through the channel.
 // 	log.Printf("Broadcasting transaction %s to the network", tx.ID)
 // 	return nil
 // }
 
 // // Size returns the number of transactions in the pool
-// func (p *types.TxPool) Size() int {
+// func (p *txPoolImpl) Size() int {
 // 	p.mu.RLock()
 // 	defer p.mu.RUnlock()
 

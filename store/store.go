@@ -3,6 +3,8 @@ package store
 import (
 	// Alias for standard crypto
 
+	"fmt"
+
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -39,14 +41,14 @@ var globalUTXOCache *UTXOCache
 // }
 
 // GetUTXO retrieves a UTXO by its key.
-// func GetUTXO(txID string, index int) (*types.UTXO, error) {
-// 	key := fmt.Sprintf("%s-%d", txID, index)
-// 	utxo, exists := globalUTXOCache.Get(key)
-// 	if !exists {
-// 		return nil, fmt.Errorf("UTXO not found")
-// 	}
-// 	return utxo, nil
-// }
+func GetUTXO(txID string, index int) (*types.UTXO, error) {
+	key := fmt.Sprintf("%s-%d", txID, index)
+	utxo, exists := globalUTXOCache.Get(key)
+	if !exists {
+		return nil, fmt.Errorf("UTXO not found")
+	}
+	return utxo, nil
+}
 
 // UTXO
 
@@ -174,7 +176,7 @@ var globalUTXOCache *UTXOCache
 // 	defer badgerTxn.Discard()
 
 // 	// Create a TransactionContext wrapper
-// 	txn := &shared.TransactionContext{Txn: badgerTxn}
+// 	txn := &types.TransactionContext{Txn: badgerTxn}
 
 // 	for _, input := range inputs {
 // 		err := s.MarkUTXOAsSpent(txn, input)
