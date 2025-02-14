@@ -1,24 +1,5 @@
 package chain
 
-import (
-	"bytes"
-	"crypto/rand"
-	"fmt"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
-	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/amount"
-	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/hash"
-	"github.com/thrylos-labs/thrylos/shared"
-	"github.com/thrylos-labs/thrylos/store"
-	"github.com/thrylos-labs/thrylos/utils"
-)
-
 // // other necessary imports
 
 // NewTransaction creates a new transaction
@@ -27,14 +8,14 @@ import (
 // 	Stake   int
 // }
 
-type BlockchainConfig struct {
-	DataDir           string
-	AESKey            []byte
-	GenesisAccount    crypto.PrivateKey
-	TestMode          bool
-	DisableBackground bool
-	StateManager      *shared.StateManager
-}
+// type BlockchainConfig struct {
+// 	DataDir           string
+// 	AESKey            []byte
+// 	GenesisAccount    crypto.PrivateKey
+// 	TestMode          bool
+// 	DisableBackground bool
+// 	StateManager      *types.StateManager
+// }
 
 // const (
 // 	keyLen    = 32 // AES-256
@@ -113,10 +94,10 @@ type BlockchainConfig struct {
 // 	return &privKey, nil
 // }
 
-type BlockchainImpl struct {
-	*shared.Blockchain
-	txPool *txPool
-}
+// type BlockchainImpl struct {
+// 	Blockchain *types.Blockchain // embedded field
+// 	txPool     *types.txPool
+// }
 
 // // // GetMinStakeForValidator returns the current minimum stake required for a validator
 // func (bc *BlockchainImpl) GetMinStakeForValidator() *big.Int {
@@ -132,357 +113,353 @@ type BlockchainImpl struct {
 // 	bc.MinStakeForValidator = new(big.Int).Set(newMinStake)
 // }
 
-func ConvertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
-	if tx == nil {
-		return nil
-	}
+// func ConvertToSharedTransaction(tx *thrylos.Transaction) *shared.Transaction {
+// 	if tx == nil {
+// 		return nil
+// 	}
 
-	// Convert inputs
-	inputs := make([]shared.UTXO, len(tx.Inputs))
-	for i, input := range tx.Inputs {
-		inputs[i] = shared.UTXO{
-			TransactionID: input.TransactionId,
-			Index:         int(input.Index),
-			OwnerAddress:  input.OwnerAddress,
-			Amount:        amount.Amount(input.Amount),
-			IsSpent:       input.IsSpent,
-		}
-	}
+// 	// Convert inputs
+// 	inputs := make([]types.UTXO, len(tx.Inputs))
+// 	for i, input := range tx.Inputs {
+// 		inputs[i] = types.UTXO{
+// 			TransactionID: input.TransactionId,
+// 			Index:         int(input.Index),
+// 			OwnerAddress:  input.OwnerAddress,
+// 			Amount:        amount.Amount(input.Amount),
+// 			IsSpent:       input.IsSpent,
+// 		}
+// 	}
 
-	// Convert outputs
-	outputs := make([]shared.UTXO, len(tx.Outputs))
-	for i, output := range tx.Outputs {
-		outputs[i] = shared.UTXO{
-			TransactionID: output.TransactionId,
-			Index:         int(output.Index),
-			OwnerAddress:  output.OwnerAddress,
-			Amount:        amount.Amount(output.Amount),
-			IsSpent:       output.IsSpent,
-		}
-	}
+// 	// Convert outputs
+// 	outputs := make([]types.UTXO, len(tx.Outputs))
+// 	for i, output := range tx.Outputs {
+// 		outputs[i] = types.UTXO{
+// 			TransactionID: output.TransactionId,
+// 			Index:         int(output.Index),
+// 			OwnerAddress:  output.OwnerAddress,
+// 			Amount:        amount.Amount(output.Amount),
+// 			IsSpent:       output.IsSpent,
+// 		}
+// 	}
 
-	// For genesis transaction, we might need special handling of some fields
-	sharedTx := &shared.Transaction{
-		ID:               tx.Id,
-		Timestamp:        tx.Timestamp,
-		Inputs:           inputs,
-		Outputs:          outputs,
-		EncryptedInputs:  tx.EncryptedInputs,
-		EncryptedOutputs: tx.EncryptedOutputs,
-		EncryptedAESKey:  tx.EncryptedAesKey,
-		PreviousTxIds:    tx.PreviousTxIds,
-		GasFee:           int(tx.Gasfee),
-		BlockHash:        string(tx.BlockHash),
-		Salt:             tx.Salt,
-		Status:           tx.Status,
-		// For genesis transaction, we might leave these nil
-		// SenderAddress and SenderPublicKey will be nil for genesis
-		// Signature is provided as bytes
-		Signature: nil, // For genesis, we use the provided signature bytes
-	}
+// 	// For genesis transaction, we might need special handling of some fields
+// 	sharedTx := &types.Transaction{
+// 		ID:               tx.Id,
+// 		Timestamp:        tx.Timestamp,
+// 		Inputs:           inputs,
+// 		Outputs:          outputs,
+// 		EncryptedInputs:  tx.EncryptedInputs,
+// 		EncryptedOutputs: tx.EncryptedOutputs,
+// 		EncryptedAESKey:  tx.EncryptedAesKey,
+// 		PreviousTxIds:    tx.PreviousTxIds,
+// 		GasFee:           int(tx.Gasfee),
+// 		BlockHash:        string(tx.BlockHash),
+// 		Salt:             tx.Salt,
+// 		Status:           tx.Status,
+// 		// For genesis transaction, we might leave these nil
+// 		// SenderAddress and SenderPublicKey will be nil for genesis
+// 		// Signature is provided as bytes
+// 		Signature: nil, // For genesis, we use the provided signature bytes
+// 	}
 
-	return sharedTx
-}
+// 	return sharedTx
+// }
 
-func (bc *BlockchainImpl) Status() string {
-	return fmt.Sprintf("Height: %d, Blocks: %d", len(bc.Blocks)-1, len(bc.Blocks))
-}
+// func (bc *BlockchainImpl) Status() string {
+// 	return fmt.Sprintf("Height: %d, Blocks: %d", len(bc.Blocks)-1, len(bc.Blocks))
+// }
 
-// // // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
-// // // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
-func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.Store, error) {
+// // // // NewBlockchain initializes and returns a new instance of a Blockchain. It sets up the necessary
+// // // // infrastructure, including the genesis block and the database connection for persisting the blockchain state.
+// func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.Store, error) {
 
-	// Initialize the database
-	db, err := store.NewDatabase(config.DataDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
-	}
+// 	// Initialize the database
+// 	db, err := store.NewDatabase(config.DataDir)
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
+// 	}
 
-	// Create the store instance with the database
-	storeInstance, err := store.NewStore(db, config.AESKey)
-	if err != nil {
-		db.Close() // Clean up if store creation fails
-		return nil, nil, fmt.Errorf("failed to create store: %v", err)
-	}
+// 	// Create the store instance with the database
+// 	storeInstance, err := store.NewStore(db, config.AESKey)
+// 	if err != nil {
+// 		db.Close() // Clean up if store creation fails
+// 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
+// 	}
 
-	// Create BlockchainDB using the same database instance
-	blockchainDB := store.NewBlockchainDB(db, config.AESKey)
-	if blockchainDB == nil {
-		db.Close() // Clean up if BlockchainDB creation fails
-		return nil, nil, fmt.Errorf("failed to create blockchain database")
-	}
+// 	// Create BlockchainDB using the same database instance
+// 	blockchainDB := store.NewBlockchainDB(db, config.AESKey)
+// 	if blockchainDB == nil {
+// 		db.Close() // Clean up if BlockchainDB creation fails
+// 		return nil, nil, fmt.Errorf("failed to create blockchain database")
+// 	}
 
-	// Use storeInstance where shared.Store is needed
-	db.Blockchain = storeInstance // This sets the store implementation
+// 	// Use storeInstance where shared.Store is needed
+// 	db.Blockchain = storeInstance // This sets the store implementation
 
-	log.Println("BlockchainDB created")
+// 	log.Println("BlockchainDB created")
 
-	// Create the genesis block
-	genesis := NewGenesisBlock()
-	log.Println("Genesis block created")
+// 	// Create the genesis block
+// 	genesis := NewGenesisBlock()
+// 	log.Println("Genesis block created")
 
-	// Initialize the map for public keys
-	publicKeyMap := make(map[string]*crypto.PublicKey)
+// 	// Initialize the map for public keys
+// 	publicKeyMap := make(map[string]*crypto.PublicKey)
 
-	// Initialize Stakeholders map with the genesis account
-	totalSupplyNano := utils.ThrylosToNano()
+// 	// Initialize Stakeholders map with the genesis account
+// 	totalSupplyNano := utils.ThrylosToNano()
 
-	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
+// 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
 
-	// Use bech32GenesisAccount instead of genesisAccount from here on
-	stakeholdersMap := make(map[string]int64)
-	addr, _ := config.GenesisAccount.PublicKey().Address()
-	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
+// 	// Use bech32GenesisAccount instead of genesisAccount from here on
+// 	stakeholdersMap := make(map[string]int64)
+// 	addr, _ := config.GenesisAccount.PublicKey().Address()
+// 	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
 
-	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
+// 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
 
-	// Generate a new key pair for the genesis account
-	log.Println("Generating key pair for genesis account")
+// 	// Generate a new key pair for the genesis account
+// 	log.Println("Generating key pair for genesis account")
 
-	privKey, err := crypto.NewPrivateKey()
-	if err != nil {
-		log.Printf("error generating private key for the genesis account: %v", err)
-		return nil, nil, err
-	}
+// 	privKey, err := crypto.NewPrivateKey()
+// 	if err != nil {
+// 		log.Printf("error generating private key for the genesis account: %v", err)
+// 		return nil, nil, err
+// 	}
 
-	pubKey := privKey.PublicKey()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
-	}
-	log.Println("Genesis account key pair generated successfully")
+// 	pubKey := privKey.PublicKey()
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
+// 	}
+// 	log.Println("Genesis account key pair generated successfully")
 
-	// Create and initialize validatorKeys before blockchain creation
-	//validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey)
+// 	// Create and initialize validatorKeys before blockchain creation
+// 	//validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey)
 
-	// log.Println("Storing public key for genesis account")
-	// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
-	// if err != nil {
-	// 	return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
-	// }
-	// log.Println("Genesis account public key stored successfully")
+// 	// log.Println("Storing public key for genesis account")
+// 	// err = db.Blockchain.StoreValidatorMLDSAPublicKey(bech32GenesisAccount, blockchainPublicKey)
+// 	// if err != nil {
+// 	// 	return nil, nil, fmt.Errorf("failed to store genesis account public key: %v", err)
+// 	// }
+// 	// log.Println("Genesis account public key stored successfully")
 
-	// Create genesis transaction
-	genesisTx := &thrylos.Transaction{
-		Id:        "genesis_tx_" + addr.String(),
-		Timestamp: time.Now().Unix(),
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: addr.String(),
-			Amount:       totalSupplyNano,
-		}},
-		Signature:       []byte("genesis_signature"), // Keep as is since it's genesis
-		SenderPublicKey: nil,                         // No need for genesis
-	}
+// 	// Create genesis transaction
+// 	genesisTx := &thrylos.Transaction{
+// 		Id:        "genesis_tx_" + addr.String(),
+// 		Timestamp: time.Now().Unix(),
+// 		Outputs: []*thrylos.UTXO{{
+// 			OwnerAddress: addr.String(),
+// 			Amount:       totalSupplyNano,
+// 		}},
+// 		Signature:       []byte("genesis_signature"), // Keep as is since it's genesis
+// 		SenderPublicKey: nil,                         // No need for genesis
+// 	}
 
-	// Initialize UTXO map with the genesis transaction
-	utxoMap := make(map[string][]*thrylos.UTXO)
-	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
-	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
+// 	// Initialize UTXO map with the genesis transaction
+// 	utxoMap := make(map[string][]*thrylos.UTXO)
+// 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
+// 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-	genesis.Transactions = []*shared.Transaction{ConvertToSharedTransaction(genesisTx)}
+// 	genesis.Transactions = []*shared.Transaction{ConvertToSharedTransaction(genesisTx)}
 
-	stateNetwork := shared.NewDefaultNetwork()
-	// stateManager := state.NewStateManager(stateNetwork, 4)
+// 	stateNetwork := shared.NewDefaultNetwork()
+// 	// stateManager := state.NewStateManager(stateNetwork, 4)
 
-	// // Create and initialize validatorKeys before blockchain creation
-	// validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey) // Use config.AESKey instead of encryptionKey
+// 	// // Create and initialize validatorKeys before blockchain creation
+// 	// validatorKeys := validator.NewValidatorKeyStore(db, config.AESKey) // Use config.AESKey instead of encryptionKey
 
-	// // Convert and store the private key
-	// log.Println("Storing private key for genesis account")
-	// blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
-	// validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
+// 	// // Convert and store the private key
+// 	// log.Println("Storing private key for genesis account")
+// 	// blockchainPrivateKey := convertToBlockchainPrivateKey(genesisPrivateKey)
+// 	// validatorKeys.StoreKey(bech32GenesisAccount, blockchainPrivateKey)
 
-	// // Verify that the key was stored correctly
-	// storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
-	// if !exists {
-	// 	return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
-	// }
+// 	// // Verify that the key was stored correctly
+// 	// storedKey, exists := validatorKeys.GetKey(bech32GenesisAccount)
+// 	// if !exists {
+// 	// 	return nil, nil, fmt.Errorf("failed to store genesis account private key: key not found after storage")
+// 	// }
 
-	// // Compare keys using the Equal method that's already defined
-	// if !storedKey.Equal(blockchainPrivateKey) {
-	// 	return nil, nil, fmt.Errorf("stored key does not match original key")
-	// }
+// 	// // Compare keys using the Equal method that's already defined
+// 	// if !storedKey.Equal(blockchainPrivateKey) {
+// 	// 	return nil, nil, fmt.Errorf("stored key does not match original key")
+// 	// }
 
-	log.Println("Genesis account private key stored and verified successfully")
+// 	log.Println("Genesis account private key stored and verified successfully")
 
-	sharedBlockchain := &shared.Blockchain{
-		Blocks:              []*shared.Block{genesis},
-		Genesis:             genesis,
-		Stakeholders:        stakeholdersMap,
-		Database:            blockchainDB, // Changed from bdb to blockchainDB
-		PublicKeyMap:        publicKeyMap,
-		UTXOs:               utxoMap,
-		Forks:               make([]*shared.Fork, 0),
-		GenesisAccount:      privKey,
-		PendingTransactions: make([]*thrylos.Transaction, 0),
-		ActiveValidators:    make([]string, 0),
-		StateNetwork:        stateNetwork,
-		//ValidatorKeys:       validatorKeys,
-		TestMode: config.TestMode,
-		// StateManager: shared.StateManager
-	}
+// 	blockchain := &BlockchainImpl{
+// 		Blockchain: &types.Blockchain{ // Add & here to create a pointer
+// 			Blocks:              []*types.Block{genesis},
+// 			Genesis:             genesis,
+// 			Stakeholders:        stakeholdersMap,
+// 			Database:            blockchainDB,
+// 			PublicKeyMap:        publicKeyMap,
+// 			UTXOs:               utxoMap,
+// 			Forks:               make([]*types.Fork, 0),
+// 			GenesisAccount:      privKey,
+// 			PendingTransactions: make([]*thrylos.Transaction, 0),
+// 			ActiveValidators:    make([]string, 0),
+// 			StateNetwork:        stateNetwork,
+// 			TestMode:            config.TestMode,
+// 		},
+// 		txPool: newTxPool(),
+// 	}
 
-	// Add the blockchain public key to the publicKeyMap
-	publicKeyMap[addr.String()] = &pubKey
-	log.Println("Genesis account public key added to publicKeyMap")
+// 	// Add the blockchain public key to the publicKeyMap
+// 	publicKeyMap[addr.String()] = &pubKey
+// 	log.Println("Genesis account public key added to publicKeyMap")
 
-	// Create and return the BlockchainImpl
-	blockchain := &BlockchainImpl{
-		Blockchain: sharedBlockchain,
-	}
+// 	// Set the minimum stake for validators
+// 	//FIXME: we need to harmonise the minimum stake amount in one service
+// 	// blockchain.MinStakeForValidator = big.NewInt(staking.MinimumStakeAmount)
 
-	// Set the minimum stake for validators
-	//FIXME: we need to harmonise the minimum stake amount in one service
-	// blockchain.MinStakeForValidator = big.NewInt(staking.MinimumStakeAmount)
+// 	// Initialize ConsensusManager which provides sufficient consensus management
+// 	// blockchain.ConsensusManager = consensus.NewConsensusManager(blockchain)
 
-	// Initialize ConsensusManager which provides sufficient consensus management
-	// blockchain.ConsensusManager = consensus.NewConsensusManager(blockchain)
+// 	log.Println("Generating and storing validator keys")
+// 	// validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
+// 	if err != nil {
+// 		log.Printf("Warning: Failed to generate validator keys: %v", err)
+// 		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
+// 	}
+// 	log.Println("Validator keys generated and stored")
 
-	log.Println("Generating and storing validator keys")
-	// validatorAddresses, err := blockchain.GenerateAndStoreValidatorKeys(2)
-	if err != nil {
-		log.Printf("Warning: Failed to generate validator keys: %v", err)
-		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
-	}
-	log.Println("Validator keys generated and stored")
+// 	// Add generated validators to ActiveValidators list
+// 	// blockchain.ActiveValidators = append(blockchain.ActiveValidators, validatorAddresses...)
+// 	// log.Printf("Added %d validators to ActiveValidators list", len(validatorAddresses))
 
-	// Add generated validators to ActiveValidators list
-	// blockchain.ActiveValidators = append(blockchain.ActiveValidators, validatorAddresses...)
-	// log.Printf("Added %d validators to ActiveValidators list", len(validatorAddresses))
+// 	// Add genesis account as a validator if it's not already included
+// 	// if !contains(blockchain.ActiveValidators, bech32GenesisAccount) {
+// 	// 	blockchain.ActiveValidators = append(blockchain.ActiveValidators, bech32GenesisAccount)
+// 	// 	log.Printf("Added genesis account to ActiveValidators list")
+// 	// }
 
-	// Add genesis account as a validator if it's not already included
-	// if !contains(blockchain.ActiveValidators, bech32GenesisAccount) {
-	// 	blockchain.ActiveValidators = append(blockchain.ActiveValidators, bech32GenesisAccount)
-	// 	log.Printf("Added genesis account to ActiveValidators list")
-	// }
+// 	log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
 
-	log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
+// 	// Add this check
+// 	// log.Println("Verifying stored validator keys")
+// 	// keys, err := db.Blockchain.GetAllValidatorPublicKeys()
+// 	// if err != nil {
+// 	// 	log.Printf("Failed to retrieve all validator public keys: %v", err)
+// 	// 	return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
+// 	// }
+// 	// log.Printf("Retrieved %d validator public keys", len(keys))
 
-	// Add this check
-	// log.Println("Verifying stored validator keys")
-	// keys, err := db.Blockchain.GetAllValidatorPublicKeys()
-	// if err != nil {
-	// 	log.Printf("Failed to retrieve all validator public keys: %v", err)
-	// 	return nil, nil, fmt.Errorf("failed to verify stored validator keys: %v", err)
-	// }
-	// log.Printf("Retrieved %d validator public keys", len(keys))
+// 	// log.Println("Loading all validator public keys")
+// 	// // err = blockchain.LoadAllValidatorPublicKeys()
+// 	// if err != nil {
+// 	// 	log.Printf("Warning: Failed to load all validator public keys: %v", err)
+// 	// }
+// 	// log.Println("Validator public keys loaded")
 
-	// log.Println("Loading all validator public keys")
-	// // err = blockchain.LoadAllValidatorPublicKeys()
-	// if err != nil {
-	// 	log.Printf("Warning: Failed to load all validator public keys: %v", err)
-	// }
-	// log.Println("Validator public keys loaded")
+// 	// log.Println("Checking validator key consistency")
+// 	// // blockchain.CheckValidatorKeyConsistency()
+// 	log.Println("Validator key consistency check completed")
 
-	// log.Println("Checking validator key consistency")
-	// // blockchain.CheckValidatorKeyConsistency()
-	log.Println("Validator key consistency check completed")
+// 	// Start periodic validator update in a separate goroutine
+// 	go func() {
+// 		log.Println("Starting periodic validator update")
+// 		blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
+// 	}()
 
-	// Start periodic validator update in a separate goroutine
-	go func() {
-		log.Println("Starting periodic validator update")
-		blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
-	}()
+// 	if err := db.Blockchain.SaveBlock(genesis); err != nil {
+// 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+// 	}
 
-	if err := db.Blockchain.SaveBlock(genesis); err != nil {
-		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-	}
+// 	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
 
-	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
+// 	log.Println("NewBlockchain initialization completed successfully")
 
-	log.Println("NewBlockchain initialization completed successfully")
+// 	// Add after state sync loop start and before return
+// 	// blockchain.StateManager.StartStateSyncLoop()
+// 	log.Println("State synchronization loop started")
 
-	// Add after state sync loop start and before return
-	// blockchain.StateManager.StartStateSyncLoop()
-	log.Println("State synchronization loop started")
+// 	// Add shutdown handler
+// 	go func() {
+// 		c := make(chan os.Signal, 1)
+// 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+// 		<-c
+// 		log.Println("Stopping state synchronization...")
+// 		// blockchain.StateManager.StopStateSyncLoop()
+// 	}()
 
-	// Add shutdown handler
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		<-c
-		log.Println("Stopping state synchronization...")
-		// blockchain.StateManager.StopStateSyncLoop()
-	}()
+// 	// Initialize staking service with proper configuration
+// 	log.Println("Initialize staking service...")
+// 	// blockchain.StakingService = staking.NewStakingService(blockchain)
 
-	// Initialize staking service with proper configuration
-	log.Println("Initialize staking service...")
-	// blockchain.StakingService = staking.NewStakingService(blockchain)
+// 	log.Printf("Staking service initialized with:")
+// 	// log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
+// 	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
+// 	log.Printf("- Current total supply: 120M THRYLOS")
 
-	log.Printf("Staking service initialized with:")
-	// log.Printf("- Minimum stake: %d THRYLOS", blockchain.StakingService.pool.MinStakeAmount/1e7)
-	log.Printf("- Fixed yearly reward: 4.8M THRYLOS")
-	log.Printf("- Current total supply: 120M THRYLOS")
+// 	log.Println("Initializing transaction propagator...")
+// 	// blockchain.TransactionPropagator = network.NewTransactionPropagator(blockchain)
+// 	log.Println("Transaction propagator initialized successfully")
 
-	log.Println("Initializing transaction propagator...")
-	// blockchain.TransactionPropagator = network.NewTransactionPropagator(blockchain)
-	log.Println("Transaction propagator initialized successfully")
+// 	// Modify background process initialization based on DisableBackground flag
+// 	if !config.DisableBackground {
+// 		go func() {
+// 			log.Println("Starting daily staking reward distribution process")
+// 			for {
+// 				// if err := blockchain.StakingService.DistributeRewards(); err != nil {
+// 				// 	log.Printf("Error distributing staking rewards: %v", err)
+// 				// }
+// 				// Sleep for 1 hour instead of 1 minute since we only need to check daily
+// 				// This reduces unnecessary checks while ensuring we don't miss the 24-hour mark
+// 				time.Sleep(time.Hour)
+// 			}
+// 		}()
 
-	// Modify background process initialization based on DisableBackground flag
-	if !config.DisableBackground {
-		go func() {
-			log.Println("Starting daily staking reward distribution process")
-			for {
-				// if err := blockchain.StakingService.DistributeRewards(); err != nil {
-				// 	log.Printf("Error distributing staking rewards: %v", err)
-				// }
-				// Sleep for 1 hour instead of 1 minute since we only need to check daily
-				// This reduces unnecessary checks while ensuring we don't miss the 24-hour mark
-				time.Sleep(time.Hour)
-			}
-		}()
+// 		// Start periodic validator update in a separate goroutine
+// 		// go func() {
+// 		// 	log.Println("Starting periodic validator update")
+// 		// 	blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
+// 		// }()
 
-		// Start periodic validator update in a separate goroutine
-		// go func() {
-		// 	log.Println("Starting periodic validator update")
-		// 	blockchain.StartPeriodicValidatorUpdate(15 * time.Minute)
-		// }()
+// 		// Start state synchronization loop
+// 		// blockchain.StateManager.StartStateSyncLoop()
+// 		log.Println("State synchronization loop started")
 
-		// Start state synchronization loop
-		// blockchain.StateManager.StartStateSyncLoop()
-		log.Println("State synchronization loop started")
+// 		// Add shutdown handler
+// 		// go func() {
+// 		// 	c := make(chan os.Signal, 1)
+// 		// 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+// 		// 	<-c
+// 		// 	log.Println("Stopping state synchronization...")
+// 		// 	blockchain.StateManager.StopStateSyncLoop()
+// 		// }()
 
-		// Add shutdown handler
-		// go func() {
-		// 	c := make(chan os.Signal, 1)
-		// 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		// 	<-c
-		// 	log.Println("Stopping state synchronization...")
-		// 	blockchain.StateManager.StopStateSyncLoop()
-		// }()
+// 		// Start block creation routine
+// 		go func() {
+// 			log.Println("Starting block creation process")
+// 			ticker := time.NewTicker(10 * time.Second) // Or whatever interval is appropriate
+// 			defer ticker.Stop()
 
-		// Start block creation routine
-		go func() {
-			log.Println("Starting block creation process")
-			ticker := time.NewTicker(10 * time.Second) // Or whatever interval is appropriate
-			defer ticker.Stop()
+// 			for {
+// 				select {
+// 				case <-ticker.C:
+// 					// Check if there are pending transactions
+// 					if len(blockchain.PendingTransactions) > 0 {
+// 						// block, err := blockchain.CreateNextBlock()
+// 						if err != nil {
+// 							log.Printf("Failed to create new block: %v", err)
+// 							continue
+// 						}
+// 						// log.Printf("Successfully created new block %d with %d transactions",
+// 						// 	block.Index, len(block.Transactions))
 
-			for {
-				select {
-				case <-ticker.C:
-					// Check if there are pending transactions
-					if len(blockchain.PendingTransactions) > 0 {
-						// block, err := blockchain.CreateNextBlock()
-						if err != nil {
-							log.Printf("Failed to create new block: %v", err)
-							continue
-						}
-						// log.Printf("Successfully created new block %d with %d transactions",
-						// 	block.Index, len(block.Transactions))
+// 					}
+// 				}
+// 			}
+// 		}()
+// 	} else {
+// 		// In test mode, log that background processes are disabled
+// 		log.Println("Background processes disabled for testing")
+// 	}
 
-					}
-				}
-			}
-		}()
-	} else {
-		// In test mode, log that background processes are disabled
-		log.Println("Background processes disabled for testing")
-	}
+// 	log.Println("NewBlockchain initialization completed successfully")
+// 	return blockchain, storeInstance, nil // Return the store instance instead of bdb
+// }
 
-	log.Println("NewBlockchain initialization completed successfully")
-	return blockchain, storeInstance, nil // Return the store instance instead of bdb
-}
-
-// // // // FIXME: The total supply is not correct, it needs to be improved
+// // // // // FIXME: The total supply is not correct, it needs to be improved
 // func (bc *BlockchainImpl) GetTotalSupply() int64 {
 // 	totalSupply := int64(0)
 // 	for _, balance := range bc.Stakeholders {
@@ -513,7 +490,7 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 // 	return 50
 // }
 
-// // Example usage function
+// // // Example usage function
 // func (bc *BlockchainImpl) CreateNextBlock(nodes ...*node.Node) (*shared.Block, error) {
 // 	var node *node.Node
 // 	if len(nodes) > 0 {
@@ -530,25 +507,25 @@ func NewBlockchainWithConfig(config *BlockchainConfig) (*BlockchainImpl, shared.
 // 	return bc.CreateBlockFromPendingTransactions(validator)
 // }
 
-func (bc *BlockchainImpl) calculateAverageLatency() time.Duration {
-	// This is a placeholder. In a real implementation, you would measure actual network latency.
-	// For now, we'll return a constant value.
-	return 200 * time.Millisecond
-}
+// func (bc *BlockchainImpl) calculateAverageLatency() time.Duration {
+// 	// This is a placeholder. In a real implementation, you would measure actual network latency.
+// 	// For now, we'll return a constant value.
+// 	return 200 * time.Millisecond
+// }
 
-// FIXME: Does this need to started here?
-func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	go func() {
-		for range ticker.C {
-			// bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
-		}
-	}()
-}
+// // FIXME: Does this need to started here?
+// func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
+// 	ticker := time.NewTicker(interval)
+// 	go func() {
+// 		for range ticker.C {
+// 			// bc.UpdateActiveValidators(bc.ConsensusManager.GetActiveValidatorCount())
+// 		}
+// 	}()
+// }
 
-// // // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
+// // // // When reading or processing transactions that have been deserialized from Protobuf, you'll use ConvertProtoUTXOToShared to convert the Protobuf-generated UTXOs back into the format your application uses internally.
 
-// // // ConvertProtoUTXOToShared converts a Protobuf-generated UTXO to your shared UTXO type.
+// // // // ConvertProtoUTXOToShared converts a Protobuf-generated UTXO to your shared UTXO type.
 // func ConvertProtoUTXOToShared(protoUTXO *thrylos.UTXO) shared.UTXO {
 // 	return shared.UTXO{
 // 		ID:            protoUTXO.GetTransactionId(), // Assuming you have corresponding fields
@@ -889,33 +866,33 @@ func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration) {
 // 	return nil
 // }
 
-// // // Helper function to efficiently check salt uniqueness in all blocks
-func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
-	bc.Mu.RLock()
-	defer bc.Mu.RUnlock()
+// // // // Helper function to efficiently check salt uniqueness in all blocks
+// func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
+// 	bc.Mu.RLock()
+// 	defer bc.Mu.RUnlock()
 
-	// Create an efficient lookup for pending transaction salts
-	pendingSalts := make(map[string]bool)
-	for _, tx := range bc.PendingTransactions {
-		pendingSalts[string(tx.Salt)] = true
-	}
+// 	// Create an efficient lookup for pending transaction salts
+// 	pendingSalts := make(map[string]bool)
+// 	for _, tx := range bc.PendingTransactions {
+// 		pendingSalts[string(tx.Salt)] = true
+// 	}
 
-	// Check pending transactions first (faster in-memory check)
-	if pendingSalts[string(salt)] {
-		return true
-	}
+// 	// Check pending transactions first (faster in-memory check)
+// 	if pendingSalts[string(salt)] {
+// 		return true
+// 	}
 
-	// Check confirmed blocks
-	for _, block := range bc.Blocks {
-		for _, tx := range block.Transactions {
-			if bytes.Equal(tx.Salt, salt) {
-				return true
-			}
-		}
-	}
+// 	// Check confirmed blocks
+// 	for _, block := range bc.Blocks {
+// 		for _, tx := range block.Transactions {
+// 			if bytes.Equal(tx.Salt, salt) {
+// 				return true
+// 			}
+// 		}
+// 	}
 
-	return false
-}
+// 	return false
+// }
 
 // func (bc *BlockchainImpl) SignBlock(block *shared.Block, validatorAddress string) ([]byte, error) {
 // 	privateKey, bech32Address, err := bc.GetValidatorPrivateKey(validatorAddress)
@@ -979,7 +956,7 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 // 	bc.Forks = nil
 // }
 
-// // // In Blockchain
+// // // // In Blockchain
 // func (bc *BlockchainImpl) InsertOrUpdatePublicKey(address string, publicKeyBytes []byte, keyType string) error {
 // 	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
 
@@ -1030,7 +1007,7 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 // 	return nil
 // }
 
-// // // ValidateBlock checks if the block is valid
+// // // // ValidateBlock checks if the block is valid
 // func (bc *BlockchainImpl) ValidateBlock(newBlock *shared.Block, prevBlock *shared.Block) bool {
 // 	// Existing checks
 // 	if !bytes.Equal(newBlock.PrevHash, prevBlock.Hash) {
@@ -1083,7 +1060,7 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 // 	return &lastBlock, lastIndex, nil
 // }
 
-// // // addUTXO adds a new UTXO to the blockchain's UTXO set.
+// // // // addUTXO adds a new UTXO to the blockchain's UTXO set.
 // func (bc *BlockchainImpl) addUTXO(utxo shared.UTXO) error {
 // 	utxoKey := fmt.Sprintf("%s:%d", utxo.TransactionID, utxo.Index)
 // 	log.Printf("Adding UTXO with key: %s", utxoKey)
@@ -1104,7 +1081,7 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 // 	return nil
 // }
 
-// // // removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.
+// // // // removeUTXO removes a UTXO from the blockchain's UTXO set based on transaction ID and index.
 // func (bc *BlockchainImpl) removeUTXO(transactionID string, index int32) bool {
 // 	utxoKey := fmt.Sprintf("%s:%d", transactionID, index)
 // 	if _, exists := bc.UTXOs[utxoKey]; exists {
@@ -1114,9 +1091,9 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 // 	return false
 // }
 
-// // // VerifyTransaction checks the validity of a transaction against the current state of the blockchain,
-// // // including signature verification and double spending checks. It's essential for maintaining the
-// // // Example snippet for VerifyTransaction method adjustment
+// // // // VerifyTransaction checks the validity of a transaction against the current state of the blockchain,
+// // // // including signature verification and double spending checks. It's essential for maintaining the
+// // // // Example snippet for VerifyTransaction method adjustment
 // func (bc *BlockchainImpl) VerifyTransaction(tx *thrylos.Transaction) (bool, error) {
 // 	// Check if salt is present and valid
 // 	if len(tx.Salt) == 0 {
@@ -1162,17 +1139,17 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 // 	return true, nil
 // }
 
-// // // Helper function to generate a random salt
-func generateSalt() ([]byte, error) {
-	salt := make([]byte, 32) // Using 32 bytes for salt
-	_, err := rand.Read(salt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate salt: %v", err)
-	}
-	return salt, nil
-}
+// // // // Helper function to generate a random salt
+// func generateSalt() ([]byte, error) {
+// 	salt := make([]byte, 32) // Using 32 bytes for salt
+// 	_, err := rand.Read(salt)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to generate salt: %v", err)
+// 	}
+// 	return salt, nil
+// }
 
-// // // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
+// // // // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 // func (bc *BlockchainImpl) ProcessPendingTransactions(validator string) (*shared.Block, error) {
 // 	// First, verify validator status before acquiring locks
 // 	if !bc.IsActiveValidator(validator) {
@@ -1444,8 +1421,8 @@ func generateSalt() ([]byte, error) {
 // 	return nil
 // }
 
-// // // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
-// // Validate transactions with available UTXOs
+// // // // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
+// // // Validate transactions with available UTXOs
 // func (bc *BlockchainImpl) validateTransactionsConcurrently(transactions []*thrylos.Transaction) []error {
 // 	var wg sync.WaitGroup
 // 	errChan := make(chan error, len(transactions))
@@ -1493,14 +1470,14 @@ func generateSalt() ([]byte, error) {
 // // // Helper function to convert thrylos.Transaction to shared.Transaction
 // func (bc *BlockchainImpl) convertToSharedTransaction(tx *thrylos.Transaction) (shared.Transaction, error) {
 // 	if tx == nil {
-// 		return shared.Transaction{}, fmt.Errorf("nil transaction received for conversion")
+// 		return types.Transaction{}, fmt.Errorf("nil transaction received for conversion")
 // 	}
 
 // 	signatureEncoded := base64.StdEncoding.EncodeToString(tx.Signature)
 
-// 	inputs := make([]shared.UTXO, len(tx.Inputs))
+// 	inputs := make([]types.UTXO, len(tx.Inputs))
 // 	for i, input := range tx.Inputs {
-// 		inputs[i] = shared.UTXO{
+// 		inputs[i] = types.UTXO{
 // 			TransactionID: input.TransactionId,
 // 			Index:         int(input.Index),
 // 			OwnerAddress:  input.OwnerAddress,
@@ -1508,9 +1485,9 @@ func generateSalt() ([]byte, error) {
 // 		}
 // 	}
 
-// 	outputs := make([]shared.UTXO, len(tx.Outputs))
+// 	outputs := make([]types.UTXO, len(tx.Outputs))
 // 	for i, output := range tx.Outputs {
-// 		outputs[i] = shared.UTXO{
+// 		outputs[i] = types.UTXO{
 // 			TransactionID: tx.Id, // Assume output inherits transaction ID
 // 			Index:         int(output.Index),
 // 			OwnerAddress:  output.OwnerAddress,
@@ -1518,7 +1495,7 @@ func generateSalt() ([]byte, error) {
 // 		}
 // 	}
 
-// 	return shared.Transaction{
+// 	return types.Transaction{
 // 		ID:        tx.Id,
 // 		Inputs:    inputs,
 // 		Outputs:   outputs,
@@ -1590,7 +1567,7 @@ func generateSalt() ([]byte, error) {
 // 	return nil, errors.New("transaction not found")
 // }
 
-// // // This function should return the number of blocks in the blockchain.
+// // // // This function should return the number of blocks in the blockchain.
 
 // func (bc *BlockchainImpl) GetBlockCount() int {
 // 	bc.Mu.RLock()
@@ -2262,36 +2239,36 @@ func generateSalt() ([]byte, error) {
 // }
 
 // // // VerifyPoSRules verifies the PoS rules for the given block
-// func (bc *BlockchainImpl) VerifyPoSRules(block shared.Block) bool {
+// func (bc *BlockchainImpl) VerifyPoSRules(block types.Block) bool {
 // 	// Check if the validator had a stake at the time of block creation
 // 	_, exists := bc.Stakeholders[block.Validator]
 // 	return exists
 // }
 
-// // // CheckChainIntegrity verifies the entire blockchain for hash integrity and chronological order,
-// // // ensuring that no blocks have been altered or inserted maliciously. It's a safeguard against tampering
-// // // and a key component in the blockchain's security mechanisms.
-func (bc *BlockchainImpl) CheckChainIntegrity() bool {
-	for i := 1; i < len(bc.Blocks); i++ {
-		prevBlock := bc.Blocks[i-1]
-		currentBlock := bc.Blocks[i]
+// // // // CheckChainIntegrity verifies the entire blockchain for hash integrity and chronological order,
+// // // // ensuring that no blocks have been altered or inserted maliciously. It's a safeguard against tampering
+// // // // and a key component in the blockchain's security mechanisms.
+// func (bc *BlockchainImpl) CheckChainIntegrity() bool {
+// 	for i := 1; i < len(bc.Blocks); i++ {
+// 		prevBlock := bc.Blocks[i-1]
+// 		currentBlock := bc.Blocks[i]
 
-		if !currentBlock.PrevHash.Equal(prevBlock.Hash) {
-			fmt.Printf("Invalid previous hash in block %d\n", currentBlock.Index)
-			return false
-		}
+// 		if !currentBlock.PrevHash.Equal(prevBlock.Hash) {
+// 			fmt.Printf("Invalid previous hash in block %d\n", currentBlock.Index)
+// 			return false
+// 		}
 
-		blockBytes, err := SerializeForSigning(currentBlock)
-		if err != nil {
-			fmt.Printf("Failed to serialize block %d: %v\n", currentBlock.Index, err)
-			return false
-		}
-		computedHash := hash.NewHash(blockBytes)
+// 		blockBytes, err := SerializeForSigning(currentBlock)
+// 		if err != nil {
+// 			fmt.Printf("Failed to serialize block %d: %v\n", currentBlock.Index, err)
+// 			return false
+// 		}
+// 		computedHash := hash.NewHash(blockBytes)
 
-		if !currentBlock.Hash.Equal(computedHash) {
-			fmt.Printf("Invalid hash in block %d\n", currentBlock.Index)
-			return false
-		}
-	}
-	return true
-}
+// 		if !currentBlock.Hash.Equal(computedHash) {
+// 			fmt.Printf("Invalid hash in block %d\n", currentBlock.Index)
+// 			return false
+// 		}
+// 	}
+// 	return true
+// }

@@ -1,27 +1,21 @@
 package staking
 
-import (
-	"sync"
+// type StakingService struct {
+// 	mu         sync.RWMutex
+// 	pool       *types.StakingPool
+// 	stakes     map[string]*types.Stake
+// 	blockchain *types.Blockchain
+// }
 
-	"github.com/thrylos-labs/thrylos/shared"
-)
-
-type StakingService struct {
-	mu         sync.RWMutex
-	pool       *shared.StakingPool
-	stakes     map[string]*shared.Stake
-	blockchain *shared.Blockchain
-}
-
-// func (s *StakingService) GetPool() *shared.StakingPool {
+// func (s *StakingService) GetPool() *types.StakingPool {
 // 	s.mu.RLock()
 // 	defer s.mu.RUnlock()
 // 	return s.pool
 // }
 
-// func NewStakingService(blockchain *shared.Blockchain) *StakingService {
+// func NewStakingService(blockchain *types.Blockchain) *StakingService {
 // 	return &StakingService{
-// 		pool: &shared.StakingPool{
+// 		pool: &types.StakingPool{
 // 			MinStakeAmount:    config.MinimumStakeAmount, // From constants.go
 // 			MinDelegation:     config.MinimumStakeAmount, // Use same minimum for delegation
 // 			FixedYearlyReward: config.AnnualStakeReward,  // From constants.go
@@ -29,7 +23,7 @@ type StakingService struct {
 // 			TotalStaked:       0,
 // 			TotalDelegated:    0,
 // 		},
-// 		stakes:     make(map[string]*shared.Stake),
+// 		stakes:     make(map[string]*types.Stake),
 // 		blockchain: blockchain,
 // 	}
 // }
@@ -176,58 +170,58 @@ type StakingService struct {
 // 	return false
 // }
 
-// // func (s *StakingService) CreateStake(userAddress string, amount int64) (*shared.Stake, error) {
-// // 	s.mu.Lock()
-// // 	defer s.mu.Unlock()
+// func (s *StakingService) CreateStake(userAddress string, amount int64) (*types.Stake, error) {
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
 
-// // 	// Automatically determine if address is a validator
-// // 	isValidator := s.isValidator(userAddress)
-// // 	isDelegator := !isValidator // isDelegator is opposite of isValidator
+// 	// Automatically determine if address is a validator
+// 	isValidator := s.isValidator(userAddress)
+// 	isDelegator := !isValidator // isDelegator is opposite of isValidator
 
-// // 	// Use appropriate minimum based on status
-// // 	minRequired := s.pool.MinStakeAmount
-// // 	if isDelegator {
-// // 		minRequired = s.pool.MinDelegation
-// // 	}
+// 	// Use appropriate minimum based on status
+// 	minRequired := s.pool.MinStakeAmount
+// 	if isDelegator {
+// 		minRequired = s.pool.MinDelegation
+// 	}
 
-// // 	if amount < minRequired {
-// // 		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
-// // 	}
+// 	if amount < minRequired {
+// 		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
+// 	}
 
-// // 	// Create transaction based on type
-// // 	txType := "stake"
-// // 	if isDelegator {
-// // 		txType = "delegate"
-// // 	}
-// // 	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
+// 	// Create transaction based on type
+// 	txType := "stake"
+// 	if isDelegator {
+// 		txType = "delegate"
+// 	}
+// 	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
 
-// // 	stakingTx := &thrylos.Transaction{
-// // 		Id:        txID,
-// // 		Sender:    userAddress,
-// // 		Timestamp: time.Now().Unix(),
-// // 		Outputs: []*thrylos.UTXO{{
-// // 			OwnerAddress:  "staking_pool",
-// // 			Amount:        amount,
-// // 			Index:         0,
-// // 			TransactionId: "",
-// // 		}},
-// // 	}
+// 	stakingTx := &thrylos.Transaction{
+// 		Id:        txID,
+// 		Sender:    userAddress,
+// 		Timestamp: time.Now().Unix(),
+// 		Outputs: []*thrylos.UTXO{{
+// 			OwnerAddress:  "staking_pool",
+// 			Amount:        amount,
+// 			Index:         0,
+// 			TransactionId: "",
+// 		}},
+// 	}
 
-// // 	// Create the stake transaction
-// // 	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
-// // 		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
-// // 	}
+// 	// Create the stake transaction
+// 	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
+// 		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
+// 	}
 
-// // 	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
-// // }
+// 	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
+// }
 
 // // Keep internal function for testing
-// func (s *StakingService) createStakeInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) (*shared.Stake, error) {
+// func (s *StakingService) createStakeInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) (*types.Stake, error) {
 // 	now := timestamp
 
 // 	// Initialize stake if it doesn't exist
 // 	if s.stakes[userAddress] == nil {
-// 		s.stakes[userAddress] = &shared.Stake{
+// 		s.stakes[userAddress] = &types.Stake{
 // 			UserAddress:            userAddress,
 // 			Amount:                 0,
 // 			StartTime:              now,

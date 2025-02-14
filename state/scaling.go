@@ -1,11 +1,11 @@
 package state
 
 import (
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 type ShardScalingImpl struct {
-	*shared.ShardScaling
+	*types.ShardScaling
 }
 
 // func NewShardScaling() *ShardScalingImpl {
@@ -28,7 +28,7 @@ type ShardScalingImpl struct {
 // 	}
 // }
 
-// func (s *ShardScalingImpl) MonitorShards(sm *shared.StateManager) {
+// func (s *ShardScalingImpl) MonitorShards(sm *types.StateManager) {
 // 	go func() {
 // 		ticker := time.NewTicker(30 * time.Second)
 // 		defer ticker.Stop()
@@ -44,7 +44,7 @@ type ShardScalingImpl struct {
 // 	}()
 // }
 
-// func (s *ShardScalingImpl) evaluateShards(sm *StateManager) {
+// func (s *ShardScalingImpl) evaluateShards(sm *types.StateManager) {
 // 	s.mu.Lock()
 // 	defer s.mu.Unlock()
 

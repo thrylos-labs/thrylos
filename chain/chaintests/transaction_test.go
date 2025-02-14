@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 // ensure this import path is correct
@@ -140,13 +140,13 @@ func TestSignatureVerificationSimplified(t *testing.T) {
 	}
 }
 
-func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Transaction {
+func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []types.Transaction {
 	// Example: Creating a single mock transaction for simplicity.
 	// In a real scenario, you might create several transactions based on your test requirements.
 
 	// Mock transaction details.
 	txID := "tx1"
-	inputs := []shared.UTXO{
+	inputs := []types.UTXO{
 		{
 			ID:            "utxo1",
 			TransactionID: "tx0",
@@ -155,7 +155,7 @@ func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Tran
 			Amount:        100,
 		},
 	}
-	outputs := []shared.UTXO{
+	outputs := []types.UTXO{
 		{
 			ID:            "utxo2",
 			TransactionID: txID,
@@ -166,7 +166,7 @@ func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Tran
 	}
 
 	// Create a new transaction.
-	tx := shared.Transaction{
+	tx := types.Transaction{
 		ID:        txID,
 		Inputs:    inputs,
 		Outputs:   outputs,
@@ -194,7 +194,7 @@ func CreateMockTransactionsWithSigning(privateKey *rsa.PrivateKey) []shared.Tran
 	// 	tx.Signature = signature // The Signature field should be a string.
 
 	// Return a slice containing the signed transaction.
-	return []shared.Transaction{tx}
+	return []types.Transaction{tx}
 }
 
 func TestTransactionSigningAndVerification1(t *testing.T) {
@@ -205,11 +205,11 @@ func TestTransactionSigningAndVerification1(t *testing.T) {
 	}
 
 	// Step 2: Create a new transaction
-	tx := shared.Transaction{
+	tx := types.Transaction{
 		ID:        "txTest123",
 		Timestamp: 1630000000,
-		Inputs:    []shared.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-		Outputs:   []shared.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		Inputs:    []types.UTXO{{TransactionID: "tx0", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []types.UTXO{{TransactionID: "txTest123", Index: 0, OwnerAddress: "Bob", Amount: 100}},
 	}
 
 	// Step 3: Serialize the transaction (excluding the signature for now)

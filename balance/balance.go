@@ -9,36 +9,31 @@ import (
 
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/config"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
-type BalanceNotifier interface {
-	SendBalanceUpdate(address string) error
-	NotifyBalanceUpdate(address string, balance amount.Amount)
-}
-
 type Manager struct {
-	messageBus     *shared.MessageBus
-	notifier       BalanceNotifier
+	messageBus     types.MessageBusInterface // Change to interface from types
+	notifier       types.BalanceNotifier
 	cache          sync.Map
 	cacheTTL       time.Duration
-	pendingUpdates map[string][]PendingBalanceUpdate
+	pendingUpdates map[string][]types.PendingBalanceUpdate
 	pendingMutex   sync.RWMutex
 	updateQueue    *BalanceUpdateQueue
 }
 
-func NewManager(messageBus *shared.MessageBus, notifier BalanceNotifier) *Manager {
+func NewManager(messageBus types.MessageBusInterface, notifier types.BalanceNotifier) *Manager {
 	m := &Manager{
 		messageBus:     messageBus,
 		notifier:       notifier,
 		cacheTTL:       5 * time.Second,
-		pendingUpdates: make(map[string][]PendingBalanceUpdate),
+		pendingUpdates: make(map[string][]types.PendingBalanceUpdate),
 	}
 	m.updateQueue = newBalanceUpdateQueue(m)
 
 	// Subscribe to relevant message types
-	ch := make(chan shared.Message, 100)
-	messageBus.Subscribe(shared.GetBalance, ch)
+	ch := make(chan types.Message, 100)
+	messageBus.Subscribe(types.GetBalance, ch)
 
 	// Start message handler
 	go m.handleMessages(ch)
@@ -46,18 +41,18 @@ func NewManager(messageBus *shared.MessageBus, notifier BalanceNotifier) *Manage
 	return m
 }
 
-func (m *Manager) handleMessages(ch chan shared.Message) {
+func (m *Manager) handleMessages(ch chan types.Message) {
 	for msg := range ch {
 		switch msg.Type {
-		case shared.GetBalance:
+		case types.GetBalance:
 			if address, ok := msg.Data.(string); ok {
 				balance, err := m.GetBalance(address)
-				msg.ResponseCh <- shared.Response{
+				msg.ResponseCh <- types.Response{
 					Data:  balance,
 					Error: err,
 				}
 			} else {
-				msg.ResponseCh <- shared.Response{
+				msg.ResponseCh <- types.Response{
 					Error: fmt.Errorf("invalid address format in message"),
 				}
 			}
@@ -78,25 +73,14 @@ type cachedBalance struct {
 	timestamp time.Time
 }
 
-type BalanceUpdateRequest struct {
-	Address string
-	Retries int
-}
-
-type PendingBalanceUpdate struct {
-	Address   string
-	Balance   int64
-	Timestamp time.Time
-}
-
 type BalanceUpdateQueue struct {
-	queue   chan BalanceUpdateRequest
+	queue   chan types.BalanceUpdateRequest
 	manager *Manager
 }
 
 func newBalanceUpdateQueue(manager *Manager) *BalanceUpdateQueue {
 	return &BalanceUpdateQueue{
-		queue:   make(chan BalanceUpdateRequest, 1000),
+		queue:   make(chan types.BalanceUpdateRequest, 1000),
 		manager: manager,
 	}
 }
@@ -128,10 +112,10 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 	}
 
 	// Request UTXOs through message bus
-	responseCh := make(chan shared.Response)
-	m.messageBus.Publish(shared.Message{
-		Type: shared.GetUTXOs,
-		Data: shared.UTXORequest{
+	responseCh := make(chan types.Response)
+	m.messageBus.Publish(types.Message{
+		Type: types.GetUTXOs,
+		Data: types.UTXORequest{
 			Address: address,
 		},
 		ResponseCh: responseCh,
@@ -143,7 +127,7 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 		return 0, response.Error
 	}
 
-	utxos, ok := response.Data.([]shared.UTXO)
+	utxos, ok := response.Data.([]types.UTXO)
 	if !ok {
 		return 0, fmt.Errorf("invalid UTXO response format")
 	}
@@ -159,7 +143,7 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 		initialBalanceThrylos := 70.0
 		initialBalanceNano, _ := amount.NewAmount(initialBalanceThrylos)
 
-		newUtxo := shared.UTXO{
+		newUtxo := types.UTXO{
 			OwnerAddress:  address,
 			Amount:        initialBalanceNano,
 			TransactionID: fmt.Sprintf("genesis-%s", address),
@@ -168,10 +152,10 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 		}
 
 		// Add UTXO through message bus
-		addUTXOResponse := make(chan shared.Response)
-		m.messageBus.Publish(shared.Message{
-			Type: shared.AddUTXO,
-			Data: shared.AddUTXORequest{
+		addUTXOResponse := make(chan types.Response)
+		m.messageBus.Publish(types.Message{
+			Type: types.AddUTXO,
+			Data: types.AddUTXORequest{
 				UTXO: newUtxo,
 			},
 			ResponseCh: addUTXOResponse,
@@ -191,13 +175,13 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 	})
 
 	// Update state through message bus
-	m.messageBus.Publish(shared.Message{
-		Type: shared.UpdateState,
-		Data: shared.UpdateStateRequest{
+	m.messageBus.Publish(types.Message{
+		Type: types.UpdateState,
+		Data: types.UpdateStateRequest{
 			Address: address,
 			Balance: total,
 		},
-		ResponseCh: make(chan shared.Response),
+		ResponseCh: make(chan types.Response),
 	})
 
 	return total, nil
@@ -206,7 +190,7 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 func (m *Manager) AddPendingBalanceUpdate(address string, balance int64) {
 	m.pendingMutex.Lock()
 	defer m.pendingMutex.Unlock()
-	m.pendingUpdates[address] = append(m.pendingUpdates[address], PendingBalanceUpdate{
+	m.pendingUpdates[address] = append(m.pendingUpdates[address], types.PendingBalanceUpdate{
 		Address:   address,
 		Balance:   balance,
 		Timestamp: time.Now(),
@@ -214,13 +198,13 @@ func (m *Manager) AddPendingBalanceUpdate(address string, balance int64) {
 	log.Printf("Added pending balance update for address %s: %d nanoTHRYLOS", address, balance)
 }
 
-func (m *Manager) GetPendingBalanceUpdates(address string) []PendingBalanceUpdate {
+func (m *Manager) GetPendingBalanceUpdates(address string) []types.PendingBalanceUpdate {
 	m.pendingMutex.RLock()
 	defer m.pendingMutex.RUnlock()
 	return m.pendingUpdates[address]
 }
 
-func (m *Manager) RemovePendingBalanceUpdate(address string, update PendingBalanceUpdate) {
+func (m *Manager) RemovePendingBalanceUpdate(address string, update types.PendingBalanceUpdate) {
 	m.pendingMutex.Lock()
 	defer m.pendingMutex.Unlock()
 	updates := m.pendingUpdates[address]

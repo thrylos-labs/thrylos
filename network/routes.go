@@ -1,6 +1,6 @@
 package network
 
-// Helper function to check if request is WebSocket
+// // Helper function to check if request is WebSocket
 // func isWebSocketRequest(r *http.Request) bool {
 // 	return strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
 // }

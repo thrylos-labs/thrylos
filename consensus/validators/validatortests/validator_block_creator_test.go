@@ -1,21 +1,14 @@
 package validatortests
 
-import (
-	"sync"
-
-	thrylos "github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/shared"
-)
-
 // MockBlockchainForValidator implements the test blockchain
-type MockBlockchainForValidator struct {
-	ActiveValidators []string
-	PendingTxs       []*thrylos.Transaction
-	PropagatedTxs    map[string][]string
-	Stakeholders     map[string]int64
-	Blocks           []*shared.Block
-	mu               sync.RWMutex
-}
+// type MockBlockchainForValidator struct {
+// 	ActiveValidators []string
+// 	PendingTxs       []*thrylos.Transaction
+// 	PropagatedTxs    map[string][]string
+// 	Stakeholders     map[string]int64
+// 	Blocks           []*shared.Block
+// 	mu               sync.RWMutex
+// }
 
 // func NewMockBlockchainForValidator() *MockBlockchainForValidator {
 // 	// Create genesis block

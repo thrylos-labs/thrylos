@@ -7,7 +7,7 @@ import (
 
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 	// other necessary imports
 )
 
@@ -15,8 +15,8 @@ import (
 // previous hash, and validator. This function also calculates the current timestamp and the block's
 // hash, ensuring the block is ready to be added to the blockchain.
 
-func NewBlock(index int64, prevHash hash.Hash, transactions []*shared.Transaction, validatorPublicKey crypto.PublicKey) (*shared.Block, error) {
-	block := &shared.Block{
+func NewBlock(index int64, prevHash hash.Hash, transactions []*types.Transaction, validatorPublicKey crypto.PublicKey) (*types.Block, error) {
+	block := &types.Block{
 		Index:              index,
 		Timestamp:          time.Now().Unix(),
 		PrevHash:           prevHash,
@@ -34,8 +34,8 @@ func NewBlock(index int64, prevHash hash.Hash, transactions []*shared.Transactio
 
 // NewGenesisBlock creates and returns the genesis block for the blockchain. The genesis block
 // is the first block in the blockchain, serving as the foundation upon which the entire chain is built.
-func NewGenesisBlock() *shared.Block {
-	block := &shared.Block{
+func NewGenesisBlock() *types.Block {
+	block := &types.Block{
 		Index:      0,
 		Timestamp:  time.Now().Unix(),
 		VerkleRoot: []byte{}, // Or some predefined value, since it's a special case.
@@ -47,7 +47,7 @@ func NewGenesisBlock() *shared.Block {
 }
 
 // Verify verifies the integrity of the block by checking its hash, previous hash, and transactions.
-func Verify(b *shared.Block) error {
+func Verify(b *types.Block) error {
 	// Check if the previous hash matches
 	if b.PrevHash == hash.NullHash() || !b.PrevHash.Equal(b.Hash) {
 		return fmt.Errorf("block's previous hash does not match the hash of the previous block")
@@ -68,7 +68,7 @@ func Verify(b *shared.Block) error {
 	return nil
 }
 
-func SerializeForSigning(b *shared.Block) ([]byte, error) {
+func SerializeForSigning(b *types.Block) ([]byte, error) {
 	// Create a copy to avoid modifying the original
 	blockCopy := *b
 	blockCopy.Hash = hash.NullHash()
@@ -84,7 +84,7 @@ func SerializeForSigning(b *shared.Block) ([]byte, error) {
 }
 
 // InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
-func InitializeVerkleTree(b *shared.Block) error {
+func InitializeVerkleTree(b *types.Block) error {
 	if len(b.Transactions) == 0 {
 		return nil
 	}
@@ -109,7 +109,7 @@ func InitializeVerkleTree(b *shared.Block) error {
 	b.VerkleRoot = commitment[:]
 	return nil
 }
-func ComputeBlockHash(b *shared.Block) {
+func ComputeBlockHash(b *types.Block) {
 	blockByte, err := SerializeForSigning(b) // Pass the block parameter
 	if err != nil {
 		log.Printf("Failed to create serialise block: %v", err)

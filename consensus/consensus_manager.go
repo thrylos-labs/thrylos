@@ -1,22 +1,20 @@
 package consensus
 
 import (
-	"time"
-
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 type ConsensusManagerImpl struct {
-	*shared.ConsensusManager
+	*types.ConsensusManager
 }
 
-const (
-	BaseBlockTime = 5 * time.Second
-	MinBlockTime  = 2 * time.Second
-	MaxBlockTime  = 10 * time.Second
-)
+// const (
+// 	BaseBlockTime = 5 * time.Second
+// 	MinBlockTime  = 2 * time.Second
+// 	MaxBlockTime  = 10 * time.Second
+// )
 
-// func NewConsensusManager(blockchain BlockchainInterface) *ConsensusManagerImpl {
+// func NewConsensusManager(blockchain types.BlockchainInterface) *ConsensusManagerImpl {
 // 	cm := &ConsensusManagerImpl{
 // 		Blockchain:       blockchain,
 // 		CurrentBlockTime: BaseBlockTime,

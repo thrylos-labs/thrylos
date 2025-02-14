@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 func TestUTXO(t *testing.T) {
@@ -15,7 +15,7 @@ func TestUTXO(t *testing.T) {
 
 	t.Run("UTXO Creation", func(t *testing.T) {
 		// Test successful creation
-		utxo := shared.CreateUTXO(
+		utxo := types.CreateUTXO(
 			"test-utxo-1",
 			0,
 			"test-tx-1",
@@ -31,7 +31,7 @@ func TestUTXO(t *testing.T) {
 		assert.False(t, utxo.IsSpent)
 
 		// Test creation with negative amount - should still create but will fail validation
-		negativeUtxo := shared.CreateUTXO(
+		negativeUtxo := types.CreateUTXO(
 			"test-utxo-2",
 			0,
 			"test-tx-2",
@@ -44,7 +44,7 @@ func TestUTXO(t *testing.T) {
 
 	t.Run("UTXO Validation", func(t *testing.T) {
 		// Test valid UTXO
-		validUtxo := shared.CreateUTXO(
+		validUtxo := types.CreateUTXO(
 			"test-utxo-1",
 			0,
 			"test-tx-1",
@@ -56,7 +56,7 @@ func TestUTXO(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Test UTXO with invalid address
-		invalidUtxo := shared.CreateUTXO(
+		invalidUtxo := types.CreateUTXO(
 			"test-utxo-2",
 			0,
 			"test-tx-2",
@@ -71,7 +71,7 @@ func TestUTXO(t *testing.T) {
 	})
 
 	t.Run("UTXO Key Generation", func(t *testing.T) {
-		utxo := shared.CreateUTXO(
+		utxo := types.CreateUTXO(
 			"test-utxo-1",
 			5,
 			"test-tx-1",
@@ -85,7 +85,7 @@ func TestUTXO(t *testing.T) {
 	})
 
 	t.Run("UTXO Serialization", func(t *testing.T) {
-		original := shared.CreateUTXO(
+		original := types.CreateUTXO(
 			"test-utxo-1",
 			0,
 			"test-tx-1",
@@ -100,7 +100,7 @@ func TestUTXO(t *testing.T) {
 		assert.NotNil(t, data)
 
 		// Test Unmarshal
-		var reconstructed shared.UTXO
+		var reconstructed types.UTXO
 		err = reconstructed.Unmarshal(data)
 		assert.NoError(t, err)
 
@@ -115,8 +115,8 @@ func TestUTXO(t *testing.T) {
 
 	t.Run("Mark UTXO as Spent", func(t *testing.T) {
 		// Create a map of UTXOs
-		utxos := make(map[string]shared.UTXO)
-		utxo := shared.CreateUTXO(
+		utxos := make(map[string]types.UTXO)
+		utxo := types.CreateUTXO(
 			"test-utxo-1",
 			0,
 			"test-tx-1",
@@ -131,7 +131,7 @@ func TestUTXO(t *testing.T) {
 		assert.True(t, exists)
 
 		// Mark as spent
-		shared.MarkUTXOAsSpent(utxo.ID, utxos)
+		types.MarkUTXOAsSpent(utxo.ID, utxos)
 
 		// Verify UTXO no longer exists
 		_, exists = utxos[utxo.ID]

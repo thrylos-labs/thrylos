@@ -10,7 +10,7 @@ package chain
 
 // type ModernBlockProducer struct {
 // 	config         *BlockProducerConfig
-// 	blockchain     *shared.Blockchain
+// 	blockchain     *types.Blockchain
 // 	isProducing    atomic.Bool
 // 	lastBlockTime  time.Time
 // 	blockProcessor *BlockProcessor
@@ -18,7 +18,7 @@ package chain
 // 	messageBus     *shared.MessageBus
 // }
 
-// func NewBlockProducer(blockchain *shared.Blockchain, messageBus *shared.MessageBus) *ModernBlockProducer {
+// func NewBlockProducer(blockchain *types.Blockchain, messageBus *shared.MessageBus) *ModernBlockProducer {
 // 	return &ModernBlockProducer{
 // 		config: &BlockProducerConfig{
 // 			TargetBlockTime:   1200 * time.Millisecond,

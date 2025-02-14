@@ -1,4 +1,4 @@
-package shared
+package types
 
 // NetworkInterface defines the methods required for network communication
 type NetworkInterface interface {

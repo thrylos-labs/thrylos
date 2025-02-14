@@ -1,7 +1,7 @@
 package node
 
 // func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
-// 	vote := validators.Vote{
+// 	vote := validator.Vote{
 // 		ValidatorID: validatorID,
 // 		BlockNumber: blockNumber,
 // 		Timestamp:   time.Now(),
@@ -43,7 +43,7 @@ package node
 // 		}
 // 		defer resp.Body.Close()
 
-// 		var votes []validators.Vote
+// 		var votes []validator.Vote
 // 		if err := json.NewDecoder(resp.Body).Decode(&votes); err != nil {
 // 			log.Printf("Failed to decode votes from peer %s: %v", peer.Address, err)
 // 			continue
@@ -55,14 +55,14 @@ package node
 // 	}
 // }
 
-// func (node *Node) ValidateAndVoteForBlock(block *shared.Block) error {
+// func (node *Node) ValidateAndVoteForBlock(block *types.Block) error {
 // 	// Perform block validation
 // 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
 // 		return fmt.Errorf("block validation failed: %v", err)
 // 	}
 
 // 	// Create vote with validation result
-// 	vote := validators.Vote{
+// 	vote := validator.Vote{
 // 		ValidatorID:    block.Validator,
 // 		BlockNumber:    block.Index,
 // 		BlockHash:      block.Hash,
@@ -79,7 +79,7 @@ package node
 // 	return nil
 // }
 
-// func (node *Node) sendVoteToCounter(vote validators.Vote) error {
+// func (node *Node) sendVoteToCounter(vote validator.Vote) error {
 // 	if node.IsVoteCounter {
 // 		// If this is the counter node, process locally
 // 		return node.VoteCounter.AddVote(vote)

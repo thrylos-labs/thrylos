@@ -1,40 +1,21 @@
 package main
 
-// import (
-// 	"context"
-// 	"encoding/base64"
-// 	"encoding/json"
-// 	"errors"
-// 	"fmt"
-// 	"log"
-// 	"strings"
-
-// 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-
-// 	"github.com/thrylos-labs/thrylos"
-// 	"github.com/thrylos-labs/thrylos/core/consensus/processor"
-// 	"github.com/thrylos-labs/thrylos/database"
-// 	"github.com/thrylos-labs/thrylos/shared"
-// 	"golang.org/x/crypto/blake2b"
-// 	"google.golang.org/grpc/codes"
-// 	"google.golang.org/grpc/status"
-// )
-
 // type server struct {
 // 	thrylos.UnimplementedBlockchainServiceServer
-// 	db           *database.BlockchainDB        // Include a pointer to BlockchainDB
+// 	db           *store.BlockchainDB           // Include a pointer to BlockchainDB
 // 	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
 // 	hasherPool   *XOFPool                      // Add the hasher pool here
-
+// 	store        types.Store
 // }
 
-// func NewServer(db *database.BlockchainDB) *server {
+// func NewServer(db *store.BlockchainDB, store types.Store) *server {
 // 	pool := NewXOFPool(10) // Adjust the pool size based on expected load
 
 // 	return &server{
 // 		db:           db,
 // 		PublicKeyMap: make(map[string]*mldsa44.PublicKey),
 // 		hasherPool:   pool,
+// 		store:        store,
 // 	}
 // }
 
@@ -46,10 +27,10 @@ package main
 // 	}
 
 // 	// Create empty UTXO map for the GetBalance call
-// 	utxoMap := make(map[string][]shared.UTXO)
+// 	utxoMap := make(map[string][]types.UTXO)
 
 // 	// Get balance using the existing GetBalance method with UTXO map
-// 	balance, err := s.db.GetBalance(req.Address, utxoMap)
+// 	balance, err := s.store.GetBalance(req.Address, utxoMap)
 // 	if err != nil {
 // 		// Handle new wallet case
 // 		if strings.Contains(err.Error(), "wallet not found") {
@@ -62,8 +43,10 @@ package main
 // 	// Calculate Thrylos balance
 // 	balanceThrylos := float64(balance) / 1e7
 
+// 	balanceInt64 := int64(balance)
+
 // 	return &thrylos.BalanceResponse{
-// 		Balance:           balance,
+// 		Balance:           balanceInt64,
 // 		BalanceThrylos:    balanceThrylos,
 // 		BlockchainAddress: req.Address,
 // 	}, nil
@@ -76,10 +59,10 @@ package main
 // 	}
 
 // 	// Create empty UTXO map for the GetBalance call
-// 	utxoMap := make(map[string][]shared.UTXO)
+// 	utxoMap := make(map[string][]types.UTXO)
 
 // 	// Send initial balance
-// 	balance, err := s.db.GetBalance(req.Address, utxoMap)
+// 	balance, err := s.store.GetBalance(req.Address, utxoMap)
 // 	if err != nil {
 // 		if strings.Contains(err.Error(), "wallet not found") {
 // 			balance = 700000000 // 70 Thrylos in nanoTHR
@@ -88,8 +71,10 @@ package main
 // 		}
 // 	}
 
+// 	balanceInt64 := int64(balance)
+
 // 	balanceResponse := &thrylos.BalanceResponse{
-// 		Balance:           balance,
+// 		Balance:           balanceInt64,
 // 		BalanceThrylos:    float64(balance) / 1e7,
 // 		BlockchainAddress: req.Address,
 // 	}
@@ -216,10 +201,10 @@ package main
 // 	}
 
 // 	// Process the transaction including UTXO updates and adding the transaction to the blockchain
-// 	return s.db.ProcessTransaction(sharedTx)
+// 	return s.store.ProcessTransaction(sharedTx)
 // }
 
-// func (s *server) validateTransaction(tx *shared.Transaction) bool {
+// func (s *server) validateTransaction(tx *types.Transaction) bool {
 // 	if tx == nil || tx.Signature == "" {
 // 		log.Println("Transaction or its signature is empty")
 // 		return false
@@ -264,7 +249,7 @@ package main
 // 	// The rest of the validation logic remains the same
 // 	var totalInputs int64
 // 	for _, input := range tx.Inputs {
-// 		utxo, err := shared.GetUTXO(input.TransactionID, input.Index)
+// 		utxo, err := store.GetUTXO(input.TransactionID, input.Index)
 // 		if err != nil || utxo == nil {
 // 			log.Printf("UTXO not found or error retrieving UTXO: %v", err)
 // 			return false
@@ -308,7 +293,7 @@ package main
 // 	}
 
 // 	// Process the transaction using your blockchain core logic
-// 	err = s.db.AddTransaction(tx)
+// 	err = s.store.AddTransaction(tx)
 // 	if err != nil {
 // 		return nil, status.Errorf(codes.Internal, "Transaction failed: %v", err)
 // 	}

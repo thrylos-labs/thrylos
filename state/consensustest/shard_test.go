@@ -1,40 +1,36 @@
 package state
 
-import (
-	"github.com/stretchr/testify/mock"
-)
+// type MockNetwork struct {
+// 	mock.Mock
+// }
 
-type MockNetwork struct {
-	mock.Mock
-}
+// func (m *MockNetwork) SendMessage(nodeAddress string, message []byte) error {
+// 	args := m.Called(nodeAddress, message)
+// 	return args.Error(0)
+// }
 
-func (m *MockNetwork) SendMessage(nodeAddress string, message []byte) error {
-	args := m.Called(nodeAddress, message)
-	return args.Error(0)
-}
+// func (m *MockNetwork) BroadcastMessage(message []byte) error {
+// 	args := m.Called(message)
+// 	return args.Error(0)
+// }
 
-func (m *MockNetwork) BroadcastMessage(message []byte) error {
-	args := m.Called(message)
-	return args.Error(0)
-}
+// func (m *MockNetwork) GetPeerAddresses() []string {
+// 	args := m.Called()
+// 	return args.Get(0).([]string)
+// }
 
-func (m *MockNetwork) GetPeerAddresses() []string {
-	args := m.Called()
-	return args.Get(0).([]string)
-}
+// func (m *MockNetwork) IsConnected(nodeAddress string) bool {
+// 	args := m.Called(nodeAddress)
+// 	return args.Bool(0)
+// }
 
-func (m *MockNetwork) IsConnected(nodeAddress string) bool {
-	args := m.Called(nodeAddress)
-	return args.Bool(0)
-}
+// func (m *MockNetwork) AddPeer(address string) {
+// 	m.Called(address)
+// }
 
-func (m *MockNetwork) AddPeer(address string) {
-	m.Called(address)
-}
-
-func (m *MockNetwork) RemovePeer(address string) {
-	m.Called(address)
-}
+// func (m *MockNetwork) RemovePeer(address string) {
+// 	m.Called(address)
+// }
 
 // func TestStateManager(t *testing.T) {
 // 	mockNetwork := new(MockNetwork)

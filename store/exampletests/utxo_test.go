@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/store"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 func TestLRUCacheDirectly(t *testing.T) {
@@ -60,7 +60,7 @@ func TestUTXOCache(t *testing.T) {
 
 	t.Run("Basic Operations", func(t *testing.T) {
 		// Create a test UTXO
-		utxo := shared.CreateUTXO(
+		utxo := types.CreateUTXO(
 			"test-utxo-1",
 			0,
 			"test-tx-1",
@@ -102,7 +102,7 @@ func TestUTXOCache(t *testing.T) {
 	t.Run("Multiple UTXOs", func(t *testing.T) {
 		// Test with multiple UTXOs
 		for i := 0; i < 5; i++ {
-			utxo := shared.CreateUTXO(
+			utxo := types.CreateUTXO(
 				fmt.Sprintf("utxo-%d", i),
 				i,
 				fmt.Sprintf("tx-%d", i),
@@ -149,7 +149,7 @@ func TestUTXOCacheAdvanced(t *testing.T) {
 			go func(routineID int) {
 				defer wg.Done()
 				for j := 0; j < numOperations; j++ {
-					utxo := shared.CreateUTXO(
+					utxo := types.CreateUTXO(
 						fmt.Sprintf("utxo-%d-%d", routineID, j),
 						j,
 						fmt.Sprintf("tx-%d-%d", routineID, j),
@@ -185,9 +185,9 @@ func TestUTXOCacheAdvanced(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Add more items than the cache can hold
-		addedUTXOs := make(map[string]*shared.UTXO)
+		addedUTXOs := make(map[string]*types.UTXO)
 		for i := 0; i < smallCacheSize*2; i++ {
-			utxo := shared.CreateUTXO(
+			utxo := types.CreateUTXO(
 				fmt.Sprintf("utxo-%d", i),
 				i,
 				fmt.Sprintf("tx-%d", i),
@@ -219,7 +219,7 @@ func TestUTXOCacheAdvanced(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Add and remove a UTXO
-		utxo := shared.CreateUTXO("utxo-1", 0, "tx-1", "addr1_valid_address_format", 100.0, false)
+		utxo := types.CreateUTXO("utxo-1", 0, "tx-1", "addr1_valid_address_format", 100.0, false)
 		key := utxo.Key()
 
 		added := cache.Add(key, utxo)
@@ -229,7 +229,7 @@ func TestUTXOCacheAdvanced(t *testing.T) {
 		assert.True(t, removed)
 
 		// Try to add a new UTXO with the same key
-		newUTXO := shared.CreateUTXO("utxo-2", 0, "tx-1", "addr1_valid_address_format", 200.0, false)
+		newUTXO := types.CreateUTXO("utxo-2", 0, "tx-1", "addr1_valid_address_format", 200.0, false)
 		added = cache.Add(key, newUTXO)
 		assert.True(t, added)
 
@@ -249,7 +249,7 @@ func TestUTXOCacheAdvanced(t *testing.T) {
 		assert.True(t, added, "Should handle nil UTXO")
 
 		// Test with empty key
-		utxo := shared.CreateUTXO("utxo-1", 0, "", "addr1_valid_address_format", 100.0, false)
+		utxo := types.CreateUTXO("utxo-1", 0, "", "addr1_valid_address_format", 100.0, false)
 		key := utxo.Key()
 		added = cache.Add(key, utxo)
 		assert.True(t, added, "Should handle empty transaction ID")
@@ -274,7 +274,7 @@ func TestUTXOCacheAdvanced(t *testing.T) {
 		// Add a large number of UTXOs
 		numUTXOs := 1000
 		for i := 0; i < numUTXOs; i++ {
-			utxo := shared.CreateUTXO(
+			utxo := types.CreateUTXO(
 				fmt.Sprintf("utxo-%d", i),
 				i,
 				fmt.Sprintf("tx-%d", i),

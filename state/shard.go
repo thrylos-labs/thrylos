@@ -1,19 +1,11 @@
 package state
 
-import (
-	"github.com/thrylos-labs/thrylos/shared"
-)
-
-type StateManagerImpl struct {
-	*shared.StateManager
-}
-
 // func (sm *StateManagerImpl) StopStateSyncLoop() {
 // 	close(sm.stopChan)
 // }
 
 // // NewStateManager creates a new state sharding manager
-// func NewStateManager(networkHandler shared.NetworkInterface, numShards int) *StateManagerImpl {
+// func NewStateManager(networkHandler types.NetworkInterface, numShards int) *StateManagerImpl {
 // 	if numShards < 1 {
 // 		numShards = 1
 // 	}
@@ -117,13 +109,13 @@ type StateManagerImpl struct {
 // 	return nil
 // }
 
-// func (sm *StateManagerImpl) syncPartitionState(partition *shared.StatePartition) error {
+// func (sm *StateManagerImpl) syncPartitionState(partition *types.StatePartition) error {
 // 	partitionData, err := json.Marshal(partition)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to marshal partition: %v", err)
 // 	}
 
-// 	message := shared.NetworkMessage{
+// 	message := types.NetworkMessage{
 // 		Type:      "STATE_SYNC",
 // 		Data:      partitionData,
 // 		Timestamp: time.Now(),
@@ -137,13 +129,13 @@ type StateManagerImpl struct {
 // 	return sm.network.BroadcastMessage(messageBytes)
 // }
 
-// func (sm *StateManagerImpl) handleStateSync(message shared.NetworkMessage) error {
+// func (sm *StateManagerImpl) handleStateSync(message types.NetworkMessage) error {
 // 	data, ok := message.Data.([]byte)
 // 	if !ok {
 // 		return fmt.Errorf("invalid data type in message")
 // 	}
 
-// 	var partition shared.StatePartition
+// 	var partition types.StatePartition
 // 	if err := json.Unmarshal(data, &partition); err != nil {
 // 		return fmt.Errorf("failed to unmarshal partition state: %v", err)
 // 	}
@@ -203,7 +195,7 @@ type StateManagerImpl struct {
 // }
 
 // // GetUTXOs retrieves UTXOs from the appropriate partition
-// func (sm *StateManagerImpl) GetUTXOs(address string) ([]*shared.UTXO, error) {
+// func (sm *StateManagerImpl) GetUTXOs(address string) ([]*types.UTXO, error) {
 // 	partition := sm.GetResponsiblePartition(address)
 // 	if partition == nil {
 // 		return nil, fmt.Errorf("no responsible partition found for address: %s", address)
@@ -212,7 +204,7 @@ type StateManagerImpl struct {
 // 	partition.mu.RLock()
 // 	defer partition.mu.RUnlock()
 
-// 	var utxos []*shared.UTXO
+// 	var utxos []*types.UTXO
 // 	for _, utxo := range partition.UTXOs {
 // 		if utxo.OwnerAddress == address {
 // 			utxos = append(utxos, utxo)

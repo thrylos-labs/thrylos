@@ -1,9 +1,5 @@
 package network
 
-// Add this import instead of just thrylos
-
-// "github.com/thrylos-labs/thrylos/core/node" // This import is needed
-
 // type Handler struct {
 // 	node *node.Node // This reference requires the above import
 // }
@@ -293,7 +289,7 @@ package network
 // 		return nil, fmt.Errorf("error marshaling block data: %v", err)
 // 	}
 
-// 	var block chain.Block
+// 	var block types.Block
 // 	if err := json.Unmarshal(blockJSON, &block); err != nil {
 // 		return nil, fmt.Errorf("error unmarshaling block: %v", err)
 // 	}
@@ -309,19 +305,19 @@ package network
 // 		return nil, fmt.Errorf("block validation failed")
 // 	}
 
-// Add block
-// success, err := node.Blockchain.AddBlock(
-// 	block.Transactions,
-// 	block.Validator,
-// 	block.PrevHash,
-// 	block.Timestamp,
-// )
-// if err != nil {
-// 	return nil, fmt.Errorf("failed to add block: %v", err)
-// }
-// if !success {
-// 	return nil, fmt.Errorf("failed to add block due to validation or other issues")
-// }
+// 	// Add block
+// 	success, err := node.Blockchain.AddBlock(
+// 		block.Transactions,
+// 		block.Validator,
+// 		block.PrevHash,
+// 		block.Timestamp,
+// 	)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to add block: %v", err)
+// 	}
+// 	if !success {
+// 		return nil, fmt.Errorf("failed to add block due to validation or other issues")
+// 	}
 
 // 	// Log previous block info
 // 	if prevBlock != nil {

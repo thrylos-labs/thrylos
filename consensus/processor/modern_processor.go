@@ -12,7 +12,7 @@ package processor
 // 	txQueues       []chan *thrylos.Transaction
 // 	priorityQueues []chan *thrylos.Transaction
 // 	workerPool     chan struct{}
-// 	msgCh          chan shared.Message
+// 	msgCh          chan types.Message
 // 	DAGManager     *DAGManager
 // }
 
@@ -46,7 +46,7 @@ package processor
 // 		txQueues:       make([]chan *thrylos.Transaction, 12),
 // 		priorityQueues: make([]chan *thrylos.Transaction, 12),
 // 		workerPool:     make(chan struct{}, workerCount),
-// 		msgCh:          make(chan shared.Message, 100),
+// 		msgCh:          make(chan types.Message, 100),
 // 	}
 
 // 	// Initialize queues
@@ -68,8 +68,8 @@ package processor
 
 // 	// Subscribe to message types
 // 	messageBus := shared.GetMessageBus()
-// 	messageBus.Subscribe(shared.ProcessTransaction, mp.msgCh)
-// 	messageBus.Subscribe(shared.UpdateProcessorState, mp.msgCh)
+// 	messageBus.Subscribe(types.ProcessTransaction, mp.msgCh)
+// 	messageBus.Subscribe(types.UpdateProcessorState, mp.msgCh)
 
 // 	// Start message handler
 // 	go mp.handleMessages()
@@ -80,22 +80,22 @@ package processor
 // func (mp *ModernProcessor) handleMessages() {
 // 	for msg := range mp.msgCh {
 // 		switch msg.Type {
-// 		case shared.ProcessTransaction:
+// 		case types.ProcessTransaction:
 // 			mp.handleProcessTransaction(msg)
-// 		case shared.UpdateProcessorState:
+// 		case types.UpdateProcessorState:
 // 			mp.handleUpdateState(msg)
 // 		}
 // 	}
 // }
 
-// func (mp *ModernProcessor) handleProcessTransaction(msg shared.Message) {
+// func (mp *ModernProcessor) handleProcessTransaction(msg types.Message) {
 // 	tx := msg.Data.(*thrylos.Transaction)
 // 	err := mp.ProcessIncomingTransaction(tx)
-// 	msg.ResponseCh <- shared.Response{Error: err}
+// 	msg.ResponseCh <- types.Response{Error: err}
 // }
 
-// func (mp *ModernProcessor) handleUpdateState(msg shared.Message) {
-// 	req := msg.Data.(shared.UpdateProcessorStateRequest)
+// func (mp *ModernProcessor) handleUpdateState(msg types.Message) {
+// 	req := msg.Data.(types.UpdateProcessorStateRequest)
 
 // 	// Update the processor's state based on the request
 // 	mp.processedTxs.Store(req.TransactionID, req.State)
@@ -104,7 +104,7 @@ package processor
 // 	log.Printf("Updated transaction %s state to: %s", req.TransactionID, req.State)
 
 // 	// Send response
-// 	msg.ResponseCh <- shared.Response{
+// 	msg.ResponseCh <- types.Response{
 // 		Data: map[string]string{
 // 			"status": "updated",
 // 			"txId":   req.TransactionID,
@@ -146,9 +146,9 @@ package processor
 
 // 	// Process DAG first using message system
 // 	log.Printf("Processing DAG for transaction [%s]", txID)
-// 	responseCh := make(chan shared.Response)
-// 	shared.GetMessageBus().Publish(shared.Message{
-// 		Type:       shared.ValidateDAGTx,
+// 	responseCh := make(chan types.Response)
+// 	shared.GetMessageBus().Publish(types.Message{
+// 		Type:       types.ValidateDAGTx,
 // 		Data:       tx,
 // 		ResponseCh: responseCh,
 // 	})

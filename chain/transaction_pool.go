@@ -1,44 +1,19 @@
 package chain
 
-import (
-	"container/list"
-	"errors"
-	"fmt"
-	"log"
-	"sync"
-
-	"github.com/thrylos-labs/thrylos/network"
-	"github.com/thrylos-labs/thrylos/shared"
-	"github.com/thrylos-labs/thrylos/store"
-)
-
 // Holds pending transactions before they're added to blocks
 
-type txPool struct {
-	mu           sync.RWMutex
-	transactions map[string]*list.Element
-	order        *list.List
-	db           *shared.Store                  // Add database reference
-	propagator   *network.TransactionPropagator // Add propagator
-}
-
-type txEntry struct {
-	txID string
-	tx   *shared.Transaction
-}
-
 // NewTxPool creates a new transaction pool
-func NewTxPool(db *store.Database, propagator *network.TransactionPropagator) *txPool {
-	return &txPool{
-		transactions: make(map[string]*list.Element),
-		order:        list.New(),
-		db:           &db.Blockchain,
-		propagator:   propagator,
-	}
-}
+// func NewTxPool(db *store.Database, propagator *types.TransactionPropagator) *types.TxPool {
+// 	return &types.TxPool{
+// 		transactions: make(map[string]*list.Element),
+// 		order:        list.New(),
+// 		db:           &db.Blockchain,
+// 		propagator:   propagator,
+// 	}
+// }
 
-// AddTransaction adds a transaction to the pool
-// func (p *txPool) AddTransaction(tx *shared.Transaction) error {
+// // AddTransaction adds a transaction to the pool
+// func (p *types.TxPool) AddTransaction(tx *types.Transaction) error {
 // 	p.mu.Lock()
 // 	defer p.mu.Unlock()
 
@@ -68,11 +43,11 @@ func NewTxPool(db *store.Database, propagator *network.TransactionPropagator) *t
 // 	log.Printf("Transaction %s propagated to all validators", tx.ID)
 
 // 	// Start database transaction
-// 	dbTx, err := shared.Store.BeginTransaction()
+// 	dbTx, err := types.Store.BeginTransaction()
 // 	if err != nil {
 // 		return fmt.Errorf("failed to begin transaction: %v", err)
 // 	}
-// 	defer shared.Store.RollbackTransaction(dbTx)
+// 	defer types.Store.RollbackTransaction(dbTx)
 
 // 	// Store transaction with salt
 // 	txKey := []byte("transaction-" + tx.ID)
@@ -82,11 +57,11 @@ func NewTxPool(db *store.Database, propagator *network.TransactionPropagator) *t
 // 		return fmt.Errorf("error marshaling transaction: %v", err)
 // 	}
 
-// 	if err := shared.StoreSetTransaction(dbTx, txKey, txJSON); err != nil {
+// 	if err := types.StoreSetTransaction(dbTx, txKey, txJSON); err != nil {
 // 		return fmt.Errorf("error storing transaction: %v", err)
 // 	}
 
-// 	if err := shared.Store.CommitTransaction(dbTx); err != nil {
+// 	if err := types.Store.CommitTransaction(dbTx); err != nil {
 // 		return fmt.Errorf("error committing transaction: %v", err)
 // 	}
 
@@ -121,103 +96,103 @@ func NewTxPool(db *store.Database, propagator *network.TransactionPropagator) *t
 // 	return nil
 // }
 
-// Additional helper methods as needed
-func (p *txPool) GetTransactionStatus(txID string) (string, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// // Additional helper methods as needed
+// func (p *txPool) GetTransactionStatus(txID string) (string, error) {
+// 	p.mu.RLock()
+// 	defer p.mu.RUnlock()
 
-	if elem, exists := p.transactions[txID]; exists {
-		entry := elem.Value.(*txEntry)
-		return entry.tx.Status, nil
-	}
-	return "", fmt.Errorf("transaction not found")
-}
+// 	if elem, exists := p.transactions[txID]; exists {
+// 		entry := elem.Value.(*txEntry)
+// 		return entry.tx.Status, nil
+// 	}
+// 	return "", fmt.Errorf("transaction not found")
+// }
 
-func (p *txPool) UpdateTransactionStatus(txID string, status string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// func (p *types.TxPool) UpdateTransactionStatus(txID string, status string) error {
+// 	p.mu.Lock()
+// 	defer p.mu.Unlock()
 
-	if elem, exists := p.transactions[txID]; exists {
-		entry := elem.Value.(*txEntry)
-		entry.tx.Status = status
-		return nil
-	}
-	return fmt.Errorf("transaction not found")
-}
+// 	if elem, exists := p.transactions[txID]; exists {
+// 		entry := elem.Value.(*txEntry)
+// 		entry.tx.Status = status
+// 		return nil
+// 	}
+// 	return fmt.Errorf("transaction not found")
+// }
 
-// RemoveTransaction removes a transaction from the pool
-func (p *txPool) RemoveTransaction(tx *shared.Transaction) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// // RemoveTransaction removes a transaction from the pool
+// func (p *types.TxPool) RemoveTransaction(tx *types.Transaction) error {
+// 	p.mu.Lock()
+// 	defer p.mu.Unlock()
 
-	element, exists := p.transactions[tx.ID]
-	if !exists {
-		log.Printf("Transaction %s not found in the pool", tx.ID)
-		return errors.New("transaction not found in the pool")
-	}
+// 	element, exists := p.transactions[tx.ID]
+// 	if !exists {
+// 		log.Printf("Transaction %s not found in the pool", tx.ID)
+// 		return errors.New("transaction not found in the pool")
+// 	}
 
-	p.order.Remove(element)
-	delete(p.transactions, tx.ID)
-	log.Printf("Transaction %s removed from the pool", tx.ID)
-	return nil
-}
+// 	p.order.Remove(element)
+// 	delete(p.transactions, tx.ID)
+// 	log.Printf("Transaction %s removed from the pool", tx.ID)
+// 	return nil
+// }
 
-// GetTransaction retrieves a transaction from the pool by its ID
-func (p *txPool) GetTransaction(txID string) (*shared.Transaction, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// // GetTransaction retrieves a transaction from the pool by its ID
+// func (p *txPool) GetTransaction(txID string) (*shared.Transaction, error) {
+// 	p.mu.RLock()
+// 	defer p.mu.RUnlock()
 
-	element, exists := p.transactions[txID]
-	if !exists {
-		log.Printf("Transaction %s not found in the pool", txID)
-		return nil, errors.New("transaction not found in the pool")
-	}
+// 	element, exists := p.transactions[txID]
+// 	if !exists {
+// 		log.Printf("Transaction %s not found in the pool", txID)
+// 		return nil, errors.New("transaction not found in the pool")
+// 	}
 
-	entry := element.Value.(*txEntry)
-	log.Printf("Transaction %s retrieved from the pool", txID)
-	return entry.tx, nil
-}
+// 	entry := element.Value.(*txEntry)
+// 	log.Printf("Transaction %s retrieved from the pool", txID)
+// 	return entry.tx, nil
+// }
 
-// GetFirstTransaction retrieves the first transaction added to the pool
-func (p *txPool) GetFirstTransaction() (*shared.Transaction, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// // GetFirstTransaction retrieves the first transaction added to the pool
+// func (p *txPool) GetFirstTransaction() (*shared.Transaction, error) {
+// 	p.mu.RLock()
+// 	defer p.mu.RUnlock()
 
-	if p.order.Len() == 0 {
-		return nil, errors.New("no transactions in the pool")
-	}
+// 	if p.order.Len() == 0 {
+// 		return nil, errors.New("no transactions in the pool")
+// 	}
 
-	firstElement := p.order.Front()
-	entry := firstElement.Value.(*txEntry)
-	return entry.tx, nil
-}
+// 	firstElement := p.order.Front()
+// 	entry := firstElement.Value.(*txEntry)
+// 	return entry.tx, nil
+// }
 
-// GetAllTransactions retrieves all transactions from the pool
-func (p *txPool) GetAllTransactions() ([]*shared.Transaction, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// // GetAllTransactions retrieves all transactions from the pool
+// func (p *txPool) GetAllTransactions() ([]*types.Transaction, error) {
+// 	p.mu.RLock()
+// 	defer p.mu.RUnlock()
 
-	txs := make([]*shared.Transaction, 0, p.order.Len())
-	for e := p.order.Front(); e != nil; e = e.Next() {
-		entry := e.Value.(*txEntry)
-		txs = append(txs, entry.tx)
-	}
+// 	txs := make([]*shared.Transaction, 0, p.order.Len())
+// 	for e := p.order.Front(); e != nil; e = e.Next() {
+// 		entry := e.Value.(*txEntry)
+// 		txs = append(txs, entry.tx)
+// 	}
 
-	log.Printf("Retrieved all transactions from the pool, count: %d", len(txs))
-	return txs, nil
-}
+// 	log.Printf("Retrieved all transactions from the pool, count: %d", len(txs))
+// 	return txs, nil
+// }
 
-// BroadcastTransaction broadcasts a transaction to the network
-func (p *txPool) BroadcastTransaction(tx *shared.Transaction) error {
-	// Broadcast the transaction to the network, will be implemented, e.g by transmitting the transaction through the channel.
-	log.Printf("Broadcasting transaction %s to the network", tx.ID)
-	return nil
-}
+// // BroadcastTransaction broadcasts a transaction to the network
+// func (p *txPool) BroadcastTransaction(tx *shared.Transaction) error {
+// 	// Broadcast the transaction to the network, will be implemented, e.g by transmitting the transaction through the channel.
+// 	log.Printf("Broadcasting transaction %s to the network", tx.ID)
+// 	return nil
+// }
 
-// Size returns the number of transactions in the pool
-func (p *txPool) Size() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// // Size returns the number of transactions in the pool
+// func (p *types.TxPool) Size() int {
+// 	p.mu.RLock()
+// 	defer p.mu.RUnlock()
 
-	return p.order.Len()
-}
+// 	return p.order.Len()
+// }

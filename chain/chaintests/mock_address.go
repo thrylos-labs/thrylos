@@ -10,7 +10,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 // MockPublicKey implements the crypto.PublicKey interface
@@ -115,21 +115,21 @@ func (ms *MockSignature) Equal(other crypto.Signature) bool {
 
 // MockTransactionJSON is a helper struct for JSON marshaling/unmarshaling
 type MockTransactionJSON struct {
-	ID               string        `json:"id"`
-	Timestamp        int64         `json:"timestamp"`
-	Inputs           []shared.UTXO `json:"inputs"`
-	Outputs          []shared.UTXO `json:"outputs"`
-	EncryptedInputs  []byte        `json:"encryptedInputs,omitempty"`
-	EncryptedOutputs []byte        `json:"encryptedOutputs,omitempty"`
-	EncryptedAESKey  []byte        `json:"encryptedAESKey"`
-	PreviousTxIds    []string      `json:"previousTxIds"`
-	SenderAddress    string        `json:"senderAddress"`
-	SenderPublicKey  string        `json:"senderPublicKey"`
-	Signature        string        `json:"signature,omitempty"`
-	GasFee           int           `json:"gasFee"`
-	BlockHash        string        `json:"blockHash,omitempty"`
-	Salt             []byte        `json:"salt,omitempty"`
-	Status           string        `json:"status,omitempty"`
+	ID               string       `json:"id"`
+	Timestamp        int64        `json:"timestamp"`
+	Inputs           []types.UTXO `json:"inputs"`
+	Outputs          []types.UTXO `json:"outputs"`
+	EncryptedInputs  []byte       `json:"encryptedInputs,omitempty"`
+	EncryptedOutputs []byte       `json:"encryptedOutputs,omitempty"`
+	EncryptedAESKey  []byte       `json:"encryptedAESKey"`
+	PreviousTxIds    []string     `json:"previousTxIds"`
+	SenderAddress    string       `json:"senderAddress"`
+	SenderPublicKey  string       `json:"senderPublicKey"`
+	Signature        string       `json:"signature,omitempty"`
+	GasFee           int          `json:"gasFee"`
+	BlockHash        string       `json:"blockHash,omitempty"`
+	Salt             []byte       `json:"salt,omitempty"`
+	Status           string       `json:"status,omitempty"`
 }
 
 // CreateMockTransaction now uses CBOR encoding
@@ -149,14 +149,14 @@ func CreateMockTransaction() ([]byte, error) {
 	jsonTx := &MockTransactionJSON{
 		ID:        "tx123",
 		Timestamp: 1609459200,
-		Inputs: []shared.UTXO{
+		Inputs: []types.UTXO{
 			{
 				TransactionID: "tx100",
 				Index:         0,
 				Amount:        inputAmount, // Now 1050 instead of 50
 			},
 		},
-		Outputs: []shared.UTXO{
+		Outputs: []types.UTXO{
 			{
 				TransactionID: "tx123",
 				Index:         0,

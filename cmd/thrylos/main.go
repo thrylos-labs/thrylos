@@ -1,84 +1,75 @@
 package main
 
 import (
-	"crypto/tls"
-	"fmt"
-	"log"
-	"net/http"
 	_ "net/http/pprof" // This is important as it registers pprof handlers with the default mux.
-	"os"
-	"path/filepath"
-
-	"github.com/joho/godotenv"
-	"google.golang.org/grpc/credentials"
 )
 
-func loadEnv() (map[string]string, error) {
-	env := os.Getenv("ENV")
-	if env == "" {
-		env = "development" // Default to development if not set
-		log.Printf("ENV not set, defaulting to development mode")
-	}
+// func loadEnv() (map[string]string, error) {
+// 	env := os.Getenv("ENV")
+// 	if env == "" {
+// 		env = "development" // Default to development if not set
+// 		log.Printf("ENV not set, defaulting to development mode")
+// 	}
 
-	var envPath string
-	if env == "production" {
-		envPath = "../../.env.prod"
-	} else {
-		envPath = "../../.env.dev"
-	}
+// 	var envPath string
+// 	if env == "production" {
+// 		envPath = "../../.env.prod"
+// 	} else {
+// 		envPath = "../../.env.dev"
+// 	}
 
-	// Get the absolute path for better error reporting
-	absPath, err := filepath.Abs(envPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path for %s: %v", envPath, err)
-	}
+// 	// Get the absolute path for better error reporting
+// 	absPath, err := filepath.Abs(envPath)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to get absolute path for %s: %v", envPath, err)
+// 	}
 
-	// Check if file exists
-	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("environment file not found at %s", absPath)
-	}
+// 	// Check if file exists
+// 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+// 		return nil, fmt.Errorf("environment file not found at %s", absPath)
+// 	}
 
-	// Load the environment file
-	envFile, err := godotenv.Read(envPath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading environment file at %s: %v", absPath, err)
-	}
+// 	// Load the environment file
+// 	envFile, err := godotenv.Read(envPath)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("error reading environment file at %s: %v", absPath, err)
+// 	}
 
-	// Validate required environment variables
-	requiredVars := []string{
-		"WS_ADDRESS",
-		"HTTP_NODE_ADDRESS",
-		"GRPC_NODE_ADDRESS",
-		"AES_KEY_ENV_VAR",
-		"GENESIS_ACCOUNT",
-		"DATA_DIR",
-	}
+// 	// Validate required environment variables
+// 	requiredVars := []string{
+// 		"WS_ADDRESS",
+// 		"HTTP_NODE_ADDRESS",
+// 		"GRPC_NODE_ADDRESS",
+// 		"AES_KEY_ENV_VAR",
+// 		"GENESIS_ACCOUNT",
+// 		"DATA_DIR",
+// 	}
 
-	missingVars := []string{}
-	for _, v := range requiredVars {
-		if envFile[v] == "" {
-			missingVars = append(missingVars, v)
-		}
-	}
+// 	missingVars := []string{}
+// 	for _, v := range requiredVars {
+// 		if envFile[v] == "" {
+// 			missingVars = append(missingVars, v)
+// 		}
+// 	}
 
-	if len(missingVars) > 0 {
-		return nil, fmt.Errorf("missing required environment variables: %v", missingVars)
-	}
+// 	if len(missingVars) > 0 {
+// 		return nil, fmt.Errorf("missing required environment variables: %v", missingVars)
+// 	}
 
-	// Force development mode settings
-	if env == "development" {
-		log.Println("Running in development mode - TLS will be disabled")
-		// Explicitly set development mode variables
-		envFile["ENV"] = "development"
-		// Clear any TLS-related settings to prevent accidental usage
-		envFile["CERT_FILE"] = ""
-		envFile["KEY_FILE"] = ""
-		envFile["TLS_CERT_PATH"] = ""
-		envFile["TLS_KEY_PATH"] = ""
-	}
+// 	// Force development mode settings
+// 	if env == "development" {
+// 		log.Println("Running in development mode - TLS will be disabled")
+// 		// Explicitly set development mode variables
+// 		envFile["ENV"] = "development"
+// 		// Clear any TLS-related settings to prevent accidental usage
+// 		envFile["CERT_FILE"] = ""
+// 		envFile["KEY_FILE"] = ""
+// 		envFile["TLS_CERT_PATH"] = ""
+// 		envFile["TLS_KEY_PATH"] = ""
+// 	}
 
-	return envFile, nil
-}
+// 	return envFile, nil
+// }
 
 // func main() {
 // 	// Load environment variables
@@ -168,8 +159,8 @@ func loadEnv() (map[string]string, error) {
 // 	node.SetChainID(chainID)
 
 // 	// Initialize router and routes
-// 	router := network.NewRouter(node)
-// 	mux := router.SetupRoutes()
+// 	// router := network.NewRouter(node)
+// 	// mux := router.SetupRoutes()
 
 // 	// Needs to be reviewed
 // 	// mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +172,7 @@ func loadEnv() (map[string]string, error) {
 // 	node.StartBackgroundTasks()
 
 // 	// Setup HTTP/WS servers
-// 	setupServers(mux, envFile)
+// 	// setupServers(mux, envFile)
 
 // 	// Setup and start gRPC server
 // 	lis, err := net.Listen("tcp", grpcAddress)
@@ -200,7 +191,7 @@ func loadEnv() (map[string]string, error) {
 // 		s = grpc.NewServer(grpc.Creds(creds))
 // 	}
 
-// 	thrylos.RegisterBlockchainServiceServer(s, &server{blockchain: blockchain})
+// 	// thrylos.RegisterBlockchainServiceServer(s, &server{blockchain: blockchain})
 
 // 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 // 	if err := s.Serve(lis); err != nil {
@@ -238,54 +229,54 @@ func loadEnv() (map[string]string, error) {
 // 	go startServer(httpServer, "HTTP(S)", isDevelopment)
 // }
 
-func startServer(server *http.Server, serverType string, isDevelopment bool) {
-	var err error
-	protocol := "HTTP"
-	if !isDevelopment {
-		protocol = "HTTPS"
-		log.Printf("Starting %s server in production mode (with TLS) on %s\n", serverType, server.Addr)
-		err = server.ListenAndServeTLS("", "")
-	} else {
-		log.Printf("Starting %s server in development mode (no TLS) on %s\n", serverType, server.Addr)
-		err = server.ListenAndServe()
-	}
+// func startServer(server *http.Server, serverType string, isDevelopment bool) {
+// 	var err error
+// 	protocol := "HTTP"
+// 	if !isDevelopment {
+// 		protocol = "HTTPS"
+// 		log.Printf("Starting %s server in production mode (with TLS) on %s\n", serverType, server.Addr)
+// 		err = server.ListenAndServeTLS("", "")
+// 	} else {
+// 		log.Printf("Starting %s server in development mode (no TLS) on %s\n", serverType, server.Addr)
+// 		err = server.ListenAndServe()
+// 	}
 
-	if err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to start %s %s server: %v", protocol, serverType, err)
-	}
-}
+// 	if err != nil && err != http.ErrServerClosed {
+// 		log.Fatalf("Failed to start %s %s server: %v", protocol, serverType, err)
+// 	}
+// }
 
-func loadTLSCredentials(envFile map[string]string) credentials.TransportCredentials {
-	var certPath, keyPath string
+// func loadTLSCredentials(envFile map[string]string) credentials.TransportCredentials {
+// 	var certPath, keyPath string
 
-	// Determine paths based on the environment
-	if os.Getenv("ENV") == "production" {
-		certPath = envFile["TLS_CERT_PATH"]
-		keyPath = envFile["TLS_KEY_PATH"]
-	}
+// 	// Determine paths based on the environment
+// 	if os.Getenv("ENV") == "production" {
+// 		certPath = envFile["TLS_CERT_PATH"]
+// 		keyPath = envFile["TLS_KEY_PATH"]
+// 	}
 
-	// Load the server's certificate and its private key
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		log.Fatalf("could not load TLS keys: %v", err)
-	}
+// 	// Load the server's certificate and its private key
+// 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+// 	if err != nil {
+// 		log.Fatalf("could not load TLS keys: %v", err)
+// 	}
 
-	// Create the credentials and return them
-	config := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		// Optionally set ClientCAs and ClientAuth if you need client certificates for mutual TLS
-	}
+// 	// Create the credentials and return them
+// 	config := &tls.Config{
+// 		Certificates: []tls.Certificate{cert},
+// 		// Optionally set ClientCAs and ClientAuth if you need client certificates for mutual TLS
+// 	}
 
-	return credentials.NewTLS(config)
-}
+// 	return credentials.NewTLS(config)
+// }
 
-func loadCertificate(envFile map[string]string) tls.Certificate {
-	cert, err := tls.LoadX509KeyPair(envFile["CERT_FILE"], envFile["KEY_FILE"])
-	if err != nil {
-		log.Fatalf("Failed to load TLS certificate: %v", err)
-	}
-	return cert
-}
+// func loadCertificate(envFile map[string]string) tls.Certificate {
+// 	cert, err := tls.LoadX509KeyPair(envFile["CERT_FILE"], envFile["KEY_FILE"])
+// 	if err != nil {
+// 		log.Fatalf("Failed to load TLS certificate: %v", err)
+// 	}
+// 	return cert
+// }
 
 // Get the blockchain stats: curl http://localhost:50051/get-stats
 // Retrieve the genesis block: curl "http://localhost:50051/get-block?id=0"

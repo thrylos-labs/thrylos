@@ -2,7 +2,7 @@ package chain
 
 // type BlockProcessor struct {
 // 	config        *BlockProducerConfig
-// 	blockchain    *shared.Blockchain
+// 	blockchain    *types.Blockchain
 // 	messageBus    *shared.MessageBus
 // 	isProducing   atomic.Bool
 // 	lastBlockTime time.Time
@@ -15,7 +15,7 @@ package chain
 // 	batchSize     = 100                    // Maximum transactions per batch
 // )
 
-// func NewBlockProcessor(config *BlockProducerConfig, blockchain *Blockchain, messageBus *shared.MessageBus) *BlockProcessor {
+// func NewBlockProcessor(config *BlockProducerConfig, blockchain *types.Blockchain, messageBus *shared.MessageBus) *BlockProcessor {
 // 	bp := &BlockProcessor{
 // 		config:     config,
 // 		blockchain: blockchain,
@@ -26,9 +26,9 @@ package chain
 
 // // HasBlock checks whether a block with the specified hash exists in the node's blockchain.
 // func (bp *BlockProcessor) HasBlock(blockHash []byte) bool {
-// 	responseCh := make(chan shared.Response)
-// 	bp.messageBus.Publish(shared.Message{
-// 		Type:       shared.HasBlock,
+// 	responseCh := make(chan types.Response)
+// 	bp.messageBus.Publish(types.Message{
+// 		Type:       types.HasBlock,
 // 		Data:       blockHash,
 // 		ResponseCh: responseCh,
 // 	})
@@ -53,18 +53,18 @@ package chain
 // 			timeSinceLastBlock := now.Sub(lastBlockTime)
 
 // 			// Get current block time through message bus
-// 			timeCh := make(chan shared.Response)
-// 			bp.messageBus.Publish(shared.Message{
-// 				Type:       shared.GetConsensusTime,
+// 			timeCh := make(chan types.Response)
+// 			bp.messageBus.Publish(types.Message{
+// 				Type:       types.GetConsensusTime,
 // 				ResponseCh: timeCh,
 // 			})
 // 			timeResponse := <-timeCh
 // 			targetBlockTime := timeResponse.Data.(time.Duration)
 
 // 			// Check pending transactions through message bus
-// 			pendingCh := make(chan shared.Response)
-// 			bp.messageBus.Publish(shared.Message{
-// 				Type:       shared.GetPendingTxCount,
+// 			pendingCh := make(chan types.Response)
+// 			bp.messageBus.Publish(types.Message{
+// 				Type:       types.GetPendingTxCount,
 // 				ResponseCh: pendingCh,
 // 			})
 // 			pendingResponse := <-pendingCh
@@ -122,11 +122,11 @@ package chain
 // 	return nil
 // }
 
-// func (bp *BlockProcessor) ProcessConfirmedTransactions(block *shared.Block) {
+// func (bp *BlockProcessor) ProcessConfirmedTransactions(block *types.Block) {
 // 	// Use message bus for node-related operations
-// 	isCounterCh := make(chan shared.Response)
-// 	bp.messageBus.Publish(shared.Message{
-// 		Type:       shared.IsCounterNode,
+// 	isCounterCh := make(chan types.Response)
+// 	bp.messageBus.Publish(types.Message{
+// 		Type:       types.IsCounterNode,
 // 		ResponseCh: isCounterCh,
 // 	})
 // 	isCounterResponse := <-isCounterCh
@@ -134,9 +134,9 @@ package chain
 
 // 	if !isCounter {
 // 		// Validate block through message bus
-// 		voteCh := make(chan shared.Response)
-// 		bp.messageBus.Publish(shared.Message{
-// 			Type:       shared.ValidateBlock,
+// 		voteCh := make(chan types.Response)
+// 		bp.messageBus.Publish(types.Message{
+// 			Type:       types.ValidateBlock,
 // 			Data:       block,
 // 			ResponseCh: voteCh,
 // 		})
@@ -155,8 +155,8 @@ package chain
 // 	for _, validator := range activeValidators {
 // 		if bp.isEligibleValidator(validator) {
 // 			// Send vote through message bus
-// 			bp.messageBus.Publish(shared.Message{
-// 				Type: shared.UpdateState,
+// 			bp.messageBus.Publish(types.Message{
+// 				Type: types.UpdateState,
 // 				Data: struct {
 // 					Validator string
 // 					BlockNum  int64
@@ -164,7 +164,7 @@ package chain
 // 					Validator: validator,
 // 					BlockNum:  block.Index + 1,
 // 				},
-// 				ResponseCh: make(chan shared.Response),
+// 				ResponseCh: make(chan types.Response),
 // 			})
 // 			votedValidators++
 
@@ -187,34 +187,34 @@ package chain
 // 		}
 
 // 		// Update state through message bus since it's node-related
-// 		bp.messageBus.Publish(shared.Message{
-// 			Type: shared.UpdateState,
-// 			Data: shared.UpdateStateRequest{
+// 		bp.messageBus.Publish(types.Message{
+// 			Type: types.UpdateState,
+// 			Data: types.UpdateStateRequest{
 // 				Address: senderAddr,
 // 				Balance: 0,
 // 			},
-// 			ResponseCh: make(chan shared.Response),
+// 			ResponseCh: make(chan types.Response),
 // 		})
 // 	}
 
 // 	// Update balances for affected addresses through message bus
 // 	for address := range addressesToUpdate {
-// 		balanceCh := make(chan shared.Response)
-// 		bp.messageBus.Publish(shared.Message{
-// 			Type:       shared.GetBalance,
+// 		balanceCh := make(chan types.Response)
+// 		bp.messageBus.Publish(types.Message{
+// 			Type:       types.GetBalance,
 // 			Data:       address,
 // 			ResponseCh: balanceCh,
 // 		})
 
 // 		if response := <-balanceCh; response.Error == nil {
 // 			balance := response.Data.(int64)
-// 			bp.messageBus.Publish(shared.Message{
-// 				Type: shared.UpdateState,
-// 				Data: shared.UpdateStateRequest{
+// 			bp.messageBus.Publish(types.Message{
+// 				Type: types.UpdateState,
+// 				Data: types.UpdateStateRequest{
 // 					Address: address,
 // 					Balance: balance,
 // 				},
-// 				ResponseCh: make(chan shared.Response),
+// 				ResponseCh: make(chan types.Response),
 // 			})
 // 			log.Printf("Updated balance for %s to %d", address, balance)
 // 		}

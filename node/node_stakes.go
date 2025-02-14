@@ -1,6 +1,6 @@
 package node
 
-// // This method should be aligned with how we're handling stake determinations
+// // // This method should be aligned with how we're handling stake determinations
 // func (node *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
 // 	// We should determine if it's a delegator by checking validator status
 // 	isValidator := node.StakingService.IsValidator(userAddress)
@@ -38,12 +38,12 @@ package node
 // 	return node.StakingService.GetPoolStats()
 // }
 
-// func (node *Node) CreateStake(userAddress string, amount int64) (*staking.Stake, error) {
+// func (node *Node) CreateStake(userAddress string, amount int64) (*types.Stake, error) {
 // 	return node.StakingService.CreateStake(userAddress, amount)
 // }
 
 // // These delegation-specific methods are correct
-// func (node *Node) DelegateToPool(delegator string, amount int64) (*staking.Stake, error) {
+// func (node *Node) DelegateToPool(delegator string, amount int64) (*types.Stake, error) {
 // 	return node.StakingService.CreateStake(delegator, amount)
 // }
 

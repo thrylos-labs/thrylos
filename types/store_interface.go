@@ -1,9 +1,10 @@
-package shared
+package types
 
 import (
 	"crypto/rsa"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 )
@@ -46,4 +47,7 @@ type Store interface {
 	//PublicKey
 	GetPublicKey(addr address.Address) (crypto.PublicKey, error)
 	SavePublicKey(pubKey crypto.PublicKey) error
+
+	//Balance
+	GetBalance(address string, utxos map[string][]UTXO) (amount.Amount, error)
 }

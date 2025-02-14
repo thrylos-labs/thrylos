@@ -1,15 +1,11 @@
 package testutils
 
-import (
-	"time"
-)
-
-// Add PeerConnection definition in testutils
-type PeerConnection struct {
-	Address   string
-	IsInbound bool
-	LastSeen  time.Time
-}
+// // Add PeerConnection definition in testutils
+// type PeerConnection struct {
+// 	Address   string
+// 	IsInbound bool
+// 	LastSeen  time.Time
+// }
 
 // func NewTestNode(address string, knownPeers []string, dataDir string, blockchain *chain.Blockchain) *node.Node {
 // 	stakingService := staking.NewStakingService(blockchain)

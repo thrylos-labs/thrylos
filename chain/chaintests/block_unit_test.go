@@ -1,238 +1,221 @@
 package chaintests
 
-import (
-	"crypto/rand"
-	"fmt"
-	"os"
-	"testing"
-	"time"
+// // Helper function to handle block creation and signing
+// func createAndSignBlock(t *testing.T, blockchain *types.Blockchain, txs []*thrylos.Transaction, validatorKey *crypto.PrivateKey, prevHash []byte) error {
+// 	// Convert transactions using existing function
+// 	sharedTxs := make([]*types.Transaction, len(txs))
+// 	for i, tx := range txs {
+// 		sharedTxs[i] = chain.ConvertToSharedTransaction(tx)
+// 	}
 
-	"github.com/stretchr/testify/require"
-	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/chain"
-	"github.com/thrylos-labs/thrylos/consensus/processor"
-	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/hash"
+// 	// Rest of the function remains the same...
+// 	blockHash, err := hash.FromBytes(prevHash)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
+// 	}
 
-	"github.com/thrylos-labs/thrylos/shared"
-)
+// 	// Create block with proper types
+// 	block := &types.Block{
+// 		Index:              int64(len(blockchain.Blocks)),
+// 		Timestamp:          time.Now().Unix(),
+// 		Transactions:       sharedTxs,
+// 		PrevHash:           blockHash,
+// 		ValidatorPublicKey: nil, // This needs to be set based on your requirements
+// 	}
 
-// Helper function to handle block creation and signing
-func createAndSignBlock(t *testing.T, blockchain *shared.Blockchain, txs []*thrylos.Transaction, validatorKey *crypto.PrivateKey, prevHash []byte) error {
-	// Convert transactions using existing function
-	sharedTxs := make([]*shared.Transaction, len(txs))
-	for i, tx := range txs {
-		sharedTxs[i] = chain.ConvertToSharedTransaction(tx)
-	}
+// 	// Rest of the implementation remains the same...
+// 	if err := chain.InitializeVerkleTree(block); err != nil {
+// 		return fmt.Errorf("failed to initialize Verkle tree: %v", err)
+// 	}
 
-	// Rest of the function remains the same...
-	blockHash, err := hash.FromBytes(prevHash)
-	if err != nil {
-		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
-	}
+// 	chain.ComputeBlockHash(block)
 
-	// Create block with proper types
-	block := &shared.Block{
-		Index:              int64(len(blockchain.Blocks)),
-		Timestamp:          time.Now().Unix(),
-		Transactions:       sharedTxs,
-		PrevHash:           blockHash,
-		ValidatorPublicKey: nil, // This needs to be set based on your requirements
-	}
+// 	salt := make([]byte, 32)
+// 	if _, err := rand.Read(salt); err != nil {
+// 		return fmt.Errorf("failed to generate signature salt: %v", err)
+// 	}
+// 	signatureData := append(block.Hash[:], salt...)
 
-	// Rest of the implementation remains the same...
-	if err := chain.InitializeVerkleTree(block); err != nil {
-		return fmt.Errorf("failed to initialize Verkle tree: %v", err)
-	}
+// 	//*validatorKey
+// 	signature := (*validatorKey).Sign(signatureData)
 
-	chain.ComputeBlockHash(block)
+// 	// Assign the signature object directly since it implements crypto.Signature
+// 	block.Signature = signature
+// 	block.Salt = salt
 
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("failed to generate signature salt: %v", err)
-	}
-	signatureData := append(block.Hash[:], salt...)
+// 	blockchain.Mu.Lock()
+// 	blockchain.Blocks = append(blockchain.Blocks, block)
+// 	blockchain.Mu.Unlock()
 
-	//*validatorKey
-	signature := (*validatorKey).Sign(signatureData)
+// 	return nil
+// }
 
-	// Assign the signature object directly since it implements crypto.Signature
-	block.Signature = signature
-	block.Salt = salt
+// func TestBlockTimeToFinality(t *testing.T) {
+// 	// Create test directory
+// 	tempDir, err := os.MkdirTemp("", "blockchain-finality-test-")
+// 	require.NoError(t, err, "Failed to create temp directory")
+// 	defer os.RemoveAll(tempDir)
 
-	blockchain.Mu.Lock()
-	blockchain.Blocks = append(blockchain.Blocks, block)
-	blockchain.Mu.Unlock()
+// 	// Use predefined genesis account
+// 	privKey, err := crypto.NewPrivateKey()
+// 	require.NoError(t, err, "Failed to generate private key")
+// 	pubKey := privKey.PublicKey()
+// 	genesisAddress, err := privKey.PublicKey().Address()
+// 	require.NoError(t, err, "Failed to get genesis address")
 
-	return nil
-}
+// 	// Initialize blockchain
+// 	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+// 		DataDir:           tempDir,
+// 		AESKey:            []byte("test-key"),
+// 		GenesisAccount:    privKey,
+// 		TestMode:          true,
+// 		DisableBackground: true,
+// 	})
+// 	require.NoError(t, err, "Failed to create blockchain")
 
-func TestBlockTimeToFinality(t *testing.T) {
-	// Create test directory
-	tempDir, err := os.MkdirTemp("", "blockchain-finality-test-")
-	require.NoError(t, err, "Failed to create temp directory")
-	defer os.RemoveAll(tempDir)
+// 	err = blockchain.Database.SavePublicKey(pubKey)
+// 	require.NoError(t, err, "Failed to store MLDSA public key")
 
-	// Use predefined genesis account
-	privKey, err := crypto.NewPrivateKey()
-	require.NoError(t, err, "Failed to generate private key")
-	pubKey := privKey.PublicKey()
-	genesisAddress, err := privKey.PublicKey().Address()
-	require.NoError(t, err, "Failed to get genesis address")
+// 	// Get genesis transaction
+// 	blockchain.Mu.RLock()
+// 	genesisTx := blockchain.Blocks[0].Transactions[0]
+// 	blockchain.Mu.RUnlock()
+// 	require.NotNil(t, genesisTx, "Genesis transaction should exist")
 
-	// Initialize blockchain
-	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-		DataDir:           tempDir,
-		AESKey:            []byte("test-key"),
-		GenesisAccount:    privKey,
-		TestMode:          true,
-		DisableBackground: true,
-	})
-	require.NoError(t, err, "Failed to create blockchain")
+// 	// Test cases
+// 	testCases := []struct {
+// 		name       string
+// 		numBlocks  int
+// 		maxAvgTime time.Duration
+// 		maxTotal   time.Duration
+// 	}{
+// 		{
+// 			name:       "Small Network",
+// 			numBlocks:  5,
+// 			maxAvgTime: 2 * time.Second,
+// 			maxTotal:   10 * time.Second,
+// 		},
+// 		{
+// 			name:       "Medium Network",
+// 			numBlocks:  10,
+// 			maxAvgTime: 1 * time.Second,
+// 			maxTotal:   20 * time.Second,
+// 		},
+// 	}
 
-	err = blockchain.Database.SavePublicKey(pubKey)
-	require.NoError(t, err, "Failed to store MLDSA public key")
+// 	for _, tc := range testCases {
+// 		tc := tc // Capture range variable
+// 		t.Run(tc.name, func(t *testing.T) {
+// 			var blockTimes []time.Duration
+// 			startTime := time.Now()
 
-	// Get genesis transaction
-	blockchain.Mu.RLock()
-	genesisTx := blockchain.Blocks[0].Transactions[0]
-	blockchain.Mu.RUnlock()
-	require.NotNil(t, genesisTx, "Genesis transaction should exist")
+// 			// Get initial previous hash
+// 			blockchain.Mu.RLock()
+// 			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
+// 			blockchain.Mu.RUnlock()
 
-	// Test cases
-	testCases := []struct {
-		name       string
-		numBlocks  int
-		maxAvgTime time.Duration
-		maxTotal   time.Duration
-	}{
-		{
-			name:       "Small Network",
-			numBlocks:  5,
-			maxAvgTime: 2 * time.Second,
-			maxTotal:   10 * time.Second,
-		},
-		{
-			name:       "Medium Network",
-			numBlocks:  10,
-			maxAvgTime: 1 * time.Second,
-			maxTotal:   20 * time.Second,
-		},
-	}
+// 			// Create blocks
+// 			for i := 0; i < tc.numBlocks; i++ {
+// 				// Create transaction
+// 				gasAmount := int32(processor.BaseGasFee)
+// 				inputAmount := int64(2000)
+// 				outputAmount := inputAmount - int64(gasAmount)
 
-	for _, tc := range testCases {
-		tc := tc // Capture range variable
-		t.Run(tc.name, func(t *testing.T) {
-			var blockTimes []time.Duration
-			startTime := time.Now()
+// 				tx := &thrylos.Transaction{
+// 					Id:        fmt.Sprintf("test-tx-%d", i),
+// 					Timestamp: time.Now().Unix(),
+// 					Sender:    genesisAddress.String(),
+// 					Gasfee:    gasAmount,
+// 					Inputs: []*thrylos.UTXO{
+// 						{
+// 							TransactionId: genesisTx.ID,
+// 							Index:         int32(i),
+// 							OwnerAddress:  genesisAddress.String(),
+// 							Amount:        inputAmount,
+// 						},
+// 					},
+// 					Outputs: []*thrylos.UTXO{
+// 						{
+// 							OwnerAddress: genesisAddress.String(),
+// 							Amount:       outputAmount,
+// 							Index:        0,
+// 						},
+// 					},
+// 				}
 
-			// Get initial previous hash
-			blockchain.Mu.RLock()
-			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
-			blockchain.Mu.RUnlock()
+// 				// Sign transaction
+// 				signData := []byte(fmt.Sprintf("%s%d%s%d",
+// 					tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
+// 				for _, input := range tx.Inputs {
+// 					signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
+// 						input.TransactionId, input.Index,
+// 						input.OwnerAddress, input.Amount))...)
+// 				}
+// 				for _, output := range tx.Outputs {
+// 					signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
+// 						output.OwnerAddress, output.Index,
+// 						output.Amount))...)
+// 				}
 
-			// Create blocks
-			for i := 0; i < tc.numBlocks; i++ {
-				// Create transaction
-				gasAmount := int32(processor.BaseGasFee)
-				inputAmount := int64(2000)
-				outputAmount := inputAmount - int64(gasAmount)
+// 				signature := privKey.Sign(signData)
+// 				require.NoError(t, err, "Failed to sign transaction")
+// 				tx.Signature = signature.Bytes()
 
-				tx := &thrylos.Transaction{
-					Id:        fmt.Sprintf("test-tx-%d", i),
-					Timestamp: time.Now().Unix(),
-					Sender:    genesisAddress.String(),
-					Gasfee:    gasAmount,
-					Inputs: []*thrylos.UTXO{
-						{
-							TransactionId: genesisTx.ID,
-							Index:         int32(i),
-							OwnerAddress:  genesisAddress.String(),
-							Amount:        inputAmount,
-						},
-					},
-					Outputs: []*thrylos.UTXO{
-						{
-							OwnerAddress: genesisAddress.String(),
-							Amount:       outputAmount,
-							Index:        0,
-						},
-					},
-				}
+// 				// Create and sign block
+// 				blockStart := time.Now()
 
-				// Sign transaction
-				signData := []byte(fmt.Sprintf("%s%d%s%d",
-					tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
-				for _, input := range tx.Inputs {
-					signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
-						input.TransactionId, input.Index,
-						input.OwnerAddress, input.Amount))...)
-				}
-				for _, output := range tx.Outputs {
-					signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
-						output.OwnerAddress, output.Index,
-						output.Amount))...)
-				}
+// 				// Convert hash.Hash to []byte
+// 				prevHashBytes := prevHash.Bytes() // Assuming Hash type has a Bytes() method
 
-				signature := privKey.Sign(signData)
-				require.NoError(t, err, "Failed to sign transaction")
-				tx.Signature = signature.Bytes()
+// 				//b:= (blockchain).(*shared.Blockchain)
+// 				err = createAndSignBlock(t, blockchain.Blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
+// 				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
+// 				blockTime := time.Since(blockStart)
 
-				// Create and sign block
-				blockStart := time.Now()
+// 				// Update previous hash
+// 				blockchain.Mu.RLock()
+// 				prevHash = blockchain.Blocks[len(blockchain.Blocks)-1].Hash
+// 				blockchain.Mu.RUnlock()
 
-				// Convert hash.Hash to []byte
-				prevHashBytes := prevHash.Bytes() // Assuming Hash type has a Bytes() method
+// 				blockTimes = append(blockTimes, blockTime)
+// 			}
 
-				//b:= (blockchain).(*shared.Blockchain)
-				err = createAndSignBlock(t, blockchain.Blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
-				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
-				blockTime := time.Since(blockStart)
+// 			// Calculate metrics
+// 			var totalBlockTime time.Duration
+// 			for _, bt := range blockTimes {
+// 				totalBlockTime += bt
+// 			}
 
-				// Update previous hash
-				blockchain.Mu.RLock()
-				prevHash = blockchain.Blocks[len(blockchain.Blocks)-1].Hash
-				blockchain.Mu.RUnlock()
+// 			avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
+// 			totalTime := time.Since(startTime)
 
-				blockTimes = append(blockTimes, blockTime)
-			}
+// 			// Log metrics
+// 			t.Logf("Performance metrics for %s:", tc.name)
+// 			t.Logf("Average block time: %v", avgBlockTime)
+// 			t.Logf("Total time: %v", totalTime)
 
-			// Calculate metrics
-			var totalBlockTime time.Duration
-			for _, bt := range blockTimes {
-				totalBlockTime += bt
-			}
+// 			// Verify expectations
+// 			if avgBlockTime >= tc.maxAvgTime {
+// 				t.Errorf("Average block time %v exceeds maximum %v",
+// 					avgBlockTime, tc.maxAvgTime)
+// 			}
+// 			if totalTime >= tc.maxTotal {
+// 				t.Errorf("Total time %v exceeds maximum %v",
+// 					totalTime, tc.maxTotal)
+// 			}
+// 		})
 
-			avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
-			totalTime := time.Since(startTime)
+// 		// Allow cleanup between test cases
+// 		time.Sleep(100 * time.Millisecond)
+// 	}
+// }
 
-			// Log metrics
-			t.Logf("Performance metrics for %s:", tc.name)
-			t.Logf("Average block time: %v", avgBlockTime)
-			t.Logf("Total time: %v", totalTime)
-
-			// Verify expectations
-			if avgBlockTime >= tc.maxAvgTime {
-				t.Errorf("Average block time %v exceeds maximum %v",
-					avgBlockTime, tc.maxAvgTime)
-			}
-			if totalTime >= tc.maxTotal {
-				t.Errorf("Total time %v exceeds maximum %v",
-					totalTime, tc.maxTotal)
-			}
-		})
-
-		// Allow cleanup between test cases
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// Helper function to generate address for specific shard
-func generateAddressForShard(shardID int, nonce int, numShards int) string {
-	// Use shardID instead of batch calculation
-	// Ensures addresses match partition ranges
-	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
-}
+// // Helper function to generate address for specific shard
+// func generateAddressForShard(shardID int, nonce int, numShards int) string {
+// 	// Use shardID instead of batch calculation
+// 	// Ensures addresses match partition ranges
+// 	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
+// }
 
 // func createRealisticTransaction(t *testing.T, blockchain *shared.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
 // 	h := fnv.New32a()

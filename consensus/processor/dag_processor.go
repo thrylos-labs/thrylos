@@ -9,6 +9,7 @@ import (
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 // The DAG (Directed Acyclic Graph) processor organises transactions into a structure where each new transaction approves a few previous ones.
@@ -28,7 +29,7 @@ type DAGManager struct {
 	sync.RWMutex
 	processChan chan *txProcessRequest
 	workers     int
-	msgCh       chan shared.Message // Channel for receiving messages
+	msgCh       chan types.Message // Channel for receiving messages
 
 }
 
@@ -51,14 +52,14 @@ func NewDAGManager() *DAGManager {
 		vertices:    make(map[string]*TransactionVertex),
 		tips:        make(map[string]*TransactionVertex),
 		processChan: make(chan *txProcessRequest, 1000),
-		msgCh:       make(chan shared.Message, 100),
+		msgCh:       make(chan types.Message, 100),
 	}
 
 	// Subscribe to relevant message types
 	messageBus := shared.GetMessageBus()
-	messageBus.Subscribe(shared.ValidateDAGTx, dm.msgCh)
-	messageBus.Subscribe(shared.UpdateDAGState, dm.msgCh)
-	messageBus.Subscribe(shared.GetDAGTips, dm.msgCh)
+	messageBus.Subscribe(types.ValidateDAGTx, dm.msgCh)
+	messageBus.Subscribe(types.UpdateDAGState, dm.msgCh)
+	messageBus.Subscribe(types.GetDAGTips, dm.msgCh)
 
 	// Start message handler
 	go dm.handleMessages()
@@ -74,17 +75,17 @@ func NewDAGManager() *DAGManager {
 func (dm *DAGManager) handleMessages() {
 	for msg := range dm.msgCh {
 		switch msg.Type {
-		case shared.ValidateDAGTx:
+		case types.ValidateDAGTx:
 			dm.handleValidateTransaction(msg)
-		case shared.UpdateDAGState:
+		case types.UpdateDAGState:
 			dm.handleUpdateState(msg)
-		case shared.GetDAGTips:
+		case types.GetDAGTips:
 			dm.handleGetTips(msg)
 		}
 	}
 }
 
-func (dm *DAGManager) handleGetTips(msg shared.Message) {
+func (dm *DAGManager) handleGetTips(msg types.Message) {
 	dm.RLock()
 	tips := make([]string, 0, len(dm.tips))
 	for tipID := range dm.tips {
@@ -92,13 +93,13 @@ func (dm *DAGManager) handleGetTips(msg shared.Message) {
 	}
 	dm.RUnlock()
 
-	msg.ResponseCh <- shared.Response{Data: tips}
+	msg.ResponseCh <- types.Response{Data: tips}
 }
 
-func (dm *DAGManager) handleValidateTransaction(msg shared.Message) {
+func (dm *DAGManager) handleValidateTransaction(msg types.Message) {
 	tx := msg.Data.(*thrylos.Transaction)
 	err := dm.AddTransaction(tx)
-	msg.ResponseCh <- shared.Response{Error: err}
+	msg.ResponseCh <- types.Response{Error: err}
 }
 
 func (dm *DAGManager) processWorker() {
@@ -107,8 +108,8 @@ func (dm *DAGManager) processWorker() {
 	}
 }
 
-func (dm *DAGManager) handleUpdateState(msg shared.Message) {
-	req := msg.Data.(shared.UpdateTransactionStateRequest) // Match the type we're sending
+func (dm *DAGManager) handleUpdateState(msg types.Message) {
+	req := msg.Data.(types.UpdateTransactionStateRequest) // Match the type we're sending
 	dm.Lock()
 	if vertex, exists := dm.vertices[req.TransactionID]; exists {
 		vertex.IsConfirmed = true
@@ -118,7 +119,7 @@ func (dm *DAGManager) handleUpdateState(msg shared.Message) {
 		}
 	}
 	dm.Unlock()
-	msg.ResponseCh <- shared.Response{}
+	msg.ResponseCh <- types.Response{}
 }
 
 func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
@@ -159,9 +160,9 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 }
 
 func (dm *DAGManager) notifyTransactionConfirmed(tx *thrylos.Transaction) {
-	responseCh := make(chan shared.Response)
-	shared.GetMessageBus().Publish(shared.Message{
-		Type:       shared.ProcessBlock,
+	responseCh := make(chan types.Response)
+	shared.GetMessageBus().Publish(types.Message{
+		Type:       types.ProcessBlock,
 		Data:       tx,
 		ResponseCh: responseCh,
 	})
@@ -205,10 +206,10 @@ func (dm *DAGManager) selectTips() []*TransactionVertex {
 }
 
 func (dm *DAGManager) notifyStateChange(vertex *TransactionVertex) {
-	responseCh := make(chan shared.Response)
-	shared.GetMessageBus().Publish(shared.Message{
-		Type: shared.UpdateState,
-		Data: shared.UpdateTransactionStateRequest{
+	responseCh := make(chan types.Response)
+	shared.GetMessageBus().Publish(types.Message{
+		Type: types.UpdateState,
+		Data: types.UpdateTransactionStateRequest{
 			TransactionID: vertex.Transaction.GetId(),
 			State:         "confirmed",
 		},
@@ -217,9 +218,9 @@ func (dm *DAGManager) notifyStateChange(vertex *TransactionVertex) {
 }
 
 func (dm *DAGManager) notifyNodeOfConfirmation(tx *thrylos.Transaction) {
-	responseCh := make(chan shared.Response)
-	shared.GetMessageBus().Publish(shared.Message{
-		Type:       shared.ProcessBlock,
+	responseCh := make(chan types.Response)
+	shared.GetMessageBus().Publish(types.Message{
+		Type:       types.ProcessBlock,
 		Data:       tx,
 		ResponseCh: responseCh,
 	})

@@ -3,24 +3,24 @@ package state
 import (
 	"time"
 
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 type StateMetricsImpl struct {
-	*shared.StateMetrics
+	*types.StateMetrics
 }
 
 type ShardMetricsImpl struct {
-	*shared.ShardMetrics
+	*types.ShardMetrics
 }
 
 func NewStateMetrics(numShards int) *StateMetricsImpl {
-	metrics := &shared.StateMetrics{
-		ShardMetrics: make(map[int]*shared.ShardMetrics),
+	metrics := &types.StateMetrics{
+		ShardMetrics: make(map[int]*types.ShardMetrics),
 	}
 
 	for i := 0; i < numShards; i++ {
-		metrics.ShardMetrics[i] = &shared.ShardMetrics{
+		metrics.ShardMetrics[i] = &types.ShardMetrics{
 			LastUpdated: time.Now(),
 		}
 	}

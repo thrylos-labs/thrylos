@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 // ShardMetricData struct to hold metrics
@@ -53,7 +53,7 @@ func (m *MockNetworkInterface) BroadcastMessage(message []byte) error {
 	}
 
 	// Process message type-specific delays
-	var networkMsg shared.NetworkMessage
+	var networkMsg types.NetworkMessage
 	if err := json.Unmarshal(message, &networkMsg); err == nil {
 		if delay, exists := m.messageDelay[networkMsg.Type]; exists {
 			time.Sleep(delay)
@@ -204,7 +204,7 @@ func (m *MockNetworkInterface) SendMessage(peerID string, message []byte) error 
 	}
 
 	// Process message type-specific delays
-	var networkMsg shared.NetworkMessage
+	var networkMsg types.NetworkMessage
 	if err := json.Unmarshal(message, &networkMsg); err == nil {
 		if delay, exists := m.messageDelay[networkMsg.Type]; exists {
 			time.Sleep(delay)

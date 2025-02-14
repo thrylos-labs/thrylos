@@ -1,42 +1,36 @@
 package main
 
-import (
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+// type server struct {
+// 	thrylos.UnimplementedBlockchainServiceServer
+// 	blockchain   *chain.BlockchainImpl
+// 	store        types.Store                   // Changed from *database.BlockchainDB to types.Store
+// 	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
+// 	hasherPool   *XOFPool                      // Add the hasher pool here
 
-	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/chain"
-)
+// }
 
-type server struct {
-	thrylos.UnimplementedBlockchainServiceServer
-	blockchain   *chain.BlockchainImpl
-	PublicKeyMap map[string]*mldsa44.PublicKey // Changed to use mldsa44.PublicKey
-	// hasherPool   *XOFPool                      // Add the hasher pool here
-
-}
-
-// func NewServer(db *database.BlockchainDB) *server {
+// func NewServer(store types.Store) *server {
 // 	pool := NewXOFPool(10) // Adjust the pool size based on expected load
 
 // 	return &server{
-// 		db:           db,
+// 		store:        store, // Using store instead of db
 // 		PublicKeyMap: make(map[string]*mldsa44.PublicKey),
 // 		hasherPool:   pool,
 // 	}
 // }
 
-// server.go
-// server.go
+// // server.go
+// // server.go
 // func (s *server) GetBalance(ctx context.Context, req *thrylos.GetBalanceRequest) (*thrylos.BalanceResponse, error) {
 // 	if req.Address == "" {
 // 		return nil, status.Error(codes.InvalidArgument, "Address is required")
 // 	}
 
 // 	// Create empty UTXO map for the GetBalance call
-// 	utxoMap := make(map[string][]shared.UTXO)
+// 	utxoMap := make(map[string][]types.UTXO)
 
 // 	// Get balance using the existing GetBalance method with UTXO map
-// 	balance, err := s.db.GetBalance(req.Address, utxoMap)
+// 	balance, err := s.store.GetBalance(req.Address, utxoMap)
 // 	if err != nil {
 // 		// Handle new wallet case
 // 		if strings.Contains(err.Error(), "wallet not found") {
@@ -63,7 +57,7 @@ type server struct {
 // 	}
 
 // 	// Create empty UTXO map for the GetBalance call
-// 	utxoMap := make(map[string][]shared.UTXO)
+// 	utxoMap := make(map[string][]types.UTXO)
 
 // 	// Send initial balance
 // 	balance, err := s.db.GetBalance(req.Address, utxoMap)
@@ -203,10 +197,10 @@ type server struct {
 // 	}
 
 // 	// Process the transaction including UTXO updates and adding the transaction to the blockchain
-// 	return s.db.ProcessTransaction(sharedTx)
+// 	return s.store.ProcessTransaction(sharedTx)
 // }
 
-// func (s *server) validateTransaction(tx *shared.Transaction) bool {
+// func (s *server) validateTransaction(tx *types.Transaction) bool {
 // 	if tx == nil || tx.Signature == "" {
 // 		log.Println("Transaction or its signature is empty")
 // 		return false
@@ -251,7 +245,7 @@ type server struct {
 // 	// The rest of the validation logic remains the same
 // 	var totalInputs int64
 // 	for _, input := range tx.Inputs {
-// 		utxo, err := shared.GetUTXO(input.TransactionID, input.Index)
+// 		utxo, err := store.GetUTXO(input.TransactionID, input.Index)
 // 		if err != nil || utxo == nil {
 // 			log.Printf("UTXO not found or error retrieving UTXO: %v", err)
 // 			return false

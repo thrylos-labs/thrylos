@@ -1,7 +1,7 @@
 package store
 
 import (
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 // UTXOCache is a specialized wrapper around LRUCache that handles UTXO-specific operations.
@@ -23,15 +23,15 @@ func NewUTXOCache(size int, bloomSize uint, falsePositiveRate float64) (*UTXOCac
 	return &UTXOCache{cache: c}, nil
 }
 
-func (uc *UTXOCache) Get(key string) (*shared.UTXO, bool) {
+func (uc *UTXOCache) Get(key string) (*types.UTXO, bool) {
 	value, ok := uc.cache.Get(key)
 	if !ok {
 		return nil, false
 	}
-	return value.(*shared.UTXO), true
+	return value.(*types.UTXO), true
 }
 
-func (uc *UTXOCache) Add(key string, utxo *shared.UTXO) bool {
+func (uc *UTXOCache) Add(key string, utxo *types.UTXO) bool {
 	return uc.cache.Add(key, utxo)
 }
 

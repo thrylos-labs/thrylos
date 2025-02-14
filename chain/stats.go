@@ -1,6 +1,8 @@
 package chain
 
-import "github.com/thrylos-labs/thrylos/shared"
+import (
+	"github.com/thrylos-labs/thrylos/types"
+)
 
 type BlockchainStats struct {
 	NumberOfBlocks       int   `json:"number_of_blocks"`
@@ -11,10 +13,10 @@ type BlockchainStats struct {
 
 // Stats collector for the blockchain
 type StatsCollector struct {
-	blockchain *shared.Blockchain
+	blockchain *types.Blockchain
 }
 
-func NewStatsCollector(bc *shared.Blockchain) *StatsCollector {
+func NewStatsCollector(bc *types.Blockchain) *StatsCollector {
 	return &StatsCollector{
 		blockchain: bc,
 	}

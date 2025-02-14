@@ -1,4 +1,4 @@
-package shared
+package types
 
 import (
 	"math/big"
@@ -6,7 +6,6 @@ import (
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/network"
 )
 
 // // // Blockchain represents the entire blockchain structure, encapsulating all blocks, stakeholders,
@@ -73,7 +72,7 @@ type Blockchain struct {
 	StateNetwork   NetworkInterface
 	StakingService *StakingService
 
-	TransactionPropagator *network.TransactionPropagator
+	TransactionPropagator *TransactionPropagator
 }
 
 // // Fork structure representing a fork in the blockchain

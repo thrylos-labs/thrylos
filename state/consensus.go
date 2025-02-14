@@ -3,23 +3,23 @@ package state
 import (
 	"time"
 
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 type AdaptiveConsensusImpl struct {
-	*shared.AdaptiveConsensus
+	*types.AdaptiveConsensus
 }
 
-func NewAdaptiveConsensus(metrics *shared.StateMetrics) *AdaptiveConsensusImpl {
-	ac := &shared.AdaptiveConsensus{
-		Params:         make(map[int]*shared.ConsensusParams),
+func NewAdaptiveConsensus(metrics *types.StateMetrics) *AdaptiveConsensusImpl {
+	ac := &types.AdaptiveConsensus{
+		Params:         make(map[int]*types.ConsensusParams),
 		Metrics:        metrics,
 		UpdateInterval: time.Minute * 5,
 		StopChan:       make(chan struct{}),
 	}
 
 	for shardID := range metrics.ShardMetrics {
-		ac.Params[shardID] = &shared.ConsensusParams{
+		ac.Params[shardID] = &types.ConsensusParams{
 			BlockSize:        1000,
 			ConfirmationTime: time.Second * 10,
 			MinValidators:    3,
@@ -82,7 +82,7 @@ func (ac *AdaptiveConsensusImpl) adjustParameters() {
 	}
 }
 
-func (ac *AdaptiveConsensusImpl) GetConsensusParams(shardID int) *shared.ConsensusParams {
+func (ac *AdaptiveConsensusImpl) GetConsensusParams(shardID int) *types.ConsensusParams {
 	ac.Mu.RLock()
 	defer ac.Mu.RUnlock()
 	return ac.Params[shardID]

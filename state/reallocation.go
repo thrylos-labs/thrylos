@@ -1,7 +1,7 @@
 package state
 
 // type StateManagerImpl struct {
-// 	*shared.StateManager
+// 	*types.StateManager
 // }
 
 // func (sm *StateManagerImpl) StartRelocationMonitor() {
@@ -31,8 +31,8 @@ package state
 // 	}
 // }
 
-// func (sm *StateManagerImpl) findRelocationCandidates() []shared.RelocationCandidate {
-// 	var candidates []shared.RelocationCandidate
+// func (sm *StateManagerImpl) findRelocationCandidates() []types.RelocationCandidate {
+// 	var candidates []types.RelocationCandidate
 
 // 	// Find overloaded shards
 // 	overloadedShards := sm.findOverloadedShards()
@@ -41,7 +41,7 @@ package state
 // 	for _, fromShard := range overloadedShards {
 // 		for _, address := range sm.getHighAccessAddresses(fromShard) {
 // 			if toShard := sm.findOptimalShard(address, underutilizedShards); toShard != -1 {
-// 				candidates = append(candidates, shared.RelocationCandidate{
+// 				candidates = append(candidates, types.RelocationCandidate{
 // 					Address:   address,
 // 					FromShard: fromShard,
 // 					ToShard:   toShard,
@@ -53,7 +53,7 @@ package state
 // 	return candidates
 // }
 
-// func (sm *StateManagerImpl) relocateState(candidate shared.RelocationCandidate) error {
+// func (sm *StateManagerImpl) relocateState(candidate types.RelocationCandidate) error {
 // 	sm.mu.Lock()
 // 	defer sm.mu.Unlock()
 

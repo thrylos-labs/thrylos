@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"hash"
+	"sync"
+	"time"
 
+	"github.com/thrylos-labs/thrylos"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -54,39 +58,39 @@ func (h *Hash) Equal(other Hash) bool {
 	return bytes.Equal(h[:], other[:])
 }
 
-//TODO: optimise the hashing function
+// TODO: optimise the hashing function
 // // Initialize a cache with a mutex for concurrent access control
-// var (
-// 	addressCache = make(map[string]string)
-// 	cacheMutex   sync.RWMutex
-// )
+var (
+	addressCache = make(map[string]string)
+	cacheMutex   sync.RWMutex
+)
 
-// func CreateThrylosTransaction(id int) *thrylos.Transaction {
-// 	return &thrylos.Transaction{
-// 		Id:        fmt.Sprintf("tx%d", id),
-// 		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
-// 		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
-// 		Timestamp: time.Now().Unix(),
-// 		Signature: []byte("signature"), // This should be properly generated or mocked
-// 		Sender:    "Alice",
-// 	}
-// }
+func CreateThrylosTransaction(id int) *thrylos.Transaction {
+	return &thrylos.Transaction{
+		Id:        fmt.Sprintf("tx%d", id),
+		Inputs:    []*thrylos.UTXO{{TransactionId: "prev-tx-id", Index: 0, OwnerAddress: "Alice", Amount: 100}},
+		Outputs:   []*thrylos.UTXO{{TransactionId: fmt.Sprintf("tx%d", id), Index: 0, OwnerAddress: "Bob", Amount: 100}},
+		Timestamp: time.Now().Unix(),
+		Signature: []byte("signature"), // This should be properly generated or mocked
+		Sender:    "Alice",
+	}
+}
 
-// // Use a global hash pool for BLAKE2b hashers to reduce allocation overhead
-// var blake2bHasherPool = sync.Pool{
-// 	New: func() interface{} {
-// 		hasher, err := blake2b.New256(nil)
-// 		if err != nil {
-// 			panic(err) // Proper error handling is essential, though panic should be avoided in production
-// 		}
-// 		return hasher
-// 	},
-// }
+// Use a global hash pool for BLAKE2b hashers to reduce allocation overhead
+var blake2bHasherPool = sync.Pool{
+	New: func() interface{} {
+		hasher, err := blake2b.New256(nil)
+		if err != nil {
+			panic(err) // Proper error handling is essential, though panic should be avoided in production
+		}
+		return hasher
+	},
+}
 
-// func HashData(data []byte) []byte {
-// 	hasher := blake2bHasherPool.Get().(hash.Hash)
-// 	defer blake2bHasherPool.Put(hasher)
-// 	hasher.Reset()
-// 	hasher.Write(data)
-// 	return hasher.Sum(nil) // Correct usage of Sum
-// }
+func HashData(data []byte) []byte {
+	hasher := blake2bHasherPool.Get().(hash.Hash)
+	defer blake2bHasherPool.Put(hasher)
+	hasher.Reset()
+	hasher.Write(data)
+	return hasher.Sum(nil) // Correct usage of Sum
+}

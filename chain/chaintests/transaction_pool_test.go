@@ -2,7 +2,7 @@ package chaintests
 
 // func TestAddTransaction(t *testing.T) {
 // 	pool := chain.NewTxPool()
-// 	tx := &shared.Transaction{ID: "tx1"}
+// 	tx := &types.Transaction{ID: "tx1"}
 
 // 	err := pool.AddTransaction(tx)
 // 	assert.NoError(t, err)
@@ -14,7 +14,7 @@ package chaintests
 
 // func TestRemoveTransaction(t *testing.T) {
 // 	pool := chain.NewTxPool()
-// 	tx := &shared.Transaction{ID: "tx1"}
+// 	tx := &types.Transaction{ID: "tx1"}
 
 // 	err := pool.AddTransaction(tx)
 // 	assert.NoError(t, err)
@@ -29,7 +29,7 @@ package chaintests
 
 // func TestGetTransaction(t *testing.T) {
 // 	pool := chain.NewTxPool()
-// 	tx := &shared.Transaction{ID: "tx1"}
+// 	tx := &types.Transaction{ID: "tx1"}
 
 // 	err := pool.AddTransaction(tx)
 // 	assert.NoError(t, err)
@@ -45,8 +45,8 @@ package chaintests
 
 // func TestGetAllTransactions(t *testing.T) {
 // 	pool := chain.NewTxPool()
-// 	tx1 := &shared.Transaction{ID: "tx1"}
-// 	tx2 := &shared.Transaction{ID: "tx2"}
+// 	tx1 := &types.Transaction{ID: "tx1"}
+// 	tx2 := &types.Transaction{ID: "tx2"}
 
 // 	err := pool.AddTransaction(tx1)
 // 	assert.NoError(t, err)
@@ -62,7 +62,7 @@ package chaintests
 
 // func TestBroadcastTransaction(t *testing.T) {
 // 	pool := chain.NewTxPool()
-// 	tx := &shared.Transaction{ID: "tx1"}
+// 	tx := &types.Transaction{ID: "tx1"}
 
 // 	err := pool.BroadcastTransaction(tx)
 // 	assert.NoError(t, err)
@@ -72,7 +72,7 @@ package chaintests
 // 	pool := chain.NewTxPool()
 // 	assert.Equal(t, 0, pool.Size())
 
-// 	tx := &shared.Transaction{ID: "tx1"}
+// 	tx := &types.Transaction{ID: "tx1"}
 // 	err := pool.AddTransaction(tx)
 // 	assert.NoError(t, err)
 // 	assert.Equal(t, 1, pool.Size())

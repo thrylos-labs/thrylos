@@ -8,16 +8,16 @@ import (
 	"sync"
 
 	"github.com/dgraph-io/badger/v3"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 )
 
 // BadgerDB wraps the Badger database
 type Database struct {
 	db            *badger.DB
-	utxos         map[string]shared.UTXO
+	utxos         map[string]types.UTXO
 	once          sync.Once
-	Blockchain    shared.Store // Use the interface here
-	encryptionKey []byte       // The AES-256 key used for encryption and decryption
+	Blockchain    types.Store // Use the interface here
+	encryptionKey []byte      // The AES-256 key used for encryption and decryption
 
 }
 

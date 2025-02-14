@@ -1,54 +1,44 @@
 package store
 
-import (
-	"fmt"
-	"log"
+// func (s *store) SaveValidator(v *types.Validator) error {
+// 	addr := (*v).Address()
+// 	data, err := (*v).Marshal()
+// 	if err != nil {
+// 		log.Printf("Error marshalling validator: %v\n", err)
+// 		return err
+// 	}
+// 	key := []byte(ValidatorPrefix + addr.String())
+// 	return s.db.Set(key, data)
+// }
 
-	"github.com/dgraph-io/badger/v3"
-	"github.com/thrylos-labs/thrylos/consensus/validator"
-	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/shared"
-)
+// func (s *store) GetValidator(addr address.Address) (*types.Validator, error) {
+// 	var validatorData []byte
+// 	db := s.db.GetDB()
 
-func (s *store) SaveValidator(v *shared.Validator) error {
-	addr := (*v).Address()
-	data, err := (*v).Marshal()
-	if err != nil {
-		log.Printf("Error marshalling validator: %v\n", err)
-		return err
-	}
-	key := []byte(ValidatorPrefix + addr.String())
-	return s.db.Set(key, data)
-}
+// 	err := db.View(func(txn *badger.Txn) error {
+// 		key := []byte(ValidatorPrefix + addr.String())
+// 		log.Printf("Retrieving validator data: %s, key: %s", addr.String(), key)
+// 		item, err := txn.Get(key)
+// 		if err != nil {
+// 			log.Printf("Error validator data %s: %v", addr.String(), err)
+// 			return err
+// 		}
+// 		validatorData, err = item.ValueCopy(nil)
+// 		return err
+// 	})
 
-func (s *store) GetValidator(addr address.Address) (*shared.Validator, error) {
-	var validatorData []byte
-	db := s.db.GetDB()
+// 	if err != nil {
+// 		if err == badger.ErrKeyNotFound {
+// 			log.Printf("Public key not found for validator %s", addr.String())
+// 			return nil, fmt.Errorf("public key not found for validator %s", addr.String())
+// 		}
+// 		log.Printf("Error retrieving public key for validator %s: %v", addr.String(), err)
+// 		return nil, fmt.Errorf("error retrieving public key for validator %s: %v", addr.String(), err)
+// 	}
 
-	err := db.View(func(txn *badger.Txn) error {
-		key := []byte(ValidatorPrefix + addr.String())
-		log.Printf("Retrieving validator data: %s, key: %s", addr.String(), key)
-		item, err := txn.Get(key)
-		if err != nil {
-			log.Printf("Error validator data %s: %v", addr.String(), err)
-			return err
-		}
-		validatorData, err = item.ValueCopy(nil)
-		return err
-	})
-
-	if err != nil {
-		if err == badger.ErrKeyNotFound {
-			log.Printf("Public key not found for validator %s", addr.String())
-			return nil, fmt.Errorf("public key not found for validator %s", addr.String())
-		}
-		log.Printf("Error retrieving public key for validator %s: %v", addr.String(), err)
-		return nil, fmt.Errorf("error retrieving public key for validator %s: %v", addr.String(), err)
-	}
-
-	v := validator.NewValidatorFromBytes(validatorData)
-	return &v, nil
-}
+// 	v := validator.NewValidatorFromBytes(validatorData)
+// 	return &v, nil
+// }
 
 // // ValidatorKeyStoreImpl implements the shared.ValidatorKeyStore interface
 // type ValidatorKeyStoreImpl struct {
@@ -60,7 +50,7 @@ func (s *store) GetValidator(addr address.Address) (*shared.Validator, error) {
 
 // // NewValidatorKeyStore creates and initializes a new ValidatorKeyStore
 // // In store/validator_store.go
-// func NewValidatorKeyStore(db *Database, encryptionKey []byte) shared.ValidatorKeyStore {
+// func NewValidatorKeyStore(db *Database, encryptionKey []byte) types.ValidatorKeyStore {
 // 	return &ValidatorKeyStoreImpl{
 // 		keys:          make(map[string]*mldsa44.PrivateKey),
 // 		mu:            sync.RWMutex{},

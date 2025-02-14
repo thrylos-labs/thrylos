@@ -1,6 +1,6 @@
 package node
 
-// // Hold the chain ID and then proviude a method to set it
+// // // Hold the chain ID and then proviude a method to set it
 // func (n *Node) SetChainID(chainID string) {
 // 	n.chainID = chainID
 // }

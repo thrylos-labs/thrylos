@@ -10,11 +10,11 @@ package store
 // 	}
 // 	defer db.Close() // Ensure the database is closed after the test runs
 
-// 	bdb := &BlockchainDB{DB: db} // Wrap the *badger.DB
+// 	bdb := &store.BlockchainDB{DB: db} // Wrap the *badger.DB
 
 // 	// Test data
 // 	address := "tl11rn2agc9tqwg6eemqefj5uvtns2glepu2uaztj0v8pz3d4zg87k8szawc22"
-// 	utxo := shared.UTXO{OwnerAddress: address, Amount: 1000}
+// 	utxo := types.UTXO{OwnerAddress: address, Amount: 1000}
 
 // 	// Insert UTXO
 // 	if err := testInsertUTXO(bdb, address, utxo); err != nil {
@@ -22,7 +22,7 @@ package store
 // 	}
 
 // 	// Fetch to verify
-// 	retrievedUTXOs, err := bdb.GetUTXOsForAddress(address)
+// 	retrievedUTXOs, err := types.GetUTXOsForAddress(address)
 // 	if err != nil {
 // 		t.Errorf("Failed to fetch UTXOs: %v", err)
 // 	}
@@ -34,7 +34,7 @@ package store
 // 	}
 // }
 
-// func testInsertUTXO(bdb *BlockchainDB, address string, utxo shared.UTXO) error {
+// func testInsertUTXO(bdb *store.BlockchainDB, address string, utxo types.UTXO) error {
 // 	key := fmt.Sprintf("utxo-%s-%s", address, "unique_identifier")
 // 	log.Printf("Inserting UTXO with key: %s", key)
 // 	val, err := json.Marshal(utxo)
@@ -46,4 +46,4 @@ package store
 // 	})
 // }
 
-// // testInsertUTXO function as before...
+// // // testInsertUTXO function as before...

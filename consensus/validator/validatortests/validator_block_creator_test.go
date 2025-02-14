@@ -1,17 +1,6 @@
 package validatortests
 
-// import (
-// 	"fmt"
-// 	"sync"
-// 	"testing"
-// 	"time"
-
-// 	thrylos "github.com/thrylos-labs/thrylos"
-// 	"github.com/thrylos-labs/thrylos/core/chain"
-// 	"github.com/thrylos-labs/thrylos/core/consensus/selection"
-// )
-
-// // MockBlockchainForValidator implements the test blockchain
+// MockBlockchainForValidator implements the test blockchain
 // type MockBlockchainForValidator struct {
 // 	ActiveValidators []string
 // 	PendingTxs       []*thrylos.Transaction

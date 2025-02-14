@@ -2,7 +2,7 @@ package validator
 
 import (
 	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/amount"
@@ -15,7 +15,7 @@ type validator struct {
 	stake      amount.Amount     `cbor:"3,keyasint"`
 }
 
-func NewValidator(privateKey crypto.PrivateKey, index int32, stake amount.Amount) shared.Validator {
+func NewValidator(privateKey crypto.PrivateKey, index int32, stake amount.Amount) types.Validator {
 	return &validator{
 		index:      index,
 		privateKey: privateKey,
@@ -23,7 +23,7 @@ func NewValidator(privateKey crypto.PrivateKey, index int32, stake amount.Amount
 	}
 }
 
-func NewValidatorFromBytes(validatorData []byte) shared.Validator {
+func NewValidatorFromBytes(validatorData []byte) types.Validator {
 	v := validator{}
 	err := cbor.Unmarshal(validatorData, v)
 	if err != nil {
