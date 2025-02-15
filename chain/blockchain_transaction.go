@@ -1,5 +1,63 @@
 package chain
 
+import (
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
+	"github.com/thrylos-labs/thrylos/types"
+)
+
+func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
+	if tx == nil {
+		return nil
+	}
+
+	// Convert inputs
+	inputs := make([]types.UTXO, len(tx.Inputs))
+	for i, input := range tx.Inputs {
+		inputs[i] = types.UTXO{
+			TransactionID: input.TransactionId,
+			Index:         int(input.Index),
+			OwnerAddress:  input.OwnerAddress,
+			Amount:        amount.Amount(input.Amount),
+			IsSpent:       input.IsSpent,
+		}
+	}
+
+	// Convert outputs
+	outputs := make([]types.UTXO, len(tx.Outputs))
+	for i, output := range tx.Outputs {
+		outputs[i] = types.UTXO{
+			TransactionID: output.TransactionId,
+			Index:         int(output.Index),
+			OwnerAddress:  output.OwnerAddress,
+			Amount:        amount.Amount(output.Amount),
+			IsSpent:       output.IsSpent,
+		}
+	}
+
+	// For genesis transaction, we might need special handling of some fields
+	sharedTx := &types.Transaction{
+		ID:               tx.Id,
+		Timestamp:        tx.Timestamp,
+		Inputs:           inputs,
+		Outputs:          outputs,
+		EncryptedInputs:  tx.EncryptedInputs,
+		EncryptedOutputs: tx.EncryptedOutputs,
+		EncryptedAESKey:  tx.EncryptedAesKey,
+		PreviousTxIds:    tx.PreviousTxIds,
+		GasFee:           int(tx.Gasfee),
+		BlockHash:        string(tx.BlockHash),
+		Salt:             tx.Salt,
+		Status:           tx.Status,
+		// For genesis transaction, we might leave these nil
+		// SenderAddress and SenderPublicKey will be nil for genesis
+		// Signature is provided as bytes
+		Signature: nil, // For genesis, we use the provided signature bytes
+	}
+
+	return sharedTx
+}
+
 // func (bc *BlockchainImpl) ProcessPendingTransactionsWithBatch(validator string, batch []*thrylos.Transaction) (*shared.Block, error) {
 // 	// Similar to ProcessPendingTransactions but works with the provided batch
 // 	return bc.ProcessPendingTransactions(validator)
@@ -201,58 +259,6 @@ package chain
 // 		}
 // 	}
 // 	return errs
-// }
-
-// func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
-// 	if tx == nil {
-// 		return nil
-// 	}
-
-// 	// Convert inputs
-// 	inputs := make([]types.UTXO, len(tx.Inputs))
-// 	for i, input := range tx.Inputs {
-// 		inputs[i] = types.UTXO{
-// 			TransactionID: input.TransactionId,
-// 			Index:         int(input.Index),
-// 			OwnerAddress:  input.OwnerAddress,
-// 			Amount:        amount.Amount(input.Amount),
-// 			IsSpent:       input.IsSpent,
-// 		}
-// 	}
-
-// 	// Convert outputs
-// 	outputs := make([]types.UTXO, len(tx.Outputs))
-// 	for i, output := range tx.Outputs {
-// 		outputs[i] = types.UTXO{
-// 			TransactionID: output.TransactionId,
-// 			Index:         int(output.Index),
-// 			OwnerAddress:  output.OwnerAddress,
-// 			Amount:        amount.Amount(output.Amount),
-// 			IsSpent:       output.IsSpent,
-// 		}
-// 	}
-
-// 	// For genesis transaction, we might need special handling of some fields
-// 	sharedTx := &types.Transaction{
-// 		ID:               tx.Id,
-// 		Timestamp:        tx.Timestamp,
-// 		Inputs:           inputs,
-// 		Outputs:          outputs,
-// 		EncryptedInputs:  tx.EncryptedInputs,
-// 		EncryptedOutputs: tx.EncryptedOutputs,
-// 		EncryptedAESKey:  tx.EncryptedAesKey,
-// 		PreviousTxIds:    tx.PreviousTxIds,
-// 		GasFee:           int(tx.Gasfee),
-// 		BlockHash:        string(tx.BlockHash),
-// 		Salt:             tx.Salt,
-// 		Status:           tx.Status,
-// 		// For genesis transaction, we might leave these nil
-// 		// SenderAddress and SenderPublicKey will be nil for genesis
-// 		// Signature is provided as bytes
-// 		Signature: nil, // For genesis, we use the provided signature bytes
-// 	}
-
-// 	return sharedTx
 // }
 
 // // // Helper function to convert thrylos.Transaction to shared.Transaction

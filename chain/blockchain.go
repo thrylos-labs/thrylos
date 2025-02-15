@@ -1,213 +1,223 @@
 package chain
 
-// type BlockchainImpl struct {
-// 	Blockchain      *types.Blockchain
-// 	modernProcessor *processor.ModernProcessor
-// 	txPool          types.TxPool // Not *types.TxPool
-// 	dagManager      *processor.DAGManager
-// }
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-// func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
-// 	// Initialize the database
-// 	database, err := store.NewDatabase(config.DataDir)
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
-// 	}
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
+	"github.com/thrylos-labs/thrylos/network"
+	"github.com/thrylos-labs/thrylos/store"
+	"github.com/thrylos-labs/thrylos/types"
+	"github.com/thrylos-labs/thrylos/utils"
+)
 
-// 	// Create the store instance
-// 	storeInstance, err := store.NewStore(database, config.AESKey)
-// 	if err != nil {
-// 		database.Close() // Clean up if store creation fails
-// 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
-// 	}
+type BlockchainImpl struct {
+	Blockchain *types.Blockchain
+	// modernProcessor *processor.ModernProcessor
+	txPool types.TxPool // Not *types.TxPool
+	// dagManager      *processor.DAGManager
+}
 
-// 	// Create BlockchainDB using the store instance
-// 	blockchainDB := store.NewBlockchainDB(database, config.AESKey)
-// 	if blockchainDB == nil {
-// 		database.Close() // Clean up if BlockchainDB creation fails
-// 		return nil, nil, fmt.Errorf("failed to create blockchain database")
-// 	}
+func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
+	// Initialize the database
+	database, err := store.NewDatabase(config.DataDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
+	}
 
-// 	log.Println("BlockchainDB created")
+	// Create the store instance
+	storeInstance, err := store.NewStore(database, config.AESKey)
+	if err != nil {
+		database.Close() // Clean up if store creation fails
+		return nil, nil, fmt.Errorf("failed to create store: %v", err)
+	}
 
-// 	// Create the genesis block
-// 	genesis := NewGenesisBlock()
-// 	log.Println("Genesis block created")
+	log.Println("BlockchainDB created")
 
-// 	// Initialize the map for public keys
-// 	publicKeyMap := make(map[string]*crypto.PublicKey)
+	// Create the genesis block
+	genesis := NewGenesisBlock()
+	log.Println("Genesis block created")
 
-// 	// Initialize Stakeholders map with the genesis account
-// 	totalSupplyNano := utils.ThrylosToNano()
+	// Initialize the map for public keys
+	publicKeyMap := make(map[string]*crypto.PublicKey)
 
-// 	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
+	// Initialize Stakeholders map with the genesis account
+	totalSupplyNano := utils.ThrylosToNano()
 
-// 	stakeholdersMap := make(map[string]int64)
-// 	addr, _ := config.GenesisAccount.PublicKey().Address()
-// 	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
+	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
 
-// 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
+	stakeholdersMap := make(map[string]int64)
+	addr, _ := config.GenesisAccount.PublicKey().Address()
+	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
 
-// 	// Generate a new key pair for the genesis account
-// 	log.Println("Generating key pair for genesis account")
+	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
 
-// 	privKey, err := crypto.NewPrivateKey()
-// 	if err != nil {
-// 		log.Printf("error generating private key for the genesis account: %v", err)
-// 		return nil, nil, err
-// 	}
+	// Generate a new key pair for the genesis account
+	log.Println("Generating key pair for genesis account")
 
-// 	pubKey := privKey.PublicKey()
-// 	if err != nil {
-// 		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
-// 	}
-// 	log.Println("Genesis account key pair generated successfully")
+	privKey, err := crypto.NewPrivateKey()
+	if err != nil {
+		log.Printf("error generating private key for the genesis account: %v", err)
+		return nil, nil, err
+	}
 
-// 	// Create genesis transaction
-// 	genesisTx := &thrylos.Transaction{
-// 		Id:        "genesis_tx_" + addr.String(),
-// 		Timestamp: time.Now().Unix(),
-// 		Outputs: []*thrylos.UTXO{{
-// 			OwnerAddress: addr.String(),
-// 			Amount:       totalSupplyNano,
-// 		}},
-// 		Signature:       []byte("genesis_signature"),
-// 		SenderPublicKey: nil,
-// 	}
+	pubKey := privKey.PublicKey()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
+	}
+	log.Println("Genesis account key pair generated successfully")
 
-// 	// Initialize UTXO map with the genesis transaction
-// 	utxoMap := make(map[string][]*thrylos.UTXO)
-// 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
-// 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
+	// Create genesis transaction
+	genesisTx := &thrylos.Transaction{
+		Id:        "genesis_tx_" + addr.String(),
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress: addr.String(),
+			Amount:       totalSupplyNano,
+		}},
+		Signature:       []byte("genesis_signature"),
+		SenderPublicKey: nil,
+	}
 
-// 	genesis.Transactions = []*types.Transaction{ConvertToSharedTransaction(genesisTx)}
+	// Initialize UTXO map with the genesis transaction
+	utxoMap := make(map[string][]*thrylos.UTXO)
+	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
+	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-// 	stateNetwork := network.NewDefaultNetwork()
-// 	// stateManager := state.NewStateManager(stateNetwork, 4)
+	genesis.Transactions = []*types.Transaction{ConvertToSharedTransaction(genesisTx)}
 
-// 	log.Println("Genesis account private key stored and verified successfully")
+	stateNetwork := network.NewDefaultNetwork()
+	// stateManager := state.NewStateManager(stateNetwork, 4)
 
-// 	// Create initial blockchain instance
-// 	temp := &BlockchainImpl{
-// 		Blockchain: &types.Blockchain{
-// 			Blocks:              []*types.Block{genesis},
-// 			Genesis:             genesis,
-// 			Stakeholders:        stakeholdersMap,
-// 			Database:            blockchainDB,
-// 			PublicKeyMap:        publicKeyMap,
-// 			UTXOs:               utxoMap,
-// 			Forks:               make([]*types.Fork, 0),
-// 			GenesisAccount:      privKey,
-// 			PendingTransactions: make([]*thrylos.Transaction, 0),
-// 			ActiveValidators:    make([]string, 0),
-// 			StateNetwork:        stateNetwork,
-// 			TestMode:            config.TestMode,
-// 		},
-// 	}
+	log.Println("Genesis account private key stored and verified successfully")
 
-// 	// Create the propagator
-// 	propagator := &types.TransactionPropagator{
-// 		Blockchain: temp,
-// 		Mu:         sync.RWMutex{},
-// 	}
-// 	// Create the transaction pool
-// 	temp.txPool = NewTxPool(database, propagator)
+	// Create initial blockchain instance
+	temp := &BlockchainImpl{
+		Blockchain: &types.Blockchain{
+			Blocks:              []*types.Block{genesis},
+			Genesis:             genesis,
+			Stakeholders:        stakeholdersMap,
+			Database:            database.Blockchain,
+			PublicKeyMap:        publicKeyMap,
+			UTXOs:               utxoMap,
+			Forks:               make([]*types.Fork, 0),
+			GenesisAccount:      privKey,
+			PendingTransactions: make([]*thrylos.Transaction, 0),
+			ActiveValidators:    make([]string, 0),
+			StateNetwork:        stateNetwork,
+			TestMode:            config.TestMode,
+		},
+	}
 
-// 	// Add the blockchain public key to the publicKeyMap
-// 	publicKeyMap[addr.String()] = &pubKey
-// 	log.Println("Genesis account public key added to publicKeyMap")
+	// Create the propagator
+	// propagator := &types.TransactionPropagator{
+	// 	Blockchain: temp,
+	// 	Mu:         sync.RWMutex{},
+	// }
+	// Create the transaction pool
+	temp.txPool = NewTxPool(database)
 
-// 	// Commented out validator key generation check to avoid error
-// 	/*
-// 	   if err != nil {
-// 	       log.Printf("Warning: Failed to generate validator keys: %v", err)
-// 	       return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
-// 	   }
-// 	*/
+	// Add the blockchain public key to the publicKeyMap
+	publicKeyMap[addr.String()] = &pubKey
+	log.Println("Genesis account public key added to publicKeyMap")
 
-// 	// log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
+	// Commented out validator key generation check to avoid error
+	/*
+	   if err != nil {
+	       log.Printf("Warning: Failed to generate validator keys: %v", err)
+	       return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
+	   }
+	*/
 
-// 	// Save genesis block
-// 	if err := database.Blockchain.SaveBlock(genesis); err != nil {
-// 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-// 	}
+	// log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
 
-// 	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
+	// Save genesis block
+	if err := database.Blockchain.SaveBlock(genesis); err != nil {
+		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+	}
 
-// 	log.Println("NewBlockchain initialization completed successfully")
+	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
 
-// 	// Add shutdown handler for clean termination
-// 	go func() {
-// 		c := make(chan os.Signal, 1)
-// 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-// 		<-c
-// 		log.Println("Stopping blockchain...")
-// 	}()
+	log.Println("NewBlockchain initialization completed successfully")
 
-// 	if !config.DisableBackground {
-// 		// Start block creation routine
-// 		go func() {
-// 			log.Println("Starting block creation process")
-// 			ticker := time.NewTicker(10 * time.Second)
-// 			defer ticker.Stop()
+	// Add shutdown handler for clean termination
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		log.Println("Stopping blockchain...")
+	}()
 
-// 			for {
-// 				select {
-// 				case <-ticker.C:
-// 					// First fetch transactions from the pool
-// 					txs, err := temp.txPool.GetAllTransactions()
-// 					if err != nil {
-// 						log.Printf("Error getting transactions from pool: %v", err)
-// 						continue
-// 					}
+	// if !config.DisableBackground {
+	// 	// Start block creation routine
+	// 	go func() {
+	// 		log.Println("Starting block creation process")
+	// 		ticker := time.NewTicker(10 * time.Second)
+	// 		defer ticker.Stop()
 
-// 					// then process each of them through the modern transaction processor
-// 					if len(txs) > 0 {
-// 						log.Printf("Processing %d transactions from pool", len(txs))
-// 						for _, tx := range txs {
-// 							err := temp.ProcessIncomingTransaction(tx)
-// 							if err != nil {
-// 								log.Printf("Error processing transaction: %v", err)
-// 								continue
-// 							}
-// 						}
-// 					}
-// 				}
-// 			}
-// 		}()
-// 	} else {
-// 		log.Println("Background processes disabled for testing")
-// 	}
+	// 		for {
+	// 			select {
+	// 			case <-ticker.C:
+	// 				// First fetch transactions from the pool
+	// 				txs, err := temp.txPool.GetAllTransactions()
+	// 				if err != nil {
+	// 					log.Printf("Error getting transactions from pool: %v", err)
+	// 					continue
+	// 				}
 
-// 	log.Println("NewBlockchain initialization completed successfully")
-// 	return temp, storeInstance, nil
-// }
+	// 				// then process each of them through the modern transaction processor
+	// 				if len(txs) > 0 {
+	// 					log.Printf("Processing %d transactions from pool", len(txs))
+	// 					for _, tx := range txs {
+	// 						err := temp.ProcessIncomingTransaction(tx)
+	// 						if err != nil {
+	// 							log.Printf("Error processing transaction: %v", err)
+	// 							continue
+	// 						}
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+	// 	}()
+	// } else {
+	// 	log.Println("Background processes disabled for testing")
+	// }
 
-// // // // ensuring that no blocks have been altered or inserted maliciously.
-// func (bc *BlockchainImpl) CheckChainIntegrity() bool {
-// 	for i := 1; i < len(bc.Blockchain.Blocks); i++ {
-// 		prevBlock := bc.Blockchain.Blocks[i-1]
-// 		currentBlock := bc.Blockchain.Blocks[i]
+	log.Println("NewBlockchain initialization completed successfully")
+	return temp, storeInstance, nil
+}
 
-// 		if !currentBlock.PrevHash.Equal(prevBlock.Hash) {
-// 			fmt.Printf("Invalid previous hash in block %d\n", currentBlock.Index)
-// 			return false
-// 		}
+// // // ensuring that no blocks have been altered or inserted maliciously.
+func (bc *BlockchainImpl) CheckChainIntegrity() bool {
+	for i := 1; i < len(bc.Blockchain.Blocks); i++ {
+		prevBlock := bc.Blockchain.Blocks[i-1]
+		currentBlock := bc.Blockchain.Blocks[i]
 
-// 		blockBytes, err := SerializeForSigning(currentBlock)
-// 		if err != nil {
-// 			fmt.Printf("Failed to serialize block %d: %v\n", currentBlock.Index, err)
-// 			return false
-// 		}
-// 		computedHash := hash.NewHash(blockBytes)
+		if !currentBlock.PrevHash.Equal(prevBlock.Hash) {
+			fmt.Printf("Invalid previous hash in block %d\n", currentBlock.Index)
+			return false
+		}
 
-// 		if !currentBlock.Hash.Equal(computedHash) {
-// 			fmt.Printf("Invalid hash in block %d\n", currentBlock.Index)
-// 			return false
-// 		}
-// 	}
-// 	return true
-// }
+		blockBytes, err := SerializeForSigning(currentBlock)
+		if err != nil {
+			fmt.Printf("Failed to serialize block %d: %v\n", currentBlock.Index, err)
+			return false
+		}
+		computedHash := hash.NewHash(blockBytes)
+
+		if !currentBlock.Hash.Equal(computedHash) {
+			fmt.Printf("Invalid hash in block %d\n", currentBlock.Index)
+			return false
+		}
+	}
+	return true
+}
 
 // // helper methods
 // func (bc *BlockchainImpl) GetGenesis() *types.Block {

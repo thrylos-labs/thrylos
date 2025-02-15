@@ -18,28 +18,13 @@ type Database struct {
 	once          sync.Once
 	Blockchain    types.Store // Use the interface here
 	encryptionKey []byte      // The AES-256 key used for encryption and decryption
-
 }
 
-type BlockchainDB struct {
-	//ValidatorStore *ValidatorKeyStoreImpl
-	Database      *Database
-	encryptionKey []byte
-}
-
-func NewBlockchainDB(database *Database, encryptionKey []byte) *store {
-	//validatorStore := NewValidatorKeyStore(database, encryptionKey)
-
-	return &store{
-		encryptionKey: encryptionKey,
-		//validatorStore: validatorStore, // match the field name exactly
-	}
-}
-
-// NewBadgerDB initializes and returns a new instance of BadgerDB
+// NewDatabase initializes and returns a new instance of BadgerDB
 func NewDatabase(path string) (*Database, error) {
 	// Remove any existing lock file before opening
 	lockFile := filepath.Join(path, "LOCK")
+	log.Printf("Attempting to remove lock file: %s", lockFile)
 	if err := os.Remove(lockFile); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to remove existing lock file: %v", err)
 	}
@@ -67,6 +52,7 @@ func NewDatabase(path string) (*Database, error) {
 	return d, nil
 }
 
+// GetDB returns the underlying BadgerDB instance
 func (d *Database) GetDB() *badger.DB {
 	return d.db
 }
@@ -111,11 +97,12 @@ func (d *Database) Delete(key []byte) error {
 }
 
 // Close closes the Badger database
-func (d *Database) Close() {
+func (d *Database) Close() error {
 	if d.db != nil {
 		err := d.db.Close()
 		if err != nil {
-			log.Fatalf("Failed to close Badger database: %v", err)
+			return fmt.Errorf("failed to close Badger database: %v", err)
 		}
 	}
+	return nil
 }
