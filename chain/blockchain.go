@@ -1,10 +1,17 @@
 package chain
 
 import (
+	"bytes"
+	"database/sql"
+	"encoding/gob"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -222,81 +229,95 @@ func (bc *BlockchainImpl) CheckChainIntegrity() bool {
 	return true
 }
 
-// // helper methods
-// func (bc *BlockchainImpl) GetGenesis() *types.Block {
-// 	return bc.Blockchain.Genesis
-// }
+// helper methods
+func (bc *BlockchainImpl) GetGenesis() *types.Block {
+	return bc.Blockchain.Genesis
+}
 
-// func (bc *BlockchainImpl) GetBlocks() []*types.Block {
-// 	return bc.Blockchain.Blocks
-// }
+func (bc *BlockchainImpl) GetBlocks() []*types.Block {
+	return bc.Blockchain.Blocks
+}
 
-// func (bc *BlockchainImpl) Status() string {
-// 	return fmt.Sprintf("Height: %d, Blocks: %d",
-// 		len(bc.Blockchain.Blocks)-1,
-// 		len(bc.Blockchain.Blocks))
-// }
+func (bc *BlockchainImpl) Status() string {
+	return fmt.Sprintf("Height: %d, Blocks: %d",
+		len(bc.Blockchain.Blocks)-1,
+		len(bc.Blockchain.Blocks))
+}
 
-// // Block functions
-// func (bc *BlockchainImpl) GetLastBlock() (*types.Block, int, error) {
-// 	// Query the last block data and index
-// 	blockData, lastIndex, err := types.Store.GetLastBlockData()
-// 	if err != nil {
-// 		if err == sql.ErrNoRows {
-// 			// Handle no rows returned, which means the blockchain is empty
-// 			return nil, 0, nil
-// 		}
-// 		return nil, 0, err
-// 	}
+// Block functions
+func (bc *BlockchainImpl) GetLastBlock() (*types.Block, int, error) {
+	// Query the last block data and index
+	blockData, err := bc.Blockchain.Database.GetLastBlockData()
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Handle no rows returned, which means the blockchain is empty
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
 
-// 	// Deserialize the block
-// 	var lastBlock types.Block
-// 	buffer := bytes.NewBuffer(blockData)
-// 	decoder := gob.NewDecoder(buffer)
-// 	err = decoder.Decode(&lastBlock)
-// 	if err != nil {
-// 		return nil, 0, err
-// 	}
+	// Get the last block index
+	lastIndex, err := bc.Blockchain.Database.GetLastBlockIndex()
+	if err != nil {
+		return nil, 0, err
+	}
 
-// 	// Return the block along with its index
-// 	return &lastBlock, lastIndex, nil
-// }
+	// Deserialize the block
+	var lastBlock types.Block
+	buffer := bytes.NewBuffer(blockData)
+	decoder := gob.NewDecoder(buffer)
+	err = decoder.Decode(&lastBlock)
+	if err != nil {
+		return nil, 0, err
+	}
 
-// func (bc *BlockchainImpl) GetBlockCount() int {
-// 	bc.Blockchain.Mu.RLock()
-// 	defer bc.Blockchain.Mu.RUnlock()
-// 	return len(bc.Blockchain.Blocks)
-// }
+	// Return the block along with its index
+	return &lastBlock, lastIndex, nil
+}
 
-// func (bc *BlockchainImpl) GetBlock(blockNumber int) (*types.Block, error) {
-// 	blockData, err := bc.Blockchain.Database.RetrieveBlock(blockNumber)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
-// 	}
+func (bc *BlockchainImpl) GetBlockCount() int {
+	bc.Blockchain.Mu.RLock()
+	defer bc.Blockchain.Mu.RUnlock()
+	return len(bc.Blockchain.Blocks)
+}
 
-// 	var block types.Block
-// 	if err := json.Unmarshal(blockData, &block); err != nil { // Deserialize here
-// 		return nil, fmt.Errorf("failed to deserialize block: %v", err)
-// 	}
-// 	return &block, nil
-// }
+func (bc *BlockchainImpl) GetBlock(blockNumber int) (*types.Block, error) {
+	blockData, err := bc.Blockchain.Database.RetrieveBlock(blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
+	}
 
+	var block types.Block
+	if err := json.Unmarshal(blockData, &block); err != nil { // Deserialize here
+		return nil, fmt.Errorf("failed to deserialize block: %v", err)
+	}
+	return &block, nil
+}
+
+// TO DO
 // func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
 // 	bc.Blockchain.Mu.Lock()
 // 	defer bc.Blockchain.Mu.Unlock()
 
 // 	// Handle potential forks.
-// 	if len(bc.Blockchain.Blocks) > 0 && !bytes.Equal(prevHash, bc.Blockchain[len(bc.Blockchain)-1].Hash) {
+// 	prevHashObj, err := hash.FromBytes(prevHash)
+// 	if err != nil {
+// 		return false, fmt.Errorf("invalid previous hash: %v", err)
+// 	}
+
+// 	if len(bc.Blockchain.Blocks) > 0 && !bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1].Hash.Equal(prevHashObj) {
 // 		var selectedFork *types.Fork
 // 		for _, fork := range bc.Blockchain.Forks {
-// 			if bytes.Equal(fork.Blocks[len(fork.Blocks)-1].Hash, prevHash) {
-// 				selectedFork = fork
-// 				break
+// 			if fork.Blocks != nil && len(fork.Blocks) > 0 {
+// 				if fork.Blocks[len(fork.Blocks)-1].Hash.Equal(prevHashObj) {
+// 					selectedFork = fork
+// 					break
+// 				}
 // 			}
 // 		}
 
 // 		// Create unsigned block for the fork
-// 		unsignedBlock, err := bc.Blockchain.CreateUnsignedBlock(transactions, validator)
+// 		unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
 // 		if err != nil {
 // 			return false, fmt.Errorf("failed to create unsigned block: %v", err)
 // 		}
@@ -317,16 +338,16 @@ func (bc *BlockchainImpl) CheckChainIntegrity() bool {
 // 			return false, fmt.Errorf("failed to serialize new block: %v", err)
 // 		}
 
-// 		blockNumber := len(bc.Blocks)
+// 		blockNumber := len(bc.Blockchain.Blocks)
 // 		if selectedFork != nil {
 // 			selectedFork.Blocks = append(selectedFork.Blocks, signedBlock)
 // 			blockNumber = len(selectedFork.Blocks) - 1
 // 		} else {
-// 			bc.Blocks = append(bc.Blocks, signedBlock)
-// 			blockNumber = len(bc.Blocks) - 1
+// 			bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
+// 			blockNumber = len(bc.Blockchain.Blocks) - 1
 // 		}
 
-// 		if err := bc.Database.StoreBlock(blockData, blockNumber); err != nil {
+// 		if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
 // 			return false, fmt.Errorf("failed to store block in database: %v", err)
 // 		}
 
@@ -363,12 +384,12 @@ func (bc *BlockchainImpl) CheckChainIntegrity() bool {
 // 		// Remove spent UTXOs
 // 		for _, input := range tx.GetInputs() {
 // 			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
-// 			delete(bc.UTXOs, utxoKey)
+// 			delete(bc.Blockchain.UTXOs, utxoKey)
 // 		}
 // 		// Add new UTXOs
 // 		for index, output := range tx.GetOutputs() {
 // 			utxoKey := fmt.Sprintf("%s:%d", tx.GetId(), index)
-// 			bc.UTXOs[utxoKey] = []*thrylos.UTXO{output}
+// 			bc.Blockchain.UTXOs[utxoKey] = []*thrylos.UTXO{output}
 // 		}
 // 	}
 
@@ -378,51 +399,57 @@ func (bc *BlockchainImpl) CheckChainIntegrity() bool {
 // 		return false, fmt.Errorf("failed to serialize new block: %v", err)
 // 	}
 
-// 	blockNumber := len(bc.Blocks)
-// 	if err := bc.Database.StoreBlock(blockData, blockNumber); err != nil {
+// 	blockNumber := len(bc.Blockchain.Blocks)
+// 	if err := bc.Blockchain.DatabaseDatabase.StoreBlock(blockData, blockNumber); err != nil {
 // 		return false, fmt.Errorf("failed to store block in database: %v", err)
 // 	}
 
 // 	// Update the blockchain with the new block
-// 	bc.Blocks = append(bc.Blocks, signedBlock)
-// 	bc.lastTimestamp = signedBlock.Timestamp
+// 	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
+// 	bc.Blockchain.lastTimestamp = signedBlock.Timestamp
 
-// 	if bc.OnNewBlock != nil {
-// 		bc.OnNewBlock(signedBlock)
+// 	if bc.Blockchain.OnNewBlock != nil {
+// 		bc.Blockchain.OnNewBlock(signedBlock)
 // 	}
 
 // 	// Update balances for affected addresses
-// 	bc.updateBalancesForBlock(signedBlock)
+// 	bc.Blockchain.updateBalancesForBlock(signedBlock)
 
 // 	return true, nil
 // }
 
-// func (bc *BlockchainImpl) GetBlockByID(id string) (types.Block, error) {
-// 	// First, try to parse id as a block index
-// 	if index, err := strconv.Atoi(id); err == nil {
-// 		// id is a valid integer, so we treat it as a block index
-// 		if index >= 0 && index < len(bc.Blockchain.Blocks) {
-// 			block := bc.Blockchain.Blocks[index]
-// 			log.Printf("Block found by index: Index=%d, Transactions=%v", block.Index, block.Transactions)
-// 			return block, nil
-// 		}
-// 	}
+func (bc *BlockchainImpl) GetBlockByID(id string) (*types.Block, error) { // Changed return type to pointer
+	// First, try to parse id as a block index
+	if index, err := strconv.Atoi(id); err == nil {
+		// id is a valid integer, so we treat it as a block index
+		if index >= 0 && index < len(bc.Blockchain.Blocks) {
+			block := bc.Blockchain.Blocks[index]
+			log.Printf("Block found by index: Index=%d, Transactions=%v", block.Index, block.Transactions)
+			return block, nil
+		}
+	}
 
-// 	// If id is not a valid index, try to match it as a hash
-// 	idBytes, err := hex.DecodeString(id)
-// 	if err != nil {
-// 		log.Printf("Invalid block ID format: %s", id)
-// 		return nil, errors.New("invalid block ID format")
-// 	}
+	// If id is not a valid index, try to match it as a hash
+	idBytes, err := hex.DecodeString(id)
+	if err != nil {
+		log.Printf("Invalid block ID format: %s", id)
+		return nil, errors.New("invalid block ID format")
+	}
 
-// 	// Iterate over blocks and find by hash
-// 	for _, block := range bc.Blocks {
-// 		if bytes.Equal(block.Hash, idBytes) {
-// 			log.Printf("Block found by hash: Index=%d, Transactions=%v", block.Index, block.Transactions)
-// 			return block, nil
-// 		}
-// 	}
+	// Create a Hash from the bytes
+	idHash, err := hash.FromBytes(idBytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid hash bytes: %v", err)
+	}
 
-// 	log.Println("Block not found with ID:", id)
-// 	return nil, errors.New("block not found")
-// }
+	// Iterate over blocks and find by hash
+	for _, block := range bc.Blockchain.Blocks {
+		if block.Hash.Equal(idHash) { // Use the Equal method from Hash type
+			log.Printf("Block found by hash: Index=%d, Transactions=%v", block.Index, block.Transactions)
+			return block, nil
+		}
+	}
+
+	log.Println("Block not found with ID:", id)
+	return nil, errors.New("block not found")
+}

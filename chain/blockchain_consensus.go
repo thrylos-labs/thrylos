@@ -1,5 +1,14 @@
 package chain
 
+import (
+	"fmt"
+	"time"
+
+	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/crypto/hash"
+	"github.com/thrylos-labs/thrylos/types"
+)
+
 // func (bc *BlockchainImpl) calculateAverageLatency() time.Duration {
 // 	// This is a placeholder. In a real implementation, you would measure actual network latency.
 // 	// For now, we'll return a constant value.
@@ -61,7 +70,7 @@ package chain
 // 	return signature, nil
 // }
 
-// func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *Block) error {
+// func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
 // 	// Verify the block's hash
 // 	computedHash := signedBlock.ComputeHash()
 // 	if !bytes.Equal(computedHash, signedBlock.Hash) {
@@ -146,24 +155,39 @@ package chain
 
 // // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // // This method encapsulates the logic for building a block to be added to the blockchain.
-// func (bc *BlockchainImpl) CreateUnsignedBlock(transactions []*thrylos.Transaction, validator string) (shared.Block, error) {
-// 	prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
-// 	newBlock := &types.Block{
-// 		Index:        int32(len(bc.Blocks)),
-// 		Timestamp:    time.Now().Unix(),
-// 		Transactions: shartransactions,
-// 		Validator:    validator,
-// 		PrevHash:     prevBlock.Hash,
-// 		// Hash and Signature fields are left empty
-// 	}
+func (bc *BlockchainImpl) CreateUnsignedBlock(transactions []*thrylos.Transaction, validator string) (*types.Block, error) {
+	// Get the previous block
+	prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
 
-// 	// Initialize Verkle tree before computing hash
-// 	if err := InitializeVerkleTree(); err != nil {
-// 		return nil, fmt.Errorf("failed to initialize Verkle tree: %v", err)
-// 	}
+	// Convert index to int64 as required by Block struct
+	nextIndex := int64(len(bc.Blockchain.Blocks))
 
-// 	// Compute the hash
-// 	newBlock.Hash = newBlock.ComputeBlockHash()
+	// Convert transactions using existing function
+	sharedTransactions := make([]*types.Transaction, len(transactions))
+	for i, tx := range transactions {
+		sharedTransactions[i] = ConvertToSharedTransaction(tx)
+		if sharedTransactions[i] == nil {
+			return nil, fmt.Errorf("failed to convert transaction at index %d", i)
+		}
+	}
 
-// 	return newBlock, nil
-// }
+	// Create new block
+	newBlock := &types.Block{
+		Index:        nextIndex,
+		Timestamp:    time.Now().Unix(),
+		Transactions: sharedTransactions,
+		Validator:    validator,
+		PrevHash:     prevBlock.Hash,
+		Hash:         hash.NullHash(), // Initialize with null hash
+	}
+
+	// Initialize Verkle tree
+	if err := InitializeVerkleTree(newBlock); err != nil {
+		return nil, fmt.Errorf("failed to initialize Verkle tree: %v", err)
+	}
+
+	// Compute the hash using the existing function
+	ComputeBlockHash(newBlock)
+
+	return newBlock, nil
+}

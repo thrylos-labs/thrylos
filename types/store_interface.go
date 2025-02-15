@@ -42,6 +42,7 @@ type Store interface {
 	SaveBlock(blk *Block) error
 	GetLastBlockData() ([]byte, error)
 	GetLastBlockIndex() (int, error)
+	StoreBlock(blockData []byte, blockNumber int) error
 
 	//Validator
 	// GetValidator(addr address.Address) (*Validator, error)
