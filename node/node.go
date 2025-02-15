@@ -1,214 +1,174 @@
 package node
 
-// type Node struct {
-// 	config     *config.Config
-// 	store      *types.Store
-// 	state      *state.State
-// 	txPool     *types.TxPool
-// 	validator  *types.Validator
-// 	blockchain *types.Blockchain
-// 	DAGManager *processor.DAGManager
-// 	// ModernProcessor      *processor.ModernProcessor
-// 	messageCh           chan types.Message
-// 	BalanceManager      *balance.Manager
-// 	Database            types.Store
-// 	StateManager        *types.StateManager
-// 	PendingTransactions []*thrylos.Transaction
-// 	PublicKeyMap        map[string]mldsa44.PublicKey
-// 	chainID             string
-// 	ResponsibleUTXOs    map[string]types.UTXO
-// 	GasEstimateURL      string
-// 	Mu                  sync.RWMutex
-// 	// WebSocketConnections map[string]*network.WebSocketConnection
-// 	WebSocketMutex sync.RWMutex
-// 	// balanceUpdateQueue   *BalanceUpdateQueue
-// 	// blockProducer        *chain.ModernBlockProducer
-// 	// StakingService       *staking.StakingService
-// 	serverHost   string
-// 	useSSL       bool
-// 	BlockTrigger chan struct{}
-// 	// Peers        map[string]*network.PeerConnection
-// 	PeerMu      sync.RWMutex
-// 	MaxInbound  int
-// 	MaxOutbound int
-// 	txStatusMap sync.Map
-// 	VoteCounter *validator.VoteCounter
-// 	// ValidatorSelector    *validators.ValidatorSelector
-// 	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
-// 	VoteCounterAddress string // Address of the designated vote counter
-// }
+import (
+	"encoding/base64"
+	"log"
+	"strings"
+	"sync"
+
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	"github.com/thrylos-labs/thrylos/consensus/processor"
+	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/types"
+)
+
+type Node struct {
+	// Essential configuration and blockchain components
+	config     *types.BlockchainConfig // Changed to match actual config type
+	blockchain *types.Blockchain       // Changed to match the returned type
+	Database   types.Store
+
+	// Transaction handling
+	txPool     types.TxPool // Changed from pointer to interface
+	DAGManager *processor.DAGManager
+	messageCh  chan types.Message
+
+	// Core state tracking
+	PublicKeyMap     map[string]mldsa44.PublicKey
+	ResponsibleUTXOs map[string]types.UTXO
+	chainID          string
+
+	// Basic settings
+	GasEstimateURL string
+	serverHost     string
+	useSSL         bool
+
+	// Essential synchronization
+	Mu           sync.RWMutex
+	BlockTrigger chan struct{}
+
+	// Optional components - commented out for future implementation
+	// store               *types.Store        // Additional store interface if needed
+	// state               *state.State        // State management
+	// validator           *types.Validator    // Validator functionality
+	// ModernProcessor     *processor.ModernProcessor  // Advanced transaction processing
+	// BalanceManager      *balance.Manager    // Balance tracking
+	// StateManager        *types.StateManager // State synchronization
+	// PendingTransactions []*thrylos.Transaction  // Being replaced by txPool
+
+	// Network and peer management - for future implementation
+	// WebSocketConnections map[string]*network.WebSocketConnection
+	// WebSocketMutex       sync.RWMutex
+	// balanceUpdateQueue   *BalanceUpdateQueue
+	// blockProducer        *chain.ModernBlockProducer
+	// StakingService       *staking.StakingService
+	// Peers               map[string]*network.PeerConnection
+	// PeerMu              sync.RWMutex
+	// MaxInbound          int
+	// MaxOutbound         int
+
+	// Voting and validation - for future implementation
+	// txStatusMap         sync.Map
+	// VoteCounter         *validator.VoteCounter
+	// ValidatorSelector   *validators.ValidatorSelector
+	// IsVoteCounter      bool   // Indicates if this node is the designated vote counter
+	// VoteCounterAddress string // Address of the designated vote counter
+}
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
-// func NewNode(address string, knownPeers []string, dataDir string, stateManager *state.StateManager) *Node {
-// 	// Default values for WebSocket configuration
-// 	serverHost := address                            // Use the node's address as default server host
-// 	useSSL := strings.HasPrefix(address, "https://") // Determine SSL based on address
+func NewNode(address string, dataDir string) *Node { // removed knownPeers
+	// Basic configuration
+	serverHost := address
+	useSSL := strings.HasPrefix(address, "https://")
 
-// 	envFile, _ := loadEnv() // Dynamically load the correct environment configuration
+	// Load environment configuration
+	envFile, _ := loadEnv()
 
-// 	// Retrieve the AES key securely from an environment variable, with a fallback for tests
-// 	aesKeyEncoded := envFile["AES_KEY_ENV_VAR"]
+	// Get and decode AES key
+	aesKeyEncoded := envFile["AES_KEY_ENV_VAR"]
+	log.Printf("AES Key from environment: %s", aesKeyEncoded)
 
-// 	log.Printf("AES Key from environment: %s", aesKeyEncoded)
+	aesKey, err := base64.StdEncoding.DecodeString(aesKeyEncoded)
+	if err != nil {
+		log.Fatalf("Failed to decode AES key: %v", err)
+	}
+	log.Println("AES key decoded successfully")
 
-// 	aesKey, err := base64.StdEncoding.DecodeString(aesKeyEncoded)
-// 	if err != nil {
-// 		log.Fatalf("Failed to decode AES key: %v", err)
-// 	} else {
-// 		log.Println("AES key decoded successfully")
-// 	}
+	// Get essential configuration
+	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
+	if gasEstimateURL == "" {
+		log.Fatal("Gas estimate URL is not set in environment variables")
+	}
 
-// 	// Retrieve the URL for gas estimation from an environment variable
-// 	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
-// 	if gasEstimateURL == "" {
-// 		log.Fatal("Gas estimate URL is not set in environment variables. Please configure it before starting.")
-// 	}
+	genesisAccount := envFile["GENESIS_ACCOUNT"]
+	if genesisAccount == "" {
+		log.Fatal("Genesis account is not set in environment variables")
+	}
 
-// 	// Assuming you have a way to get or set a default genesis account address
-// 	genesisAccount := envFile["GENESIS_ACCOUNT"]
-// 	if genesisAccount == "" {
-// 		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
-// 	}
+	// Generate genesis account private key
+	privKey, err := crypto.NewPrivateKey()
+	if err != nil {
+		log.Fatalf("Failed to generate genesis account key: %v", err)
+	}
 
-// 	if err != nil {
-// 		log.Fatalf("error initializing app: %v\n", err)
-// 	}
+	// Initialize blockchain with minimal configuration
+	blockchainConfig := &types.BlockchainConfig{
+		DataDir:        dataDir,
+		AESKey:         aesKey,
+		GenesisAccount: privKey,
+		TestMode:       true,
+	}
 
-// 	bc, db, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-// 		DataDir:           dataDir,
-// 		AESKey:            aesKey,
-// 		GenesisAccount:    genesisAccount,
-// 		TestMode:          true,
-// 		DisableBackground: false,
-// 	})
-// 	if err != nil {
-// 		log.Fatalf("Failed to create new blockchain: %v", err)
-// 	}
+	// bc, db, err := chain.NewBlockchain(blockchainConfig)
+	// if err != nil {
+	// 	log.Fatalf("Failed to create new blockchain: %v", err)
+	// }
 
-// 	// Initialize staking service with the blockchain
-// 	stakingService := staking.NewStakingService(bc)
+	// Create node with essential components
+	node := &Node{
+		config: blockchainConfig, // Use the config we created
+		// blockchain:       bc.Blockchain,    // Access the embedded *types.Blockchain
+		// Database:         db,               // db implements types.Store
+		PublicKeyMap:     make(map[string]mldsa44.PublicKey),
+		ResponsibleUTXOs: make(map[string]types.UTXO),
+		GasEstimateURL:   gasEstimateURL,
+		serverHost:       serverHost,
+		useSSL:           useSSL,
+		BlockTrigger:     make(chan struct{}, 1),
+		messageCh:        make(chan types.Message, 1000),
+	}
 
-// 	node := &Node{
-// 		Address:              address,
-// 		Peers:                make(map[string]*network.PeerConnection),
-// 		Blockchain:           bc,
-// 		Database:             db,
-// 		StateManager:         stateManager,
-// 		PublicKeyMap:         make(map[string]mldsa44.PublicKey),
-// 		ResponsibleUTXOs:     make(map[string]types.UTXO),
-// 		GasEstimateURL:       gasEstimateURL,
-// 		WebSocketConnections: make(map[string]*network.WebSocketConnection),
-// 		StakingService:       stakingService,
-// 		serverHost:           serverHost,
-// 		useSSL:               useSSL,
-// 		BlockTrigger:         make(chan struct{}, 1),
-// 		MaxInbound:           30,
-// 		MaxOutbound:          20,
-// 		messageCh:            make(chan types.Message, 1000),
-// 	}
+	// Subscribe to essential message types
+	messageBus := shared.GetMessageBus()
+	messageBus.Subscribe(types.ProcessBlock, node.messageCh)
+	messageBus.Subscribe(types.ValidateBlock, node.messageCh)
 
-// 	// Subscribe to message types
-// 	messageBus := shared.GetMessageBus()
-// 	messageBus.Subscribe(types.GetBalance, node.messageCh)
-// 	messageBus.Subscribe(types.ProcessBlock, node.messageCh)
-// 	messageBus.Subscribe(types.ValidateBlock, node.messageCh)
-// 	messageBus.Subscribe(types.UpdatePeerList, node.messageCh)
-// 	messageBus.Subscribe(types.GetStakingStats, node.messageCh)
-// 	messageBus.Subscribe(types.CreateStake, node.messageCh)
+	// Start essential message handler
+	// go node.handleMessages()
 
-// 	// Start message handler
-// 	go node.handleMessages()
+	/* Optional components commented out for future implementation
+	   // Initialize staking service
+	   // stakingService := staking.NewStakingService(bc)
 
-// 	wsManager := network.NewWebSocketManager(node)
-// 	node.BalanceManager = balance.NewManager(node, wsManager)
+	   // Peer management
+	   // node.Peers = make(map[string]*network.PeerConnection)
+	   // node.WebSocketConnections = make(map[string]*network.WebSocketConnection)
+	   // node.MaxInbound = 30
+	   // node.MaxOutbound = 20
 
-// 	isDesignatedCounter := false
-// 	if len(bc.GetActiveValidators()) > 0 {
-// 		// Make the first validator the designated counter
-// 		isDesignatedCounter = (address == bc.GetActiveValidators()[0])
-// 	}
+	   // WebSocket and Balance management
+	   // wsManager := network.NewWebSocketManager(node)
+	   // node.BalanceManager = balance.NewManager(node, wsManager)
 
-// 	// Initialize VoteCounter with designation status
-// 	node.VoteCounter = validator.NewVoteCounter(node, isDesignatedCounter)
+	   // Validator components
+	   // isDesignatedCounter := false
+	   // if len(bc.GetActiveValidators()) > 0 {
+	   //     isDesignatedCounter = (address == bc.GetActiveValidators()[0])
+	   // }
+	   // node.VoteCounter = validator.NewVoteCounter(node, isDesignatedCounter)
+	   // node.ValidatorSelector = validators.NewValidatorSelector(bc, node)
 
-// 	if isDesignatedCounter {
-// 		log.Printf("Node %s designated as vote counter", address)
-// 	}
-// 	// Initialize ValidatorSelector with node
-// 	node.ValidatorSelector = validators.NewValidatorSelector(bc, node)
+	   // Additional initialization
+	   // node.InitializeProcessors()
+	   // node.blockProducer = chain.NewBlockProducer(node, bc)
+	   // node.blockProducer.Start()
+	   // node.balanceUpdateQueue = balance.newBalanceUpdateQueue(node)
+	   // go node.balanceUpdateQueue.balanceUpdateWorker()
+	   // network.DiscoverPeers()
+	   // go node.startStakingTasks()
+	*/
 
-// 	node.InitializeProcessors()
-
-// 	// Add known peers as outbound connections
-// 	for _, peer := range knownPeers {
-// 		if err := network.AddPeer(peer, false); err != nil {
-// 			log.Printf("Failed to add known peer %s: %v", peer, err)
-// 		}
-// 	}
-
-// 	// Initialize block producer after node is set up
-// 	node.blockProducer = chain.NewBlockProducer(node, bc)
-// 	node.blockProducer.Start()
-
-// 	// Set the callback function
-// 	node.Blockchain.OnNewBlock = balance.ProcessConfirmedTransactions
-
-// 	// Initialize the balanceUpdateQueue
-// 	node.balanceUpdateQueue = balance.newBalanceUpdateQueue(node)
-
-// 	// Start the balance update worker goroutine
-// 	go node.balanceUpdateQueue.balanceUpdateWorker()
-
-// 	network.DiscoverPeers()
-
-// 	bc.OnTransactionProcessed = balance.handleProcessedTransaction
-
-// 	go node.startStakingTasks()
-
-// 	return node
-// }
-
-// a central component that coordinates between different parts of the system.
-
-// Node defines a blockchain node with its properties and capabilities within the network. It represents both
-// a ledger keeper and a participant in the blockchain's consensus mechanism. Each node maintains a copy of
-// the blockcFetchGasEstimatehain, a list of peers, a shard reference, and a pool of pending transactions to be included in future blocks.
-
-// type Node struct {
-// 	Address             string               // Network address of the node.
-// 	Blockchain          *shared.Blockchain   // The blockchain maintained by this node.
-// 	StateManager        *shared.StateManager // Replace Shard field
-// 	PendingTransactions []*thrylos.Transaction
-// 	PublicKeyMap        map[string]mldsa44.PublicKey // Updated to store mldsa44 public keys
-// 	chainID             string
-// 	ResponsibleUTXOs    map[string]shared.UTXO // Tracks UTXOs for which the node is responsible
-// 	// Database provides an abstraction over the underlying database technology used to persist
-// 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
-// 	Database       shared.Store // Updated the type to interface
-// 	GasEstimateURL string       // New field to store the URL for gas estimation
-// 	// Mu provides concurrency control to ensure that operations on the blockchain are thread-safe,
-// 	// preventing race conditions and ensuring data integrity.
-// 	Mu sync.RWMutex
-// 	// WebSocketConnections map[string]*network.WebSocketConnection
-// 	WebSocketMutex     sync.RWMutex
-// 	balanceUpdateQueue *balance.BalanceUpdateQueue
-// 	blockProducer      *chain.ModernBlockProducer
-// 	StakingService     *staking.StakingService
-// 	serverHost         string
-// 	useSSL             bool
-// 	ModernProcessor    *processor.ModernProcessor
-// 	BlockTrigger       chan struct{}
-// 	DAGManager         *processor.DAGManager
-// 	Peers              map[string]*network.PeerConnection
-// 	PeerMu             sync.RWMutex
-// 	MaxInbound         int
-// 	MaxOutbound        int
-// 	txStatusMap        sync.Map
-// 	VoteCounter        *validator.VoteCounter
-// 	ValidatorSelector  *validators.ValidatorSelector
-// 	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
-// 	VoteCounterAddress string // Address of the designated vote counter
-// 	BalanceManager     *balance.Manager
-// 	messageCh          chan shared.Message
-// }
+	return node
+}

@@ -18,7 +18,7 @@ package chain
 // 	messageBus     *shared.MessageBus
 // }
 
-// func NewBlockProducer(blockchain *types.Blockchain, messageBus *shared.MessageBus) *ModernBlockProducer {
+// func NewBlockProducer(blockchain *types.Blockchain, messageBus *types.MessageBus) *ModernBlockProducer {
 // 	return &ModernBlockProducer{
 // 		config: &BlockProducerConfig{
 // 			TargetBlockTime:   1200 * time.Millisecond,

@@ -19,6 +19,9 @@ type Store interface {
 	CreateUTXO(id, txID string, index int, address string, amount float64) (UTXO, error)
 	UpdateUTXOs(inputs []UTXO, outputs []UTXO) error
 	MarkUTXOAsSpent(txContext *TransactionContext, utxo UTXO) error
+	GetUTXOsForAddress(address string) ([]UTXO, error)
+	GetUTXOsForUser(address string) ([]UTXO, error)
+	RetrieveBlock(blockNumber int) ([]byte, error)
 
 	//Transaction
 	GetTransaction(id string) (*Transaction, error)

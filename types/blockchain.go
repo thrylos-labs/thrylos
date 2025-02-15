@@ -80,3 +80,18 @@ type Fork struct {
 	Index  int
 	Blocks []*Block
 }
+
+// NewTransaction creates a new transaction
+type Stakeholder struct {
+	Address string
+	Stake   int
+}
+
+type BlockchainConfig struct {
+	DataDir           string
+	AESKey            []byte
+	GenesisAccount    crypto.PrivateKey
+	TestMode          bool
+	DisableBackground bool
+	// StateManager      *types.StateManager
+}

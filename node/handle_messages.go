@@ -1,6 +1,6 @@
 package node
 
-// // // handled throguh node messages to avoid import cycle errors
+// // // // handled throguh node messages to avoid import cycle errors
 // func (node *Node) handleMessages() {
 // 	for msg := range node.messageCh {
 // 		switch msg.Type {

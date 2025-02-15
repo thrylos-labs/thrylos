@@ -3,8 +3,6 @@ package store
 import (
 	// Alias for standard crypto
 
-	"fmt"
-
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -40,17 +38,17 @@ var globalUTXOCache *UTXOCache
 // 	return s, nil
 // }
 
-// GetUTXO retrieves a UTXO by its key.
-func GetUTXO(txID string, index int) (*types.UTXO, error) {
-	key := fmt.Sprintf("%s-%d", txID, index)
-	utxo, exists := globalUTXOCache.Get(key)
-	if !exists {
-		return nil, fmt.Errorf("UTXO not found")
-	}
-	return utxo, nil
-}
+// // GetUTXO retrieves a UTXO by its key.
+// func GetUTXO(txID string, index int) (*types.UTXO, error) {
+// 	key := fmt.Sprintf("%s-%d", txID, index)
+// 	utxo, exists := globalUTXOCache.Get(key)
+// 	if !exists {
+// 		return nil, fmt.Errorf("UTXO not found")
+// 	}
+// 	return utxo, nil
+// }
 
-// UTXO
+// // UTXO
 
 // func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amount float64) error {
 // 	utxo := types.CreateUTXO(id, index, txID, owner, amount, false)

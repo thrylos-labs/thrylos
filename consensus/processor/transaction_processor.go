@@ -1,14 +1,12 @@
 package processor
 
-import (
-	"github.com/thrylos-labs/thrylos/types"
-)
+// type TransactionProcessorImpl struct {
+// 	*types.TransactionPropagator
+// 	txStatusMap        sync.Map
+// 	balanceUpdateQueue *balance.BalanceUpdateQueue
+// }
 
-type TransactionProcessorImpl struct {
-	*types.TransactionPropagator
-}
-
-// Gas fee constants
+// // Gas fee constants
 // const (
 // 	BaseGasFee = 1000  // Base fee in microTHRYLOS (0.001 THRYLOS)
 // 	MaxGasFee  = 10000 // Maximum gas fee in microTHRYLOS (0.01 THRYLOS)
@@ -26,7 +24,15 @@ type TransactionProcessorImpl struct {
 // 	sync.Mutex
 // }
 
-// func (n *Node) handleProcessedTransaction(tx *thrylos.Transaction) {
+// // NewTransactionProcessorImpl creates a new instance of TransactionProcessorImpl
+// func NewTransactionProcessorImpl(propagator *types.TransactionPropagator, updateQueue *types.BalanceUpdateQueue) *TransactionProcessorImpl {
+// 	return &TransactionProcessorImpl{
+// 		TransactionPropagator: propagator,
+// 		balanceUpdateQueue:    updateQueue,
+// 	}
+// }
+
+// func (tp *TransactionProcessorImpl) handleProcessedTransaction(tx *thrylos.Transaction) {
 // 	txID := tx.GetId()
 // 	log.Printf("Starting final processing for transaction %s", txID)
 
@@ -68,7 +74,7 @@ type TransactionProcessorImpl struct {
 // }
 
 // // HasTransaction checks whether a transaction with the specified ID exists in the node's pool of pending transactions.
-// func (node *Node) HasTransaction(txID string) bool {
+// func (tp *TransactionProcessorImpl) HasTransaction(txID string) bool {
 // 	for _, tx := range node.PendingTransactions {
 // 		if tx.GetId() == txID {
 // 			return true
@@ -78,7 +84,7 @@ type TransactionProcessorImpl struct {
 // }
 
 // // Transaction verification and processing
-// func (node *Node) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
+// func (tp *TransactionProcessorImpl) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 // 	// Check if this is a staking transaction
 // 	if isStakingTransaction(tx) {
 // 		return node.processStakingTransaction(tx)
@@ -115,7 +121,7 @@ type TransactionProcessorImpl struct {
 // }
 
 // // In transaction processor code
-// func (node *Node) processStakingTransaction(tx *thrylos.Transaction) error {
+// func (tp *TransactionProcessorImpl) processStakingTransaction(tx *thrylos.Transaction) error {
 // 	txType := getStakingTransactionType(tx)
 // 	log.Printf("Processing %s transaction: %s", txType, tx.Id)
 
@@ -188,7 +194,7 @@ type TransactionProcessorImpl struct {
 // }
 
 // // Transaction input collection
-// func (node *Node) CollectInputsForTransaction(amount int64, senderAddress string) (inputs []shared.UTXO, change int64, err error) {
+// func (tp *TransactionProcessorImpl) CollectInputsForTransaction(amount int64, senderAddress string) (inputs []shared.UTXO, change int64, err error) {
 // 	var collectedAmount int64
 // 	var collectedInputs []shared.UTXO
 
@@ -229,7 +235,7 @@ type TransactionProcessorImpl struct {
 // }
 
 // // Transaction validation
-// func (n *Node) validateTransactionAddresses(tx *shared.Transaction) error {
+// func (tp *TransactionProcessorImpl) validateTransactionAddresses(tx *shared.Transaction) error {
 // 	_, err := n.Database.RetrievePublicKeyFromAddress(tx.Sender)
 // 	if err != nil {
 // 		log.Printf("Invalid sender address %s: %v", tx.Sender, err)
@@ -344,7 +350,7 @@ type TransactionProcessorImpl struct {
 // 	TxStatusProcessing = "processing" // Transaction is being processed
 // )
 
-// func (node *Node) GetPendingTransactions() []*thrylos.Transaction {
+// func (tp *TransactionProcessorImpl) GetPendingTransactions() []*thrylos.Transaction {
 // 	return node.PendingTransactions
 // }
 
@@ -356,7 +362,7 @@ type TransactionProcessorImpl struct {
 // 	return total
 // }
 
-// func (n *Node) updateBalances(tx *thrylos.Transaction) error {
+// func (tp *TransactionProcessorImpl) updateBalances(tx *thrylos.Transaction) error {
 // 	senderBalance, err := n.Blockchain.GetBalance(tx.Sender)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to get sender balance: %v", err)

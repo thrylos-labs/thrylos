@@ -1,60 +1,78 @@
 package node
 
-// func (node *Node) Shutdown() error {
-// 	if node.blockProducer != nil {
-// 		node.blockProducer.Stop()
-// 	}
-// 	close(node.messageCh) // Close message channel
-// 	// ... other possible cleanup ...
-// 	return nil
-// }
+import (
+	"log"
 
-// func (node *Node) StartBackgroundTasks() {
-// 	tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
-// 	go func() {
-// 		for {
-// 			select {
-// 			case <-tickerDiscoverPeers.C:
-// 				network.DiscoverPeers()
-// 			}
-// 		}
-// 	}()
+	"github.com/thrylos-labs/thrylos/consensus/processor"
+)
 
-// 	// 	// Add vote synchronization
-// 	tickerVoteSync := time.NewTicker(30 * time.Second)
-// 	go func() {
-// 		for {
-// 			select {
-// 			case <-tickerVoteSync.C:
-// 				node.syncVotes()
-// 			}
-// 		}
-// 	}()
-// }
+// Essential background tasks and initialization
+func (node *Node) Shutdown() error {
+	// Keep essential cleanup
+	close(node.messageCh)
 
-// func (node *Node) startStakingTasks() {
-// 	ticker := time.NewTicker(24 * time.Hour)
-// 	for {
-// 		select {
-// 		case <-ticker.C:
-// 			if err := node.StakingService.DistributeRewards(); err != nil {
-// 				log.Printf("Error distributing staking rewards: %v", err)
-// 			}
-// 		}
-// 	}
-// }
+	/* Optional cleanup commented out
+	   if node.blockProducer != nil {
+	       node.blockProducer.Stop()
+	   }
+	*/
+	return nil
+}
 
-// func (n *Node) InitializeProcessors() {
-// 	log.Printf("Initializing node processors...")
+// StartBackgroundTasks now only includes essential background processes
+func (node *Node) StartBackgroundTasks() {
+	/* Optional background tasks commented out
+	   // Peer discovery
+	   // tickerDiscoverPeers := time.NewTicker(10 * time.Minute)
+	   // go func() {
+	   //     for {
+	   //         select {
+	   //         case <-tickerDiscoverPeers.C:
+	   //             network.DiscoverPeers()
+	   //         }
+	   //     }
+	   // }()
 
-// 	// Initialize DAG Manager first - no node parameter needed now
-// 	n.DAGManager = processor.NewDAGManager()
-// 	log.Printf("DAG manager initialized")
+	   // Vote synchronization
+	   // tickerVoteSync := time.NewTicker(30 * time.Second)
+	   // go func() {
+	   //     for {
+	   //         select {
+	   //         case <-tickerVoteSync.C:
+	   //             node.syncVotes()
+	   //         }
+	   //     }
+	   // }()
+	*/
+}
 
-// 	// Initialize ModernProcessor
-// 	n.ModernProcessor = processor.NewModernProcessor()
-// 	n.ModernProcessor.Start()
-// 	log.Printf("Modern processor initialized and started")
+/* Optional tasks commented out for future implementation
+func (node *Node) startStakingTasks() {
+    ticker := time.NewTicker(24 * time.Hour)
+    for {
+        select {
+        case <-ticker.C:
+            if err := node.StakingService.DistributeRewards(); err != nil {
+                log.Printf("Error distributing staking rewards: %v", err)
+            }
+        }
+    }
+}
+*/
 
-// 	log.Printf("Node processors initialization complete")
-// }
+// Keep only essential processor initialization
+func (n *Node) InitializeProcessors() {
+	log.Printf("Initializing essential node processors...")
+
+	// Initialize DAG Manager - essential for transaction processing
+	n.DAGManager = processor.NewDAGManager()
+	log.Printf("DAG manager initialized")
+
+	/* Optional processors commented out
+	   // n.ModernProcessor = processor.NewModernProcessor()
+	   // n.ModernProcessor.Start()
+	   // log.Printf("Modern processor initialized and started")
+	*/
+
+	log.Printf("Essential node processors initialization complete")
+}
