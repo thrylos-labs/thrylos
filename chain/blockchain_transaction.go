@@ -56,7 +56,7 @@ package chain
 // 	bc.Mu.Unlock()
 
 // 	// Start database transaction
-// 	txContext, err := bc.Database.BeginTransaction()
+// 	txContext, err := bc.Blockchain.Database.BeginTransaction()
 // 	if err != nil {
 // 		return nil, fmt.Errorf("database transaction error: %v", err)
 // 	}
@@ -333,7 +333,7 @@ package chain
 // 		if err != nil {
 // 			return fmt.Errorf("error marshaling new transaction: %v", err)
 // 		}
-// 		if err := bc.Database.SetTransaction(txn, txKey, txJSON); err != nil {
+// 		if err := bc.Blockchain.Database.SetTransaction(txn, txKey, txJSON); err != nil {
 // 			return fmt.Errorf("error storing new transaction: %v", err)
 // 		}
 // 	} else {

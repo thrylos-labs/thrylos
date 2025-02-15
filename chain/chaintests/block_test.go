@@ -12,7 +12,7 @@ package chaintests
 // 		t.Fatalf("Failed to create temporary directory: %v", err)
 // 	}
 
-// 	// Rest of cleanup function remains the same
+// 	// Cleanup function
 // 	cleanup := func() {
 // 		time.Sleep(100 * time.Millisecond)
 // 		lockFile := filepath.Join(tempDir, "LOCK")
@@ -40,7 +40,8 @@ package chaintests
 // 		t.Fatalf("Failed to generate AES key: %v", err)
 // 	}
 
-// 	genesisAccount = os.Getenv("GENESIS_ACCOUNT") //I assume the genesis account is the private key
+// 	// Create the genesis account private key
+// 	genesisAccount = os.Getenv("GENESIS_ACCOUNT")
 // 	if genesisAccount == "" {
 // 		t.Fatal("Genesis account is not set in environment variables. This should not happen.")
 // 	}
@@ -49,16 +50,16 @@ package chaintests
 // 		t.Fatal("Error converting the genesis account into a private key.")
 // 	}
 
-// 	// Initialize the blockchain with the temporary directory
-// 	blockchain, store, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+// 	// Initialize blockchain with correct config type
+// 	config := &types.BlockchainConfig{
 // 		DataDir:           tempDir,
 // 		AESKey:            aesKey,
 // 		GenesisAccount:    priv,
 // 		TestMode:          true,
 // 		DisableBackground: true,
-// 	})
+// 	}
 
-// 	// If initialization fails, run cleanup and return
+// 	blockchain, store, err := chain.NewBlockchain(config)
 // 	if err != nil {
 // 		cleanup()
 // 		t.Fatalf("Failed to initialize blockchain: %v", err)
@@ -72,9 +73,37 @@ package chaintests
 // 		}()
 // 	}
 
-// 	// Check if the first block is the genesis block
-// 	if len(blockchain.Blockchain.Blocks) == 0 || blockchain.Blockchain.Blocks[0] != blockchain.Blockchain.Genesis {
-// 		t.Errorf("Genesis block is not the first block in the blockchain")
+// 	// Verify the genesis block
+// 	if blockchain == nil || blockchain.Blockchain == nil {
+// 		t.Fatal("Blockchain or Blockchain.Blockchain is nil")
+// 	}
+
+// 	if len(blockchain.Blockchain.Blocks) == 0 {
+// 		t.Error("Blockchain has no blocks")
+// 	}
+
+// 	if blockchain.Blockchain.Genesis == nil {
+// 		t.Error("Genesis block is nil")
+// 	}
+
+// 	if len(blockchain.Blockchain.Blocks) > 0 && blockchain.Blockchain.Blocks[0] != blockchain.Blockchain.Genesis {
+// 		t.Error("First block is not the genesis block")
+// 	}
+
+// 	// Verify genesis transaction
+// 	genesisBlock := blockchain.Blockchain.Genesis
+// 	if len(genesisBlock.Transactions) == 0 {
+// 		t.Error("Genesis block has no transactions")
+// 	}
+
+// 	// Verify stakeholders map initialization
+// 	if len(blockchain.Blockchain.Stakeholders) == 0 {
+// 		t.Error("Stakeholders map not initialized")
+// 	}
+
+// 	// Verify UTXO map initialization
+// 	if len(blockchain.Blockchain.UTXOs) == 0 {
+// 		t.Error("UTXO map not initialized")
 // 	}
 // }
 

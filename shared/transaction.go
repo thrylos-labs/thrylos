@@ -30,10 +30,11 @@ import (
 
 // TransactionContextImpl implements the types.TransactionContext interface
 type TransactionContextImpl struct {
-	txn      *badger.Txn
-	utxos    map[string][]types.UTXO
-	modified map[string]bool
-	mu       sync.RWMutex
+	txn         *badger.Txn
+	utxos       map[string][]types.UTXO
+	modified    map[string]bool
+	mu          sync.RWMutex
+	transaction *types.Transaction
 }
 
 type TransactionForSigning struct {
@@ -86,10 +87,15 @@ func (tc *TransactionContextImpl) Rollback() error {
 // Constructor
 func NewTransactionContext(txn *badger.Txn) types.TransactionContext {
 	return &TransactionContextImpl{
-		txn:      txn,
-		utxos:    make(map[string][]types.UTXO),
-		modified: make(map[string]bool),
+		txn:         txn,
+		utxos:       make(map[string][]types.UTXO),
+		modified:    make(map[string]bool),
+		transaction: nil,
 	}
+}
+
+func (tc *TransactionContextImpl) GetBadgerTxn() *badger.Txn {
+	return tc.txn
 }
 
 func (tc *TransactionContextImpl) GetTransaction() *types.Transaction {

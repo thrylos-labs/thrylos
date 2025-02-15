@@ -1,6 +1,7 @@
 package types
 
 import (
+	badger "github.com/dgraph-io/badger/v3" // Change this import to use v3
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
@@ -34,6 +35,7 @@ type TransactionContext interface {
 	GetTransaction() *Transaction
 	Commit() error
 	Rollback() error
+	GetBadgerTxn() *badger.Txn // Add this new method
 }
 
 // Marshal serializes the transaction into CBOR format

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/dgraph-io/badger/v3"
+	badger "github.com/dgraph-io/badger/v3"
 	"github.com/thrylos-labs/thrylos/types"
 )
 
