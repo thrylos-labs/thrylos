@@ -1,4 +1,4 @@
 #!/bin/bash
-cd cmd/thrylosnode
+cd cmd/thrylos
 export ENV=development
 go run .

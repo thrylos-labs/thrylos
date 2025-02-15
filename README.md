@@ -16,7 +16,7 @@ ENV=development
 HTTP_NODE_ADDRESS=localhost:8546
 GRPC_NODE_ADDRESS=localhost:50051
 WS_NODE_ADDRESS=localhost:8444
-DOMAIN_NAME=node.thrylos.org
+DOMAIN_NAME=
 PEERS=XXXXXXXXX
 DATA=./blockchain_data
 TESTNET=true
@@ -26,28 +26,17 @@ GENESIS_ACCOUNT=XXXXXXXXX
 GAS_ESTIMATE_URL=https://localhost:8546/api/gas-estimate
 
 
-4. **Run_Thrylos**: Execute `./run_thrylos.sh` in your terminal to run thyrlos testnet in development.
+4. **Run_Thrylos**: Execute `./run_thrylos.sh` in your terminal to run thyrlos testnet in development. Try 'run_thrylos' just in the terminal
 
 How to run manaully without using run_thrylos.sh:
 
-**Navigate**: In terminal change directory to `cd cmd/thrylosnode`.
+**Navigate**: In terminal change directory to `cd cmd/thrylos`.
 
 **Run**: Execute `'export ENV=development'` in your terminal. 
 
 **Run**: Execute `'go run .'` in your terminal. 
 
 If you delete the blockchain_data the account and balances will be wiped
-
-
-## send a transaction using the cli signer 
-
-1. In a new terminal:
-```shell
-# change to clisigner directory
-cd cmd/clisigner
-# run a sample send and receive test
-go run . --sender=6ab5fbf652da1467169cd68dd5dc9e82331d2cf17eb64e9a5b8b644dcb0e3d19 --receiver=8bcd8b1c3e3487743ed7caf19b688f83d6f86cf7d246bc71d5f7d322a64189f7 --amount=4
-```
 
 ## Inside the Blockchain
 
