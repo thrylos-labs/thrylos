@@ -21,8 +21,7 @@ func (s signature) Bytes() []byte {
 }
 
 func (s signature) Verify(pubKey *PublicKey, data []byte) error {
-
-	mldsaPubKey, ok := (*pubKey).(publicKey)
+	mldsaPubKey, ok := (*pubKey).(*publicKey)
 	if !ok {
 		return errors.New("invalid public key type")
 	}
@@ -33,8 +32,7 @@ func (s signature) Verify(pubKey *PublicKey, data []byte) error {
 }
 
 func (s signature) VerifyWithSalt(pubKey *PublicKey, data, salt []byte) error {
-
-	mldsaPubKey, ok := (*pubKey).(publicKey)
+	mldsaPubKey, ok := (*pubKey).(*publicKey)
 	if !ok {
 		return errors.New("invalid public key type")
 	}
