@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/encryption"
-	"github.com/thrylos-labs/thrylos/store"
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -29,11 +28,6 @@ func TestNewBlockchain(t *testing.T) {
 	require.NoError(t, err, "Failed to create temporary directory")
 
 	// Clean up the temporary directory after the test
-	defer func() {
-		if err := os.RemoveAll(tempDir); err != nil {
-			t.Logf("Warning: Failed to remove temp directory: %v", err)
-		}
-	}()
 
 	// Generate test keys
 	priv, err := crypto.NewPrivateKey()
@@ -41,18 +35,6 @@ func TestNewBlockchain(t *testing.T) {
 
 	aesKey, err := encryption.GenerateAESKey()
 	require.NoError(t, err, "Failed to generate AES key")
-
-	// Initialize database
-	database, err := store.NewDatabase(tempDir)
-	require.NoError(t, err, "Failed to create database")
-	require.NotNil(t, database, "Database should not be nil")
-
-	// Ensure database is closed after the test
-	defer func() {
-		if err := database.Close(); err != nil {
-			t.Logf("Warning: Failed to close database: %v", err)
-		}
-	}()
 
 	// Initialize blockchain config
 	config := &types.BlockchainConfig{
@@ -74,6 +56,23 @@ func TestNewBlockchain(t *testing.T) {
 	require.NotNil(t, blockchain.Blockchain.Genesis, "Genesis block should not be nil")
 	require.NotEmpty(t, blockchain.Blockchain.Blocks, "Blockchain should have at least one block")
 	require.Equal(t, blockchain.Blockchain.Genesis, blockchain.Blockchain.Blocks[0], "First block should be genesis block")
+
+	// Add more robust cleanup
+	defer func() {
+		// First close the blockchain store if it exists
+		if blockchainStore != nil {
+			if closer, ok := blockchainStore.(interface{ Close() error }); ok {
+				if err := closer.Close(); err != nil {
+					t.Logf("Warning: Failed to close blockchain store: %v", err)
+				}
+			}
+		}
+
+		// Clean up the temporary directory
+		if err := os.RemoveAll(tempDir); err != nil {
+			t.Logf("Warning: Failed to remove temp directory: %v", err)
+		}
+	}()
 
 	// Verify genesis block structure
 	genesis := blockchain.Blockchain.Genesis

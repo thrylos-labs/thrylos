@@ -38,6 +38,9 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
 	}
 
+	// Set the Blockchain field of the database
+	database.Blockchain = storeInstance
+
 	log.Println("BlockchainDB created")
 
 	// Create the genesis block
@@ -103,7 +106,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			Blocks:              []*types.Block{genesis},
 			Genesis:             genesis,
 			Stakeholders:        stakeholdersMap,
-			Database:            database.Blockchain,
+			Database:            storeInstance, // Use storeInstance instead of database.Blockchain
 			PublicKeyMap:        publicKeyMap,
 			UTXOs:               utxoMap,
 			Forks:               make([]*types.Fork, 0),

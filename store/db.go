@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	badger "github.com/dgraph-io/badger/v3"
 	"github.com/thrylos-labs/thrylos/types"
@@ -22,6 +23,9 @@ type Database struct {
 
 // NewDatabase initializes and returns a new instance of BadgerDB
 func NewDatabase(path string) (*Database, error) {
+	// Add a small delay to ensure proper cleanup
+	time.Sleep(100 * time.Millisecond)
+
 	// Remove any existing lock file before opening
 	lockFile := filepath.Join(path, "LOCK")
 	log.Printf("Attempting to remove lock file: %s", lockFile)
@@ -36,6 +40,12 @@ func NewDatabase(path string) (*Database, error) {
 			WithLogger(nil).
 			WithSyncWrites(false).     // Disable sync for testing
 			WithDetectConflicts(false) // Disable conflict detection for testing
+
+		// Remove the WithInMemory option and ensure the directory exists
+		if err := os.MkdirAll(path, 0755); err != nil {
+			err = fmt.Errorf("failed to create database directory: %v", err)
+			return
+		}
 
 		// Try to open the database
 		d.db, err = badger.Open(opts)
