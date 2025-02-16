@@ -1,5 +1,13 @@
 package chain
 
+import (
+	"fmt"
+
+	"github.com/btcsuite/btcutil/bech32"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	"github.com/thrylos-labs/thrylos/crypto/address"
+)
+
 // func (bc *BlockchainImpl) GetActiveValidators() []string {
 // 	return bc.Blockchain.ActiveValidators
 // }
@@ -190,24 +198,46 @@ package chain
 // 	return validatorAddresses, nil
 // }
 
-// func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
-// 	// Retrieve the public key from storage
-// 	storedPubKey, err := bc.Database.RetrieveValidatorPublicKey(validatorAddress)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to retrieve public key for validator %s: %v", validatorAddress, err)
-// 	}
+func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
+	// First validate the address format
+	if !address.Validate(validatorAddress) {
+		return nil, fmt.Errorf("invalid validator address format: %s", validatorAddress)
+	}
 
-// 	// Create a new MLDSA44 public key
-// 	publicKey := new(mldsa44.PublicKey)
+	// Create an address instance by decoding the bech32 string
+	prefix, decoded, err := bech32.Decode(validatorAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode validator address %s: %v", validatorAddress, err)
+	}
 
-// 	// Unmarshal the stored bytes into the public key
-// 	err = publicKey.UnmarshalBinary(storedPubKey)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to unmarshal public key for validator %s: %v", validatorAddress, err)
-// 	}
+	if prefix != address.AddressPrefix {
+		return nil, fmt.Errorf("invalid address prefix: got %s, want %s", prefix, address.AddressPrefix)
+	}
 
-// 	return publicKey, nil
-// }
+	var addr address.Address
+	copy(addr[:], decoded)
+
+	// Get the public key using the store's method
+	pubKey, err := bc.Blockchain.Database.GetPublicKey(addr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key for validator %s: %v", validatorAddress, err)
+	}
+
+	// Convert crypto.PublicKey to bytes
+	pubKeyBytes, err := pubKey.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal public key for validator %s: %v", validatorAddress, err)
+	}
+
+	// Create and unmarshal into MLDSA44 public key
+	mldsa44PubKey := new(mldsa44.PublicKey)
+	err = mldsa44PubKey.UnmarshalBinary(pubKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert to MLDSA44 public key for validator %s: %v", validatorAddress, err)
+	}
+
+	return mldsa44PubKey, nil
+}
 
 // func (bc *BlockchainImpl) validatorExists(address string) bool {
 // 	_, err := bc.RetrievePublicKey(address)

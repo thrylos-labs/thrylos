@@ -1,6 +1,8 @@
 package chain
 
 import (
+	"log"
+
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/types"
@@ -582,16 +584,32 @@ func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
 // 	return nil, errors.New("transaction not found")
 // }
 
-// func (bc *BlockchainImpl) updateBalancesForBlock(block *shared.Block) {
-// 	for _, tx := range block.Transactions {
-// 		// Update sender's balance
-// 		senderBalance, _ := bc.GetBalance(tx.Sender)
-// 		bc.Stakeholders[tx.Sender] = senderBalance // directly use int64 value
+func (bc *BlockchainImpl) updateBalancesForBlock(block *types.Block) {
+	for _, tx := range block.Transactions {
+		// Update sender's balance
+		senderBalance, err := bc.GetBalance(tx.SenderAddress.String())
+		if err != nil {
+			log.Printf("Error getting sender balance for %s: %v", tx.SenderAddress.String(), err)
+			continue
+		}
 
-// 		// Update recipients' balances
-// 		for _, output := range tx.Outputs {
-// 			recipientBalance, _ := bc.GetBalance(output.OwnerAddress)
-// 			bc.Stakeholders[output.OwnerAddress] = recipientBalance // directly use int64 value
-// 		}
-// 	}
-// }
+		// Convert amount.Amount to int64
+		bc.Blockchain.Stakeholders[tx.SenderAddress.String()] = int64(senderBalance)
+
+		// Update recipients' balances from outputs
+		for _, output := range tx.Outputs {
+			recipientBalance, err := bc.GetBalance(output.OwnerAddress)
+			if err != nil {
+				log.Printf("Error getting recipient balance for %s: %v", output.OwnerAddress, err)
+				continue
+			}
+			// Convert amount.Amount to int64
+			bc.Blockchain.Stakeholders[output.OwnerAddress] = int64(recipientBalance)
+		}
+	}
+
+	// Log the updated balances for debugging
+	for address, balance := range bc.Blockchain.Stakeholders {
+		log.Printf("Updated balance for %s: %d", address, balance)
+	}
+}

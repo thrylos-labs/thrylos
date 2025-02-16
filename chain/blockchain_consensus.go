@@ -1,9 +1,12 @@
 package chain
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/types"
@@ -70,59 +73,51 @@ import (
 // 	return signature, nil
 // }
 
-// func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
-// 	// Verify the block's hash
-// 	computedHash := signedBlock.ComputeHash()
-// 	if !bytes.Equal(computedHash, signedBlock.Hash) {
-// 		log.Printf("Block hash mismatch. Computed: %x, Block: %x", computedHash, signedBlock.Hash)
-// 		return errors.New("invalid block hash")
-// 	}
+func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
+	// Store the original hash
+	originalHash := signedBlock.Hash
 
-// 	publicKey, err := bc.GetValidatorPublicKey(signedBlock.Validator)
-// 	if err != nil {
-// 		log.Printf("Failed to get validator public key: %v", err)
-// 		return fmt.Errorf("failed to get validator public key: %v", err)
-// 	}
+	// Compute the block hash
+	ComputeBlockHash(signedBlock)
+	computedHash := signedBlock.Hash
 
-// 	pubKeyBytes, err := publicKey.MarshalBinary()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to marshal public key for logging: %v", err)
-// 	}
-// 	log.Printf("Retrieved public key for verification: %x", pubKeyBytes)
+	// Restore the original hash after computation
+	signedBlock.Hash = originalHash
 
-// 	// Also try to retrieve the public key directly from the database
-// 	storedPubKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(signedBlock.Validator)
-// 	if err != nil {
-// 		log.Printf("Failed to retrieve stored public key for validator %s: %v", signedBlock.Validator, err)
-// 	} else {
-// 		log.Printf("Stored public key for validator %s: %x", signedBlock.Validator, storedPubKeyBytes)
+	// Compare hashes using the Equal method
+	if !computedHash.Equal(originalHash) {
+		log.Printf("Block hash mismatch. Computed: %x, Block: %x", computedHash.Bytes(), originalHash.Bytes())
+		return errors.New("invalid block hash")
+	}
 
-// 		// Create a new public key to unmarshal the stored bytes
-// 		storedPublicKey := new(mldsa44.PublicKey)
-// 		err = storedPublicKey.UnmarshalBinary(storedPubKeyBytes)
-// 		if err != nil {
-// 			log.Printf("Failed to unmarshal stored public key: %v", err)
-// 		} else {
-// 			// Compare the marshaled forms of both keys
-// 			currentKeyBytes, _ := publicKey.MarshalBinary()
-// 			storedKeyBytes, _ := storedPublicKey.MarshalBinary()
-// 			if !bytes.Equal(currentKeyBytes, storedKeyBytes) {
-// 				log.Printf("WARNING: Retrieved public key does not match stored public key for validator %s", signedBlock.Validator)
-// 			}
-// 		}
-// 	}
+	publicKey, err := bc.GetValidatorPublicKey(signedBlock.Validator)
+	if err != nil {
+		log.Printf("Failed to get validator public key: %v", err)
+		return fmt.Errorf("failed to get validator public key: %v", err)
+	}
 
-// 	// Verify the signature using MLDSA44
-// 	// Note: passing nil as the context parameter as it's not used in the block signing
-// 	if !mldsa44.Verify(publicKey, signedBlock.Hash, nil, signedBlock.Signature) {
-// 		log.Printf("Signature verification failed. Validator: %s, Block Hash: %x, Signature: %x",
-// 			signedBlock.Validator, signedBlock.Hash, signedBlock.Signature)
-// 		return errors.New("invalid block signature")
-// 	}
+	pubKeyBytes, err := publicKey.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("failed to marshal public key for logging: %v", err)
+	}
+	log.Printf("Retrieved public key for verification: %x", pubKeyBytes)
 
-// 	log.Printf("Block signature verified successfully for validator: %s", signedBlock.Validator)
-// 	return nil
-// }
+	// Convert Hash to bytes for verification
+	hashBytes := signedBlock.Hash.Bytes()
+
+	// Get signature bytes
+	sigBytes := signedBlock.Signature.Bytes()
+
+	// Verify the signature using MLDSA44
+	if !mldsa44.Verify(publicKey, hashBytes, nil, sigBytes) {
+		log.Printf("Signature verification failed. Validator: %s, Block Hash: %x, Signature: %x",
+			signedBlock.Validator, hashBytes, sigBytes)
+		return errors.New("invalid block signature")
+	}
+
+	log.Printf("Block signature verified successfully for validator: %s", signedBlock.Validator)
+	return nil
+}
 
 // // // // ValidateBlock checks if the block is valid
 // func (bc *BlockchainImpl) ValidateBlock(newBlock *shared.Block, prevBlock *shared.Block) bool {

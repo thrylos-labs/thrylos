@@ -44,7 +44,7 @@ type Blockchain struct {
 
 	// lastTimestamp records the timestamp of the last added block. This is used to ensure that
 	// blocks are added in chronological order, preserving the integrity of the blockchain's timeline.
-	lastTimestamp int64
+	LastTimestamp int64
 
 	// Database provides an abstraction over the underlying database technology used to persist
 	// blockchain data, facilitating operations like adding blocks and retrieving blockchain state
