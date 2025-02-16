@@ -294,129 +294,129 @@ func (bc *BlockchainImpl) GetBlock(blockNumber int) (*types.Block, error) {
 	return &block, nil
 }
 
-// TO DO
-func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+// TO DO FIND WHERE VerifyTransaction IS AND SimulateValidatorSigning
+// func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
+// 	bc.Blockchain.Mu.Lock()
+// 	defer bc.Blockchain.Mu.Unlock()
 
-	// Handle potential forks.
-	prevHashObj, err := hash.FromBytes(prevHash)
-	if err != nil {
-		return false, fmt.Errorf("invalid previous hash: %v", err)
-	}
+// 	// Handle potential forks.
+// 	prevHashObj, err := hash.FromBytes(prevHash)
+// 	if err != nil {
+// 		return false, fmt.Errorf("invalid previous hash: %v", err)
+// 	}
 
-	if len(bc.Blockchain.Blocks) > 0 && !bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1].Hash.Equal(prevHashObj) {
-		var selectedFork *types.Fork
-		for _, fork := range bc.Blockchain.Forks {
-			if fork.Blocks != nil && len(fork.Blocks) > 0 {
-				if fork.Blocks[len(fork.Blocks)-1].Hash.Equal(prevHashObj) {
-					selectedFork = fork
-					break
-				}
-			}
-		}
+// 	if len(bc.Blockchain.Blocks) > 0 && !bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1].Hash.Equal(prevHashObj) {
+// 		var selectedFork *types.Fork
+// 		for _, fork := range bc.Blockchain.Forks {
+// 			if fork.Blocks != nil && len(fork.Blocks) > 0 {
+// 				if fork.Blocks[len(fork.Blocks)-1].Hash.Equal(prevHashObj) {
+// 					selectedFork = fork
+// 					break
+// 				}
+// 			}
+// 		}
 
-		// Create unsigned block for the fork
-		unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
-		if err != nil {
-			return false, fmt.Errorf("failed to create unsigned block: %v", err)
-		}
+// 		// Create unsigned block for the fork
+// 		unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
+// 		if err != nil {
+// 			return false, fmt.Errorf("failed to create unsigned block: %v", err)
+// 		}
 
-		// Simulate validator signing
-		signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
-		if err != nil {
-			return false, fmt.Errorf("failed to simulate block signing: %v", err)
-		}
+// 		// Simulate validator signing
+// 		signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+// 		if err != nil {
+// 			return false, fmt.Errorf("failed to simulate block signing: %v", err)
+// 		}
 
-		// Verify the signed block
-		if err := bc.VerifySignedBlock(signedBlock); err != nil {
-			return false, fmt.Errorf("invalid signed block: %v", err)
-		}
+// 		// Verify the signed block
+// 		if err := bc.VerifySignedBlock(signedBlock); err != nil {
+// 			return false, fmt.Errorf("invalid signed block: %v", err)
+// 		}
 
-		blockData, err := json.Marshal(signedBlock)
-		if err != nil {
-			return false, fmt.Errorf("failed to serialize new block: %v", err)
-		}
+// 		blockData, err := json.Marshal(signedBlock)
+// 		if err != nil {
+// 			return false, fmt.Errorf("failed to serialize new block: %v", err)
+// 		}
 
-		blockNumber := len(bc.Blockchain.Blocks)
-		if selectedFork != nil {
-			selectedFork.Blocks = append(selectedFork.Blocks, signedBlock)
-			blockNumber = len(selectedFork.Blocks) - 1
-		} else {
-			bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
-			blockNumber = len(bc.Blockchain.Blocks) - 1
-		}
+// 		blockNumber := len(bc.Blockchain.Blocks)
+// 		if selectedFork != nil {
+// 			selectedFork.Blocks = append(selectedFork.Blocks, signedBlock)
+// 			blockNumber = len(selectedFork.Blocks) - 1
+// 		} else {
+// 			bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
+// 			blockNumber = len(bc.Blockchain.Blocks) - 1
+// 		}
 
-		if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
-			return false, fmt.Errorf("failed to store block in database: %v", err)
-		}
+// 		if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
+// 			return false, fmt.Errorf("failed to store block in database: %v", err)
+// 		}
 
-		return true, nil
-	}
+// 		return true, nil
+// 	}
 
-	// Verify transactions.
-	for _, tx := range transactions {
-		isValid, err := bc.VerifyTransaction(tx)
-		if err != nil || !isValid {
-			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
-		}
-	}
+// 	// Verify transactions.
+// 	for _, tx := range transactions {
+// 		isValid, err := bc.VerifyTransaction(tx)
+// 		if err != nil || !isValid {
+// 			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
+// 		}
+// 	}
 
-	// Create unsigned block
-	unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
-	if err != nil {
-		return false, fmt.Errorf("failed to create unsigned block: %v", err)
-	}
+// 	// Create unsigned block
+// 	unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
+// 	if err != nil {
+// 		return false, fmt.Errorf("failed to create unsigned block: %v", err)
+// 	}
 
-	// Simulate validator signing
-	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
-	if err != nil {
-		return false, fmt.Errorf("failed to simulate block signing: %v", err)
-	}
+// 	// Simulate validator signing
+// 	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+// 	if err != nil {
+// 		return false, fmt.Errorf("failed to simulate block signing: %v", err)
+// 	}
 
-	// Verify the signed block
-	if err := bc.VerifySignedBlock(signedBlock); err != nil {
-		return false, fmt.Errorf("invalid signed block: %v", err)
-	}
+// 	// Verify the signed block
+// 	if err := bc.VerifySignedBlock(signedBlock); err != nil {
+// 		return false, fmt.Errorf("invalid signed block: %v", err)
+// 	}
 
-	// Update UTXO set
-	for _, tx := range signedBlock.Transactions {
-		// Remove spent UTXOs
-		for _, input := range tx.GetInputs() {
-			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
-			delete(bc.Blockchain.UTXOs, utxoKey)
-		}
-		// Add new UTXOs
-		for index, output := range tx.GetOutputs() {
-			utxoKey := fmt.Sprintf("%s:%d", tx.GetId(), index)
-			bc.Blockchain.UTXOs[utxoKey] = []*thrylos.UTXO{output}
-		}
-	}
+// 	// Update UTXO set
+// 	for _, tx := range signedBlock.Transactions {
+// 		// Remove spent UTXOs
+// 		for _, input := range tx.GetInputs() {
+// 			utxoKey := fmt.Sprintf("%s:%d", input.GetTransactionId(), input.GetIndex())
+// 			delete(bc.Blockchain.UTXOs, utxoKey)
+// 		}
+// 		// Add new UTXOs
+// 		for index, output := range tx.GetOutputs() {
+// 			utxoKey := fmt.Sprintf("%s:%d", tx.GetId(), index)
+// 			bc.Blockchain.UTXOs[utxoKey] = []*thrylos.UTXO{output}
+// 		}
+// 	}
 
-	// Serialize and store the block
-	blockData, err := json.Marshal(signedBlock)
-	if err != nil {
-		return false, fmt.Errorf("failed to serialize new block: %v", err)
-	}
+// 	// Serialize and store the block
+// 	blockData, err := json.Marshal(signedBlock)
+// 	if err != nil {
+// 		return false, fmt.Errorf("failed to serialize new block: %v", err)
+// 	}
 
-	blockNumber := len(bc.Blockchain.Blocks)
-	if err := bc.Blockchain.DatabaseDatabase.StoreBlock(blockData, blockNumber); err != nil {
-		return false, fmt.Errorf("failed to store block in database: %v", err)
-	}
+// 	blockNumber := len(bc.Blockchain.Blocks)
+// 	if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
+// 		return false, fmt.Errorf("failed to store block in database: %v", err)
+// 	}
 
-	// Update the blockchain with the new block
-	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
-	bc.Blockchain.LastTimestamp = signedBlock.Timestamp
+// 	// Update the blockchain with the new block
+// 	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
+// 	bc.Blockchain.LastTimestamp = signedBlock.Timestamp
 
-	if bc.Blockchain.OnNewBlock != nil {
-		bc.Blockchain.OnNewBlock(signedBlock)
-	}
+// 	if bc.Blockchain.OnNewBlock != nil {
+// 		bc.Blockchain.OnNewBlock(signedBlock)
+// 	}
 
-	// Update balances for affected addresses
-	bc.updateBalancesForBlock(signedBlock)
+// 	// Update balances for affected addresses
+// 	bc.updateBalancesForBlock(signedBlock)
 
-	return true, nil
-}
+// 	return true, nil
+// }
 
 func (bc *BlockchainImpl) GetBlockByID(id string) (*types.Block, error) { // Changed return type to pointer
 	// First, try to parse id as a block index
