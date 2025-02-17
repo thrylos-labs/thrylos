@@ -130,8 +130,11 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	// 	Blockchain: temp,
 	// 	Mu:         sync.RWMutex{},
 	// }
+
+	var blockchain *BlockchainImpl
+
 	// Create the transaction pool
-	temp.txPool = NewTxPool(database)
+	temp.txPool = NewTxPool(database, blockchain)
 
 	// Add the blockchain public key to the publicKeyMap
 	publicKeyMap[addr.String()] = &pubKey

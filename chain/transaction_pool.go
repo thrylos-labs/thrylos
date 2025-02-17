@@ -20,6 +20,8 @@ type txPoolImpl struct {
 	transactions map[string]*list.Element
 	order        *list.List
 	db           types.Store // Remove the pointer
+	blockchain   *BlockchainImpl
+
 	// propagator   *types.TransactionPropagator  // Remove as part of validator/consensus removal
 }
 
@@ -29,11 +31,12 @@ type txEntry struct {
 }
 
 // Constructor that returns the interface type
-func NewTxPool(db *store.Database) types.TxPool {
+func NewTxPool(db *store.Database, blockchain *BlockchainImpl) types.TxPool {
 	return &txPoolImpl{
 		transactions: make(map[string]*list.Element),
 		order:        list.New(),
 		db:           db.Blockchain, // Remove the & operator
+		blockchain:   blockchain,
 	}
 }
 
@@ -57,9 +60,9 @@ func (p *txPoolImpl) AddTransaction(tx *types.Transaction) error {
 	}
 
 	// // Verify salt uniqueness - commenting out as it depends on BlockchainImpl
-	// if err := p.verifyTransactionUniqueness(tx); err != nil {
-	//     return fmt.Errorf("transaction salt verification failed: %v", err)
-	// }
+	if err := p.verifyTransactionUniqueness(tx); err != nil {
+		return fmt.Errorf("transaction salt verification failed: %v", err)
+	}
 
 	// // Propagate to validators - removing validator propagation
 	// if err := p.propagator.PropagateTransaction(tx); err != nil {
@@ -106,24 +109,24 @@ func (p *txPoolImpl) AddTransaction(tx *types.Transaction) error {
 }
 
 // // Helper function to verify transaction uniqueness using salt - commenting out as depends on BlockchainImpl
-// func (p *txPoolImpl) verifyTransactionUniqueness(tx *types.Transaction) error {
-// 	if tx == nil {
-// 		return fmt.Errorf("nil transaction")
-// 	}
-// 	if len(tx.Salt) == 0 {
-// 		return fmt.Errorf("empty salt")
-// 	}
-// 	if len(tx.Salt) != 32 {
-// 		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
-// 	}
+func (p *txPoolImpl) verifyTransactionUniqueness(tx *types.Transaction) error {
+	if tx == nil {
+		return fmt.Errorf("nil transaction")
+	}
+	if len(tx.Salt) == 0 {
+		return fmt.Errorf("empty salt")
+	}
+	if len(tx.Salt) != 32 {
+		return fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
+	}
 
-// 	// Use the efficient helper function to check salt uniqueness
-// 	if chain.checkSaltInBlocks(tx.Salt) {
-// 		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
-// 	}
+	// Use the efficient helper function to check salt uniqueness
+	if p.blockchain.checkSaltInBlocks(tx.Salt) {
+		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
+	}
 
-// 	return nil
-// }
+	return nil
+}
 
 // Comment out network-related operations:
 // // BroadcastTransaction broadcasts a transaction to the network
@@ -220,9 +223,9 @@ func (p *txPoolImpl) RemoveTransaction(tx *types.Transaction) error {
 	}
 
 	// Use the efficient helper function to check salt uniqueness
-	// if BlockchainImpl.checkSaltInBlocks(tx.Salt) {
-	// 	return fmt.Errorf("duplicate salt detected: transaction replay attempt")
-	// }
+	if p.blockchain.checkSaltInBlocks(tx.Salt) {
+		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
+	}
 
 	return nil
 }

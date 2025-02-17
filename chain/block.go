@@ -108,6 +108,7 @@ func InitializeVerkleTree(b *types.Block) error {
 	b.VerkleRoot = commitment[:]
 	return nil
 }
+
 func ComputeBlockHash(b *types.Block) {
 	blockByte, err := SerializeForSigning(b) // Pass the block parameter
 	if err != nil {
