@@ -24,6 +24,12 @@ func NewPrivateKey() (PrivateKey, error) {
 	}, nil
 }
 
+func NewPrivateKeyFromMLDSA(key *mldsa44.PrivateKey) PrivateKey {
+	return &privateKey{
+		privKey: key,
+	}
+}
+
 func NewPrivateKeyFromBytes(keyData []byte) (PrivateKey, error) {
 	var priv privateKey
 	err := priv.Unmarshal(keyData)

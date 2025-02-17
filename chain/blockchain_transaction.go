@@ -535,7 +535,7 @@ func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
 // 	}
 
 // 	// Verify transaction data
-// 	isValid, err := shared.VerifyTransactionData(tx, protoUTXOs, getMldsaPublicKeyFunc)
+// 	isValid, err := chain.VerifyTransactionData(tx, protoUTXOs, getMldsaPublicKeyFunc)
 // 	if err != nil {
 // 		return false, fmt.Errorf("transaction data verification failed: %v", err)
 // 	}
