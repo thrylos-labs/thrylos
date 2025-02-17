@@ -120,9 +120,9 @@ func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
 }
 
 // // // // ValidateBlock checks if the block is valid
-// func (bc *BlockchainImpl) ValidateBlock(newBlock *shared.Block, prevBlock *shared.Block) bool {
-// 	// Existing checks
-// 	if !bytes.Equal(newBlock.PrevHash, prevBlock.Hash) {
+// func (bc *BlockchainImpl) ValidateBlock(newBlock *types.Block, prevBlock *types.Block) bool {
+// 	// Check previous hash using Hash.Equal method
+// 	if !newBlock.PrevHash.Equal(prevBlock.Hash) {
 // 		fmt.Printf("Invalid previous hash in block %d\n", newBlock.Index)
 // 		return false
 // 	}
@@ -139,9 +139,13 @@ func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
 // 		return false
 // 	}
 
-// 	computedHash := newBlock.ComputeHash()
-// 	if !bytes.Equal(newBlock.Hash, computedHash) {
-// 		fmt.Printf("Invalid hash in block %d: expected %x, got %x\n", newBlock.Index, computedHash, newBlock.Hash)
+// 	// Create a copy of the block to compute its hash
+// 	blockCopy := *newBlock
+// 	ComputeBlockHash(&blockCopy)
+
+// 	// Compare hashes using Hash.Equal method
+// 	if !newBlock.Hash.Equal(blockCopy.Hash) {
+// 		fmt.Printf("Invalid hash in block %d: expected %x, got %x\n", newBlock.Index, blockCopy.Hash, newBlock.Hash)
 // 		return false
 // 	}
 

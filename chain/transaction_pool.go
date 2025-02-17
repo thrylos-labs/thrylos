@@ -118,16 +118,12 @@ func (p *txPoolImpl) AddTransaction(tx *types.Transaction) error {
 // 	}
 
 // 	// Use the efficient helper function to check salt uniqueness
-// 	if BlockchainImpl.checkSaltInBlocks(tx.Salt) {
+// 	if chain.checkSaltInBlocks(tx.Salt) {
 // 		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
 // 	}
 
 // 	return nil
 // }
-
-// Keep the basic transaction pool operations:
-// GetTransactionStatus, ,, ,
-// , Size
 
 // Comment out network-related operations:
 // // BroadcastTransaction broadcasts a transaction to the network

@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"log"
 
 	thrylos "github.com/thrylos-labs/thrylos"
@@ -377,7 +378,7 @@ func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
 // 	return nil
 // }
 
-// func (bc *BlockchainImpl) validateBlockTransactionSalts(block *shared.Block) error {
+// func (bc *BlockchainImpl) validateBlockTransactionSalts(block *types.Block) error {
 // 	seenSalts := make(map[string]bool)
 
 // 	for _, tx := range block.Transactions {
@@ -396,32 +397,32 @@ func ConvertToSharedTransaction(tx *thrylos.Transaction) *types.Transaction {
 // }
 
 // // // // Helper function to efficiently check salt uniqueness in all blocks
-// func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
-// 	bc.Mu.RLock()
-// 	defer bc.Mu.RUnlock()
+func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
+	bc.Blockchain.Mu.RLock()
+	defer bc.Blockchain.Mu.RUnlock()
 
-// 	// Create an efficient lookup for pending transaction salts
-// 	pendingSalts := make(map[string]bool)
-// 	for _, tx := range bc.PendingTransactions {
-// 		pendingSalts[string(tx.Salt)] = true
-// 	}
+	// Create an efficient lookup for pending transaction salts
+	pendingSalts := make(map[string]bool)
+	for _, tx := range bc.Blockchain.PendingTransactions {
+		pendingSalts[string(tx.Salt)] = true
+	}
 
-// 	// Check pending transactions first (faster in-memory check)
-// 	if pendingSalts[string(salt)] {
-// 		return true
-// 	}
+	// Check pending transactions first (faster in-memory check)
+	if pendingSalts[string(salt)] {
+		return true
+	}
 
-// 	// Check confirmed blocks
-// 	for _, block := range bc.Blocks {
-// 		for _, tx := range block.Transactions {
-// 			if bytes.Equal(tx.Salt, salt) {
-// 				return true
-// 			}
-// 		}
-// 	}
+	// Check confirmed blocks
+	for _, block := range bc.Blockchain.Blocks {
+		for _, tx := range block.Transactions {
+			if bytes.Equal(tx.Salt, salt) {
+				return true
+			}
+		}
+	}
 
-// 	return false
-// }
+	return false
+}
 
 // // func SharedToThrylos(tx *shared.Transaction) *thrylos.Transaction {
 // // 	if tx == nil {

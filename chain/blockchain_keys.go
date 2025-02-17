@@ -39,7 +39,7 @@ package chain
 // 	log.Printf("Attempting to retrieve public key for address: %s", formattedAddress)
 
 // 	// First, check the in-memory map
-// 	if pubKey, ok := bc.PublicKeyMap[formattedAddress]; ok {
+// 	if pubKey, ok := bc.Blockchain.PublicKeyMap[formattedAddress]; ok {
 // 		log.Printf("Public key found in memory for address: %s", formattedAddress)
 // 		return pubKey, nil
 // 	}
@@ -59,7 +59,7 @@ package chain
 // 	}
 
 // 	// Store in memory for future use
-// 	bc.PublicKeyMap[formattedAddress] = &publicKey
+// 	bc.Blockchain.PublicKeyMap[formattedAddress] = &publicKey
 
 // 	log.Printf("Successfully retrieved and validated public key for address: %s", formattedAddress)
 // 	return &publicKey, nil
@@ -265,37 +265,37 @@ package chain
 // 	return nil
 // }
 
-// // Load all Validator public keys into Memory
-// // func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
-// // 	bc.Mu.Lock()
-// // 	defer bc.Mu.Unlock()
+// Load all Validator public keys into Memory
+// func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
+// 	bc.Mu.Lock()
+// 	defer bc.Mu.Unlock()
 
-// // 	log.Println("Loading all validator public keys")
+// 	log.Println("Loading all validator public keys")
 
-// // 	for address := range bc.Stakeholders {
-// // 		log.Printf("Attempting to load public key for stakeholder: %s", address)
-// // 		pubKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
-// // 		if err != nil {
-// // 			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
-// // 			continue
-// // 		}
+// 	for address := range bc.Stakeholders {
+// 		log.Printf("Attempting to load public key for stakeholder: %s", address)
+// 		pubKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
+// 		if err != nil {
+// 			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
+// 			continue
+// 		}
 
-// // 		if len(pubKeyBytes) > 0 {
-// // 			// Create a new PublicKey instance
-// // 			pubKey := new(mldsa44.PublicKey)
-// // 			// Parse the bytes into the public key
-// // 			err = pubKey.UnmarshalBinary(pubKeyBytes)
-// // 			if err != nil {
-// // 				log.Printf("Failed to parse public key for stakeholder %s: %v", address, err)
-// // 				continue
-// // 			}
+// 		if len(pubKeyBytes) > 0 {
+// 			// Create a new PublicKey instance
+// 			pubKey := new(mldsa44.PublicKey)
+// 			// Parse the bytes into the public key
+// 			err = pubKey.UnmarshalBinary(pubKeyBytes)
+// 			if err != nil {
+// 				log.Printf("Failed to parse public key for stakeholder %s: %v", address, err)
+// 				continue
+// 			}
 
-// // 			// Store the pointer directly
-// // 			bc.PublicKeyMap[address] = pubKey
-// // 			log.Printf("Loaded public key for validator: %s", address)
-// // 		}
-// // 	}
+// 			// Store the pointer directly
+// 			bc.PublicKeyMap[address] = pubKey
+// 			log.Printf("Loaded public key for validator: %s", address)
+// 		}
+// 	}
 
-// // 	log.Printf("Loaded public keys for %d validators", len(bc.PublicKeyMap))
-// // 	return nil
-// // }
+// 	log.Printf("Loaded public keys for %d validators", len(bc.PublicKeyMap))
+// 	return nil
+// }
