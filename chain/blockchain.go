@@ -102,7 +102,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-	genesis.Transactions = []*types.Transaction{ConvertToSharedTransaction(genesisTx)}
+	genesis.Transactions = []*types.Transaction{utils.ConvertToSharedTransaction(genesisTx)}
 
 	stateNetwork := network.NewDefaultNetwork()
 	// stateManager := state.NewStateManager(stateNetwork, 4)

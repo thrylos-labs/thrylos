@@ -10,6 +10,7 @@ import (
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/types"
+	"github.com/thrylos-labs/thrylos/utils"
 )
 
 // func (bc *BlockchainImpl) calculateAverageLatency() time.Duration {
@@ -164,7 +165,7 @@ func (bc *BlockchainImpl) CreateUnsignedBlock(transactions []*thrylos.Transactio
 	// Convert transactions using existing function
 	sharedTransactions := make([]*types.Transaction, len(transactions))
 	for i, tx := range transactions {
-		sharedTransactions[i] = ConvertToSharedTransaction(tx)
+		sharedTransactions[i] = utils.ConvertToSharedTransaction(tx)
 		if sharedTransactions[i] == nil {
 			return nil, fmt.Errorf("failed to convert transaction at index %d", i)
 		}
