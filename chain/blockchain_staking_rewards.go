@@ -40,6 +40,13 @@ func (bc *BlockchainImpl) GetTotalSupply() int64 {
 	return totalSupply
 }
 
+func (bc *BlockchainImpl) Stakeholders() map[string]int64 {
+	bc.Blockchain.Mu.RLock()
+	defer bc.Blockchain.Mu.RUnlock()
+
+	return bc.Blockchain.Stakeholders
+}
+
 func (bc *BlockchainImpl) TransferFunds(from, to string, amount int64) error {
 	bc.Blockchain.Mu.Lock()
 	defer bc.Blockchain.Mu.Unlock()

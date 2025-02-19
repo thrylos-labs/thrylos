@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,7 +26,8 @@ import (
 )
 
 type BlockchainImpl struct {
-	Blockchain *types.Blockchain
+	Blockchain            *types.Blockchain
+	TransactionPropagator *types.TransactionPropagator
 	// modernProcessor *processor.ModernProcessor
 	txPool types.TxPool // Not *types.TxPool
 	// dagManager      *processor.DAGManager
@@ -126,15 +128,15 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	}
 
 	// Create the propagator
-	// propagator := &types.TransactionPropagator{
-	// 	Blockchain: temp,
-	// 	Mu:         sync.RWMutex{},
-	// }
+	propagator := &types.TransactionPropagator{
+		Blockchain: temp,
+		Mu:         sync.RWMutex{},
+	}
 
-	var blockchain *BlockchainImpl
+	temp.TransactionPropagator = propagator
 
 	// Create the transaction pool
-	temp.txPool = NewTxPool(database, blockchain)
+	temp.txPool = NewTxPool(database, temp)
 
 	// Add the blockchain public key to the publicKeyMap
 	publicKeyMap[addr.String()] = &pubKey

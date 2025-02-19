@@ -1,301 +1,356 @@
 package chain
 
-// const (
-// 	keyLen    = 32 // AES-256
-// 	nonceSize = 12
-// 	saltSize  = 32
-// )
+import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"log"
 
-// var ErrInvalidKeySize = errors.New("invalid key size")
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/shared"
+	"golang.org/x/crypto/scrypt"
+)
 
-// func (bc *BlockchainImpl) RegisterPublicKey(pubKey string) error {
-// 	// Convert the public key string to bytes, assuming pubKey is base64 encoded
-// 	pubKeyBytes, err := base64.StdEncoding.DecodeString(pubKey)
-// 	if err != nil {
-// 		return fmt.Errorf("error decoding public key: %v", err)
-// 	}
+const (
+	keyLen    = 32 // AES-256
+	nonceSize = 12
+	saltSize  = 32
+)
 
-// 	// Create and parse MLDSA public key from bytes
-// 	mldsaPubKey := new(mldsa44.PublicKey)
-// 	err = mldsaPubKey.UnmarshalBinary(pubKeyBytes)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to parse MLDSA public key: %v", err)
-// 	}
+var ErrInvalidKeySize = errors.New("invalid key size")
 
-// 	// Assuming "publicKeyAddress" should be dynamically determined or correctly provided
-// 	return bc.Database.InsertOrUpdateMLDSAPublicKey("publicKeyAddress", mldsaPubKey)
-// }
+func (bc *BlockchainImpl) RegisterPublicKey(pubKey crypto.PublicKey) error {
+	bc.Blockchain.Mu.Lock()
+	defer bc.Blockchain.Mu.Unlock()
+
+	// Save to database
+	if err := bc.Blockchain.Database.SavePublicKey(pubKey); err != nil {
+		return err
+	}
+
+	// Also cache in memory
+	addr, err := pubKey.Address()
+	if err != nil {
+		return fmt.Errorf("failed to get address from public key: %v", err)
+	}
+
+	bc.Blockchain.PublicKeyMap[addr.String()] = &pubKey
+	return nil
+}
 
 // // // In blockchain.go, within your Blockchain struct definition
-// func (bc *BlockchainImpl) RetrievePublicKey(ownerAddress string) (*mldsa44.PublicKey, error) {
-// 	bc.Mu.RLock()
-// 	defer bc.Mu.RUnlock()
+func (bc *BlockchainImpl) RetrievePublicKey(validator string) ([]byte, error) {
+	bc.Blockchain.Mu.RLock()
+	defer bc.Blockchain.Mu.RUnlock()
 
-// 	formattedAddress, err := shared.SanitizeAndFormatAddress(ownerAddress)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("invalid address format: %v", err)
-// 	}
+	formattedAddress, err := shared.SanitizeAndFormatAddress(validator)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address format: %v", err)
+	}
 
-// 	log.Printf("Attempting to retrieve public key for address: %s", formattedAddress)
+	log.Printf("Attempting to retrieve public key for address: %s", formattedAddress)
 
-// 	// First, check the in-memory map
-// 	if pubKey, ok := bc.Blockchain.PublicKeyMap[formattedAddress]; ok {
-// 		log.Printf("Public key found in memory for address: %s", formattedAddress)
-// 		return pubKey, nil
-// 	}
+	// First, check if we already have a public key in memory
+	if pubKeyPtr, ok := bc.Blockchain.PublicKeyMap[formattedAddress]; ok {
+		log.Printf("Public key found in memory for address: %s", formattedAddress)
+		// Dereference the pointer before calling Marshal()
+		pubKeyBytes, err := (*pubKeyPtr).Marshal()
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal public key: %v", err)
+		}
+		return pubKeyBytes, nil
+	}
 
-// 	// If not in memory, try the database
-// 	pubKeyBytes, err := bc.Database.RetrieveMLDSAPublicKey(formattedAddress)
-// 	if err != nil {
-// 		log.Printf("Failed to retrieve public key from database for address %s: %v", formattedAddress, err)
-// 		return nil, err
-// 	}
+	// Try to parse the address
+	addr, err := address.FromString(formattedAddress)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address format: %v", err)
+	}
 
-// 	// Create ML-DSA44 public key from bytes
-// 	var publicKey mldsa44.PublicKey
-// 	err = publicKey.UnmarshalBinary(pubKeyBytes)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to unmarshal public key: %v", err)
-// 	}
+	// Use the store's GetPublicKey method
+	pubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+	if err != nil {
+		log.Printf("Failed to retrieve public key from database: %v", err)
+		return nil, err
+	}
 
-// 	// Store in memory for future use
-// 	bc.Blockchain.PublicKeyMap[formattedAddress] = &publicKey
+	// Cache the result in memory for future use
+	bc.Blockchain.PublicKeyMap[formattedAddress] = &pubKey
 
-// 	log.Printf("Successfully retrieved and validated public key for address: %s", formattedAddress)
-// 	return &publicKey, nil
-// }
+	// Marshal the public key to bytes
+	pubKeyBytes, err := pubKey.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal public key: %v", err)
+	}
+
+	log.Printf("Successfully retrieved public key for address: %s", formattedAddress)
+	return pubKeyBytes, nil
+}
 
 // // // // In Blockchain
-// func (bc *BlockchainImpl) InsertOrUpdatePublicKey(address string, publicKeyBytes []byte, keyType string) error {
-// 	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
+func (bc *BlockchainImpl) InsertOrUpdatePublicKey(address string, publicKeyBytes []byte, keyType string) error {
+	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
+	bc.Blockchain.Mu.Lock()
+	defer bc.Blockchain.Mu.Unlock()
 
-// 	if len(publicKeyBytes) == 0 {
-// 		return fmt.Errorf("empty public key bytes provided")
-// 	}
-// 	log.Printf("PublicKey bytes: %x", publicKeyBytes)
+	if len(publicKeyBytes) == 0 {
+		return fmt.Errorf("empty public key bytes provided")
+	}
+	log.Printf("PublicKey bytes: %x", publicKeyBytes)
 
-// 	switch keyType {
-// 	case "MLDSA":
-// 		// Parse the bytes into an MLDSA public key
-// 		pubKey := new(mldsa44.PublicKey)
-// 		err := pubKey.UnmarshalBinary(publicKeyBytes)
-// 		if err != nil {
-// 			log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
-// 			return fmt.Errorf("failed to parse MLDSA public key: %v", err)
-// 		}
+	switch keyType {
+	case "MLDSA":
+		// Parse the bytes into an MLDSA public key
+		mldsaPubKey := new(mldsa44.PublicKey)
+		err := mldsaPubKey.UnmarshalBinary(publicKeyBytes)
+		if err != nil {
+			log.Printf("Failed to parse MLDSA public key for address %s: %v", address, err)
+			return fmt.Errorf("failed to parse MLDSA public key: %v", err)
+		}
 
-// 		// Store the parsed key
-// 		err = bc.Database.InsertOrUpdateMLDSAPublicKey(address, pubKey)
-// 		if err != nil {
-// 			log.Printf("Failed to store MLDSA public key for address %s: %v", address, err)
-// 			return fmt.Errorf("failed to store MLDSA public key: %v", err)
-// 		}
+		// Create a crypto.PublicKey from the MLDSA public key
+		pubKey := crypto.NewPublicKey(mldsaPubKey)
 
-// 		log.Printf("Successfully stored MLDSA public key for address %s", address)
-// 		return nil
-// 	default:
-// 		return fmt.Errorf("unsupported key type: %s", keyType)
-// 	}
-// }
+		// Save to database using the standard method
+		if err := bc.Blockchain.Database.SavePublicKey(pubKey); err != nil {
+			log.Printf("Failed to store public key for address %s: %v", address, err)
+			return fmt.Errorf("failed to store public key: %v", err)
+		}
 
-// func (bc *BlockchainImpl) EnsureTestValidatorRegistered(address string, publicKey mldsa44.PublicKey) error {
-// 	// Check if the validator is already registered
-// 	_, err := bc.RetrievePublicKey(address)
-// 	if err == nil {
-// 		// Validator is already registered
-// 		return nil
-// 	}
+		// Update in-memory cache
+		bc.Blockchain.PublicKeyMap[address] = &pubKey
 
-// 	// Serialize the public key to bytes
-// 	publicKeyBytes := publicKey.Bytes()
+		log.Printf("Successfully stored public key for address %s", address)
+		return nil
+	default:
+		return fmt.Errorf("unsupported key type: %s", keyType)
+	}
+}
 
-// 	// Encode the public key to Base64
-// 	pubKeyBase64 := base64.StdEncoding.EncodeToString(publicKeyBytes)
+func (bc *BlockchainImpl) EnsureTestValidatorRegistered(address string, publicKey mldsa44.PublicKey) error {
+	// Check if the validator is already registered
+	_, err := bc.RetrievePublicKey(address)
+	if err == nil {
+		// Validator is already registered
+		return nil
+	}
 
-// 	// Register the validator
-// 	err = bc.RegisterValidator(address, pubKeyBase64, true)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to register test validator: %v", err)
-// 	}
+	// Serialize the public key to bytes
+	publicKeyBytes := publicKey.Bytes()
 
-// 	log.Printf("Registered test validator: %s", address)
-// 	return nil
-// }
+	// Encode the public key to Base64
+	pubKeyBase64 := base64.StdEncoding.EncodeToString(publicKeyBytes)
 
-// func deriveKey(password []byte, salt []byte) ([]byte, error) {
-// 	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
-// }
+	// Register the validator
+	err = bc.RegisterValidator(address, pubKeyBase64, true)
+	if err != nil {
+		return fmt.Errorf("failed to register test validator: %v", err)
+	}
 
-// func encryptPrivateKey(privKey *mldsa44.PrivateKey) ([]byte, error) {
-// 	// Convert ML-DSA44 private key to bytes
-// 	privKeyBytes, err := privKey.MarshalBinary()
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to marshal private key: %v", err)
-// 	}
+	log.Printf("Registered test validator: %s", address)
+	return nil
+}
 
-// 	salt := make([]byte, saltSize)
-// 	if _, err := rand.Read(salt); err != nil {
-// 		return nil, err
-// 	}
+func deriveKey(password []byte, salt []byte) ([]byte, error) {
+	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
+}
 
-// 	block, err := aes.NewCipher(salt)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+func encryptPrivateKey(privKey *mldsa44.PrivateKey) ([]byte, error) {
+	// Convert ML-DSA44 private key to bytes
+	privKeyBytes, err := privKey.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal private key: %v", err)
+	}
 
-// 	gcm, err := cipher.NewGCM(block)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	salt := make([]byte, saltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, err
+	}
 
-// 	nonce := make([]byte, gcm.NonceSize())
-// 	if _, err := rand.Read(nonce); err != nil {
-// 		return nil, err
-// 	}
+	block, err := aes.NewCipher(salt)
+	if err != nil {
+		return nil, err
+	}
 
-// 	ciphertext := gcm.Seal(nil, nonce, privKeyBytes, nil)
-// 	return append(append(salt, nonce...), ciphertext...), nil
-// }
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
 
-// func decryptPrivateKey(encryptedKey []byte) (*mldsa44.PrivateKey, error) {
-// 	if len(encryptedKey) < saltSize+nonceSize+1 {
-// 		return nil, ErrInvalidKeySize
-// 	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
 
-// 	salt := encryptedKey[:saltSize]
-// 	nonce := encryptedKey[saltSize : saltSize+nonceSize]
-// 	ciphertext := encryptedKey[saltSize+nonceSize:]
+	ciphertext := gcm.Seal(nil, nonce, privKeyBytes, nil)
+	return append(append(salt, nonce...), ciphertext...), nil
+}
 
-// 	block, err := aes.NewCipher(salt)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+func decryptPrivateKey(encryptedKey []byte) (*mldsa44.PrivateKey, error) {
+	if len(encryptedKey) < saltSize+nonceSize+1 {
+		return nil, ErrInvalidKeySize
+	}
 
-// 	gcm, err := cipher.NewGCM(block)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	salt := encryptedKey[:saltSize]
+	nonce := encryptedKey[saltSize : saltSize+nonceSize]
+	ciphertext := encryptedKey[saltSize+nonceSize:]
 
-// 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-// 	if err != nil {
-// 		return nil, err
-// 	}
+	block, err := aes.NewCipher(salt)
+	if err != nil {
+		return nil, err
+	}
 
-// 	// Convert bytes back to ML-DSA44 private key
-// 	var privKey mldsa44.PrivateKey
-// 	err = privKey.UnmarshalBinary(plaintext)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to unmarshal private key: %v", err)
-// 	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
 
-// 	return &privKey, nil
-// }
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
 
-// func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {
-// 	log.Println("Checking validator key consistency")
+	// Convert bytes back to ML-DSA44 private key
+	var privKey mldsa44.PrivateKey
+	err = privKey.UnmarshalBinary(plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal private key: %v", err)
+	}
 
-// 	allPublicKeys, err := bc.Database.GetAllValidatorPublicKeys()
-// 	if err != nil {
-// 		return fmt.Errorf("failed to retrieve all validator public keys: %v", err)
-// 	}
+	return &privKey, nil
+}
 
-// 	log.Printf("Total stored validator public keys: %d", len(allPublicKeys))
-// 	log.Printf("Total active validators: %d", len(bc.ActiveValidators))
+func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {
+	log.Println("Checking validator key consistency")
 
-// 	for address, storedPubKey := range allPublicKeys {
-// 		log.Printf("Checking consistency for validator: %s", address)
+	// Use stakeholders map instead of getting all validators from database
+	bc.Blockchain.Mu.RLock()
+	stakeholders := bc.Blockchain.Stakeholders
+	activeValidators := bc.Blockchain.ActiveValidators
+	bc.Blockchain.Mu.RUnlock()
 
-// 		// Convert stored public key to bytes for logging
-// 		storedPubKeyBytes, err := storedPubKey.MarshalBinary()
-// 		if err != nil {
-// 			log.Printf("Failed to marshal stored public key for validator %s: %v", address, err)
-// 			continue
-// 		}
-// 		log.Printf("Stored public key for %s: %x", address, storedPubKeyBytes)
+	log.Printf("Total stakeholders: %d", len(stakeholders))
+	log.Printf("Total active validators: %d", len(activeValidators))
 
-// 		if bc.IsActiveValidator(address) {
-// 			log.Printf("Validator %s is active", address)
+	// Check stakeholders first
+	for addressStr := range stakeholders {
+		log.Printf("Checking consistency for stakeholder: %s", addressStr)
 
-// 			privateKey, bech32Address, err := bc.GetValidatorPrivateKey(address)
-// 			if err != nil {
-// 				log.Printf("Failed to retrieve private key for validator %s: %v", address, err)
-// 				continue
-// 			}
+		// Parse address using the crypto package
+		addr, err := address.FromString(addressStr)
+		if err != nil {
+			log.Printf("Invalid address format for stakeholder %s: %v", addressStr, err)
+			continue
+		}
 
-// 			log.Printf("Retrieved private key for %s, Bech32 address: %s", address, bech32Address)
+		// Get public key from database
+		storedPubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+		if err != nil {
+			log.Printf("Failed to retrieve public key for stakeholder %s: %v", addressStr, err)
+			continue
+		}
 
-// 			// Fixed: Use pointer type for the type assertion
-// 			derivedPublicKey := privateKey.Public().(*mldsa44.PublicKey)
+		// Convert stored public key to bytes for logging
+		storedPubKeyBytes, err := storedPubKey.Marshal()
+		if err != nil {
+			log.Printf("Failed to marshal stored public key for stakeholder %s: %v", addressStr, err)
+			continue
+		}
+		log.Printf("Stored public key for %s: %x", addressStr, storedPubKeyBytes)
 
-// 			// Convert both keys to bytes for comparison
-// 			derivedPubKeyBytes, err := derivedPublicKey.MarshalBinary()
-// 			if err != nil {
-// 				return fmt.Errorf("failed to marshal derived public key for validator %s: %v", address, err)
-// 			}
+		if bc.IsActiveValidator(addressStr) {
+			log.Printf("Stakeholder %s is an active validator", addressStr)
 
-// 			storedPubKeyBytes, err := storedPubKey.MarshalBinary()
-// 			if err != nil {
-// 				return fmt.Errorf("failed to marshal stored public key for validator %s: %v", address, err)
-// 			}
+			privateKey, bech32Address, err := bc.GetValidatorPrivateKey(addressStr)
+			if err != nil {
+				log.Printf("Failed to retrieve private key for validator %s: %v", addressStr, err)
+				continue
+			}
 
-// 			log.Printf("Derived public key for %s: %x", address, derivedPubKeyBytes)
+			log.Printf("Retrieved private key for %s, Bech32 address: %s", addressStr, bech32Address)
 
-// 			if !bytes.Equal(storedPubKeyBytes, derivedPubKeyBytes) {
-// 				log.Printf("Key mismatch for validator %s (Bech32: %s):", address, bech32Address)
-// 				log.Printf("  Stored public key:  %x", storedPubKeyBytes)
-// 				log.Printf("  Derived public key: %x", derivedPubKeyBytes)
-// 				return fmt.Errorf("key mismatch for active validator %s (Bech32: %s): stored public key does not match derived public key",
-// 					address, bech32Address)
-// 			}
+			// Get public key from private key
+			pubKey := privateKey.PublicKey()
 
-// 			log.Printf("Keys consistent for active validator %s", address)
-// 		} else {
-// 			log.Printf("Validator %s is not active", address)
-// 		}
-// 	}
+			// Convert to bytes for comparison
+			derivedPubKeyBytes, err := pubKey.Marshal()
+			if err != nil {
+				return fmt.Errorf("failed to marshal derived public key for validator %s: %v", addressStr, err)
+			}
 
-// 	for _, activeAddress := range bc.ActiveValidators {
-// 		if _, exists := allPublicKeys[activeAddress]; !exists {
-// 			log.Printf("Active validator %s does not have a stored public key", activeAddress)
-// 			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
-// 		}
-// 	}
+			log.Printf("Derived public key for %s: %x", addressStr, derivedPubKeyBytes)
 
-// 	log.Println("Validator key consistency check completed")
-// 	return nil
-// }
+			if !bytes.Equal(storedPubKeyBytes, derivedPubKeyBytes) {
+				log.Printf("Key mismatch for validator %s (Bech32: %s):", addressStr, bech32Address)
+				log.Printf("  Stored public key:  %x", storedPubKeyBytes)
+				log.Printf("  Derived public key: %x", derivedPubKeyBytes)
+				return fmt.Errorf("key mismatch for active validator %s (Bech32: %s)", addressStr, bech32Address)
+			}
+
+			log.Printf("Keys consistent for active validator %s", addressStr)
+		} else {
+			log.Printf("Stakeholder %s is not an active validator", addressStr)
+		}
+	}
+
+	// Check if all active validators have stored public keys and are stakeholders
+	for _, activeAddress := range activeValidators {
+		if _, isStakeholder := stakeholders[activeAddress]; !isStakeholder {
+			log.Printf("Active validator %s is not a stakeholder", activeAddress)
+			return fmt.Errorf("active validator %s is not a stakeholder", activeAddress)
+		}
+
+		addr, err := address.FromString(activeAddress)
+		if err != nil {
+			return fmt.Errorf("invalid active validator address format: %v", err)
+		}
+
+		_, err = bc.Blockchain.Database.GetPublicKey(*addr)
+		if err != nil {
+			log.Printf("Active validator %s does not have a stored public key", activeAddress)
+			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
+		}
+	}
+
+	log.Println("Validator key consistency check completed")
+	return nil
+}
 
 // Load all Validator public keys into Memory
-// func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
-// 	bc.Mu.Lock()
-// 	defer bc.Mu.Unlock()
+func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
+	bc.Blockchain.Mu.Lock()
+	defer bc.Blockchain.Mu.Unlock()
 
-// 	log.Println("Loading all validator public keys")
+	log.Println("Loading all validator public keys")
 
-// 	for address := range bc.Stakeholders {
-// 		log.Printf("Attempting to load public key for stakeholder: %s", address)
-// 		pubKeyBytes, err := bc.Database.RetrieveValidatorPublicKey(address)
-// 		if err != nil {
-// 			log.Printf("Failed to load public key for stakeholder %s: %v", address, err)
-// 			continue
-// 		}
+	for addressStr := range bc.Blockchain.Stakeholders {
+		log.Printf("Attempting to load public key for stakeholder: %s", addressStr)
 
-// 		if len(pubKeyBytes) > 0 {
-// 			// Create a new PublicKey instance
-// 			pubKey := new(mldsa44.PublicKey)
-// 			// Parse the bytes into the public key
-// 			err = pubKey.UnmarshalBinary(pubKeyBytes)
-// 			if err != nil {
-// 				log.Printf("Failed to parse public key for stakeholder %s: %v", address, err)
-// 				continue
-// 			}
+		// Parse address using the correct package
+		addr, err := address.FromString(addressStr)
+		if err != nil {
+			log.Printf("Invalid address format for stakeholder %s: %v", addressStr, err)
+			continue
+		}
 
-// 			// Store the pointer directly
-// 			bc.PublicKeyMap[address] = pubKey
-// 			log.Printf("Loaded public key for validator: %s", address)
-// 		}
-// 	}
+		// Get public key using standard method
+		pubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+		if err != nil {
+			log.Printf("Failed to load public key for stakeholder %s: %v", addressStr, err)
+			continue
+		}
 
-// 	log.Printf("Loaded public keys for %d validators", len(bc.PublicKeyMap))
-// 	return nil
-// }
+		// Store in memory cache
+		bc.Blockchain.PublicKeyMap[addressStr] = &pubKey
+		log.Printf("Loaded public key for validator: %s", addressStr)
+	}
+
+	log.Printf("Loaded public keys for %d validators", len(bc.Blockchain.PublicKeyMap))
+	return nil
+}

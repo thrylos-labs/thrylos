@@ -12,7 +12,7 @@ package consensus
 
 // func NewConsensusManager(blockchain types.BlockchainInterface) *ConsensusManagerImpl {
 // 	cm := &ConsensusManagerImpl{
-// 		Blockchai		n:       blockchain,
+// 		Blockchain:       blockchain,
 // 		CurrentBlockTime: BaseBlockTime,
 // 		PredictionModel:  &PredictionModel{},
 // 	}
@@ -78,7 +78,7 @@ package consensus
 // 		return false
 // 	}
 
-// 	blockData, err := chain.SerializeForSigning(&shared.Block{})
+// 	blockData, err := chain.SerializeForSigning(&types.Block{})
 // 	if err != nil {
 // 		log.Printf("Failed to serialize block for signing: %v", err)
 // 		return false
@@ -101,7 +101,7 @@ package consensus
 // 	return big.NewInt(stake).Cmp(minStake) >= 0
 // }
 
-// func (cm *ConsensusManagerImpl) verifyBlockSignature(block *Block) bool {
+// func (cm *ConsensusManagerImpl) verifyBlockSignature(block *types.Block) bool {
 // 	mldsaPubKey, err := cm.Blockchain.RetrievePublicKey(block.Validator)
 // 	if err != nil {
 // 		log.Printf("Failed to retrieve public key for validator %s: %v", block.Validator, err)

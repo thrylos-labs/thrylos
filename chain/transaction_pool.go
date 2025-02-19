@@ -21,8 +21,12 @@ type txPoolImpl struct {
 	order        *list.List
 	db           types.Store // Remove the pointer
 	blockchain   *BlockchainImpl
+	propagator   *types.TransactionPropagator // Remove as part of validator/consensus removal
+}
 
-	// propagator   *types.TransactionPropagator  // Remove as part of validator/consensus removal
+// GetActiveValidators implements types.TxPool.
+func (p *txPoolImpl) GetActiveValidators(tx *types.Transaction) error {
+	panic("unimplemented")
 }
 
 type txEntry struct {

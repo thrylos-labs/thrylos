@@ -16,6 +16,6 @@ type TxPool interface {
 	GetFirstTransaction() (*Transaction, error)
 	GetAllTransactions() ([]*Transaction, error)
 	BroadcastTransaction(tx *Transaction) error
-	// GetActiveValidators(tx *Transaction) error
+	GetActiveValidators(tx *Transaction) error
 	Size() int
 }
