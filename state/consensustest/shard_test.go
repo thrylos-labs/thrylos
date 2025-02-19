@@ -37,7 +37,7 @@ package state
 // 	// Set up mock expectation before creating StateManager
 // 	mockNetwork.On("BroadcastMessage", mock.Anything).Return(nil)
 
-// 	sm := NewStateManager(mockNetwork, 4)
+// 	sm := state.NewStateManager(mockNetwork, 4)
 
 // 	t.Run("Partition Assignment", func(t *testing.T) {
 // 		// Test each partition range
@@ -68,7 +68,7 @@ package state
 
 // 	t.Run("UTXO Management", func(t *testing.T) {
 // 		address := "tl1test123"
-// 		utxo := shared.UTXO{
+// 		utxo := types.UTXO{
 // 			TransactionID: "tx1",
 // 			OwnerAddress:  address,
 // 			Amount:        1000,

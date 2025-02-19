@@ -1,54 +1,62 @@
 package validator
 
-// type validator struct {
-// 	index      int32             `cbor:"2,keyasint"`
-// 	privateKey crypto.PrivateKey `cbor:"1,keyasint"`
-// 	stake      amount.Amount     `cbor:"3,keyasint"`
-// }
+import (
+	"github.com/fxamacker/cbor/v2"
+	"github.com/thrylos-labs/thrylos/amount"
+	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/types"
+)
 
-// func NewValidator(privateKey crypto.PrivateKey, index int32, stake amount.Amount) types.Validator {
-// 	return &validator{
-// 		index:      index,
-// 		privateKey: privateKey,
-// 		stake:      stake,
-// 	}
-// }
+type validator struct {
+	index      int32             `cbor:"2,keyasint"`
+	privateKey crypto.PrivateKey `cbor:"1,keyasint"`
+	stake      amount.Amount     `cbor:"3,keyasint"`
+}
 
-// func NewValidatorFromBytes(validatorData []byte) types.Validator {
-// 	v := validator{}
-// 	err := cbor.Unmarshal(validatorData, v)
-// 	if err != nil {
-// 		return nil
-// 	}
-// 	return v
-// }
-// func (v validator) Index() int32 {
-// 	return v.index
-// }
-// func (v validator) PrivateKey() *crypto.PrivateKey {
-// 	return &v.privateKey
-// }
-// func (v validator) PublicKey() *crypto.PublicKey {
-// 	pub := v.privateKey.PublicKey()
-// 	return &pub
-// }
+func NewValidator(privateKey crypto.PrivateKey, index int32, stake amount.Amount) types.Validator {
+	return &validator{
+		index:      index,
+		privateKey: privateKey,
+		stake:      stake,
+	}
+}
 
-// func (v validator) Address() *address.Address {
-// 	pub := v.privateKey.PublicKey()
-// 	addr, err := (pub).Address()
-// 	if err != nil {
-// 		return address.NullAddress()
-// 	}
-// 	return addr
-// }
-// func (v validator) Stake() amount.Amount {
-// 	return v.stake
-// }
+func NewValidatorFromBytes(validatorData []byte) types.Validator {
+	v := validator{}
+	err := cbor.Unmarshal(validatorData, v)
+	if err != nil {
+		return nil
+	}
+	return v
+}
+func (v validator) Index() int32 {
+	return v.index
+}
+func (v validator) PrivateKey() *crypto.PrivateKey {
+	return &v.privateKey
+}
+func (v validator) PublicKey() *crypto.PublicKey {
+	pub := v.privateKey.PublicKey()
+	return &pub
+}
 
-// func (v validator) Marshal() ([]byte, error) {
-// 	return cbor.Marshal(v)
-// }
+func (v validator) Address() *address.Address {
+	pub := v.privateKey.PublicKey()
+	addr, err := (pub).Address()
+	if err != nil {
+		return address.NullAddress()
+	}
+	return addr
+}
+func (v validator) Stake() amount.Amount {
+	return v.stake
+}
 
-// func (v validator) Unmarshal(data []byte) error {
-// 	return cbor.Unmarshal(data, v)
-// }
+func (v validator) Marshal() ([]byte, error) {
+	return cbor.Marshal(v)
+}
+
+func (v validator) Unmarshal(data []byte) error {
+	return cbor.Unmarshal(data, v)
+}

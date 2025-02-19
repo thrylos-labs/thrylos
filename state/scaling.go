@@ -1,12 +1,8 @@
 package state
 
-import (
-	"github.com/thrylos-labs/thrylos/types"
-)
-
-type ShardScalingImpl struct {
-	*types.ShardScaling
-}
+// type ShardScalingImpl struct {
+// 	*types.ShardScaling
+// }
 
 // func NewShardScaling() *ShardScalingImpl {
 // 	return &ShardScaling{

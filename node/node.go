@@ -8,6 +8,9 @@ import (
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
+	"github.com/thrylos-labs/thrylos/consensus/selection"
+	"github.com/thrylos-labs/thrylos/consensus/staking"
+	"github.com/thrylos-labs/thrylos/consensus/validator"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/types"
@@ -41,7 +44,7 @@ type Node struct {
 	// Optional components - commented out for future implementation
 	// store               *types.Store        // Additional store interface if needed
 	// state               *state.State        // State management
-	// validator           *types.Validator    // Validator functionality
+	validator *types.Validator // Validator functionality
 	// ModernProcessor     *processor.ModernProcessor  // Advanced transaction processing
 	// BalanceManager      *balance.Manager    // Balance tracking
 	// StateManager        *types.StateManager // State synchronization
@@ -52,18 +55,18 @@ type Node struct {
 	// WebSocketMutex       sync.RWMutex
 	// balanceUpdateQueue   *BalanceUpdateQueue
 	// blockProducer        *chain.ModernBlockProducer
-	// StakingService       *staking.StakingService
+	StakingService *staking.StakingService
 	// Peers               map[string]*network.PeerConnection
 	// PeerMu              sync.RWMutex
 	// MaxInbound          int
 	// MaxOutbound         int
 
 	// Voting and validation - for future implementation
-	// txStatusMap         sync.Map
-	// VoteCounter         *validator.VoteCounter
-	// ValidatorSelector   *validators.ValidatorSelector
-	// IsVoteCounter      bool   // Indicates if this node is the designated vote counter
-	// VoteCounterAddress string // Address of the designated vote counter
+	txStatusMap        sync.Map
+	VoteCounter        *validator.VoteCounter
+	ValidatorSelector  *selection.ValidatorSelector
+	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
+	VoteCounterAddress string // Address of the designated vote counter
 }
 
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new

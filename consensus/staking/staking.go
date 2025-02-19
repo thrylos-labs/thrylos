@@ -1,260 +1,271 @@
 package staking
 
-// type StakingService struct {
-// 	mu         sync.RWMutex
-// 	pool       *types.StakingPool
-// 	stakes     map[string]*types.Stake
-// 	blockchain *types.Blockchain
-// }
+import (
+	"errors"
+	"fmt"
+	"sync"
+	"time"
 
-// func (s *StakingService) GetPool() *types.StakingPool {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
-// 	return s.pool
-// }
+	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/config"
+	"github.com/thrylos-labs/thrylos/types"
+)
 
-// func NewStakingService(blockchain *types.Blockchain) *StakingService {
-// 	return &StakingService{
-// 		pool: &types.StakingPool{
-// 			MinStakeAmount:    config.MinimumStakeAmount, // From constants.go
-// 			MinDelegation:     config.MinimumStakeAmount, // Use same minimum for delegation
-// 			FixedYearlyReward: config.AnnualStakeReward,  // From constants.go
-// 			LastRewardTime:    time.Now().Unix(),
-// 			TotalStaked:       0,
-// 			TotalDelegated:    0,
-// 		},
-// 		stakes:     make(map[string]*types.Stake),
-// 		blockchain: blockchain,
-// 	}
-// }
+type StakingService struct {
+	mu         sync.RWMutex
+	pool       *types.StakingPool
+	stakes     map[string]*types.Stake
+	blockchain *types.Blockchain
+}
 
-// // calculateStakeReward calculates daily reward for each validator and delegator
-// func (s *StakingService) CalculateStakeReward(rewardDistributionTime int64) map[string]float64 {
-// 	// Add validation for time parameters
-// 	if rewardDistributionTime <= s.pool.LastRewardTime {
-// 		return nil
-// 	}
+func (s *StakingService) GetPool() *types.StakingPool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pool
+}
 
-// 	// finalise stake period before reward distribution
-// 	totalStakeTimeAverage := float64(0)
-// 	for _, stake := range s.stakes {
-// 		if stake.LastStakeUpdateTime < rewardDistributionTime {
-// 			stakeTime := stake.Amount * (rewardDistributionTime - stake.LastStakeUpdateTime)
-// 			stake.StakeTimeSum += float64(stakeTime)
-// 			stake.LastStakeUpdateTime = rewardDistributionTime
-// 			stake.StakeTimeAverage = stake.StakeTimeSum / float64(rewardDistributionTime-s.pool.LastRewardTime)
-// 			totalStakeTimeAverage += stake.StakeTimeAverage
-// 		}
-// 	}
+func NewStakingService(blockchain *types.Blockchain) *StakingService {
+	return &StakingService{
+		pool: &types.StakingPool{
+			MinStakeAmount:    config.MinimumStakeAmount, // From constants.go
+			MinDelegation:     config.MinimumStakeAmount, // Use same minimum for delegation
+			FixedYearlyReward: config.AnnualStakeReward,  // From constants.go
+			LastRewardTime:    time.Now().Unix(),
+			TotalStaked:       0,
+			TotalDelegated:    0,
+		},
+		stakes:     make(map[string]*types.Stake),
+		blockchain: blockchain,
+	}
+}
 
-// 	rewards := make(map[string]float64)
-// 	extraRewardsFromDelegation := float64(0)
-// 	validatorsTotalStakeTimeAverage := float64(0)
-// 	//distribution of rewards to delegators and validators
-// 	if totalStakeTimeAverage > 0 {
-// 		for addr, stake := range s.stakes {
-// 			reward := (stake.StakeTimeAverage / float64(totalStakeTimeAverage)) * float64(config.DailyStakeReward)
-// 			if stake.ValidatorRole {
-// 				rewards[addr] = reward
-// 				stake.TotalStakeRewards += reward
-// 				validatorsTotalStakeTimeAverage += stake.StakeTimeAverage
-// 			} else {
-// 				rewards[addr] = reward * config.DelegationRewardPercent
-// 				extraRewardsFromDelegation += reward * (1 - config.DelegationRewardPercent)
-// 				stake.TotalDelegationRewards += reward * config.DelegationRewardPercent
-// 			}
-// 		}
-// 	}
+// calculateStakeReward calculates daily reward for each validator and delegator
+func (s *StakingService) CalculateStakeReward(rewardDistributionTime int64) map[string]float64 {
+	// Add validation for time parameters
+	if rewardDistributionTime <= s.pool.LastRewardTime {
+		return nil
+	}
 
-// 	//distribute extra rewards from delegation
-// 	if extraRewardsFromDelegation > 0 && validatorsTotalStakeTimeAverage > 0 {
-// 		for addr, stake := range s.stakes {
-// 			if stake.ValidatorRole {
-// 				reward := (stake.StakeTimeAverage / float64(validatorsTotalStakeTimeAverage)) * extraRewardsFromDelegation
-// 				rewards[addr] += reward
-// 				stake.TotalDelegationRewards += reward
-// 			}
-// 		}
-// 	}
-// 	return rewards
-// }
+	// finalise stake period before reward distribution
+	totalStakeTimeAverage := float64(0)
+	for _, stake := range s.stakes {
+		if stake.LastStakeUpdateTime < rewardDistributionTime {
+			stakeTime := stake.Amount * (rewardDistributionTime - stake.LastStakeUpdateTime)
+			stake.StakeTimeSum += float64(stakeTime)
+			stake.LastStakeUpdateTime = rewardDistributionTime
+			stake.StakeTimeAverage = stake.StakeTimeSum / float64(rewardDistributionTime-s.pool.LastRewardTime)
+			totalStakeTimeAverage += stake.StakeTimeAverage
+		}
+	}
 
-// func (s *StakingService) EstimateStakeReward(targetAddress string, currentTimeStamp int64) float64 {
-// 	totalStakeTimeAverage := float64(0)
-// 	addressStakeTimeAverage := float64(0)
-// 	validatorsStakeTimeAverage := float64(0)
-// 	delegatorsStakeTimeAverage := float64(0)
-// 	isDelegator := false
+	rewards := make(map[string]float64)
+	extraRewardsFromDelegation := float64(0)
+	validatorsTotalStakeTimeAverage := float64(0)
+	//distribution of rewards to delegators and validators
+	if totalStakeTimeAverage > 0 {
+		for addr, stake := range s.stakes {
+			reward := (stake.StakeTimeAverage / float64(totalStakeTimeAverage)) * float64(config.DailyStakeReward)
+			if stake.ValidatorRole {
+				rewards[addr] = reward
+				stake.TotalStakeRewards += reward
+				validatorsTotalStakeTimeAverage += stake.StakeTimeAverage
+			} else {
+				rewards[addr] = reward * config.DelegationRewardPercent
+				extraRewardsFromDelegation += reward * (1 - config.DelegationRewardPercent)
+				stake.TotalDelegationRewards += reward * config.DelegationRewardPercent
+			}
+		}
+	}
 
-// 	for addr, stake := range s.stakes {
-// 		if stake.LastStakeUpdateTime < currentTimeStamp {
-// 			stakeTime := stake.Amount * (currentTimeStamp - stake.LastStakeUpdateTime)
-// 			stakeTimeSum := stake.StakeTimeSum + float64(stakeTime)
-// 			totalStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
+	//distribute extra rewards from delegation
+	if extraRewardsFromDelegation > 0 && validatorsTotalStakeTimeAverage > 0 {
+		for addr, stake := range s.stakes {
+			if stake.ValidatorRole {
+				reward := (stake.StakeTimeAverage / float64(validatorsTotalStakeTimeAverage)) * extraRewardsFromDelegation
+				rewards[addr] += reward
+				stake.TotalDelegationRewards += reward
+			}
+		}
+	}
+	return rewards
+}
 
-// 			if addr == targetAddress {
-// 				addressStakeTimeAverage = stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
-// 				if !stake.ValidatorRole {
-// 					isDelegator = true
-// 				}
-// 			}
-// 			if stake.ValidatorRole {
-// 				validatorsStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
-// 			} else {
-// 				delegatorsStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
-// 			}
-// 		}
-// 	}
-// 	if totalStakeTimeAverage == 0 {
-// 		return 0
-// 	}
+func (s *StakingService) EstimateStakeReward(targetAddress string, currentTimeStamp int64) float64 {
+	totalStakeTimeAverage := float64(0)
+	addressStakeTimeAverage := float64(0)
+	validatorsStakeTimeAverage := float64(0)
+	delegatorsStakeTimeAverage := float64(0)
+	isDelegator := false
 
-// 	if isDelegator {
-// 		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(config.DailyStakeReward) * config.DelegationRewardPercent
-// 	}
+	for addr, stake := range s.stakes {
+		if stake.LastStakeUpdateTime < currentTimeStamp {
+			stakeTime := stake.Amount * (currentTimeStamp - stake.LastStakeUpdateTime)
+			stakeTimeSum := stake.StakeTimeSum + float64(stakeTime)
+			totalStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
 
-// 	if delegatorsStakeTimeAverage == 0 {
-// 		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(config.DailyStakeReward) * (1 - config.DelegationRewardPercent)
-// 	}
+			if addr == targetAddress {
+				addressStakeTimeAverage = stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
+				if !stake.ValidatorRole {
+					isDelegator = true
+				}
+			}
+			if stake.ValidatorRole {
+				validatorsStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
+			} else {
+				delegatorsStakeTimeAverage += stakeTimeSum / float64(currentTimeStamp-s.pool.LastRewardTime)
+			}
+		}
+	}
+	if totalStakeTimeAverage == 0 {
+		return 0
+	}
 
-// 	extraDelegationReward := delegatorsStakeTimeAverage * float64(config.DailyStakeReward) * (1 - config.DelegationRewardPercent) / totalStakeTimeAverage
+	if isDelegator {
+		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(config.DailyStakeReward) * config.DelegationRewardPercent
+	}
 
-// 	extraAddressReward := extraDelegationReward * addressStakeTimeAverage / validatorsStakeTimeAverage
+	if delegatorsStakeTimeAverage == 0 {
+		return (addressStakeTimeAverage / totalStakeTimeAverage) * float64(config.DailyStakeReward) * (1 - config.DelegationRewardPercent)
+	}
 
-// 	reward := (addressStakeTimeAverage / totalStakeTimeAverage) * float64(config.DailyStakeReward)
-// 	return extraAddressReward + reward
-// }
+	extraDelegationReward := delegatorsStakeTimeAverage * float64(config.DailyStakeReward) * (1 - config.DelegationRewardPercent) / totalStakeTimeAverage
 
-// // Add this method to your StakingService struct
-// func (s *StakingService) GetPoolStats() map[string]interface{} {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
+	extraAddressReward := extraDelegationReward * addressStakeTimeAverage / validatorsStakeTimeAverage
 
-// 	currentTime := time.Now().Unix()
-// 	lastRewardTime := s.pool.LastRewardTime // Changed from LastEpochBlock to LastRewardTime
+	reward := (addressStakeTimeAverage / totalStakeTimeAverage) * float64(config.DailyStakeReward)
+	return extraAddressReward + reward
+}
 
-// 	// Calculate next reward time (24 hours after last reward)
-// 	nextRewardTime := lastRewardTime + (24 * 3600)
-// 	timeUntilReward := nextRewardTime - currentTime
+// Add this method to your StakingService struct
+func (s *StakingService) GetPoolStats() map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-// 	return map[string]interface{}{
-// 		"totalStaked": map[string]interface{}{
-// 			"thrylos": float64(s.pool.TotalStaked) / 1e7,
-// 			"nano":    s.pool.TotalStaked,
-// 		},
-// 		"delegatorCount": len(s.stakes),
-// 		"rewardSchedule": map[string]interface{}{
-// 			"nextRewardTime":  nextRewardTime,
-// 			"timeUntilReward": timeUntilReward,
-// 			"lastRewardTime":  lastRewardTime, // Using LastRewardTime consistently
-// 			"rewardInterval":  "24h",
-// 			"dailyRewardPool": config.DailyStakeReward / 1e7,
-// 			"validatorShare":  "50%",
-// 			"delegatorShare":  "50%",
-// 		},
-// 		"validatorInfo": map[string]interface{}{
-// 			"activeCount":    len(s.blockchain.ActiveValidators),
-// 			"minStakeAmount": float64(s.pool.MinStakeAmount) / 1e7,
-// 		},
-// 	}
-// }
+	currentTime := time.Now().Unix()
+	lastRewardTime := s.pool.LastRewardTime // Changed from LastEpochBlock to LastRewardTime
 
-// func (s *StakingService) IsValidator(address string) bool {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
-// 	for _, validator := range s.blockchain.ActiveValidators {
-// 		if validator == address {
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
+	// Calculate next reward time (24 hours after last reward)
+	nextRewardTime := lastRewardTime + (24 * 3600)
+	timeUntilReward := nextRewardTime - currentTime
 
-// func (s *StakingService) CreateStake(userAddress string, amount int64) (*types.Stake, error) {
-// 	s.mu.Lock()
-// 	defer s.mu.Unlock()
+	return map[string]interface{}{
+		"totalStaked": map[string]interface{}{
+			"thrylos": float64(s.pool.TotalStaked) / 1e7,
+			"nano":    s.pool.TotalStaked,
+		},
+		"delegatorCount": len(s.stakes),
+		"rewardSchedule": map[string]interface{}{
+			"nextRewardTime":  nextRewardTime,
+			"timeUntilReward": timeUntilReward,
+			"lastRewardTime":  lastRewardTime, // Using LastRewardTime consistently
+			"rewardInterval":  "24h",
+			"dailyRewardPool": config.DailyStakeReward / 1e7,
+			"validatorShare":  "50%",
+			"delegatorShare":  "50%",
+		},
+		"validatorInfo": map[string]interface{}{
+			"activeCount":    len(s.blockchain.ActiveValidators),
+			"minStakeAmount": float64(s.pool.MinStakeAmount) / 1e7,
+		},
+	}
+}
 
-// 	// Automatically determine if address is a validator
-// 	isValidator := s.isValidator(userAddress)
-// 	isDelegator := !isValidator // isDelegator is opposite of isValidator
+func (s *StakingService) IsValidator(address string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, validator := range s.blockchain.ActiveValidators {
+		if validator == address {
+			return true
+		}
+	}
+	return false
+}
 
-// 	// Use appropriate minimum based on status
-// 	minRequired := s.pool.MinStakeAmount
-// 	if isDelegator {
-// 		minRequired = s.pool.MinDelegation
-// 	}
+func (s *StakingService) CreateStake(userAddress string, amount int64) (*types.Stake, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-// 	if amount < minRequired {
-// 		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
-// 	}
+	// Automatically determine if address is a validator
+	isValidator := s.IsValidator(userAddress)
+	isDelegator := !isValidator // isDelegator is opposite of isValidator
 
-// 	// Create transaction based on type
-// 	txType := "stake"
-// 	if isDelegator {
-// 		txType = "delegate"
-// 	}
-// 	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
+	// Use appropriate minimum based on status
+	minRequired := s.pool.MinStakeAmount
+	if isDelegator {
+		minRequired = s.pool.MinDelegation
+	}
 
-// 	stakingTx := &thrylos.Transaction{
-// 		Id:        txID,
-// 		Sender:    userAddress,
-// 		Timestamp: time.Now().Unix(),
-// 		Outputs: []*thrylos.UTXO{{
-// 			OwnerAddress:  "staking_pool",
-// 			Amount:        amount,
-// 			Index:         0,
-// 			TransactionId: "",
-// 		}},
-// 	}
+	if amount < minRequired {
+		return nil, fmt.Errorf("minimum amount required is %d THRYLOS", minRequired/1e7)
+	}
 
-// 	// Create the stake transaction
-// 	if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
-// 		return nil, fmt.Errorf("failed to create staking transaction: %v", err)
-// 	}
+	// Create transaction based on type
+	txType := "stake"
+	if isDelegator {
+		txType = "delegate"
+	}
+	txID := fmt.Sprintf("%s-%s-%d", txType, userAddress, time.Now().UnixNano())
 
-// 	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
-// }
+	stakingTx := &thrylos.Transaction{
+		Id:        txID,
+		Sender:    userAddress,
+		Timestamp: time.Now().Unix(),
+		Outputs: []*thrylos.UTXO{{
+			OwnerAddress:  "staking_pool",
+			Amount:        amount,
+			Index:         0,
+			TransactionId: "",
+		}},
+	}
 
-// // Keep internal function for testing
-// func (s *StakingService) createStakeInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) (*types.Stake, error) {
-// 	now := timestamp
+	// Create the stake transaction
+	// if err := s.blockchain.AddPendingTransaction(stakingTx); err != nil {
+	// 	return nil, fmt.Errorf("failed to create staking transaction: %v", err)
+	// }
 
-// 	// Initialize stake if it doesn't exist
-// 	if s.stakes[userAddress] == nil {
-// 		s.stakes[userAddress] = &types.Stake{
-// 			UserAddress:            userAddress,
-// 			Amount:                 0,
-// 			StartTime:              now,
-// 			LastStakeUpdateTime:    now,
-// 			TotalStakeRewards:      0,
-// 			TotalDelegationRewards: 0,
-// 			IsActive:               true,
-// 			ValidatorRole:          !isDelegator, // Set based on delegation status
-// 		}
-// 	}
+	return s.createStakeInternal(userAddress, isDelegator, amount, stakingTx.Timestamp)
+}
 
-// 	// Update stakes
-// 	stake := s.stakes[userAddress]
-// 	duration := now - stake.LastStakeUpdateTime
-// 	totalDuration := now - s.pool.LastRewardTime
-// 	stakeTime := stake.Amount * duration
+// Keep internal function for testing
+func (s *StakingService) createStakeInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) (*types.Stake, error) {
+	now := timestamp
 
-// 	stake.Amount += amount
-// 	stake.StakeTimeSum += float64(stakeTime)
-// 	if totalDuration > 0 {
-// 		stake.StakeTimeAverage = stake.StakeTimeSum / float64(totalDuration)
-// 	}
-// 	stake.LastStakeUpdateTime = now
+	// Initialize stake if it doesn't exist
+	if s.stakes[userAddress] == nil {
+		s.stakes[userAddress] = &types.Stake{
+			UserAddress:            userAddress,
+			Amount:                 0,
+			StartTime:              now,
+			LastStakeUpdateTime:    now,
+			TotalStakeRewards:      0,
+			TotalDelegationRewards: 0,
+			IsActive:               true,
+			ValidatorRole:          !isDelegator, // Set based on delegation status
+		}
+	}
 
-// 	// Update pool totals
-// 	if isDelegator {
-// 		s.pool.TotalDelegated += amount
-// 	} else {
-// 		s.pool.TotalStaked += amount
-// 	}
+	// Update stakes
+	stake := s.stakes[userAddress]
+	duration := now - stake.LastStakeUpdateTime
+	totalDuration := now - s.pool.LastRewardTime
+	stakeTime := stake.Amount * duration
 
-// 	return stake, nil
-// }
+	stake.Amount += amount
+	stake.StakeTimeSum += float64(stakeTime)
+	if totalDuration > 0 {
+		stake.StakeTimeAverage = stake.StakeTimeSum / float64(totalDuration)
+	}
+	stake.LastStakeUpdateTime = now
+
+	// Update pool totals
+	if isDelegator {
+		s.pool.TotalDelegated += amount
+	} else {
+		s.pool.TotalStaked += amount
+	}
+
+	return stake, nil
+}
 
 // func (s *StakingService) DistributeRewards() error {
 // 	s.mu.Lock()
@@ -295,84 +306,84 @@ package staking
 // 	return nil
 // }
 
-// func (s *StakingService) unstakeTokensInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) error {
-// 	stake, exists := s.stakes[userAddress]
-// 	if !exists {
-// 		return errors.New("no stake found for address")
-// 	}
+func (s *StakingService) unstakeTokensInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) error {
+	stake, exists := s.stakes[userAddress]
+	if !exists {
+		return errors.New("no stake found for address")
+	}
 
-// 	if stake.Amount < amount {
-// 		return errors.New("insufficient staked amount")
-// 	}
+	if stake.Amount < amount {
+		return errors.New("insufficient staked amount")
+	}
 
-// 	// Calculate time-based values first
-// 	now := timestamp
-// 	duration := now - stake.LastStakeUpdateTime
-// 	totalDuration := now - s.pool.LastRewardTime
-// 	stakeTime := stake.Amount * duration
+	// Calculate time-based values first
+	now := timestamp
+	duration := now - stake.LastStakeUpdateTime
+	totalDuration := now - s.pool.LastRewardTime
+	stakeTime := stake.Amount * duration
 
-// 	// Update stake amount (removed oldAmount declaration)
-// 	stake.Amount -= amount
-// 	stake.StakeTimeSum += float64(stakeTime)
-// 	if totalDuration > 0 {
-// 		stake.StakeTimeAverage = stake.StakeTimeSum / float64(totalDuration)
-// 	}
-// 	stake.LastStakeUpdateTime = now
+	// Update stake amount (removed oldAmount declaration)
+	stake.Amount -= amount
+	stake.StakeTimeSum += float64(stakeTime)
+	if totalDuration > 0 {
+		stake.StakeTimeAverage = stake.StakeTimeSum / float64(totalDuration)
+	}
+	stake.LastStakeUpdateTime = now
 
-// 	// Update pool totals based on stake type
-// 	if isDelegator {
-// 		s.pool.TotalDelegated = s.pool.TotalDelegated - amount
-// 	} else {
-// 		s.pool.TotalStaked = s.pool.TotalStaked - amount
-// 	}
+	// Update pool totals based on stake type
+	if isDelegator {
+		s.pool.TotalDelegated = s.pool.TotalDelegated - amount
+	} else {
+		s.pool.TotalStaked = s.pool.TotalStaked - amount
+	}
 
-// 	// Update Stakeholders map
-// 	if stake.Amount == 0 {
-// 		delete(s.stakes, userAddress)
-// 	}
+	// Update Stakeholders map
+	if stake.Amount == 0 {
+		delete(s.stakes, userAddress)
+	}
 
-// 	// Update blockchain stakeholders
-// 	currentStake := s.blockchain.Stakeholders[userAddress]
-// 	if currentStake <= amount {
-// 		delete(s.blockchain.Stakeholders, userAddress)
-// 	} else {
-// 		s.blockchain.Stakeholders[userAddress] = currentStake - amount
-// 	}
+	// Update blockchain stakeholders
+	currentStake := s.blockchain.Stakeholders[userAddress]
+	if currentStake <= amount {
+		delete(s.blockchain.Stakeholders, userAddress)
+	} else {
+		s.blockchain.Stakeholders[userAddress] = currentStake - amount
+	}
 
-// 	return nil
-// }
+	return nil
+}
 
-// // Support methods for compatibility
-// func (s *StakingService) GetTotalStaked() int64 {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
-// 	return s.pool.TotalStaked
-// }
-// func (s *StakingService) GetTotalDelegated() int64 {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
-// 	return s.pool.TotalDelegated
-// }
-// func (s *StakingService) GetTotalStakedDelegated() int64 {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
-// 	return s.pool.TotalDelegated + s.pool.TotalStaked
-// }
+// Support methods for compatibility
+func (s *StakingService) GetTotalStaked() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pool.TotalStaked
+}
+func (s *StakingService) GetTotalDelegated() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pool.TotalDelegated
+}
+func (s *StakingService) GetTotalStakedDelegated() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pool.TotalDelegated + s.pool.TotalStaked
+}
 
-// func (s *StakingService) GetEffectiveInflationRate() float64 {
-// 	s.mu.RLock()
-// 	defer s.mu.RUnlock()
+func (s *StakingService) GetEffectiveInflationRate() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-// 	currentTotalSupply := float64(s.getTotalSupply()) / 1e7
-// 	fixedYearlyReward := float64(s.pool.FixedYearlyReward) / 1e7
-// 	return (fixedYearlyReward / currentTotalSupply) * 100
-// }
+	currentTotalSupply := float64(s.getTotalSupply()) / 1e7
+	fixedYearlyReward := float64(s.pool.FixedYearlyReward) / 1e7
+	return (fixedYearlyReward / currentTotalSupply) * 100
+}
 
-// func (s *StakingService) getTotalSupply() int64 {
-// 	// No need for additional locking as this is called from locked methods
-// 	totalSupply := int64(0)
-// 	for _, balance := range s.blockchain.Stakeholders {
-// 		totalSupply += balance
-// 	}
-// 	return totalSupply
-// }
+func (s *StakingService) getTotalSupply() int64 {
+	// No need for additional locking as this is called from locked methods
+	totalSupply := int64(0)
+	for _, balance := range s.blockchain.Stakeholders {
+		totalSupply += balance
+	}
+	return totalSupply
+}

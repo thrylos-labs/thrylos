@@ -1,12 +1,8 @@
 package consensus
 
-import (
-	"github.com/thrylos-labs/thrylos/types"
-)
-
-type ConsensusManagerImpl struct {
-	*types.ConsensusManager
-}
+// type ConsensusManagerImpl struct {
+// 	*types.ConsensusManager
+// }
 
 // const (
 // 	BaseBlockTime = 5 * time.Second
@@ -16,7 +12,7 @@ type ConsensusManagerImpl struct {
 
 // func NewConsensusManager(blockchain types.BlockchainInterface) *ConsensusManagerImpl {
 // 	cm := &ConsensusManagerImpl{
-// 		Blockchain:       blockchain,
+// 		Blockchai		n:       blockchain,
 // 		CurrentBlockTime: BaseBlockTime,
 // 		PredictionModel:  &PredictionModel{},
 // 	}

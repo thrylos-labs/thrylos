@@ -23,12 +23,12 @@ package state
 
 // 	// Rest of initialization remains the same
 // 	for i := 0; i < numShards; i++ {
-// 		sm.partitions[i] = &StatePartition{
+// 		sm.partitions[i] = &types.StatePartition{
 // 			ID:           i,
 // 			StartAddress: calculatePartitionStart(i, numShards),
 // 			EndAddress:   calculatePartitionEnd(i, numShards),
 // 			Balances:     make(map[string]int64),
-// 			UTXOs:        make(map[string]*shared.UTXO),
+// 			UTXOs:        make(map[string]*types.UTXO),
 // 			LastUpdated:  time.Now().Unix(),
 // 		}
 // 	}
@@ -73,7 +73,7 @@ package state
 // }
 
 // // GetResponsiblePartition determines which partition handles a given address
-// func (sm *StateManagerImpl) GetResponsiblePartition(address string) *shared.StatePartition {
+// func (sm *StateManagerImpl) GetResponsiblePartition(address string) *types.StatePartition {
 // 	sm.mu.RLock()
 // 	defer sm.mu.RUnlock()
 
@@ -86,7 +86,7 @@ package state
 // }
 
 // // UpdateState updates state data in the appropriate partition
-// func (sm *StateManagerImpl) UpdateState(address string, balance int64, utxo *shared.UTXO) error {
+// func (sm *StateManagerImpl) UpdateState(address string, balance int64, utxo *types.UTXO) error {
 // 	partition := sm.GetResponsiblePartition(address)
 // 	if partition == nil {
 // 		return fmt.Errorf("no responsible partition found for address: %s", address)

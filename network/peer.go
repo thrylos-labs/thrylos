@@ -7,7 +7,7 @@ package network
 // // Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network.
 
 // type PeerConnection struct {
-// 	// Node      *Node // Add a reference to the Node
+// 	Node      *Node // Add a reference to the Node
 // 	Address   string
 // 	IsInbound bool
 // 	LastSeen  time.Time
