@@ -1,102 +1,120 @@
 package state
 
-// func TestStateReallocation(t *testing.T) {
-// 	mockNetwork := new(MockNetwork)
-// 	mockNetwork.On("BroadcastMessage", mock.Anything).Return(nil)
+import (
+	"testing"
+	"time"
 
-// 	sm := state.NewStateManager(mockNetwork, 4)
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/thrylos-labs/thrylos/state"
+)
 
-// 	t.Run("Metrics Collection", func(t *testing.T) {
-// 		address := "tl1test123"
+func TestStateReallocation(t *testing.T) {
+	mockNetwork := new(MockNetwork)
+	mockNetwork.On("BroadcastMessage", mock.Anything).Return(nil)
 
-// 		// Record some activity
-// 		err := sm.UpdateState(address, 1000, nil)
-// 		assert.NoError(t, err)
+	sm := state.NewStateManager(mockNetwork, 4)
 
-// 		balance, err := sm.GetBalance(address)
-// 		assert.NoError(t, err)
-// 		assert.Equal(t, int64(1000), balance)
+	t.Run("Metrics Collection", func(t *testing.T) {
+		address := "tl1test123"
 
-// 		partition := sm.GetResponsiblePartition(address)
-// 		metrics := sm.metrics.shardMetrics[partition.ID]
+		// Record some activity
+		err := sm.UpdateState(address, 1000, nil)
+		assert.NoError(t, err)
 
-// 		assert.Equal(t, int64(1), metrics.AccessCount)
-// 		assert.Equal(t, int64(1), metrics.ModifyCount)
-// 		assert.True(t, metrics.LoadFactor > 0)
-// 	})
+		balance, err := sm.GetBalance(address)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1000), balance)
 
-// 	t.Run("State Relocation", func(t *testing.T) {
-// 		// Create an overloaded shard
-// 		address := "tl1test456"
-// 		partition := sm.GetResponsiblePartition(address)
+		partition := sm.GetResponsiblePartition(address)
 
-// 		// Simulate high load
-// 		for i := 0; i < 1000; i++ {
-// 			sm.metrics.shardMetrics[partition.ID].RecordAccess()
-// 			sm.metrics.shardMetrics[partition.ID].RecordModify()
-// 		}
-// 		sm.metrics.shardMetrics[partition.ID].UpdateLoadFactor(900)
+		// Use accessor methods to get metrics
+		accessCount := sm.GetShardAccessCount(partition.ID)
+		modifyCount := sm.GetShardModifyCount(partition.ID)
+		loadFactor := sm.GetShardLoadFactor(partition.ID)
 
-// 		// Add test state
-// 		err := sm.UpdateState(address, 2000, nil)
-// 		assert.NoError(t, err)
+		assert.Equal(t, int64(1), accessCount)
+		assert.Equal(t, int64(1), modifyCount)
+		assert.True(t, loadFactor > 0)
+	})
 
-// 		// Trigger relocation check
-// 		sm.checkAndRelocate()
+	t.Run("State Relocation", func(t *testing.T) {
+		// Create an overloaded shard
+		address := "tl1test456"
+		partition := sm.GetResponsiblePartition(address)
 
-// 		// Verify state was moved
-// 		balance, err := sm.GetBalance(address)
-// 		assert.NoError(t, err)
-// 		assert.Equal(t, int64(2000), balance)
-// 	})
+		// You'll need to add methods to simulate high load
+		// For example:
+		err := sm.SimulateHighLoad(partition.ID, 1000) // Add this method to StateManagerImpl
+		assert.NoError(t, err)
 
-// 	t.Run("Relocation Under Load", func(t *testing.T) {
-// 		// Test concurrent access during relocation
-// 		address := "tl1test789"
+		// Add test state
+		err = sm.UpdateState(address, 2000, nil)
+		assert.NoError(t, err)
 
-// 		// Add initial state
-// 		err := sm.UpdateState(address, 3000, nil)
-// 		assert.NoError(t, err)
+		// You need to expose the checkAndRelocate method or create a wrapper
+		err = sm.CheckAndRelocateForTesting() // Add this method to StateManagerImpl
+		assert.NoError(t, err)
 
-// 		// Start concurrent operations
-// 		done := make(chan bool)
-// 		go func() {
-// 			for i := 0; i < 100; i++ {
-// 				sm.GetBalance(address)
-// 				time.Sleep(time.Millisecond)
-// 			}
-// 			done <- true
-// 		}()
+		// Verify state was moved
+		balance, err := sm.GetBalance(address)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(2000), balance)
+	})
 
-// 		// Trigger relocation during operations
-// 		sm.checkAndRelocate()
+	t.Run("Relocation Under Load", func(t *testing.T) {
+		// Test concurrent access during relocation
+		address := "tl1test789"
 
-// 		<-done
+		// Add initial state
+		err := sm.UpdateState(address, 3000, nil)
+		assert.NoError(t, err)
 
-// 		// Verify final state
-// 		balance, err := sm.GetBalance(address)
-// 		assert.NoError(t, err)
-// 		assert.Equal(t, int64(3000), balance)
-// 	})
+		// Start concurrent operations
+		done := make(chan bool)
+		go func() {
+			for i := 0; i < 100; i++ {
+				sm.GetBalance(address)
+				time.Sleep(time.Millisecond)
+			}
+			done <- true
+		}()
 
-// 	t.Run("Metrics Reset", func(t *testing.T) {
-// 		address := "tl1test999"
-// 		partition := sm.GetResponsiblePartition(address)
+		// Trigger relocation during operations
+		err = sm.CheckAndRelocateForTesting()
+		assert.NoError(t, err)
 
-// 		// Record metrics
-// 		sm.metrics.shardMetrics[partition.ID].RecordAccess()
-// 		sm.metrics.shardMetrics[partition.ID].RecordModify()
+		<-done
 
-// 		// Verify metrics
-// 		metrics := sm.metrics.shardMetrics[partition.ID]
-// 		assert.True(t, metrics.AccessCount > 0)
-// 		assert.True(t, metrics.ModifyCount > 0)
+		// Verify final state
+		balance, err := sm.GetBalance(address)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(3000), balance)
+	})
 
-// 		// Reset metrics
-// 		metrics.AccessCount = 0
-// 		metrics.ModifyCount = 0
+	t.Run("Metrics Reset", func(t *testing.T) {
+		address := "tl1test999"
+		partition := sm.GetResponsiblePartition(address)
 
-// 		assert.Equal(t, int64(0), metrics.AccessCount)
-// 		assert.Equal(t, int64(0), metrics.ModifyCount)
-// 	})
-// }
+		// You'll need a method to record metrics
+		err := sm.RecordMetricsForTesting(partition.ID) // Add this method to StateManagerImpl
+		assert.NoError(t, err)
+
+		// Verify metrics
+		accessCount := sm.GetShardAccessCount(partition.ID)
+		modifyCount := sm.GetShardModifyCount(partition.ID)
+
+		assert.True(t, accessCount > 0)
+		assert.True(t, modifyCount > 0)
+
+		// You'll need a method to reset metrics
+		err = sm.ResetMetricsForTesting(partition.ID) // Add this method to StateManagerImpl
+		assert.NoError(t, err)
+
+		accessCount = sm.GetShardAccessCount(partition.ID)
+		modifyCount = sm.GetShardModifyCount(partition.ID)
+
+		assert.Equal(t, int64(0), accessCount)
+		assert.Equal(t, int64(0), modifyCount)
+	})
+}

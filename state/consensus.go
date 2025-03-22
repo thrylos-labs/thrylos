@@ -87,3 +87,8 @@ func (ac *AdaptiveConsensusImpl) GetConsensusParams(shardID int) *types.Consensu
 	defer ac.Mu.RUnlock()
 	return ac.Params[shardID]
 }
+
+// AdjustParametersForTesting exposes the adjustParameters method for testing
+func (ac *AdaptiveConsensusImpl) AdjustParametersForTesting() {
+	ac.adjustParameters()
+}

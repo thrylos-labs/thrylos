@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
+	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/balance"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
 	"github.com/thrylos-labs/thrylos/consensus/selection"
@@ -15,6 +16,7 @@ import (
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/types"
+	"google.golang.org/grpc/balancer/grpclb/state"
 )
 
 type Node struct {
@@ -43,24 +45,24 @@ type Node struct {
 	BlockTrigger chan struct{}
 
 	// Optional components - commented out for future implementation
-	// store               *types.Store        // Additional store interface if needed
-	// state               *state.State        // State management
-	validator *types.Validator // Validator functionality
-	// ModernProcessor     *processor.ModernProcessor  // Advanced transaction processing
-	// BalanceManager      *balance.Manager    // Balance tracking
-	// StateManager        *types.StateManager // State synchronization
-	// PendingTransactions []*thrylos.Transaction  // Being replaced by txPool
+	store               *types.Store               // Additional store interface if needed
+	state               *state.State               // State management
+	validator           *types.Validator           // Validator functionality
+	ModernProcessor     *processor.ModernProcessor // Advanced transaction processing
+	BalanceManager      *balance.Manager           // Balance tracking
+	StateManager        *types.StateManager        // State synchronization
+	PendingTransactions []*thrylos.Transaction     // Being replaced by txPool
 
 	// Network and peer management - for future implementation
 	// WebSocketConnections map[string]*network.WebSocketConnection
-	// WebSocketMutex       sync.RWMutex
+	WebSocketMutex     sync.RWMutex
 	balanceUpdateQueue *balance.BalanceUpdateQueue
 	// blockProducer        *chain.ModernBlockProducer
 	StakingService *staking.StakingService
 	// Peers               map[string]*network.PeerConnection
-	// PeerMu              sync.RWMutex
-	// MaxInbound          int
-	// MaxOutbound         int
+	PeerMu      sync.RWMutex
+	MaxInbound  int
+	MaxOutbound int
 
 	// Voting and validation - for future implementation
 	txStatusMap        sync.Map

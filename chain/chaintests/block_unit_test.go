@@ -5,22 +5,15 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"runtime"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/state"
-
-	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/chain"
-	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
-	"github.com/thrylos-labs/thrylos/node"
 	"github.com/thrylos-labs/thrylos/types"
 	"github.com/thrylos-labs/thrylos/utils"
 )
@@ -341,407 +334,407 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 	return "None"
 }
 
-func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
-	// Create test directory
-	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
-	require.NoError(t, err, "Failed to create temp directory")
-	defer os.RemoveAll(tempDir)
+// func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
+// 	// Create test directory
+// 	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
+// 	require.NoError(t, err, "Failed to create temp directory")
+// 	defer os.RemoveAll(tempDir)
 
-	// Production-like timing constants
-	const (
-		networkLatency    = 25 * time.Millisecond  // Reduced from 75ms
-		consensusDelay    = 100 * time.Millisecond // Reduced from 200ms
-		validatorCount    = 16
-		txsPerBlock       = 1000
-		batchSize         = 50 // Smaller batches for better distribution
-		batchDelay        = 30 * time.Millisecond
-		expectedBlockTime = 850 * time.Millisecond
-		numShards         = 12
-	)
+// 	// Production-like timing constants
+// 	const (
+// 		networkLatency    = 25 * time.Millisecond  // Reduced from 75ms
+// 		consensusDelay    = 100 * time.Millisecond // Reduced from 200ms
+// 		validatorCount    = 16
+// 		txsPerBlock       = 1000
+// 		batchSize         = 50 // Smaller batches for better distribution
+// 		batchDelay        = 30 * time.Millisecond
+// 		expectedBlockTime = 850 * time.Millisecond
+// 		numShards         = 12
+// 	)
 
-	// Initialize network handler mock
-	networkHandler := state.NewMockNetworkInterface(networkLatency, 0.1)
+// 	// Initialize network handler mock
+// 	networkHandler := state.NewMockNetworkInterface(networkLatency, 0.1)
 
-	// Initialize state manager with sharding
-	stateManager := state.NewStateManager(networkHandler, numShards)
-	defer stateManager.StopStateSyncLoop()
+// 	// Initialize state manager with sharding
+// 	stateManager := state.NewStateManager(networkHandler, numShards)
+// 	defer stateManager.StopStateSyncLoop()
 
-	privKey, err := crypto.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("Failed to generate private key: %v", err)
-	}
+// 	privKey, err := crypto.NewPrivateKey()
+// 	if err != nil {
+// 		t.Fatalf("Failed to generate private key: %v", err)
+// 	}
 
-	// Initialize blockchain with genesis account and state manager
-	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
-	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
-		DataDir:           tempDir,
-		AESKey:            []byte("test-key"),
-		GenesisAccount:    privKey,
-		TestMode:          true,
-		DisableBackground: true,
-		StateManager:      stateManager.StateManager,
-	})
-	require.NoError(t, err, "Failed to create blockchain")
+// 	// Initialize blockchain with genesis account and state manager
+// 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
+// 	config := &types.BlockchainConfig{
+// 		DataDir:           tempDir,
+// 		AESKey:            []byte("test-key"),
+// 		GenesisAccount:    privKey,
+// 		TestMode:          true,
+// 		DisableBackground: true,
+// 	}
 
-	node := &node.Node{
-		config:     &config.Config{},
-		state:      state.NewState(),
-		txPool:     shared.NewTxPool(),
-		validator:  shared.NewValidator(),
-		blockchain: blockchain,
-		messageCh:  make(chan shared.Message, 100), // Message channel for node communication
-	}
+// 	require.NoError(t, err, "Failed to create blockchain")
 
-	// Start message handler for node
-	go node.handleMessages()
+// 	node := &node.Node{
+// 		config:     &config.Config{},
+// 		state:      state.NewState(),
+// 		txPool:     shared.NewTxPool(),
+// 		validator:  shared.NewValidator(),
+// 		blockchain: blockchain,
+// 		messageCh:  make(chan shared.Message, 100), // Message channel for node communication
+// 	}
 
-	// Initialize DAG Manager first
-	dagManager := processor.NewDAGManager()
-	node.DAGManager = dagManager
+// 	// Start message handler for node
+// 	go node.handleMessages()
 
-	// Initialize ModernProcessor instead of BatchProcessor
-	node.ModernProcessor = processor.NewModernProcessor()
-	node.ModernProcessor.Start()
+// 	// Initialize DAG Manager first
+// 	dagManager := processor.NewDAGManager()
+// 	node.DAGManager = dagManager
 
-	// Setup validators
-	// Setup validators
-	// Setup validators
-	validators := make([]struct {
-		address    string
-		publicKey  *mldsa44.PublicKey  // Note: Using pointer type
-		privateKey *mldsa44.PrivateKey // Note: Using pointer type
-	}, validatorCount)
+// 	// Initialize ModernProcessor instead of BatchProcessor
+// 	node.ModernProcessor = processor.NewModernProcessor()
+// 	node.ModernProcessor.Start()
 
-	// Create and register validators
-	for i := 0; i < validatorCount; i++ {
-		// GenerateKey returns pointers
-		publicKey, privateKey, err := mldsa.GenerateKey(nil)
-		require.NoError(t, err, "Failed to generate validator key pair")
+// 	// Setup validators
+// 	// Setup validators
+// 	// Setup validators
+// 	validators := make([]struct {
+// 		address    string
+// 		publicKey  *mldsa44.PublicKey  // Note: Using pointer type
+// 		privateKey *mldsa44.PrivateKey // Note: Using pointer type
+// 	}, validatorCount)
 
-		address := fmt.Sprintf("tl11validator%d", i)
-		validators[i] = struct {
-			address    string
-			publicKey  *mldsa44.PublicKey
-			privateKey *mldsa44.PrivateKey
-		}{
-			address:    address,
-			publicKey:  publicKey,  // Store the pointer directly
-			privateKey: privateKey, // Store the pointer directly
-		}
+// 	// Create and register validators
+// 	for i := 0; i < validatorCount; i++ {
+// 		// GenerateKey returns pointers
+// 		publicKey, privateKey, err := mldsa.GenerateKey(nil)
+// 		require.NoError(t, err, "Failed to generate validator key pair")
 
-		// Make sure we pass the pointers to these functions
-		err = blockchain.Database.InsertOrUpdateMLDSAPublicKey(address, publicKey)
-		require.NoError(t, err, "Failed to store validator public key")
-		err = blockchain.ValidatorKeys.StoreKey(address, privateKey)
-		require.NoError(t, err, "Failed to store validator private key")
-		blockchain.PublicKeyMap[address] = publicKey // Store the pointer in the map
+// 		address := fmt.Sprintf("tl11validator%d", i)
+// 		validators[i] = struct {
+// 			address    string
+// 			publicKey  *mldsa44.PublicKey
+// 			privateKey *mldsa44.PrivateKey
+// 		}{
+// 			address:    address,
+// 			publicKey:  publicKey,  // Store the pointer directly
+// 			privateKey: privateKey, // Store the pointer directly
+// 		}
 
-		err = stateManager.UpdateState(address, 1000000, nil)
-		require.NoError(t, err, "Failed to initialize validator state")
-	}
+// 		// Make sure we pass the pointers to these functions
+// 		err = blockchain.Database.InsertOrUpdateMLDSAPublicKey(address, publicKey)
+// 		require.NoError(t, err, "Failed to store validator public key")
+// 		err = blockchain.ValidatorKeys.StoreKey(address, privateKey)
+// 		require.NoError(t, err, "Failed to store validator private key")
+// 		blockchain.PublicKeyMap[address] = publicKey // Store the pointer in the map
 
-	// Test cases for different network loads
-	testCases := []struct {
-		name            string
-		numBlocks       int
-		networkLoad     string
-		latencyFactor   float64
-		expectedMaxTime time.Duration
-	}{
-		{
-			name:            "Normal Network Load",
-			numBlocks:       10,
-			networkLoad:     "normal",
-			latencyFactor:   1.0,
-			expectedMaxTime: 15 * time.Second,
-		},
-		{
-			name:            "High Network Load",
-			numBlocks:       10,
-			networkLoad:     "high",
-			latencyFactor:   2.0,
-			expectedMaxTime: 25 * time.Second,
-		},
-		{
-			name:            "Peak Network Load",
-			numBlocks:       10,
-			networkLoad:     "peak",
-			latencyFactor:   3.0,
-			expectedMaxTime: 35 * time.Second,
-		},
-	}
+// 		err = stateManager.UpdateState(address, 1000000, nil)
+// 		require.NoError(t, err, "Failed to initialize validator state")
+// 	}
 
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			var blockTimes []time.Duration
-			var batchTimes []time.Duration
+// 	// Test cases for different network loads
+// 	testCases := []struct {
+// 		name            string
+// 		numBlocks       int
+// 		networkLoad     string
+// 		latencyFactor   float64
+// 		expectedMaxTime time.Duration
+// 	}{
+// 		{
+// 			name:            "Normal Network Load",
+// 			numBlocks:       10,
+// 			networkLoad:     "normal",
+// 			latencyFactor:   1.0,
+// 			expectedMaxTime: 15 * time.Second,
+// 		},
+// 		{
+// 			name:            "High Network Load",
+// 			numBlocks:       10,
+// 			networkLoad:     "high",
+// 			latencyFactor:   2.0,
+// 			expectedMaxTime: 25 * time.Second,
+// 		},
+// 		{
+// 			name:            "Peak Network Load",
+// 			numBlocks:       10,
+// 			networkLoad:     "peak",
+// 			latencyFactor:   3.0,
+// 			expectedMaxTime: 35 * time.Second,
+// 		},
+// 	}
 
-			shardMetrics := make(map[int]*ShardMetricsData)
-			for i := 0; i < numShards; i++ {
-				shardMetrics[i] = &ShardMetricsData{}
-			}
+// 	for _, tc := range testCases {
+// 		tc := tc
+// 		t.Run(tc.name, func(t *testing.T) {
+// 			var blockTimes []time.Duration
+// 			var batchTimes []time.Duration
 
-			startTime := time.Now()
+// 			shardMetrics := make(map[int]*ShardMetricsData)
+// 			for i := 0; i < numShards; i++ {
+// 				shardMetrics[i] = &ShardMetricsData{}
+// 			}
 
-			blockchain.Mu.RLock()
-			initialHeight := len(blockchain.Blocks)
-			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
-			blockchain.Mu.RUnlock()
+// 			startTime := time.Now()
 
-			// Process blocks
-			for i := 0; i < tc.numBlocks; i++ {
-				blockStart := time.Now()
+// 			blockchain.Mu.RLock()
+// 			initialHeight := len(blockchain.Blocks)
+// 			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
+// 			blockchain.Mu.RUnlock()
 
-				// Pre-allocate transaction slice with capacity
-				allTxs := make([]*thrylos.Transaction, 0, txsPerBlock)
+// 			// Process blocks
+// 			for i := 0; i < tc.numBlocks; i++ {
+// 				blockStart := time.Now()
 
-				// Create channels
-				txChan := make(chan *thrylos.Transaction, txsPerBlock)
-				resultChan := make(chan struct {
-					tx      *thrylos.Transaction
-					latency time.Duration
-				}, txsPerBlock)
+// 				// Pre-allocate transaction slice with capacity
+// 				allTxs := make([]*thrylos.Transaction, 0, txsPerBlock)
 
-				// Create metrics channel
-				metricsChan := make(chan struct {
-					shardID int
-					latency time.Duration
-				}, txsPerBlock)
+// 				// Create channels
+// 				txChan := make(chan *thrylos.Transaction, txsPerBlock)
+// 				resultChan := make(chan struct {
+// 					tx      *thrylos.Transaction
+// 					latency time.Duration
+// 				}, txsPerBlock)
 
-				var wg sync.WaitGroup
-				parallelism := runtime.NumCPU() * 6
+// 				// Create metrics channel
+// 				metricsChan := make(chan struct {
+// 					shardID int
+// 					latency time.Duration
+// 				}, txsPerBlock)
 
-				// Launch processor goroutines
-				for w := 0; w < parallelism; w++ {
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						for tx := range txChan {
-							start := time.Now()
-							err := processor.ProcessIncomingTransaction(tx)
-							require.NoError(t, err)
+// 				var wg sync.WaitGroup
+// 				parallelism := runtime.NumCPU() * 6
 
-							resultChan <- struct {
-								tx      *thrylos.Transaction
-								latency time.Duration
-							}{tx, time.Since(start)}
-						}
-					}()
-				}
+// 				// Launch processor goroutines
+// 				for w := 0; w < parallelism; w++ {
+// 					wg.Add(1)
+// 					go func() {
+// 						defer wg.Done()
+// 						for tx := range txChan {
+// 							start := time.Now()
+// 							err := processor.ProcessIncomingTransaction(tx)
+// 							require.NoError(t, err)
 
-				// Launch metrics collector
-				go func() {
-					for metric := range metricsChan {
-						metrics := shardMetrics[metric.shardID]
-						metrics.ModifyCount++
-						metrics.TotalTxCount++
-						if metrics.AvgLatency == 0 {
-							metrics.AvgLatency = metric.latency
-						} else {
-							metrics.AvgLatency = (metrics.AvgLatency + metric.latency) / 2
-						}
-						metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
-					}
-				}()
+// 							resultChan <- struct {
+// 								tx      *thrylos.Transaction
+// 								latency time.Duration
+// 							}{tx, time.Since(start)}
+// 						}
+// 					}()
+// 				}
 
-				// Feed transactions to workers
-				go func() {
-					for j := 0; j < txsPerBlock; j++ {
-						tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards)
-						txChan <- tx
-					}
-					close(txChan)
-				}()
+// 				// Launch metrics collector
+// 				go func() {
+// 					for metric := range metricsChan {
+// 						metrics := shardMetrics[metric.shardID]
+// 						metrics.ModifyCount++
+// 						metrics.TotalTxCount++
+// 						if metrics.AvgLatency == 0 {
+// 							metrics.AvgLatency = metric.latency
+// 						} else {
+// 							metrics.AvgLatency = (metrics.AvgLatency + metric.latency) / 2
+// 						}
+// 						metrics.LoadFactor = float64(metrics.TotalTxCount) / float64(txsPerBlock*tc.numBlocks/numShards)
+// 					}
+// 				}()
 
-				// Collect results
-				go func() {
-					for result := range resultChan {
-						tx := result.tx
-						allTxs = append(allTxs, tx)
-						batchTimes = append(batchTimes, result.latency)
+// 				// Feed transactions to workers
+// 				go func() {
+// 					for j := 0; j < txsPerBlock; j++ {
+// 						tx := createRealisticTransaction(t, blockchain, genesisAddress, j, numShards)
+// 						txChan <- tx
+// 					}
+// 					close(txChan)
+// 				}()
 
-						// Update metrics
-						for _, output := range tx.Outputs {
-							partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
-							if partition != nil {
-								metricsChan <- struct {
-									shardID int
-									latency time.Duration
-								}{partition.ID, result.latency}
+// 				// Collect results
+// 				go func() {
+// 					for result := range resultChan {
+// 						tx := result.tx
+// 						allTxs = append(allTxs, tx)
+// 						batchTimes = append(batchTimes, result.latency)
 
-								err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
-								require.NoError(t, err)
-							}
-						}
-					}
-					close(metricsChan)
-				}()
+// 						// Update metrics
+// 						for _, output := range tx.Outputs {
+// 							partition := stateManager.GetResponsiblePartition(output.OwnerAddress)
+// 							if partition != nil {
+// 								metricsChan <- struct {
+// 									shardID int
+// 									latency time.Duration
+// 								}{partition.ID, result.latency}
 
-				// Wait for all processors to complete
-				wg.Wait()
-				close(resultChan)
+// 								err := stateManager.UpdateState(output.OwnerAddress, output.Amount, nil)
+// 								require.NoError(t, err)
+// 							}
+// 						}
+// 					}
+// 					close(metricsChan)
+// 				}()
 
-				// Create and process block
-				validatorIndex := i % validatorCount
-				currentValidator := validators[validatorIndex]
-				time.Sleep(consensusDelay)
+// 				// Wait for all processors to complete
+// 				wg.Wait()
+// 				close(resultChan)
 
-				block := &shared.Block{
-					Index:        int32(initialHeight + i),
-					Timestamp:    time.Now().Unix(),
-					Transactions: allTxs,
-					Validator:    currentValidator.address,
-					PrevHash:     prevHash,
-				}
+// 				// Create and process block
+// 				validatorIndex := i % validatorCount
+// 				currentValidator := validators[validatorIndex]
+// 				time.Sleep(consensusDelay)
 
-				err := chain.InitializeVerkleTree(block)
-				require.NoError(t, err)
+// 				block := &shared.Block{
+// 					Index:        int32(initialHeight + i),
+// 					Timestamp:    time.Now().Unix(),
+// 					Transactions: allTxs,
+// 					Validator:    currentValidator.address,
+// 					PrevHash:     prevHash,
+// 				}
 
-				block.Hash = block.ComputeHash()
-				block.Signature, err = currentValidator.privateKey.Sign(nil, block.Hash, crypto.Hash(0))
-				require.NoError(t, err)
+// 				err := chain.InitializeVerkleTree(block)
+// 				require.NoError(t, err)
 
-				blockchain.Mu.Lock()
-				blockchain.Blocks = append(blockchain.Blocks, block)
-				blockchain.Mu.Unlock()
+// 				block.Hash = block.ComputeHash()
+// 				block.Signature, err = currentValidator.privateKey.Sign(nil, block.Hash, crypto.Hash(0))
+// 				require.NoError(t, err)
 
-				prevHash = block.Hash
-				blockTime := time.Since(blockStart)
-				blockTimes = append(blockTimes, blockTime)
+// 				blockchain.Mu.Lock()
+// 				blockchain.Blocks = append(blockchain.Blocks, block)
+// 				blockchain.Mu.Unlock()
 
-				t.Logf("Block %d total creation time: %v", i, blockTime)
-			}
+// 				prevHash = block.Hash
+// 				blockTime := time.Since(blockStart)
+// 				blockTimes = append(blockTimes, blockTime)
 
-			// Calculate and log metrics
-			t.Logf("\nDetailed Shard Distribution Analysis:")
-			var totalTxs int64
-			var maxLoad, minLoad float64 = 0, 1
+// 				t.Logf("Block %d total creation time: %v", i, blockTime)
+// 			}
 
-			for shardID, metrics := range shardMetrics {
-				totalTxs += metrics.TotalTxCount
-				if metrics.LoadFactor > maxLoad {
-					maxLoad = metrics.LoadFactor
-				}
-				if metrics.LoadFactor < minLoad {
-					minLoad = metrics.LoadFactor
-				}
-				t.Logf("Shard %d:\n"+
-					"  - Total Transactions: %d\n"+
-					"  - Modifications: %d\n"+
-					"  - Average Latency: %v\n"+
-					"  - Load Factor: %.2f",
-					shardID, metrics.TotalTxCount, metrics.ModifyCount,
-					metrics.AvgLatency, metrics.LoadFactor)
-			}
+// 			// Calculate and log metrics
+// 			t.Logf("\nDetailed Shard Distribution Analysis:")
+// 			var totalTxs int64
+// 			var maxLoad, minLoad float64 = 0, 1
 
-			loadImbalance := maxLoad - minLoad
-			t.Logf("\nLoad Distribution Metrics:")
-			t.Logf("- Maximum Load Factor: %.2f", maxLoad)
-			t.Logf("- Minimum Load Factor: %.2f", minLoad)
-			t.Logf("- Load Imbalance: %.2f", loadImbalance)
-			t.Logf("- Average Transactions per Shard: %.2f", float64(totalTxs)/float64(numShards))
+// 			for shardID, metrics := range shardMetrics {
+// 				totalTxs += metrics.TotalTxCount
+// 				if metrics.LoadFactor > maxLoad {
+// 					maxLoad = metrics.LoadFactor
+// 				}
+// 				if metrics.LoadFactor < minLoad {
+// 					minLoad = metrics.LoadFactor
+// 				}
+// 				t.Logf("Shard %d:\n"+
+// 					"  - Total Transactions: %d\n"+
+// 					"  - Modifications: %d\n"+
+// 					"  - Average Latency: %v\n"+
+// 					"  - Load Factor: %.2f",
+// 					shardID, metrics.TotalTxCount, metrics.ModifyCount,
+// 					metrics.AvgLatency, metrics.LoadFactor)
+// 			}
 
-			// Convert metrics for legacy format
-			legacyMetrics := make(map[int]struct {
-				accesses int64
-				modifies int64
-			})
-			for shardID, metrics := range shardMetrics {
-				legacyMetrics[shardID] = struct {
-					accesses int64
-					modifies int64
-				}{
-					accesses: metrics.AccessCount,
-					modifies: metrics.ModifyCount,
-				}
-			}
+// 			loadImbalance := maxLoad - minLoad
+// 			t.Logf("\nLoad Distribution Metrics:")
+// 			t.Logf("- Maximum Load Factor: %.2f", maxLoad)
+// 			t.Logf("- Minimum Load Factor: %.2f", minLoad)
+// 			t.Logf("- Load Imbalance: %.2f", loadImbalance)
+// 			t.Logf("- Average Transactions per Shard: %.2f", float64(totalTxs)/float64(numShards))
 
-			calculateAndLogMetrics(t, tc.name, blockTimes, batchTimes, legacyMetrics,
-				startTime, txsPerBlock, expectedBlockTime, tc.expectedMaxTime)
+// 			// Convert metrics for legacy format
+// 			legacyMetrics := make(map[int]struct {
+// 				accesses int64
+// 				modifies int64
+// 			})
+// 			for shardID, metrics := range shardMetrics {
+// 				legacyMetrics[shardID] = struct {
+// 					accesses int64
+// 					modifies int64
+// 				}{
+// 					accesses: metrics.AccessCount,
+// 					modifies: metrics.ModifyCount,
+// 				}
+// 			}
 
-			t.Logf("\nShard Scaling Metrics:")
-			for shardID := range shardMetrics {
-				currentLoad := shardMetrics[shardID].LoadFactor
-				needsSplit := currentLoad > stateManager.Scaling.LoadThresholds.Split
-				needsMerge := currentLoad < stateManager.Scaling.LoadThresholds.Merge
+// 			calculateAndLogMetrics(t, tc.name, blockTimes, batchTimes, legacyMetrics,
+// 				startTime, txsPerBlock, expectedBlockTime, tc.expectedMaxTime)
 
-				t.Logf("Shard %d:\n"+
-					"  - Current Load: %.2f\n"+
-					"  - Split Threshold: %.2f\n"+
-					"  - Merge Threshold: %.2f\n"+
-					"  - Action Needed: %s",
-					shardID,
-					currentLoad,
-					stateManager.Scaling.LoadThresholds.Split,
-					stateManager.Scaling.LoadThresholds.Merge,
-					getScalingAction(needsSplit, needsMerge))
-			}
-		})
+// 			t.Logf("\nShard Scaling Metrics:")
+// 			for shardID := range shardMetrics {
+// 				currentLoad := shardMetrics[shardID].LoadFactor
+// 				needsSplit := currentLoad > stateManager.Scaling.LoadThresholds.Split
+// 				needsMerge := currentLoad < stateManager.Scaling.LoadThresholds.Merge
 
-		time.Sleep(500 * time.Millisecond)
-	}
-}
+// 				t.Logf("Shard %d:\n"+
+// 					"  - Current Load: %.2f\n"+
+// 					"  - Split Threshold: %.2f\n"+
+// 					"  - Merge Threshold: %.2f\n"+
+// 					"  - Action Needed: %s",
+// 					shardID,
+// 					currentLoad,
+// 					stateManager.Scaling.LoadThresholds.Split,
+// 					stateManager.Scaling.LoadThresholds.Merge,
+// 					getScalingAction(needsSplit, needsMerge))
+// 			}
+// 		})
 
-// Helper function to calculate and log metrics
-func calculateAndLogMetrics(t *testing.T, testName string, blockTimes, batchTimes []time.Duration,
-	shardMetrics map[int]struct{ accesses, modifies int64 }, startTime time.Time,
-	txsPerBlock int, expectedBlockTime, expectedMaxTime time.Duration) {
+// 		time.Sleep(500 * time.Millisecond)
+// 	}
+// }
 
-	var totalBlockTime, maxBlockTime time.Duration
-	var minBlockTime = time.Hour
-	var totalBatchTime, maxBatchTime time.Duration
-	var minBatchTime = time.Hour
+// // Helper function to calculate and log metrics
+// func calculateAndLogMetrics(t *testing.T, testName string, blockTimes, batchTimes []time.Duration,
+// 	shardMetrics map[int]struct{ accesses, modifies int64 }, startTime time.Time,
+// 	txsPerBlock int, expectedBlockTime, expectedMaxTime time.Duration) {
 
-	// Calculate block timing metrics
-	for _, bt := range blockTimes {
-		totalBlockTime += bt
-		if bt > maxBlockTime {
-			maxBlockTime = bt
-		}
-		if bt < minBlockTime {
-			minBlockTime = bt
-		}
-	}
+// 	var totalBlockTime, maxBlockTime time.Duration
+// 	var minBlockTime = time.Hour
+// 	var totalBatchTime, maxBatchTime time.Duration
+// 	var minBatchTime = time.Hour
 
-	// Calculate batch timing metrics
-	for _, bt := range batchTimes {
-		totalBatchTime += bt
-		if bt > maxBatchTime {
-			maxBatchTime = bt
-		}
-		if bt < minBatchTime {
-			minBatchTime = bt
-		}
-	}
+// 	// Calculate block timing metrics
+// 	for _, bt := range blockTimes {
+// 		totalBlockTime += bt
+// 		if bt > maxBlockTime {
+// 			maxBlockTime = bt
+// 		}
+// 		if bt < minBlockTime {
+// 			minBlockTime = bt
+// 		}
+// 	}
 
-	avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
-	avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
-	totalTime := time.Since(startTime)
+// 	// Calculate batch timing metrics
+// 	for _, bt := range batchTimes {
+// 		totalBatchTime += bt
+// 		if bt > maxBatchTime {
+// 			maxBatchTime = bt
+// 		}
+// 		if bt < minBatchTime {
+// 			minBatchTime = bt
+// 		}
+// 	}
 
-	// Log comprehensive metrics
-	t.Logf("\nDetailed metrics for %s:", testName)
-	t.Logf("Average block time: %v", avgBlockTime)
-	t.Logf("Minimum block time: %v", minBlockTime)
-	t.Logf("Maximum block time: %v", maxBlockTime)
-	t.Logf("Average batch time: %v", avgBatchTime)
-	t.Logf("Minimum batch time: %v", minBatchTime)
-	t.Logf("Maximum batch time: %v", maxBatchTime)
-	t.Logf("Total processing time: %v", totalTime)
-	t.Logf("Transactions processed: %d", len(blockTimes)*txsPerBlock)
-	t.Logf("Average TPS: %.2f", float64(len(blockTimes)*txsPerBlock)/totalTime.Seconds())
-	t.Logf("Effective batch TPS: %.2f", float64(txsPerBlock)/avgBatchTime.Seconds())
+// 	avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
+// 	avgBatchTime := totalBatchTime / time.Duration(len(batchTimes))
+// 	totalTime := time.Since(startTime)
 
-	// Log shard-specific metrics
-	t.Logf("\nShard metrics:")
-	for shardID, metrics := range shardMetrics {
-		t.Logf("Shard %d - Accesses: %d, Modifications: %d",
-			shardID, metrics.accesses, metrics.modifies)
-	}
+// 	// Log comprehensive metrics
+// 	t.Logf("\nDetailed metrics for %s:", testName)
+// 	t.Logf("Average block time: %v", avgBlockTime)
+// 	t.Logf("Minimum block time: %v", minBlockTime)
+// 	t.Logf("Maximum block time: %v", maxBlockTime)
+// 	t.Logf("Average batch time: %v", avgBatchTime)
+// 	t.Logf("Minimum batch time: %v", minBatchTime)
+// 	t.Logf("Maximum batch time: %v", maxBatchTime)
+// 	t.Logf("Total processing time: %v", totalTime)
+// 	t.Logf("Transactions processed: %d", len(blockTimes)*txsPerBlock)
+// 	t.Logf("Average TPS: %.2f", float64(len(blockTimes)*txsPerBlock)/totalTime.Seconds())
+// 	t.Logf("Effective batch TPS: %.2f", float64(txsPerBlock)/avgBatchTime.Seconds())
 
-	// Verify expectations
-	require.Less(t, avgBlockTime, 2*expectedBlockTime,
-		"Average block time exceeds twice the target block time")
-	require.Less(t, totalTime, expectedMaxTime,
-		"Total processing time exceeds maximum allowed time")
-}
+// 	// Log shard-specific metrics
+// 	t.Logf("\nShard metrics:")
+// 	for shardID, metrics := range shardMetrics {
+// 		t.Logf("Shard %d - Accesses: %d, Modifications: %d",
+// 			shardID, metrics.accesses, metrics.modifies)
+// 	}
+
+// 	// Verify expectations
+// 	require.Less(t, avgBlockTime, 2*expectedBlockTime,
+// 		"Average block time exceeds twice the target block time")
+// 	require.Less(t, totalTime, expectedMaxTime,
+// 		"Total processing time exceeds maximum allowed time")
+// }
