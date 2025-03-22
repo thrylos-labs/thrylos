@@ -78,6 +78,11 @@ type BalanceUpdateQueue struct {
 	manager *Manager
 }
 
+// Add this to the balance package
+func (q *BalanceUpdateQueue) QueueUpdate(req types.BalanceUpdateRequest) {
+	q.queue <- req
+}
+
 func newBalanceUpdateQueue(manager *Manager) *BalanceUpdateQueue {
 	return &BalanceUpdateQueue{
 		queue:   make(chan types.BalanceUpdateRequest, 1000),
