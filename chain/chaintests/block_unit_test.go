@@ -5,7 +5,7 @@ package chaintests
 // 	// Convert transactions using existing function
 // 	sharedTxs := make([]*types.Transaction, len(txs))
 // 	for i, tx := range txs {
-// 		sharedTxs[i] = chain.ConvertToSharedTransaction(tx)
+// 		sharedTxs[i] = utils.ConvertToSharedTransaction(tx)
 // 	}
 
 // 	// Rest of the function remains the same...
@@ -64,17 +64,23 @@ package chaintests
 // 	require.NoError(t, err, "Failed to get genesis address")
 
 // 	// Initialize blockchain
-// 	blockchain, _, err := chain.NewBlockchainWithConfig(&chain.BlockchainConfig{
+// 	config := &types.BlockchainConfig{
 // 		DataDir:           tempDir,
 // 		AESKey:            []byte("test-key"),
 // 		GenesisAccount:    privKey,
 // 		TestMode:          true,
 // 		DisableBackground: true,
-// 	})
+// 	}
+
+// 	blockchainImpl, store, err := chain.NewBlockchain(config)
 // 	require.NoError(t, err, "Failed to create blockchain")
 
-// 	err = blockchain.Database.SavePublicKey(pubKey)
+// 	// Use store instead of letting it go unused
+// 	err = store.SavePublicKey(pubKey)
 // 	require.NoError(t, err, "Failed to store MLDSA public key")
+
+// 	// Reference the blockchain field from the implementation
+// 	blockchain := blockchainImpl.Blockchain
 
 // 	// Get genesis transaction
 // 	blockchain.Mu.RLock()
@@ -168,7 +174,7 @@ package chaintests
 // 				prevHashBytes := prevHash.Bytes() // Assuming Hash type has a Bytes() method
 
 // 				//b:= (blockchain).(*shared.Blockchain)
-// 				err = createAndSignBlock(t, blockchain.Blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
+// 				err = createAndSignBlock(t, blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
 // 				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
 // 				blockTime := time.Since(blockStart)
 

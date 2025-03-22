@@ -4,6 +4,9 @@ package processor
 // 	*types.TransactionPropagator
 // 	txStatusMap        sync.Map
 // 	balanceUpdateQueue *balance.BalanceUpdateQueue
+// 	blockchain         *types.Blockchain       // Add reference to blockchain
+// 	database           types.Store             // Add reference to database
+// 	stakingService     *staking.StakingService // Add reference to staking service
 // }
 
 // // Gas fee constants
@@ -25,10 +28,19 @@ package processor
 // }
 
 // // NewTransactionProcessorImpl creates a new instance of TransactionProcessorImpl
-// func NewTransactionProcessorImpl(propagator *types.TransactionPropagator, updateQueue *types.BalanceUpdateQueue) *TransactionProcessorImpl {
+// func NewTransactionProcessorImpl(
+// 	propagator *types.TransactionPropagator,
+// 	updateQueue *balance.BalanceUpdateQueue,
+// 	blockchain *types.Blockchain,
+// 	database types.Store,
+// 	stakingService *staking.StakingService) *TransactionProcessorImpl {
+
 // 	return &TransactionProcessorImpl{
 // 		TransactionPropagator: propagator,
 // 		balanceUpdateQueue:    updateQueue,
+// 		blockchain:            blockchain,
+// 		database:              database,
+// 		stakingService:        stakingService,
 // 	}
 // }
 
@@ -37,7 +49,7 @@ package processor
 // 	log.Printf("Starting final processing for transaction %s", txID)
 
 // 	// Get transaction status
-// 	statusIface, exists := n.txStatusMap.Load(txID)
+// 	statusIface, exists := tp.txStatusMap.Load(txID)
 // 	if !exists {
 // 		log.Printf("Warning: Transaction status not found for %s", txID)
 // 		return
@@ -62,21 +74,31 @@ package processor
 // 	// Queue balance updates with retries
 // 	for address := range addresses {
 // 		// Use the existing queue channel
-// 		n.balanceUpdateQueue.queue <- types.BalanceUpdateRequest{
+// 		tp.balanceUpdateQueue.QueueUpdate(types.BalanceUpdateRequest{
 // 			Address: address,
 // 			Retries: 5, // Use same retry count as UpdateBalanceAsync
-// 		}
+// 		}),
 // 	}
 
 // 	// Clear transaction status after queuing updates
-// 	n.txStatusMap.Delete(txID)
+// 	tp.txStatusMap.Delete(txID)
 // 	log.Printf("Completed processing transaction %s", txID)
 // }
 
 // // HasTransaction checks whether a transaction with the specified ID exists in the node's pool of pending transactions.
 // func (tp *TransactionProcessorImpl) HasTransaction(txID string) bool {
-// 	for _, tx := range node.PendingTransactions {
-// 		if tx.GetId() == txID {
+// 	// Access pending transactions through blockchain or message bus
+// 	// This is a design choice - either store a reference or use the message bus
+
+// 	// Option 1: If you have direct access to the transaction pool
+// 	txs, err := tp.TransactionPropagator.GetAllTransactions()
+// 	if err != nil {
+// 		log.Printf("Error getting transactions: %v", err)
+// 		return false
+// 	}
+
+// 	for _, tx := range txs {
+// 		if tx.ID == txID {
 // 			return true
 // 		}
 // 	}
@@ -87,7 +109,7 @@ package processor
 // func (tp *TransactionProcessorImpl) VerifyAndProcessTransaction(tx *thrylos.Transaction) error {
 // 	// Check if this is a staking transaction
 // 	if isStakingTransaction(tx) {
-// 		return node.processStakingTransaction(tx)
+// 		return tp.processStakingTransaction(tx)
 // 	}
 
 // 	if len(tx.Inputs) == 0 {
@@ -107,17 +129,21 @@ package processor
 
 // 	log.Printf("VerifyAndProcessTransaction: Verifying transaction for sender address: %s", senderAddress)
 
-// 	senderMLDSAPublicKey, err := node.Blockchain.RetrievePublicKey(senderAddress)
+// 	senderAddr, err := address.FromString(senderAddress)
+// 	if err != nil {
+// 		return fmt.Errorf("invalid sender address format: %v", err)
+// 	}
+// 	senderMLDSAPublicKey, err := tp.database.GetPublicKey(*senderAddr)
 // 	if err != nil {
 // 		log.Printf("VerifyAndProcessTransaction: Failed to retrieve or validate MLDSA public key for address %s: %v", senderAddress, err)
 // 		return fmt.Errorf("failed to retrieve or validate MLDSA public key: %v", err)
 // 	}
 
-// 	if err := shared.VerifyTransactionSignature(tx, senderMLDSAPublicKey); err != nil {
-// 		return fmt.Errorf("transaction signature verification failed: %v", err)
-// 	}
+// 	sharedTx := ThrylosToShared(tx)
+// if err := shared.VerifyTransactionSignature(sharedTx); err != nil {
 
-// 	return nil
+// 		return nil
+// 	}
 // }
 
 // // In transaction processor code
@@ -131,20 +157,12 @@ package processor
 // 			return fmt.Errorf("invalid staking transaction: incorrect recipient")
 // 		}
 
-// 		// Only update the staking service state
-// 		// Database transaction will be handled by the normal transaction flow
-// 		stake := &Stake{
-// 			UserAddress:         tx.Sender,
-// 			Amount:              tx.Outputs[0].Amount,
-// 			StartTime:           tx.Timestamp,
-// 			LastStakeUpdateTime: tx.Timestamp,
-// 			IsActive:            true,
-// 			ValidatorRole:       true,
+// 		// Use CreateStake method instead of directly manipulating fields
+// 		amount := tx.Outputs[0].Amount
+// 		_, err := tp.stakingService.CreateStake(tx.Sender, amount)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to create stake: %v", err)
 // 		}
-
-// 		// Update staking service state
-// 		node.stakingService.stakes[tx.Sender] = stake
-// 		node.stakingService.pool.TotalStaked += tx.Outputs[0].Amount
 
 // 	case TxTypeUnstake:
 // 		if tx.Sender != "staking_pool" {
@@ -154,21 +172,12 @@ package processor
 // 		stakeholder := tx.Outputs[0].OwnerAddress
 // 		unstakeAmount := tx.Outputs[0].Amount
 
-// 		// Verify stake exists in staking service
-// 		if stake := node.stakingService.stakes[stakeholder]; stake != nil {
-// 			if stake.Amount < unstakeAmount {
-// 				return fmt.Errorf("insufficient stake for unstaking")
-// 			}
+// 		// Let's see if we can call a method to check if an address is a validator
+// 		isDelegator := !tp.stakingService.IsValidator(stakeholder)
 
-// 			// Update stake record
-// 			stake.Amount -= unstakeAmount
-// 			stake.LastStakeUpdateTime = tx.Timestamp
-// 			if stake.Amount == 0 {
-// 				stake.IsActive = false
-// 			}
-// 			node.stakingService.pool.TotalStaked -= unstakeAmount
-// 		} else {
-// 			return fmt.Errorf("no active stake found for %s", stakeholder)
+// 		err := tp.stakingService.UnstakeTokensInternal(stakeholder, isDelegator, unstakeAmount, tx.Timestamp)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to unstake tokens: %v", err)
 // 		}
 
 // 	default:
@@ -194,11 +203,12 @@ package processor
 // }
 
 // // Transaction input collection
-// func (tp *TransactionProcessorImpl) CollectInputsForTransaction(amount int64, senderAddress string) (inputs []shared.UTXO, change int64, err error) {
+// func (tp *TransactionProcessorImpl) CollectInputsForTransaction(amount int64, senderAddress string) (inputs []types.UTXO, change int64, err error) {
 // 	var collectedAmount int64
-// 	var collectedInputs []shared.UTXO
+// 	var collectedInputs []types.UTXO
 
-// 	utxos, err := node.Blockchain.GetUTXOsForAddress(senderAddress)
+// 	// Use the database instead of blockchain
+// 	utxos, err := tp.database.GetUTXOsForAddress(senderAddress)
 // 	if err != nil {
 // 		return nil, 0, err
 // 	}
@@ -207,7 +217,9 @@ package processor
 // 		if collectedAmount >= amount {
 // 			break
 // 		}
-// 		collectedAmount += utxo.Amount
+
+// 		utxoAmountInt64 := int64(utxo.Amount)
+// 		collectedAmount += utxoAmountInt64
 // 		collectedInputs = append(collectedInputs, utxo)
 // 	}
 
@@ -235,22 +247,31 @@ package processor
 // }
 
 // // Transaction validation
-// func (tp *TransactionProcessorImpl) validateTransactionAddresses(tx *shared.Transaction) error {
-// 	_, err := n.Database.RetrievePublicKeyFromAddress(tx.Sender)
+// func (tp *TransactionProcessorImpl) validateTransactionAddresses(tx *thrylos.Transaction) error {
+// 	// Convert the sender string to an address.Address
+// 	senderAddr, err := address.FromString(tx.Sender)
+// 	if err != nil {
+// 		log.Printf("Invalid sender address format %s: %v", tx.Sender, err)
+// 		return fmt.Errorf("invalid sender address format: %v", err)
+// 	}
+
+// 	// Use GetPublicKey instead of RetrievePublicKeyFromAddress
+// 	_, err = tp.database.GetPublicKey(*senderAddr)
 // 	if err != nil {
 // 		log.Printf("Invalid sender address %s: %v", tx.Sender, err)
 // 		return fmt.Errorf("invalid sender address: %v", err)
 // 	}
 
 // 	for _, output := range tx.Outputs {
-// 		_, err := n.Database.RetrievePublicKeyFromAddress(output.OwnerAddress)
+// 		// Convert each output owner address to address.Address
+// 		outputAddr, err := address.FromString(output.OwnerAddress)
 // 		if err != nil {
-// 			log.Printf("Invalid output address %s: %v", output.OwnerAddress, err)
-// 			return fmt.Errorf("invalid output address %s: %v", output.OwnerAddress, err)
+// 			log.Printf("Invalid output address format %s: %v", output.OwnerAddress, err)
+// 			return fmt.Errorf("invalid output address format: %v", err)
 // 		}
-// 	}
-// 	for _, output := range tx.Outputs {
-// 		_, err := n.Database.RetrievePublicKeyFromAddress(output.OwnerAddress)
+
+// 		// Use GetPublicKey instead of RetrievePublicKeyFromAddress
+// 		_, err = tp.database.GetPublicKey(*outputAddr)
 // 		if err != nil {
 // 			log.Printf("Invalid output address %s: %v", output.OwnerAddress, err)
 // 			return fmt.Errorf("invalid output address %s: %v", output.OwnerAddress, err)
@@ -270,22 +291,39 @@ package processor
 // 		return nil
 // 	}
 
-// 	// Convert signature to base64 if it exists
-// 	var signatureBase64 string
+// 	// Convert signature to crypto.Signature
+// 	var signature crypto.Signature
 // 	if tx.GetSignature() != nil {
-// 		signatureBase64 = base64.StdEncoding.EncodeToString(tx.GetSignature())
-// 	}
-// 	// Convert signature to base64 if it exists
-// 	var signatureBase64 string
-// 	if tx.GetSignature() != nil {
-// 		signatureBase64 = base64.StdEncoding.EncodeToString(tx.GetSignature())
+// 		signature = crypto.NewSignature(tx.GetSignature())
 // 	}
 
-// 	// Convert BlockHash to string if it exists
-// 	var blockHashStr string
-// 	if tx.GetBlockHash() != nil {
-// 		blockHashStr = hex.EncodeToString(tx.GetBlockHash())
+// 	// Convert sender public key to crypto.PublicKey
+// 	var senderPublicKey crypto.PublicKey
+// 	if tx.GetSenderPublicKey() != nil {
+// 		// First convert to MLDSA public key
+// 		mldsaPubKey := &mldsa44.PublicKey{}
+// 		err := mldsaPubKey.UnmarshalBinary(tx.GetSenderPublicKey())
+// 		if err != nil {
+// 			log.Printf("Error unmarshaling sender public key: %v", err)
+// 		} else {
+// 			senderPublicKey = crypto.NewPublicKey(mldsaPubKey)
+// 		}
 // 	}
+
+// 	// Convert sender address to address.Address
+// 	var senderAddress *address.Address
+// 	if tx.GetSender() != "" {
+// 		var err error
+// 		senderAddress, err = address.FromString(tx.GetSender())
+// 		if err != nil {
+// 			log.Printf("Error converting sender address: %v", err)
+// 			// Create a null address as fallback
+// 			senderAddress = address.NullAddress()
+// 		}
+// 	} else {
+// 		senderAddress = address.NullAddress()
+// 	}
+
 // 	// Convert BlockHash to string if it exists
 // 	var blockHashStr string
 // 	if tx.GetBlockHash() != nil {
@@ -299,15 +337,15 @@ package processor
 // 		Outputs:          ConvertProtoOutputs(tx.GetOutputs()),
 // 		EncryptedInputs:  tx.GetEncryptedInputs(),
 // 		EncryptedOutputs: tx.GetEncryptedOutputs(),
-// 		Signature:        signatureBase64,
 // 		EncryptedAESKey:  tx.GetEncryptedAesKey(),
 // 		PreviousTxIds:    tx.GetPreviousTxIds(),
-// 		Sender:           tx.GetSender(),
+// 		SenderAddress:    *senderAddress, // Dereference pointer to get value
+// 		SenderPublicKey:  senderPublicKey,
+// 		Signature:        signature,
 // 		GasFee:           int(tx.GetGasfee()),
-// 		SenderPublicKey:  tx.GetSenderPublicKey(),
-// 		Status:           tx.GetStatus(),
 // 		BlockHash:        blockHashStr,
 // 		Salt:             tx.GetSalt(),
+// 		Status:           tx.GetStatus(),
 // 	}
 // }
 
@@ -351,7 +389,8 @@ package processor
 // )
 
 // func (tp *TransactionProcessorImpl) GetPendingTransactions() []*thrylos.Transaction {
-// 	return node.PendingTransactions
+// 	// Use tp.TransactionPropagator or database to get pending transactions
+// 	return tp.blockchain.PendingTransactions
 // }
 
 // func calculateTotalAmount(outputs []*thrylos.UTXO) int64 {
@@ -363,18 +402,26 @@ package processor
 // }
 
 // func (tp *TransactionProcessorImpl) updateBalances(tx *thrylos.Transaction) error {
-// 	senderBalance, err := n.Blockchain.GetBalance(tx.Sender)
+// 	// Convert sender address to proper format if needed
+// 	senderAddr := tx.Sender
+
+// 	// Use database instead of blockchain for balance lookup
+// 	// The GetBalance method in Store takes an address and a UTXO map
+// 	senderBalance, err := tp.database.GetBalance(senderAddr, nil)
 // 	if err != nil {
 // 		return fmt.Errorf("failed to get sender balance: %v", err)
 // 	}
-// 	log.Printf("Updated sender (%s) balance: %d nanoTHRYLOS", tx.Sender, senderBalance)
+// 	log.Printf("Updated sender (%s) balance: %d nanoTHRYLOS", senderAddr, senderBalance)
 
 // 	for _, output := range tx.Outputs {
-// 		recipientBalance, err := n.Blockchain.GetBalance(output.OwnerAddress)
+// 		recipientAddr := output.OwnerAddress
+
+// 		// Use database for recipient balance lookup
+// 		recipientBalance, err := tp.database.GetBalance(recipientAddr, nil)
 // 		if err != nil {
 // 			return fmt.Errorf("failed to get recipient balance: %v", err)
 // 		}
-// 		log.Printf("Updated recipient (%s) balance: %d nanoTHRYLOS", output.OwnerAddress, recipientBalance)
+// 		log.Printf("Updated recipient (%s) balance: %d nanoTHRYLOS", recipientAddr, recipientBalance)
 // 	}
 // 	return nil
 // }

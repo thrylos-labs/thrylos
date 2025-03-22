@@ -1,7 +1,12 @@
 package processor
 
-// With the modern processor transactions are assigned to workers (parallel processors) each worker processes transactions in a specific shard, which makes it more scalable.
+// // Error definitions
+// var (
+// 	ErrTxAlreadyExists = errors.New("transaction already exists in the pool")
+// 	ErrNilTransaction  = errors.New("cannot process nil transaction")
+// )
 
+// // ModernProcessor processes transactions in parallel using worker shards
 // type ModernProcessor struct {
 // 	workerCount    int
 // 	workers        []*txWorker
@@ -14,14 +19,19 @@ package processor
 // 	workerPool     chan struct{}
 // 	msgCh          chan types.Message
 // 	DAGManager     *DAGManager
+// 	txPool         types.TxPool
+// 	txProcessor    *TransactionProcessorImpl
+// 	balanceCache   sync.Map // For caching balances
 // }
 
+// // ProcessorMetrics tracks performance metrics
 // type ProcessorMetrics struct {
 // 	processedCount    atomic.Int64
 // 	totalLatency      atomic.Int64
 // 	currentThroughput atomic.Int64
 // }
 
+// // txWorker handles transaction processing for a specific shard
 // type txWorker struct {
 // 	id        int
 // 	shardID   int
@@ -29,12 +39,14 @@ package processor
 // 	metrics   *workerMetrics
 // }
 
+// // workerMetrics tracks per-worker metrics
 // type workerMetrics struct {
 // 	processedTxs atomic.Int64
 // 	totalLatency atomic.Int64
 // }
 
-// func NewModernProcessor() *ModernProcessor {
+// // NewModernProcessor creates a new transaction processor with multiple worker shards
+// func NewModernProcessor(txProcessor *TransactionProcessorImpl, txPool types.TxPool, dagManager *DAGManager) *ModernProcessor {
 // 	ctx, cancel := context.WithCancel(context.Background())
 // 	workerCount := runtime.NumCPU() * 2
 
@@ -47,6 +59,9 @@ package processor
 // 		priorityQueues: make([]chan *thrylos.Transaction, 12),
 // 		workerPool:     make(chan struct{}, workerCount),
 // 		msgCh:          make(chan types.Message, 100),
+// 		txProcessor:    txProcessor,
+// 		txPool:         txPool,
+// 		DAGManager:     dagManager,
 // 	}
 
 // 	// Initialize queues
@@ -77,6 +92,7 @@ package processor
 // 	return mp
 // }
 
+// // handleMessages processes incoming message bus messages
 // func (mp *ModernProcessor) handleMessages() {
 // 	for msg := range mp.msgCh {
 // 		switch msg.Type {
@@ -88,12 +104,14 @@ package processor
 // 	}
 // }
 
+// // handleProcessTransaction handles transaction processing messages
 // func (mp *ModernProcessor) handleProcessTransaction(msg types.Message) {
 // 	tx := msg.Data.(*thrylos.Transaction)
 // 	err := mp.ProcessIncomingTransaction(tx)
 // 	msg.ResponseCh <- types.Response{Error: err}
 // }
 
+// // handleUpdateState handles processor state update messages
 // func (mp *ModernProcessor) handleUpdateState(msg types.Message) {
 // 	req := msg.Data.(types.UpdateProcessorStateRequest)
 
@@ -113,6 +131,7 @@ package processor
 // 	}
 // }
 
+// // Start begins transaction processing
 // func (mp *ModernProcessor) Start() {
 // 	log.Printf("Starting ModernProcessor with %d workers", mp.workerCount)
 
@@ -125,14 +144,16 @@ package processor
 // 	go mp.collectMetrics()
 // }
 
+// // Stop halts transaction processing
 // func (mp *ModernProcessor) Stop() {
 // 	mp.cancel()
 // }
 
-// func (mp *ModernProcessor) ProcessIncomingTransaction(dagManager *DAGManager, tx *thrylos.Transaction) error {
+// // ProcessIncomingTransaction handles a new transaction
+// func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) error {
 // 	if tx == nil {
 // 		log.Printf("ERROR: Received nil transaction")
-// 		return fmt.Errorf("cannot process nil transaction")
+// 		return ErrNilTransaction
 // 	}
 
 // 	txID := tx.GetId()
@@ -163,9 +184,13 @@ package processor
 // 		log.Printf("Transaction [%s] already exists in DAG", txID)
 // 	}
 
+// 	// Convert thrylos.Transaction to types.Transaction
+// 	// You need to implement this conversion function
+// 	typeTx := ThrylosToShared(tx)
+
 // 	// Add to transaction pool
 // 	log.Printf("Adding to transaction pool [%s]", txID)
-// 	if err := node.blockchain.txPool.AddTransaction(tx); err != nil {
+// 	if err := mp.txPool.AddTransaction(typeTx); err != nil {
 // 		if !errors.Is(err, ErrTxAlreadyExists) {
 // 			log.Printf("ERROR: Failed to add [%s] to transaction pool: %v", txID, err)
 // 			return fmt.Errorf("pool addition failed: %v", err)
@@ -173,27 +198,49 @@ package processor
 // 		log.Printf("Transaction [%s] already exists in pool", txID)
 // 	}
 
-// 	// Update transaction status
-// 	if err := node.Blockchain.UpdateTransactionStatus(tx.Id, TxStatusPending, nil); err != nil {
-// 		log.Printf("Warning: Error updating transaction status: %v", err)
+// 	// Update transaction status - using message bus for node communication
+// 	// We need to use a message type that exists in your types package
+// 	updateStatusCh := make(chan types.Response)
+// 	shared.GetMessageBus().Publish(types.Message{
+// 		Type: types.UpdateProcessorState,
+// 		Data: types.UpdateProcessorStateRequest{
+// 			TransactionID: txID,
+// 			State:         "pending", // Use TxStatusPending constant in production
+// 		},
+// 		ResponseCh: updateStatusCh,
+// 	})
+
+// 	// We can optionally wait for the status update confirmation
+// 	statusResponse := <-updateStatusCh
+// 	if statusResponse.Error != nil {
+// 		log.Printf("Warning: Error updating transaction status: %v", statusResponse.Error)
 // 	}
 
 // 	// Check pool size and trigger block creation if needed
-// 	poolSize := node.blockchain.txPool.Size()
+// 	poolSize := mp.txPool.Size()
 // 	if poolSize == 1 {
-// 		go node.TriggerBlockCreation()
+// 		// Trigger block creation using message bus
+// 		triggerCh := make(chan types.Response)
+// 		shared.GetMessageBus().Publish(types.Message{
+// 			Type:       types.ProcessBlock,
+// 			Data:       nil, // No specific data needed, just triggering block creation
+// 			ResponseCh: triggerCh,
+// 		})
+// 		// Optionally wait for response
+// 		<-triggerCh
 // 	}
 
-// 	// Clear balance cache
-// 	balanceCache.Delete(tx.Sender)
+// 	// Clear balance cache using the local cache
+// 	mp.balanceCache.Delete(tx.Sender)
 // 	for _, output := range tx.Outputs {
-// 		balanceCache.Delete(output.OwnerAddress)
+// 		mp.balanceCache.Delete(output.OwnerAddress)
 // 	}
 
 // 	// Process through ModernProcessor
 // 	log.Printf("Adding to ModernProcessor [%s]", txID)
 // 	if err := mp.AddTransaction(tx); err != nil {
-// 		mp.txPool.RemoveTransaction(tx)
+// 		// Use the converted transaction for removal
+// 		mp.txPool.RemoveTransaction(typeTx)
 // 		log.Printf("ERROR: ModernProcessor failed for [%s]: %v", txID, err)
 // 		return fmt.Errorf("modern processing failed: %v", err)
 // 	}
@@ -202,6 +249,7 @@ package processor
 // 	return nil
 // }
 
+// // AddTransaction assigns a transaction to a processing shard
 // func (mp *ModernProcessor) AddTransaction(tx *thrylos.Transaction) error {
 // 	txID := tx.GetId()
 // 	log.Printf("[ModernProcessor] Starting transaction processing for %s", txID)
@@ -238,6 +286,7 @@ package processor
 // 	}
 // }
 
+// // start begins the worker's processing loop
 // func (w *txWorker) start() {
 // 	for {
 // 		select {
@@ -262,12 +311,13 @@ package processor
 // 	}
 // }
 
+// // processTx processes a single transaction
 // func (w *txWorker) processTx(tx *thrylos.Transaction, isPriority bool) {
 // 	start := time.Now()
 // 	txID := tx.GetId()
 
 // 	// Get or create status
-// 	statusIface, _ := w.processor.node.txStatusMap.LoadOrStore(txID, &TransactionStatus{})
+// 	statusIface, _ := w.processor.txProcessor.txStatusMap.LoadOrStore(txID, &TransactionStatus{})
 // 	status := statusIface.(*TransactionStatus)
 
 // 	status.Lock()
@@ -277,12 +327,12 @@ package processor
 // 	}
 
 // 	// Verify before marking as processed
-// 	if err := w.processor.node.VerifyAndProcessTransaction(tx); err != nil {
+// 	if err := w.processor.txProcessor.VerifyAndProcessTransaction(tx); err != nil {
 // 		status.Unlock()
 // 		log.Printf("Transaction processing failed: %v", err)
 // 		w.processor.processedTxs.Delete(txID)
 // 		// Clean up status on failure
-// 		w.processor.node.txStatusMap.Delete(txID)
+// 		w.processor.txProcessor.txStatusMap.Delete(txID)
 // 		return
 // 	}
 
@@ -291,7 +341,7 @@ package processor
 // 	// If DAG has confirmed, trigger processing
 // 	if status.ConfirmedByDAG {
 // 		status.Unlock()
-// 		w.processor.node.handleProcessedTransaction(tx)
+// 		w.processor.txProcessor.handleProcessedTransaction(tx)
 // 	} else {
 // 		status.Unlock()
 // 	}
@@ -302,6 +352,7 @@ package processor
 // 	w.metrics.totalLatency.Add(int64(latency))
 // }
 
+// // getShardID determines which shard should process a transaction
 // func (mp *ModernProcessor) getShardID(tx *thrylos.Transaction) int {
 // 	// Use an FNV hash for better distribution
 // 	h := fnv.New32a()
@@ -309,6 +360,7 @@ package processor
 // 	return int(h.Sum32() % uint32(12))
 // }
 
+// // collectMetrics gathers and updates processor metrics
 // func (mp *ModernProcessor) collectMetrics() {
 // 	ticker := time.NewTicker(time.Second)
 // 	defer ticker.Stop()
@@ -327,6 +379,7 @@ package processor
 // 	}
 // }
 
+// // getTotalProcessed returns the total number of processed transactions
 // func (mp *ModernProcessor) getTotalProcessed() int64 {
 // 	var total int64
 // 	for _, worker := range mp.workers {

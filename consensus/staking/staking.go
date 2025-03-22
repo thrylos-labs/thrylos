@@ -306,7 +306,7 @@ func (s *StakingService) createStakeInternal(userAddress string, isDelegator boo
 // 	return nil
 // }
 
-func (s *StakingService) unstakeTokensInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) error {
+func (s *StakingService) UnstakeTokensInternal(userAddress string, isDelegator bool, amount int64, timestamp int64) error {
 	stake, exists := s.stakes[userAddress]
 	if !exists {
 		return errors.New("no stake found for address")
