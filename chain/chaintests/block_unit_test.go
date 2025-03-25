@@ -365,7 +365,6 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 // 	}
 
 // 	// Initialize blockchain with genesis account and state manager
-// 	genesisAddress := "tl11d26lhajjmg2xw95u66xathy7sge36t83zyfvwq"
 // 	config := &types.BlockchainConfig{
 // 		DataDir:           tempDir,
 // 		AESKey:            []byte("test-key"),
@@ -374,27 +373,81 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 // 		DisableBackground: true,
 // 	}
 
+// 	// Create the blockchain
+// 	blockchainImpl, store, err := chain.NewBlockchain(config)
 // 	require.NoError(t, err, "Failed to create blockchain")
 
-// 	node := &node.Node{
-// 		config:     &config.Config{},
-// 		state:      state.NewState(),
-// 		txPool:     shared.NewTxPool(),
-// 		validator:  shared.NewValidator(),
-// 		blockchain: blockchain,
-// 		messageCh:  make(chan shared.Message, 100), // Message channel for node communication
+// 	// Create a proper message bus for testing
+// 	messageBus := &types.MessageBus{
+// 		subscribers: make(map[types.MessageType][]chan types.Message),
+// 		mu:          sync.RWMutex{},
 // 	}
 
-// 	// Start message handler for node
-// 	go node.handleMessages()
+// 	// Create a node using the constructor to avoid using unexported fields
+// 	testNode := node.NewNode("localhost:8080", tempDir)
+
+// 	// Set up the node with the required components
+// 	testNode.Mu.Lock()
+// 	testNode.blockchain = blockchainImpl.Blockchain // Store the blockchain
+// 	blockchain := blockchainImpl.Blockchain         // Create a local reference for easier access
+// 	testNode.Database = store
+
+// 	// Use the messageBus we created
+// 	testNode.messageBus = messageBus // This fixes the unused variable error
+
+// 	// Create message channel and subscribe it to the messageBus
+// 	messageCh := make(chan types.Message, 100)
+// 	messageBus.Subscribe(types.ProcessBlock, messageCh)
+// 	messageBus.Subscribe(types.ValidateBlock, messageCh)
+// 	testNode.messageCh = messageCh
+// 	testNode.Mu.Unlock()
+
+// 	// Start a simple message handler for testing
+// 	// Instead of calling the unexported handleMessages method
+// 	go func() {
+// 		for msg := range messageCh {
+// 			// Process messages based on type
+// 			switch msg.Type {
+// 			case types.ProcessBlock:
+// 				// Handle block processing
+// 				if msg.ResponseCh != nil {
+// 					msg.ResponseCh <- types.Response{
+// 						Data:  nil,
+// 						Error: nil,
+// 					}
+// 				}
+// 			case types.ValidateBlock:
+// 				// Handle block validation
+// 				if msg.ResponseCh != nil {
+// 					msg.ResponseCh <- types.Response{
+// 						Data:  true,
+// 						Error: nil,
+// 					}
+// 				}
+// 			default:
+// 				// Handle other message types as needed
+// 				if msg.ResponseCh != nil {
+// 					msg.ResponseCh <- types.Response{
+// 						Data:  nil,
+// 						Error: nil,
+// 					}
+// 				}
+// 			}
+// 		}
+// 	}()
 
 // 	// Initialize DAG Manager first
 // 	dagManager := processor.NewDAGManager()
-// 	node.DAGManager = dagManager
+// 	testNode.Mu.Lock()
+// 	testNode.DAGManager = dagManager
+// 	testNode.Mu.Unlock()
 
 // 	// Initialize ModernProcessor instead of BatchProcessor
-// 	node.ModernProcessor = processor.NewModernProcessor()
-// 	node.ModernProcessor.Start()
+// 	modernProcessor := processor.NewModernProcessor()
+// 	modernProcessor.Start()
+// 	testNode.Mu.Lock()
+// 	testNode.ModernProcessor = modernProcessor
+// 	testNode.Mu.Unlock()
 
 // 	// Setup validators
 // 	// Setup validators
@@ -580,7 +633,7 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 // 				currentValidator := validators[validatorIndex]
 // 				time.Sleep(consensusDelay)
 
-// 				block := &shared.Block{
+// 				block := &types.Block{
 // 					Index:        int32(initialHeight + i),
 // 					Timestamp:    time.Now().Unix(),
 // 					Transactions: allTxs,
@@ -674,6 +727,7 @@ func getScalingAction(needsSplit, needsMerge bool) string {
 
 // 		time.Sleep(500 * time.Millisecond)
 // 	}
+// 	close(messageCh)
 // }
 
 // // Helper function to calculate and log metrics
