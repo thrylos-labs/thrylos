@@ -17,6 +17,7 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/consensus/processor"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/network"
@@ -28,9 +29,9 @@ import (
 type BlockchainImpl struct {
 	Blockchain            *types.Blockchain
 	TransactionPropagator *types.TransactionPropagator
-	// modernProcessor *processor.ModernProcessor
-	txPool types.TxPool // Not *types.TxPool
-	// dagManager      *processor.DAGManager
+	modernProcessor       *processor.ModernProcessor
+	txPool                types.TxPool // Not *types.TxPool
+	dagManager            *processor.DAGManager
 }
 
 func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {

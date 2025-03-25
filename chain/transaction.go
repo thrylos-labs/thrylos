@@ -201,10 +201,10 @@ func ConvertThrylosTransactionToLocal(tx *thrylos.Transaction) (types.Transactio
 }
 
 // First, define a type for the public key lookup function
-type PublicKeyFetcher func(string) (crypto.PublicKey, error)
+type PublicKeyFetcherTransaction func(string) (crypto.PublicKey, error)
 
 // Then update the verification function
-func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKey PublicKeyFetcher) (bool, error) {
+func VerifyTransactionData(tx *thrylos.Transaction, utxos map[string][]*thrylos.UTXO, getPublicKey PublicKeyFetcherTransaction) (bool, error) {
 	// Validate salt exists and has proper length
 	if len(tx.Salt) == 0 {
 		return false, fmt.Errorf("transaction must have a salt value")
