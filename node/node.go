@@ -72,6 +72,14 @@ type Node struct {
 	VoteCounterAddress string // Address of the designated vote counter
 }
 
+func (n *Node) SetBlockchain(bc *types.Blockchain) {
+	n.blockchain = bc
+}
+
+func (n *Node) SetMessageChannel(ch chan types.Message) {
+	n.messageCh = ch
+}
+
 // NewNode initializes a new Node with the given address, known peers, and shard information. It creates a new
 // blockchain instance for the node and optionally discovers peers if not running in a test environment.
 func NewNode(address string, dataDir string) *Node { // removed knownPeers

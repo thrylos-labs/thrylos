@@ -41,6 +41,13 @@ func NewManager(messageBus types.MessageBusInterface, notifier types.BalanceNoti
 	return m
 }
 
+// Add this to the balance package for mock only
+func NewBalanceUpdateQueue() *BalanceUpdateQueue {
+	return &BalanceUpdateQueue{
+		queue: make(chan types.BalanceUpdateRequest, 1000),
+	}
+}
+
 func (m *Manager) handleMessages(ch chan types.Message) {
 	for msg := range ch {
 		switch msg.Type {
