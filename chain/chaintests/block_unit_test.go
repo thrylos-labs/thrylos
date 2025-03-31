@@ -2,12 +2,15 @@ package chaintests
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	mrand "math/rand" // Alias math/rand as mrand
 	"os"
+	"runtime"
 	"sync"
 	"testing"
-	"time"
+	"time" // Alias crypto/rand as crand
 
 	"github.com/stretchr/testify/require"
 	"github.com/thrylos-labs/thrylos"
@@ -1144,6 +1147,7 @@ func createSafeTransaction(t *testing.T, sender string, nonce int, numShards int
 //		// End test - no further operations
 //		t.Log("Basic blockchain initialization test passed")
 //	}
+
 func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	// Create test directory
 	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
@@ -1236,12 +1240,18 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	prevHash := genBlock.Hash
 	blockchain.Mu.RUnlock()
 
-	// Constants for measuring TPS
+	// Constants for measuring TPS with realistic constraints
 	const (
-		numBlocks   = 10
-		txsPerBlock = 100
-		totalTxs    = numBlocks * txsPerBlock
+		numBlocks               = 10
+		txsPerBlock             = 100
+		totalTxs                = numBlocks * txsPerBlock
+		networkLatencyMs        = 5
+		signatureVerificationMs = 1
+		blockFinalizationMs     = 50
 	)
+
+	// Seed the random number generator
+	mrand.NewSource(time.Now().UnixNano())
 
 	startTime := time.Now()
 
@@ -1252,7 +1262,21 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 		// Create transactions for this block
 		blockTxs := make([]*types.Transaction, 0, txsPerBlock)
 
+		// Simulate memory pressure at the beginning of each block
+		memPressure := make([][]byte, 10)
+		for i := 0; i < 10; i++ {
+			memPressure[i] = make([]byte, 1024*1024) // 1MB each
+		}
+
 		for i := 0; i < txsPerBlock; i++ {
+			// Simulate network latency for receiving transaction
+			time.Sleep(time.Duration(networkLatencyMs) * time.Millisecond)
+
+			// Create transaction with realistic size
+			txSize := 1024 + mrand.Intn(3072) // 1-4KB range
+			dummyData := make([]byte, txSize)
+			rand.Read(dummyData)
+
 			// Create a transaction
 			tx := &thrylos.Transaction{
 				Id:        fmt.Sprintf("test-tx-%d-%d", b, i),
@@ -1274,14 +1298,26 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 						Index:        0,
 					},
 				},
-				// Use dummy signature
-				Signature: []byte(fmt.Sprintf("dummy-signature-%d-%d", b, i)),
+				// Use dummy signature with realistic size
+				Signature: dummyData[:64], // 64 bytes for signature
 			}
+
+			// Simulate signature verification time
+			time.Sleep(time.Duration(signatureVerificationMs) * time.Millisecond)
+
+			// Simulate state update
+			stateManager.UpdateState(fmt.Sprintf("address-%d-%d", b, i), int64(4900), nil)
 
 			// Convert to shared transaction
 			sharedTx := utils.ConvertToSharedTransaction(tx)
 			blockTxs = append(blockTxs, sharedTx)
 		}
+
+		// Release memory pressure
+		for i := 0; i < 10; i++ {
+			memPressure[i] = nil
+		}
+		runtime.GC()
 
 		// Create a new block
 		block := &types.Block{
@@ -1290,6 +1326,20 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 			Transactions: blockTxs,
 			PrevHash:     prevHash,
 		}
+
+		// Simulate disk I/O for block storage
+		tempFile, err := os.CreateTemp("", "block-*.tmp")
+		if err == nil { // Only proceed if file creation succeeded
+			blockData, err := json.Marshal(block)
+			if err == nil {
+				tempFile.Write(blockData)
+			}
+			tempFile.Close()
+			os.Remove(tempFile.Name()) // Clean up
+		}
+
+		// Simulate block finalization delay (consensus)
+		time.Sleep(time.Duration(blockFinalizationMs) * time.Millisecond)
 
 		// Add the block to the blockchain
 		blockchain.Mu.Lock()
@@ -1306,11 +1356,14 @@ func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 	totalTime := time.Since(startTime)
 	tps := float64(totalTxs) / totalTime.Seconds()
 
-	t.Logf("\nTPS Benchmark Results:")
+	t.Logf("\nTPS Benchmark Results (with Realistic Constraints):")
 	t.Logf("Total transactions: %d", totalTxs)
 	t.Logf("Total blocks: %d", numBlocks)
 	t.Logf("Total time: %v", totalTime)
 	t.Logf("Transactions per second (TPS): %.2f", tps)
+	t.Logf("Network latency per tx: %dms", networkLatencyMs)
+	t.Logf("Signature verification per tx: %dms", signatureVerificationMs)
+	t.Logf("Block finalization delay: %dms", blockFinalizationMs)
 
 	t.Logf("Successfully created blockchain with %d blocks", len(blockchain.Blocks))
 	t.Log("Test completed successfully!")
