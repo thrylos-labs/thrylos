@@ -1,285 +1,651 @@
 package network
 
-// NEEDS TO UPDATE TO USE MESSAGES.GO FOR INTERACTION WITH NODE
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
 
-// // Peer Management: Nodes add new peers to their network, avoiding duplicates, and adjust protocols (HTTP/HTTPS) as necessary.
-// // Peer Discovery: Nodes discover new peers by requesting peer lists from known peers and integrating the discovered peers into their own peer list.
-// // Blockchain Synchronization: Nodes synchronize their blockchain with peers to maintain a consistent state across the network.
+	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/types"
+)
 
-// type PeerConnection struct {
-// 	Node      *Node // Add a reference to the Node
-// 	Address   string
-// 	IsInbound bool
-// 	LastSeen  time.Time
-// }
+// PeerConnection manages connection to a peer in the network
+type PeerConnection struct {
+	messageBus types.MessageBusInterface
+	Address    string
+	IsInbound  bool
+	LastSeen   time.Time
+	mu         sync.RWMutex // mutex for this peer connection
+}
 
-// func (pc *PeerConnection) AddPeer(address string, isInbound bool) error {
-// 	pc.Node.PeerMu.Lock()
-// 	defer pc.Node.PeerMu.Unlock()
+// Peer management state
+type PeerManager struct {
+	messageBus            types.MessageBusInterface
+	Peers                 map[string]*PeerConnection
+	PeerMu                sync.RWMutex
+	MaxInbound            int
+	MaxOutbound           int
+	SeedPeers             []string
+	PeerDiscoveryInterval time.Duration
+}
 
-// 	inboundCount := 0
-// 	outboundCount := 0
-// 	for _, peer := range pc.Node.Peers {
-// 		if peer.IsInbound {
-// 			inboundCount++
-// 		} else {
-// 			outboundCount++
-// 		}
-// 	}
+// NewPeerManager creates a new peer manager with the message bus
+func NewPeerManager(messageBus types.MessageBusInterface, maxInbound, maxOutbound int) *PeerManager {
+	return &PeerManager{
+		messageBus:            messageBus,
+		Peers:                 make(map[string]*PeerConnection),
+		MaxInbound:            maxInbound,
+		MaxOutbound:           maxOutbound,
+		SeedPeers:             []string{},
+		PeerDiscoveryInterval: 10 * time.Minute,
+	}
+}
 
-// 	if isInbound && inboundCount >= pc.Node.MaxInbound {
-// 		return fmt.Errorf("max inbound connections (%d) reached", pc.Node.MaxInbound)
-// 	}
-// 	if !isInbound && outboundCount >= pc.Node.MaxOutbound {
-// 		return fmt.Errorf("max outbound connections (%d) reached", pc.Node.MaxOutbound)
-// 	}
+// NewPeerConnection creates a new peer connection
+func NewPeerConnection(messageBus types.MessageBusInterface, address string, isInbound bool) *PeerConnection {
+	return &PeerConnection{
+		messageBus: messageBus,
+		Address:    address,
+		IsInbound:  isInbound,
+		LastSeen:   time.Now(),
+	}
+}
 
-// 	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
-// 		address = "http://" + address
-// 	}
+// AddPeer adds a new peer to the network
+func (pm *PeerManager) AddPeer(address string, isInbound bool) error {
+	pm.PeerMu.Lock()
+	defer pm.PeerMu.Unlock()
 
-// 	pc.Node.Peers[address] = &PeerConnection{
-// 		Address:   address,
-// 		IsInbound: isInbound,
-// 		LastSeen:  time.Now(),
-// 	}
-// 	return nil
-// }
+	// Normalize the address
+	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+		address = "http://" + address
+	}
 
-// func (pc *PeerConnection) RemovePeer(address string) {
-// 	node.PeerMu.Lock()
-// 	defer node.PeerMu.Unlock()
-// 	delete(node.Peers, address)
-// }
+	// Check if peer already exists
+	if _, exists := pm.Peers[address]; exists {
+		log.Printf("Peer %s already in peer list", address)
+		return nil
+	}
 
-// func (pc *PeerConnection) GetPeerCount() (inbound, outbound int) {
-// 	node.PeerMu.RLock()
-// 	defer node.PeerMu.RUnlock()
+	// Count existing connections
+	inboundCount := 0
+	outboundCount := 0
+	for _, peer := range pm.Peers {
+		if peer.IsInbound {
+			inboundCount++
+		} else {
+			outboundCount++
+		}
+	}
 
-// 	for _, peer := range node.Peers {
-// 		if peer.IsInbound {
-// 			inbound++
-// 		} else {
-// 			outbound++
-// 		}
-// 	}
-// 	return
-// }
+	// Check connection limits
+	if isInbound && inboundCount >= pm.MaxInbound {
+		return fmt.Errorf("max inbound connections (%d) reached", pm.MaxInbound)
+	}
+	if !isInbound && outboundCount >= pm.MaxOutbound {
+		return fmt.Errorf("max outbound connections (%d) reached", pm.MaxOutbound)
+	}
 
-// func (pc *PeerConnection) GetPeerAddresses() []string {
-// 	node.PeerMu.RLock()
-// 	defer node.PeerMu.RUnlock()
+	// Create and add the new peer
+	pm.Peers[address] = NewPeerConnection(pm.messageBus, address, isInbound)
 
-// 	addresses := make([]string, 0, len(node.Peers))
-// 	for _, peer := range node.Peers {
-// 		addresses = append(addresses, peer.Address)
-// 	}
-// 	return addresses
-// }
+	// Notify peers update via message bus
+	pm.notifyPeersUpdated()
 
-// // DiscoverPeers attempts to discover new peers from the current peer list
-// func (pc *PeerConnection) DiscoverPeers() {
-// 	maxRetries := 5
-// 	retryInterval := time.Second * 5
+	peerType := "outbound"
+	if isInbound {
+		peerType = "inbound"
+	}
+	log.Printf("Added %s peer: %s", peerType, address)
+	return nil
+}
 
-// 	for i := 0; i < maxRetries; i++ {
-// 		allPeersDiscovered := true
+// RemovePeer removes a peer from the network
+func (pm *PeerManager) RemovePeer(address string) {
+	pm.PeerMu.Lock()
+	defer pm.PeerMu.Unlock()
 
-// 		for _, peer := range node.Peers {
-// 			resp, err := http.Get(peer.Address + "/peers")
-// 			if err != nil {
-// 				fmt.Println("Failed to discover peers:", err)
-// 				allPeersDiscovered = false
-// 				break
-// 			}
-// 			defer resp.Body.Close()
+	if _, exists := pm.Peers[address]; exists {
+		delete(pm.Peers, address)
 
-// 			var discoveredPeers []string
-// 			if err := json.NewDecoder(resp.Body).Decode(&discoveredPeers); err != nil {
-// 				fmt.Printf("Failed to decode peers from %s: %v\n", peer.Address, err)
-// 				allPeersDiscovered = false
-// 				break
-// 			}
+		// Notify peers update via message bus
+		pm.notifyPeersUpdated()
 
-// 			for _, discoveredPeer := range discoveredPeers {
-// 				node.AddPeer(discoveredPeer, false) // false = outbound connection
-// 			}
-// 		}
+		log.Printf("Removed peer: %s", address)
+	}
+}
 
-// 		if allPeersDiscovered {
-// 			fmt.Println("Successfully discovered all peers.")
-// 			return
-// 		}
+// GetPeerCount returns the count of inbound and outbound peers
+func (pm *PeerManager) GetPeerCount() (inbound, outbound int) {
+	pm.PeerMu.RLock()
+	defer pm.PeerMu.RUnlock()
 
-// 		fmt.Printf("Retrying peer discovery in %v... (%d/%d)\n", retryInterval, i+1, maxRetries)
-// 		time.Sleep(retryInterval)
-// 	}
+	for _, peer := range pm.Peers {
+		if peer.IsInbound {
+			inbound++
+		} else {
+			outbound++
+		}
+	}
+	return
+}
 
-// 	fmt.Println("Failed to discover all peers after maximum retries.")
-// }
+// GetPeerAddresses returns a list of all peer addresses
+func (pm *PeerManager) GetPeerAddresses() []string {
+	pm.PeerMu.RLock()
+	defer pm.PeerMu.RUnlock()
 
-// // SyncWithPeer synchronizes blockchain state with a specific peer
-// func (pc *PeerConnection) SyncWithPeer(peer string) {
-// 	resp, err := http.Get(peer + "/blockchain")
-// 	if err != nil {
-// 		fmt.Println("Error fetching the blockchain:", err)
-// 		return
-// 	}
-// 	defer resp.Body.Close()
+	addresses := make([]string, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		addresses = append(addresses, peer.Address)
+	}
+	return addresses
+}
 
-// 	body, err := ioutil.ReadAll(resp.Body)
-// 	if err != nil {
-// 		fmt.Println("Error reading response:", err)
-// 		return
-// 	}
+// notifyPeersUpdated notifies the system about peer list changes
+func (pm *PeerManager) notifyPeersUpdated() {
+	peerAddresses := pm.GetPeerAddresses()
 
-// 	peerBlockchain := &Blockchain{}
-// 	err = json.Unmarshal(body, peerBlockchain)
-// 	if err != nil {
-// 		fmt.Println("Error unmarshalling the blockchain:", err)
-// 		return
-// 	}
+	// Send message via message bus about peer list update
+	responseCh := make(chan types.Response)
+	pm.messageBus.Publish(types.Message{
+		Type:       types.UpdatePeerList,
+		Data:       peerAddresses,
+		ResponseCh: responseCh,
+	})
 
-// 	if len(peerBlockchain.Blocks) > len(node.Blockchain.Blocks) {
-// 		node.Blockchain.Mu.Lock()
-// 		node.Blockchain.Blocks = peerBlockchain.Blocks
-// 		node.Blockchain.Mu.Unlock()
-// 	}
-// }
+	// No need to wait for response
+}
 
-// // SyncBlockchain synchronizes with all peers to ensure the latest blockchain state
-// func (pc *PeerConnection) SyncBlockchain() {
-// 	for _, peer := range node.Peers {
-// 		resp, err := http.Get(peer.Address + "/blockchain")
-// 		if err != nil {
-// 			fmt.Println("Failed to get blockchain from peer:", err)
-// 			continue
-// 		}
+// DiscoverPeers attempts to discover new peers from the current peer list
+func (pm *PeerManager) DiscoverPeers() {
+	log.Println("Starting peer discovery...")
+	maxRetries := 5
+	retryInterval := time.Second * 5
 
-// 		if resp.StatusCode != http.StatusOK {
-// 			fmt.Println("Non-OK HTTP status from peer:", resp.StatusCode)
-// 			resp.Body.Close()
-// 			continue
-// 		}
+	pm.PeerMu.RLock()
+	currentPeers := make([]*PeerConnection, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		currentPeers = append(currentPeers, peer)
+	}
+	pm.PeerMu.RUnlock()
 
-// 		var peerBlockchain Blockchain
-// 		decoder := json.NewDecoder(resp.Body)
-// 		err = decoder.Decode(&peerBlockchain)
-// 		resp.Body.Close()
+	// If we have no peers, try seed peers
+	if len(currentPeers) == 0 && len(pm.SeedPeers) > 0 {
+		log.Println("No peers available, trying seed peers...")
+		for _, seedPeer := range pm.SeedPeers {
+			pm.AddPeer(seedPeer, false)
+		}
 
-// 		if err != nil {
-// 			fmt.Println("Failed to deserialize blockchain:", err)
-// 			continue
-// 		}
+		// Refresh the peer list
+		pm.PeerMu.RLock()
+		currentPeers = make([]*PeerConnection, 0, len(pm.Peers))
+		for _, peer := range pm.Peers {
+			currentPeers = append(currentPeers, peer)
+		}
+		pm.PeerMu.RUnlock()
+	}
 
-// 		if len(peerBlockchain.Blocks) > len(node.Blockchain.Blocks) {
-// 			for i := len(node.Blockchain.Blocks); i < len(peerBlockchain.Blocks); i++ {
-// 				node.Blockchain.Blocks = append(node.Blockchain.Blocks, peerBlockchain.Blocks[i])
-// 			}
-// 		}
-// 	}
-// }
+	// Still no peers after trying seeds
+	if len(currentPeers) == 0 {
+		log.Println("No peers available for discovery, even after trying seeds.")
+		return
+	}
 
-// // Broadcast sends the current blockchain state to all peers
-// func (pc *PeerConnection) Broadcast() {
-// 	data, err := json.Marshal(node.Blockchain)
-// 	if err != nil {
-// 		fmt.Println("Error:", err)
-// 		return
-// 	}
+	for i := 0; i < maxRetries; i++ {
+		allPeersDiscovered := true
 
-// 	for _, peer := range node.Peers {
-// 		resp, err := http.Post(peer.Address+"/blockchain", "application/json", bytes.NewBuffer(data))
-// 		if err != nil {
-// 			fmt.Println("Failed to broadcast to peer:", peer)
-// 			continue
-// 		}
-// 		resp.Body.Close()
-// 	}
-// }
+		for _, peer := range currentPeers {
+			log.Printf("Requesting peers from: %s", peer.Address)
+			resp, err := http.Get(peer.Address + "/peers")
+			if err != nil {
+				log.Printf("Failed to discover peers from %s: %v", peer.Address, err)
+				allPeersDiscovered = false
+				continue
+			}
 
-// // BroadcastBlock sends a block to all peers
-// func (pc *PeerConnection) BroadcastBlock(block *Block) {
-// 	blockData, err := json.Marshal(block)
-// 	if err != nil {
-// 		fmt.Println("Failed to serialize block:", err)
-// 		return
-// 	}
+			body, err := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
 
-// 	for _, peer := range node.Peers {
-// 		resp, err := http.Post(peer.Address+"/block", "application/json", bytes.NewBuffer(blockData))
-// 		if err != nil {
-// 			fmt.Printf("Failed to post block to peer %s: %v\n", peer.Address, err)
-// 			continue
-// 		}
-// 		if resp.StatusCode != http.StatusOK {
-// 			fmt.Printf("Received non-OK response when broadcasting block to peer %s: %s\n", peer.Address, resp.Status)
-// 		}
-// 		resp.Body.Close()
-// 	}
-// }
+			if err != nil {
+				log.Printf("Failed to read response from %s: %v", peer.Address, err)
+				allPeersDiscovered = false
+				continue
+			}
 
-// // BroadcastTransaction sends a transaction to all peers
-// func (pc *PeerConnection) BroadcastTransaction(tx *thrylos.Transaction) error {
-// 	txData, err := json.Marshal(tx)
-// 	if err != nil {
-// 		fmt.Println("Failed to serialize transaction:", err)
-// 		return err
-// 	}
+			var discoveredPeers []string
+			if err := json.Unmarshal(body, &discoveredPeers); err != nil {
+				log.Printf("Failed to decode peers from %s: %v", peer.Address, err)
+				allPeersDiscovered = false
+				continue
+			}
 
-// 	var broadcastErr error
-// 	for _, peer := range node.Peers {
-// 		url := fmt.Sprintf("%s/transaction", peer.Address)
-// 		resp, err := http.Post(url, "application/json", bytes.NewBuffer(txData))
-// 		if err != nil {
-// 			fmt.Println("Failed to post transaction to peer:", err)
-// 			broadcastErr = err
-// 			continue
-// 		}
-// 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-// 			fmt.Printf("Received non-OK response when broadcasting transaction to peer: %s, Status: %s\n", peer.Address, resp.Status)
-// 			broadcastErr = fmt.Errorf("failed to broadcast to peer %s, received status %s", peer.Address, resp.Status)
-// 		}
-// 		resp.Body.Close()
-// 	}
-// 	return broadcastErr
-// }
+			for _, discoveredPeer := range discoveredPeers {
+				if err := pm.AddPeer(discoveredPeer, false); err != nil {
+					log.Printf("Failed to add discovered peer %s: %v", discoveredPeer, err)
+				}
+			}
 
-// // Utility functions for peer management
-// func (pc *PeerConnection) GetPeers() []string {
-// 	return node.GetPeerAddresses() // Use existing helper function
-// }
+			// Update last seen time
+			peer.mu.Lock()
+			peer.LastSeen = time.Now()
+			peer.mu.Unlock()
+		}
 
-// // PingPeers checks the health of all connected peers
-// func (pc *PeerConnection) PingPeers() {
-// 	for _, peer := range node.Peers {
-// 		resp, err := http.Get(peer.Address + "/ping")
-// 		if err != nil {
-// 			log.Printf("Failed to ping peer %s: %v", peer.Address, err)
-// 			continue
-// 		}
-// 		resp.Body.Close()
-// 		if resp.StatusCode != http.StatusOK {
-// 			log.Printf("Unhealthy peer %s with status: %d", peer.Address, resp.StatusCode)
-// 		}
-// 	}
-// }
+		if allPeersDiscovered {
+			log.Println("Successfully discovered peers.")
+			return
+		}
 
-// func (pc *PeerConnection) SendVote(vote Vote) error {
-// 	voteData, err := json.Marshal(vote)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to serialize vote: %v", err)
-// 	}
+		log.Printf("Retrying peer discovery in %v... (%d/%d)", retryInterval, i+1, maxRetries)
+		time.Sleep(retryInterval)
+	}
 
-// 	url := fmt.Sprintf("%s/vote", pc.Address)
-// 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(voteData))
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer resp.Body.Close()
+	log.Println("Failed to discover all peers after maximum retries.")
+}
 
-// 	if resp.StatusCode != http.StatusOK {
-// 		return fmt.Errorf("received non-OK response: %s", resp.Status)
-// 	}
-// 	return nil
-// }
+// SyncWithPeer synchronizes blockchain state with a specific peer
+func (pm *PeerManager) SyncWithPeer(peerAddress string) error {
+	log.Printf("Syncing with peer: %s", peerAddress)
+
+	resp, err := http.Get(peerAddress + "/blockchain")
+	if err != nil {
+		log.Printf("Error fetching the blockchain from %s: %v", peerAddress, err)
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading response from %s: %v", peerAddress, err)
+		return err
+	}
+
+	// Get the current blockchain height
+	heightCh := make(chan types.Response)
+	pm.messageBus.Publish(types.Message{
+		Type:       types.GetBlockchainInfo,
+		Data:       "height",
+		ResponseCh: heightCh,
+	})
+	heightResp := <-heightCh
+
+	var currentHeight int32
+	if heightResp.Error == nil {
+		if height, ok := heightResp.Data.(int32); ok {
+			currentHeight = height
+		}
+	}
+
+	// Parse peer's blockchain data
+	var peerBlockchainData map[string]interface{}
+	if err := json.Unmarshal(body, &peerBlockchainData); err != nil {
+		log.Printf("Error unmarshalling blockchain data: %v", err)
+		return err
+	}
+
+	// Extract peer's blockchain height
+	var peerHeight int32
+	if heightFloat, ok := peerBlockchainData["height"].(float64); ok {
+		peerHeight = int32(heightFloat)
+	}
+
+	// If peer has higher blockchain, sync blocks
+	if peerHeight > currentHeight {
+		log.Printf("Peer %s has higher blockchain (height: %d > %d), syncing blocks...",
+			peerAddress, peerHeight, currentHeight)
+
+		// For each missing block, fetch and process
+		for height := currentHeight + 1; height <= peerHeight; height++ {
+			// Get block from peer
+			blockResp, err := http.Get(fmt.Sprintf("%s/block/%d", peerAddress, height))
+			if err != nil {
+				log.Printf("Error fetching block %d: %v", height, err)
+				continue
+			}
+
+			blockBody, err := ioutil.ReadAll(blockResp.Body)
+			blockResp.Body.Close()
+
+			if err != nil {
+				log.Printf("Error reading block %d response: %v", height, err)
+				continue
+			}
+
+			var block types.Block
+			if err := json.Unmarshal(blockBody, &block); err != nil {
+				log.Printf("Error unmarshalling block %d: %v", height, err)
+				continue
+			}
+
+			// Process block via message bus
+			processCh := make(chan types.Response)
+			pm.messageBus.Publish(types.Message{
+				Type:       types.ProcessBlock,
+				Data:       &block,
+				ResponseCh: processCh,
+			})
+
+			// Wait for processing to complete
+			processResp := <-processCh
+			if processResp.Error != nil {
+				log.Printf("Error processing block %d: %v", height, processResp.Error)
+				return processResp.Error
+			}
+		}
+
+		log.Printf("Successfully synced %d blocks from peer %s", peerHeight-currentHeight, peerAddress)
+	} else {
+		log.Printf("No new blocks from peer %s (peer height: %d, our height: %d)",
+			peerAddress, peerHeight, currentHeight)
+	}
+
+	return nil
+}
+
+// SyncBlockchain synchronizes with all peers to ensure the latest blockchain state
+func (pm *PeerManager) SyncBlockchain() {
+	log.Println("Starting blockchain synchronization...")
+
+	pm.PeerMu.RLock()
+	peers := make([]*PeerConnection, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		peers = append(peers, peer)
+	}
+	pm.PeerMu.RUnlock()
+
+	if len(peers) == 0 {
+		log.Println("No peers available for blockchain synchronization.")
+		return
+	}
+
+	for _, peer := range peers {
+		if err := pm.SyncWithPeer(peer.Address); err != nil {
+			log.Printf("Failed to sync with peer %s: %v", peer.Address, err)
+		}
+	}
+
+	log.Println("Blockchain synchronization completed.")
+}
+
+// BroadcastBlock sends a block to all peers
+func (pm *PeerManager) BroadcastBlock(block *types.Block) {
+	blockData, err := json.Marshal(block)
+	if err != nil {
+		log.Printf("Failed to serialize block: %v", err)
+		return
+	}
+
+	pm.PeerMu.RLock()
+	peers := make([]*PeerConnection, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		peers = append(peers, peer)
+	}
+	pm.PeerMu.RUnlock()
+
+	log.Printf("Broadcasting block %s to %d peers", block.Hash, len(peers))
+
+	var wg sync.WaitGroup
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(p *PeerConnection) {
+			defer wg.Done()
+
+			resp, err := http.Post(p.Address+"/block", "application/json", bytes.NewBuffer(blockData))
+			if err != nil {
+				log.Printf("Failed to post block to peer %s: %v", p.Address, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+				log.Printf("Received non-OK response when broadcasting block to peer %s: %s",
+					p.Address, resp.Status)
+			}
+
+			// Update last seen time
+			p.mu.Lock()
+			p.LastSeen = time.Now()
+			p.mu.Unlock()
+		}(peer)
+	}
+
+	// Wait for all broadcast operations to complete
+	wg.Wait()
+	log.Printf("Block broadcast completed")
+}
+
+// BroadcastTransaction sends a transaction to all peers
+func (pm *PeerManager) BroadcastTransaction(tx *thrylos.Transaction) error {
+	txData, err := json.Marshal(tx)
+	if err != nil {
+		log.Printf("Failed to serialize transaction: %v", err)
+		return err
+	}
+
+	pm.PeerMu.RLock()
+	peers := make([]*PeerConnection, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		peers = append(peers, peer)
+	}
+	pm.PeerMu.RUnlock()
+
+	log.Printf("Broadcasting transaction %s to %d peers", tx.Id, len(peers))
+
+	var (
+		wg           sync.WaitGroup
+		mu           sync.Mutex
+		broadcastErr error
+	)
+
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(p *PeerConnection) {
+			defer wg.Done()
+
+			url := fmt.Sprintf("%s/transaction", p.Address)
+			resp, err := http.Post(url, "application/json", bytes.NewBuffer(txData))
+			if err != nil {
+				log.Printf("Failed to post transaction to peer %s: %v", p.Address, err)
+				mu.Lock()
+				broadcastErr = err
+				mu.Unlock()
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+				log.Printf("Received non-OK response when broadcasting transaction to peer %s: %s",
+					p.Address, resp.Status)
+				mu.Lock()
+				broadcastErr = fmt.Errorf("failed to broadcast to peer %s, received status %s",
+					p.Address, resp.Status)
+				mu.Unlock()
+			}
+
+			// Update last seen time
+			p.mu.Lock()
+			p.LastSeen = time.Now()
+			p.mu.Unlock()
+		}(peer)
+	}
+
+	// Wait for all broadcast operations to complete
+	wg.Wait()
+
+	if broadcastErr != nil {
+		log.Printf("Transaction broadcast completed with errors")
+		return broadcastErr
+	}
+
+	log.Printf("Transaction broadcast completed successfully")
+	return nil
+}
+
+// PingPeers checks the health of all connected peers
+func (pm *PeerManager) PingPeers() {
+	log.Println("Pinging all peers...")
+
+	pm.PeerMu.RLock()
+	peers := make([]*PeerConnection, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		peers = append(peers, peer)
+	}
+	pm.PeerMu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(p *PeerConnection) {
+			defer wg.Done()
+
+			resp, err := http.Get(p.Address + "/ping")
+			if err != nil {
+				log.Printf("Failed to ping peer %s: %v", p.Address, err)
+				// Consider removing unresponsive peers
+				if strings.Contains(err.Error(), "connection refused") ||
+					strings.Contains(err.Error(), "no route to host") ||
+					strings.Contains(err.Error(), "i/o timeout") {
+					log.Printf("Removing unresponsive peer %s", p.Address)
+					pm.RemovePeer(p.Address)
+				}
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Unhealthy peer %s with status: %d", p.Address, resp.StatusCode)
+			} else {
+				// Update last seen time for responsive peers
+				p.mu.Lock()
+				p.LastSeen = time.Now()
+				p.mu.Unlock()
+			}
+		}(peer)
+	}
+
+	wg.Wait()
+	log.Printf("Ping completed for %d peers", len(peers))
+}
+
+// SendVote sends a vote to a specific peer
+func (pc *PeerConnection) SendVote(vote types.Vote) error {
+	voteData, err := json.Marshal(vote)
+	if err != nil {
+		return fmt.Errorf("failed to serialize vote: %v", err)
+	}
+
+	url := fmt.Sprintf("%s/vote", pc.Address)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(voteData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("received non-OK response: %s", resp.Status)
+	}
+
+	// Update last seen time
+	pc.mu.Lock()
+	pc.LastSeen = time.Now()
+	pc.mu.Unlock()
+
+	return nil
+}
+
+// BroadcastVote sends a vote to all peers
+func (pm *PeerManager) BroadcastVote(vote types.Vote) error {
+	voteData, err := json.Marshal(vote)
+	if err != nil {
+		log.Printf("Failed to serialize vote: %v", err)
+		return err
+	}
+
+	pm.PeerMu.RLock()
+	peers := make([]*PeerConnection, 0, len(pm.Peers))
+	for _, peer := range pm.Peers {
+		peers = append(peers, peer)
+	}
+	pm.PeerMu.RUnlock()
+
+	log.Printf("Broadcasting vote for block %s to %d peers", vote.BlockHash, len(peers))
+
+	var (
+		wg           sync.WaitGroup
+		mu           sync.Mutex
+		broadcastErr error
+	)
+
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(p *PeerConnection) {
+			defer wg.Done()
+
+			url := fmt.Sprintf("%s/vote", p.Address)
+			resp, err := http.Post(url, "application/json", bytes.NewBuffer(voteData))
+			if err != nil {
+				log.Printf("Failed to post vote to peer %s: %v", p.Address, err)
+				mu.Lock()
+				broadcastErr = err
+				mu.Unlock()
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("Received non-OK response when broadcasting vote to peer %s: %s",
+					p.Address, resp.Status)
+				mu.Lock()
+				broadcastErr = fmt.Errorf("failed to broadcast vote to peer %s, received status %s",
+					p.Address, resp.Status)
+				mu.Unlock()
+			}
+
+			// Update last seen time
+			p.mu.Lock()
+			p.LastSeen = time.Now()
+			p.mu.Unlock()
+		}(peer)
+	}
+
+	// Wait for all broadcast operations to complete
+	wg.Wait()
+
+	if broadcastErr != nil {
+		log.Printf("Vote broadcast completed with errors")
+		return broadcastErr
+	}
+
+	log.Printf("Vote broadcast completed successfully")
+	return nil
+}
+
+// StartPeerManagement initiates periodic peer discovery and health checks
+func (pm *PeerManager) StartPeerManagement() {
+	// Run initial peer discovery
+	pm.DiscoverPeers()
+
+	// Set up ticker for periodic peer discovery
+	discoveryTicker := time.NewTicker(pm.PeerDiscoveryInterval)
+	pingTicker := time.NewTicker(2 * time.Minute)
+
+	go func() {
+		for {
+			select {
+			case <-discoveryTicker.C:
+				pm.DiscoverPeers()
+			case <-pingTicker.C:
+				pm.PingPeers()
+			}
+		}
+	}()
+
+	log.Println("Peer management started")
+}

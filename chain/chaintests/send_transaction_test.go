@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/types"
@@ -326,24 +325,6 @@ func TestEnhancedSubmitTransactionHandler(t *testing.T) {
 	}
 }
 
-// MockBlockchain for testing propagation
-type MockBlockchain struct {
-	ActiveValidators      []string
-	PendingTxs            []*thrylos.Transaction
-	PropagatedTxs         map[string][]string
-	TransactionPropagator *types.TransactionPropagator
-	Stakeholders          map[string]int64
-	Blocks                []*types.Block
-	mu                    sync.RWMutex
-}
-
-// Add this new method to satisfy the interface
-func (mb *MockBlockchain) GetActiveValidators() []string {
-	mb.mu.RLock()
-	defer mb.mu.RUnlock()
-	return mb.ActiveValidators
-}
-
 // func NewMockBlockchain() *MockBlockchain {
 // 	mock := &MockBlockchain{
 // 		ActiveValidators: []string{"validator1", "validator2", "validator3"},
@@ -353,24 +334,6 @@ func (mb *MockBlockchain) GetActiveValidators() []string {
 // 	mock.TransactionPropagator = network.NewTransactionPropagator(mock)
 // 	return mock
 // }
-
-func (mb *MockBlockchain) IsActiveValidator(address string) bool {
-	mb.mu.RLock()
-	defer mb.mu.RUnlock()
-	for _, v := range mb.ActiveValidators {
-		if v == address {
-			return true
-		}
-	}
-	return false
-}
-
-func (mb *MockBlockchain) AddPendingTransaction(tx *thrylos.Transaction) error {
-	mb.mu.Lock()
-	defer mb.mu.Unlock()
-	mb.PendingTxs = append(mb.PendingTxs, tx)
-	return nil
-}
 
 // func TestTransactionPropagation(t *testing.T) {
 // 	mockBC := NewMockBlockchain()

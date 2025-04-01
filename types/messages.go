@@ -2,8 +2,7 @@ package types
 
 import (
 	"sync"
-
-	"github.com/thrylos-labs/thrylos/amount"
+	"time"
 )
 
 // The message system is mainly for:
@@ -43,6 +42,7 @@ const (
 	GetPendingTransactionCount MessageType = "GET_PENDING_TX_COUNT"
 	GetPendingTransactionBatch MessageType = "GET_PENDING_TX_BATCH"
 	UpdateProcessorState       MessageType = "UPDATE_PROCESSOR_STATE"
+	EstimateGas                MessageType = "ESTIMATE_GAS"
 
 	// Block related
 	ProcessBlock      MessageType = "PROCESS_BLOCK"
@@ -59,10 +59,16 @@ const (
 	GetDAGTips     MessageType = "GET_DAG_TIPS"
 
 	// Node state related
-	GetStakingStats MessageType = "GET_STAKING_STATS"
-	CreateStake     MessageType = "CREATE_STAKE"
-	UpdatePeerList  MessageType = "UPDATE_PEER_LIST"
-	IsCounterNode   MessageType = "IS_COUNTER_NODE"
+	GetStakingStats   MessageType = "GET_STAKING_STATS"
+	CreateStake       MessageType = "CREATE_STAKE"
+	UpdatePeerList    MessageType = "UPDATE_PEER_LIST"
+	IsCounterNode     MessageType = "IS_COUNTER_NODE"
+	ValidateValidator MessageType = "VALIDATE_VALIDATOR"
+	GetPoolStats      MessageType = "GET_POOL_STATS"
+	GetValidators     MessageType = "GET_VALIDATORS"
+	IsValidator       MessageType = "IS_VALIDATOR"
+
+	GetBlockchainInfo MessageType = "GET_BLOCKCHAIN_INFO"
 )
 
 // Message represents a generic message in the system
@@ -70,6 +76,15 @@ type Message struct {
 	Type       MessageType
 	Data       interface{}
 	ResponseCh chan Response
+}
+
+type Vote struct {
+	ValidatorID    string    `json:"validator_id"`
+	BlockNumber    int32     `json:"block_number"`
+	BlockHash      string    `json:"block_hash,omitempty"`
+	ValidationPass bool      `json:"validation_pass,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
+	VoterNode      string    `json:"voter_node"`
 }
 
 // Response represents a generic response
@@ -114,7 +129,7 @@ type AddUTXORequest struct {
 
 type UpdateStateRequest struct {
 	Address string
-	Balance amount.Amount
+	Balance int64
 }
 
 type UpdateProcessorStateRequest struct {

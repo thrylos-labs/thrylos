@@ -1,7 +1,10 @@
 package node
 
+// For thrylos.Block
+// For types.Vote, types.Block
+
 // func (node *Node) BroadcastVote(validatorID string, blockNumber int32) error {
-// 	vote := validator.Vote{
+// 	vote := types.Vote{ // Changed from validator.Vote
 // 		ValidatorID: validatorID,
 // 		BlockNumber: blockNumber,
 // 		Timestamp:   time.Now(),
@@ -23,7 +26,7 @@ package node
 // 	return nil
 // }
 
-// // // Validate block and send vote
+// // Validate block and send vote
 // func (node *Node) ValidateAndVoteOnBlock(block *thrylos.Block) error {
 // 	// Validate the block
 // 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
@@ -43,7 +46,7 @@ package node
 // 		}
 // 		defer resp.Body.Close()
 
-// 		var votes []validator.Vote
+// 		var votes []types.Vote // Changed from validator.Vote
 // 		if err := json.NewDecoder(resp.Body).Decode(&votes); err != nil {
 // 			log.Printf("Failed to decode votes from peer %s: %v", peer.Address, err)
 // 			continue
@@ -62,7 +65,7 @@ package node
 // 	}
 
 // 	// Create vote with validation result
-// 	vote := validator.Vote{
+// 	vote := types.Vote{ // Changed from validator.Vote
 // 		ValidatorID:    block.Validator,
 // 		BlockNumber:    block.Index,
 // 		BlockHash:      block.Hash,
@@ -79,7 +82,7 @@ package node
 // 	return nil
 // }
 
-// func (node *Node) sendVoteToCounter(vote validator.Vote) error {
+// func (node *Node) sendVoteToCounter(vote types.Vote) error { // Changed from validator.Vote
 // 	if node.IsVoteCounter {
 // 		// If this is the counter node, process locally
 // 		return node.VoteCounter.AddVote(vote)

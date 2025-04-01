@@ -191,7 +191,7 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 		Type: types.UpdateState,
 		Data: types.UpdateStateRequest{
 			Address: address,
-			Balance: total,
+			Balance: int64(total), // Cast to int64
 		},
 		ResponseCh: make(chan types.Response),
 	})

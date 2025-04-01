@@ -206,7 +206,7 @@ func (bp *BlockProcessor) ProcessConfirmedTransactions(block *types.Block) {
 			Type: types.UpdateState,
 			Data: types.UpdateStateRequest{
 				Address: senderAddr,
-				Balance: amount.Amount(0), // Convert to amount.Amount
+				Balance: int64(amount.Amount(0)), // Convert amount.Amount to int64
 			},
 			ResponseCh: make(chan types.Response),
 		})
@@ -238,7 +238,7 @@ func (bp *BlockProcessor) ProcessConfirmedTransactions(block *types.Block) {
 				Type: types.UpdateState,
 				Data: types.UpdateStateRequest{
 					Address: address,
-					Balance: balance,
+					Balance: int64(balance), // Convert amount.Amount to int64
 				},
 				ResponseCh: make(chan types.Response),
 			})
