@@ -31,3 +31,13 @@ type PredictionModel struct {
 	ExpectedTransactionVolume int
 	ExpectedNodeCount         int
 }
+
+// SetMaliciousDetector allows setting the maliciousDetector field
+func (cm *ConsensusManager) SetMaliciousDetector(detector *detection.MaliciousDetector) {
+	cm.maliciousDetector = detector
+}
+
+// GetMaliciousDetector allows retrieving the maliciousDetector
+func (cm *ConsensusManager) GetMaliciousDetector() *detection.MaliciousDetector {
+	return cm.maliciousDetector
+}
