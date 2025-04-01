@@ -6,7 +6,7 @@ package validatortests
 // 	PendingTxs       []*thrylos.Transaction
 // 	PropagatedTxs    map[string][]string
 // 	Stakeholders     map[string]int64
-// 	Blocks           []*shared.Block
+// 	Blocks           []*types.Block
 // 	mu               sync.RWMutex
 // }
 

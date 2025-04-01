@@ -44,6 +44,15 @@ const (
 	UpdateProcessorState       MessageType = "UPDATE_PROCESSOR_STATE"
 	EstimateGas                MessageType = "ESTIMATE_GAS"
 
+	// Validator related
+	SelectValidator            MessageType = "SELECT_VALIDATOR"
+	ProcessValidatorVote       MessageType = "PROCESS_VALIDATOR_VOTE"
+	HasSuperMajority           MessageType = "HAS_SUPER_MAJORITY"
+	GetActiveValidators        MessageType = "GET_ACTIVE_VALIDATORS"
+	GetStakeholders            MessageType = "GET_STAKEHOLDERS"
+	IsActiveValidator          MessageType = "IS_ACTIVE_VALIDATOR"
+	ProcessPendingTransactions MessageType = "PROCESS_PENDING_TRANSACTIONS"
+
 	// Block related
 	ProcessBlock      MessageType = "PROCESS_BLOCK"
 	ValidateBlock     MessageType = "VALIDATE_BLOCK"
@@ -52,6 +61,7 @@ const (
 	GetPendingTxCount MessageType = "GET_PENDING_TX_COUNT"
 	GetPendingTxBatch MessageType = "GET_PENDING_TX_BATCH"
 	BroadcastVote     MessageType = "BROADCAST_VOTE"
+	CreateBlock       MessageType = "CREATE_BLOCK"
 
 	// DAG related
 	ValidateDAGTx  MessageType = "VALIDATE_DAG_TX"
