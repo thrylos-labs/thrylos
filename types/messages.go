@@ -1,6 +1,7 @@
 package types
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -173,3 +174,62 @@ var (
 	globalMessageBus *MessageBus
 	once             sync.Once
 )
+
+// Subscribe adds a channel to receive messages of the specified type
+func (mb *MessageBus) Subscribe(msgType MessageType, ch chan Message) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	mb.subscribers[msgType] = append(mb.subscribers[msgType], ch)
+}
+
+// Unsubscribe removes a channel from receiving messages of the specified type
+func (mb *MessageBus) Unsubscribe(msgType MessageType, ch chan Message) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	subs := mb.subscribers[msgType]
+	for i, subCh := range subs {
+		if subCh == ch {
+			mb.subscribers[msgType] = append(subs[:i], subs[i+1:]...)
+			break
+		}
+	}
+}
+
+// Publish sends a message to all subscribers of the message type
+func (mb *MessageBus) Publish(msg Message) {
+	mb.mu.RLock()
+	subscribers := mb.subscribers[msg.Type]
+	mb.mu.RUnlock()
+
+	for _, ch := range subscribers {
+		// Non-blocking send with select to avoid deadlocks
+		select {
+		case ch <- msg:
+			// Message sent successfully
+		default:
+			// Channel is full or closed, log an error
+			log.Printf("Warning: Unable to send message of type %s to subscriber, channel might be full or closed", msg.Type)
+		}
+	}
+}
+
+// Close closes all subscriber channels
+func (mb *MessageBus) Close() {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	// Clear the subscribers map
+	mb.subscribers = make(map[MessageType][]chan Message)
+}
+
+// GetGlobalMessageBus returns the singleton message bus instance
+func GetGlobalMessageBus() MessageBusInterface {
+	once.Do(func() {
+		globalMessageBus = &MessageBus{
+			subscribers: make(map[MessageType][]chan Message),
+		}
+	})
+	return globalMessageBus
+}

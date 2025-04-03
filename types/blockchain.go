@@ -93,5 +93,5 @@ type BlockchainConfig struct {
 	GenesisAccount    crypto.PrivateKey
 	TestMode          bool
 	DisableBackground bool
-	// StateManager      *types.StateManager
+	StateManager      *StateManager
 }

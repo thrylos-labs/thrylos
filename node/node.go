@@ -9,11 +9,13 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/balance"
+	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
 	"github.com/thrylos-labs/thrylos/consensus/selection"
 	"github.com/thrylos-labs/thrylos/consensus/staking"
 	"github.com/thrylos-labs/thrylos/consensus/validator"
 	"github.com/thrylos-labs/thrylos/crypto"
+	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/types"
 	"google.golang.org/grpc/balancer/grpclb/state"
@@ -54,15 +56,15 @@ type Node struct {
 	PendingTransactions []*thrylos.Transaction     // Being replaced by txPool
 
 	// Network and peer management - for future implementation
-	// WebSocketConnections map[string]*network.WebSocketConnection
-	WebSocketMutex     sync.RWMutex
-	balanceUpdateQueue *balance.BalanceUpdateQueue
-	// blockProducer        *chain.ModernBlockProducer
-	StakingService *staking.StakingService
-	// Peers               map[string]*network.PeerConnection
-	PeerMu      sync.RWMutex
-	MaxInbound  int
-	MaxOutbound int
+	WebSocketConnections map[string]*network.WebSocketConnection
+	WebSocketMutex       sync.RWMutex
+	balanceUpdateQueue   *balance.BalanceUpdateQueue
+	blockProducer        *chain.ModernBlockProducer
+	StakingService       *staking.StakingService
+	Peers                map[string]*network.PeerConnection
+	PeerMu               sync.RWMutex
+	MaxInbound           int
+	MaxOutbound          int
 
 	// Voting and validation - for future implementation
 	txStatusMap        sync.Map
@@ -70,6 +72,8 @@ type Node struct {
 	ValidatorSelector  *selection.ValidatorSelector
 	IsVoteCounter      bool   // Indicates if this node is the designated vote counter
 	VoteCounterAddress string // Address of the designated vote counter
+	Address            string // This node's own address for identification in votes
+
 }
 
 func (n *Node) SetBlockchain(bc *types.Blockchain) {

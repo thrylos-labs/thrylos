@@ -26,7 +26,7 @@ package node
 
 // func (node *Node) handleGetUTXOs(msg types.Message) {
 // 	req := msg.Data.(types.UTXORequest)
-// 	utxos, err := node.blockchain.GetUTXOsForAddress(req.Address)
+// 	utxos, err := node.Database.GetUTXOsForAddress(req.Address)
 // 	msg.ResponseCh <- types.Response{
 // 		Data:  utxos,
 // 		Error: err,
@@ -43,7 +43,7 @@ package node
 
 // func (node *Node) handleUpdateState(msg types.Message) {
 // 	req := msg.Data.(types.UpdateStateRequest)
-// 	node.Blockchain.StateManager.UpdateState(req.Address, req.Balance, nil)
+// 	node.StateManager.UpdateState(req.Address, req.Balance, nil)
 // 	msg.ResponseCh <- types.Response{} // No error possible in current implementation
 // }
 

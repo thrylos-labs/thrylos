@@ -45,6 +45,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/golang/glog v1.2.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/mmcloughlin/addchain v0.4.0 // indirect

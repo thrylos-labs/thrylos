@@ -1,5 +1,7 @@
 package node
 
+// Not really needed now
+
 // func (node *Node) GetBlockchainStats() *chain.BlockchainStats {
 // 	blockCount, txCount := node.Blockchain.StatsCollector.GetBlockStats()
 // 	return &chain.BlockchainStats{

@@ -29,7 +29,7 @@ package node
 // // Validate block and send vote
 // func (node *Node) ValidateAndVoteOnBlock(block *thrylos.Block) error {
 // 	// Validate the block
-// 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
+// 	if err := node.blockchain.VerifySignedBlock(block); err != nil {
 // 		return fmt.Errorf("block validation failed: %v", err)
 // 	}
 
@@ -60,7 +60,7 @@ package node
 
 // func (node *Node) ValidateAndVoteForBlock(block *types.Block) error {
 // 	// Perform block validation
-// 	if err := node.Blockchain.VerifySignedBlock(block); err != nil {
+// 	if err := node.blockchain.VerifySignedBlock(block); err != nil {
 // 		return fmt.Errorf("block validation failed: %v", err)
 // 	}
 

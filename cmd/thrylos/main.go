@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/types"
 
 	"github.com/joho/godotenv"
@@ -173,21 +174,15 @@ func main() {
 
 	// node.SetChainID(chainID)
 
-	// Initialize router and routes
-	// router := network.NewRouter(node)
-	// mux := router.SetupRoutes()
+	// Get the singleton message bus
+	messageBus := types.GetGlobalMessageBus()
 
-	// Needs to be reviewed
-	// mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-	// 	fmt.Fprintf(w, "Blockchain status: Height: %d, Blocks: %d",
-	// 		len(blockchain.Blocks)-1, len(blockchain.Blocks))
-	// })
-
-	// Start background tasks
-	// node.StartBackgroundTasks()
+	// Initialize router with message bus only
+	router := network.NewRouter(messageBus)
+	mux := router.SetupRoutes()
 
 	// Setup HTTP/WS servers
-	// setupServers(mux, envFile)
+	setupServers(mux, envFile)
 
 	// Setup and start gRPC server
 	lis, err := net.Listen("tcp", grpcAddress)
