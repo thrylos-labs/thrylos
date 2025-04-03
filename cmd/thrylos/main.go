@@ -25,6 +25,12 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// BlockchainServer implements the gRPC service
+type server struct {
+	thrylos.UnimplementedBlockchainServiceServer
+	blockchain *chain.BlockchainImpl
+}
+
 func loadEnv() (map[string]string, error) {
 	env := os.Getenv("ENV")
 	if env == "" {
@@ -101,12 +107,10 @@ func main() {
 
 	// Environment variables
 	grpcAddress := envFile["GRPC_NODE_ADDRESS"]
-	// knownPeers := envFile["PEERS"]
-	nodeDataDir := envFile["DATA"]
-	testnet := envFile["TESTNET"] == "true" // Convert to boolea]
+	peers := strings.Split(envFile["PEERS"], ",")
 	dataDir := envFile["DATA_DIR"]
-	// chainID := "0x539" // Default local chain ID (1337 in decimal)
-	// domainName := envFile["DOMAIN_NAME"]
+	testnet := envFile["TESTNET"] == "true" // Convert to boolean
+	chainID := "thrylos-testnet"            // Default chain ID for testnet
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
@@ -114,6 +118,14 @@ func main() {
 
 	if testnet {
 		fmt.Println("Running in Testnet Mode")
+	}
+
+	// Initialize peer connections if provided
+	if len(peers) > 0 && peers[0] != "" {
+		log.Printf("Connecting to %d peer nodes", len(peers))
+		// TODO: Implement peer connection logic
+	} else {
+		log.Println("No peers specified, starting as standalone node")
 	}
 
 	// Fetch the Base64-encoded AES key from the environment variable
@@ -134,15 +146,11 @@ func main() {
 	}
 
 	// Get the absolute path of the node data directory
-	absPath, err := filepath.Abs(nodeDataDir)
+	absPath, err := filepath.Abs(dataDir)
 	if err != nil {
 		log.Fatalf("Error resolving the absolute path of the blockchain data directory: %v", err)
 	}
 	log.Printf("Using blockchain data directory: %s", absPath)
-
-	// Initialize the blockchain and database with the AES key
-
-	// Remember to set TestMode to false in your production environment to ensure that the fallback mechanism is never used with real transactions.
 
 	// Create a private key for genesis account
 	privKey, err := crypto.NewPrivateKey()
@@ -150,11 +158,13 @@ func main() {
 		log.Fatalf("Error generating private key: %v", err)
 	}
 
+	// Initialize the blockchain and database with the AES key
+	// Set TestMode to false for testnet deployment
 	blockchain, _, err := chain.NewBlockchain(&types.BlockchainConfig{
 		DataDir:           absPath,
 		AESKey:            aesKey,
 		GenesisAccount:    privKey,
-		TestMode:          true,
+		TestMode:          false, // For testnet, we should set this to false
 		DisableBackground: false,
 	})
 	if err != nil {
@@ -172,7 +182,7 @@ func main() {
 	messageBus := types.GetGlobalMessageBus()
 
 	// Connect blockchain to message bus
-	connectBlockchainToMessageBus(blockchain, messageBus)
+	connectBlockchainToMessageBus(blockchain, messageBus, chainID)
 
 	// Initialize router with message bus
 	router := network.NewRouter(messageBus)
@@ -198,7 +208,8 @@ func main() {
 		s = grpc.NewServer(grpc.Creds(creds))
 	}
 
-	// thrylos.RegisterBlockchainServiceServer(s, &server{blockchain: blockchain})
+	// Register the blockchain service
+	thrylos.RegisterBlockchainServiceServer(s, &server{blockchain: blockchain})
 
 	log.Printf("Starting gRPC server on %s\n", grpcAddress)
 	if err := s.Serve(lis); err != nil {
@@ -286,7 +297,7 @@ func loadCertificate(envFile map[string]string) tls.Certificate {
 }
 
 // Helper function to connect blockchain to the message bus
-func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface) {
+func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string) {
 	// Create channels to receive messages
 	balanceCh := make(chan types.Message, 100)
 	blockCh := make(chan types.Message, 100)
@@ -407,7 +418,7 @@ func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus 
 					"height":    blockchain.GetBlockCount() - 1,
 					"lastBlock": lastBlock,
 					"nodeCount": 1, // Default for now
-					"chainId":   "thrylos-testnet",
+					"chainId":   chainID,
 					"isSyncing": false,
 				}
 				msg.ResponseCh <- types.Response{Data: info}
