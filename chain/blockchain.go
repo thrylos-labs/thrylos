@@ -144,12 +144,10 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	log.Println("Genesis account public key added to publicKeyMap")
 
 	// Commented out validator key generation check to avoid error
-	/*
-	   if err != nil {
-	       log.Printf("Warning: Failed to generate validator keys: %v", err)
-	       return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
-	   }
-	*/
+	if err != nil {
+		log.Printf("Warning: Failed to generate validator keys: %v", err)
+		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
+	}
 
 	// log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
 
@@ -170,40 +168,40 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		log.Println("Stopping blockchain...")
 	}()
 
-	// if !config.DisableBackground {
-	// 	// Start block creation routine
-	// 	go func() {
-	// 		log.Println("Starting block creation process")
-	// 		ticker := time.NewTicker(10 * time.Second)
-	// 		defer ticker.Stop()
+	if !config.DisableBackground {
+		// Start block creation routine
+		go func() {
+			log.Println("Starting block creation process")
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
 
-	// 		for {
-	// 			select {
-	// 			case <-ticker.C:
-	// 				// First fetch transactions from the pool
-	// 				txs, err := temp.txPool.GetAllTransactions()
-	// 				if err != nil {
-	// 					log.Printf("Error getting transactions from pool: %v", err)
-	// 					continue
-	// 				}
+			for {
+				select {
+				case <-ticker.C:
+					// First fetch transactions from the pool
+					txs, err := temp.txPool.GetAllTransactions()
+					if err != nil {
+						log.Printf("Error getting transactions from pool: %v", err)
+						continue
+					}
 
-	// 				// then process each of them through the modern transaction processor
-	// 				if len(txs) > 0 {
-	// 					log.Printf("Processing %d transactions from pool", len(txs))
-	// 					for _, tx := range txs {
-	// 						err := temp.ProcessIncomingTransaction(tx)
-	// 						if err != nil {
-	// 							log.Printf("Error processing transaction: %v", err)
-	// 							continue
-	// 						}
-	// 					}
-	// 				}
-	// 			}
-	// 		}
-	// 	}()
-	// } else {
-	// 	log.Println("Background processes disabled for testing")
-	// }
+					// then process each of them through the modern transaction processor
+					if len(txs) > 0 {
+						log.Printf("Processing %d transactions from pool", len(txs))
+						for _, tx := range txs {
+							err := temp.ProcessIncomingTransaction(tx)
+							if err != nil {
+								log.Printf("Error processing transaction: %v", err)
+								continue
+							}
+						}
+					}
+				}
+			}
+		}()
+	} else {
+		log.Println("Background processes disabled for testing")
+	}
 
 	log.Println("NewBlockchain initialization completed successfully")
 	return temp, storeInstance, nil
@@ -361,12 +359,12 @@ func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validato
 	}
 
 	// Verify transactions.
-	// for _, tx := range transactions {
-	// 	isValid, err := bc.VerifyTransaction(tx)
-	// 	if err != nil || !isValid {
-	// 		return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
-	// 	}
-	// }
+	for _, tx := range transactions {
+		isValid, err := bc.VerifyTransaction(tx)
+		if err != nil || !isValid {
+			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
+		}
+	}
 
 	// Create unsigned block
 	unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
