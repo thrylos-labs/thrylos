@@ -10,7 +10,11 @@ import (
 	_ "net/http/pprof" // This is important as it registers pprof handlers with the default mux.
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
+	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/types"
@@ -164,20 +168,13 @@ func main() {
 		fmt.Println("Blockchain integrity check passed.")
 	}
 
-	// Initialize a new node with the specified address and known peers
-	// peersList := []string{}
-	// if knownPeers != "" {
-	// 	peersList = strings.Split(knownPeers, ",")
-	// }
-
-	// node := node.NewNode(grpcAddress, nodeDataDir, nil)
-
-	// node.SetChainID(chainID)
-
 	// Get the singleton message bus
 	messageBus := types.GetGlobalMessageBus()
 
-	// Initialize router with message bus only
+	// Connect blockchain to message bus
+	connectBlockchainToMessageBus(blockchain, messageBus)
+
+	// Initialize router with message bus
 	router := network.NewRouter(messageBus)
 	mux := router.SetupRoutes()
 
@@ -288,18 +285,133 @@ func loadCertificate(envFile map[string]string) tls.Certificate {
 	return cert
 }
 
-// Get the blockchain stats: curl http://localhost:50051/get-stats
-// Retrieve the genesis block: curl "http://localhost:50051/get-block?id=0"
-// Retrieve pending transactions: curl http://localhost:50051/pending-transactions
-// Retrive a balance from a specific address: curl "http://localhost:50051/get-balance?address=your_address_here"
+// Helper function to connect blockchain to the message bus
+func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface) {
+	// Create channels to receive messages
+	balanceCh := make(chan types.Message, 100)
+	blockCh := make(chan types.Message, 100)
+	txCh := make(chan types.Message, 100)
+	infoCh := make(chan types.Message, 100)
 
-// Server-Side Steps
-// Blockchain Initialization:
-// Initialize the blockchain database and genesis block upon starting the server.
-// Load or create stakeholders, UTXOs, and transactions for the genesis block.
-// Transaction Handling and Block Management:
-// Receive transactions from clients, add to the pending transaction pool, and process them periodically.
-// Create new blocks from pending transactions, ensuring transactions are valid, updating the UTXO set, and managing block links.
-// Fork Resolution and Integrity Checks:
-// Check for forks in the blockchain and resolve by selecting the longest chain.
-// Perform regular integrity checks on the blockchain to ensure no tampering or inconsistencies.
+	// Subscribe to messages
+	messageBus.Subscribe(types.GetBalance, balanceCh)
+	messageBus.Subscribe(types.GetUTXOs, balanceCh)
+	messageBus.Subscribe(types.ProcessTransaction, txCh)
+	messageBus.Subscribe(types.ProcessBlock, blockCh)
+	messageBus.Subscribe(types.GetBlockchainInfo, infoCh)
+
+	// Handle balance-related messages
+	go func() {
+		for msg := range balanceCh {
+			switch msg.Type {
+			case types.GetBalance:
+				if address, ok := msg.Data.(string); ok {
+					// Sum unspent outputs for this address
+					balance := int64(0)
+					for _, utxoList := range blockchain.Blockchain.UTXOs {
+						for _, utxo := range utxoList {
+							if utxo.OwnerAddress == address && !utxo.IsSpent {
+								balance += utxo.Amount
+							}
+						}
+					}
+					msg.ResponseCh <- types.Response{Data: balance}
+				} else {
+					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid address format")}
+				}
+			case types.GetUTXOs:
+				if req, ok := msg.Data.(types.UTXORequest); ok {
+					address := req.Address
+					utxos := []types.UTXO{}
+
+					// Find all UTXOs for this address
+					for utxoKey, utxoList := range blockchain.Blockchain.UTXOs {
+						for _, utxo := range utxoList {
+							if utxo.OwnerAddress == address && !utxo.IsSpent {
+								// Convert thrylos.UTXO to types.UTXO
+								parts := strings.Split(utxoKey, ":")
+								txID := parts[0]
+								index, _ := strconv.Atoi(parts[1])
+
+								typesUtxo := types.UTXO{
+									ID:            utxoKey,
+									TransactionID: txID,
+									Index:         index,
+									OwnerAddress:  utxo.OwnerAddress,
+									Amount:        amount.Amount(utxo.Amount),
+									IsSpent:       utxo.IsSpent,
+								}
+								utxos = append(utxos, typesUtxo)
+							}
+						}
+					}
+					msg.ResponseCh <- types.Response{Data: utxos}
+				} else {
+					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid UTXO request format")}
+				}
+			}
+		}
+	}()
+
+	// Handle transaction-related messages
+	go func() {
+		for msg := range txCh {
+			switch msg.Type {
+			case types.ProcessTransaction:
+				if tx, ok := msg.Data.(*thrylos.Transaction); ok {
+					// Verify transaction
+					// Add to pending transactions or directly to pool
+					blockchain.Blockchain.PendingTransactions = append(blockchain.Blockchain.PendingTransactions, tx)
+
+					// If you have a function for processing transactions, use it here
+					// err := blockchain.ProcessIncomingTransaction(tx)
+
+					msg.ResponseCh <- types.Response{
+						Data:  tx.Id,
+						Error: nil,
+					}
+				} else {
+					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid transaction format")}
+				}
+			}
+		}
+	}()
+
+	// Handle block-related messages
+	go func() {
+		for msg := range blockCh {
+			switch msg.Type {
+			case types.ProcessBlock:
+				if blockID, ok := msg.Data.(string); ok {
+					// Get block by ID
+					block, err := blockchain.GetBlockByID(blockID)
+					msg.ResponseCh <- types.Response{Data: block, Error: err}
+				} else if blockNum, ok := msg.Data.(int32); ok {
+					// Get block by number
+					block, err := blockchain.GetBlock(int(blockNum))
+					msg.ResponseCh <- types.Response{Data: block, Error: err}
+				} else {
+					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid block identifier")}
+				}
+			}
+		}
+	}()
+
+	// Handle blockchain info messages
+	go func() {
+		for msg := range infoCh {
+			switch msg.Type {
+			case types.GetBlockchainInfo:
+				lastBlock, _, _ := blockchain.GetLastBlock()
+				info := map[string]interface{}{
+					"height":    blockchain.GetBlockCount() - 1,
+					"lastBlock": lastBlock,
+					"nodeCount": 1, // Default for now
+					"chainId":   "thrylos-testnet",
+					"isSyncing": false,
+				}
+				msg.ResponseCh <- types.Response{Data: info}
+			}
+		}
+	}()
+}
