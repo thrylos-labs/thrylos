@@ -107,10 +107,25 @@ func main() {
 
 	// Environment variables
 	grpcAddress := envFile["GRPC_NODE_ADDRESS"]
-	peers := strings.Split(envFile["PEERS"], ",")
+	wsAddress := envFile["WS_ADDRESS"]
+	peersStr := envFile["PEERS"]
 	dataDir := envFile["DATA_DIR"]
 	testnet := envFile["TESTNET"] == "true" // Convert to boolean
 	chainID := "thrylos-testnet"            // Default chain ID for testnet
+	domainName := envFile["DOMAIN_NAME"]
+	serverHost := envFile["SERVER_HOST"]
+
+	// Parse peer list
+	var seedPeers []string
+	if peersStr != "" {
+		seedPeers = strings.Split(peersStr, ",")
+		for i, peer := range seedPeers {
+			seedPeers[i] = strings.TrimSpace(peer)
+		}
+		log.Printf("Configured with %d initial seed peers", len(seedPeers))
+	} else {
+		log.Println("No initial peers configured")
+	}
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
@@ -118,14 +133,6 @@ func main() {
 
 	if testnet {
 		fmt.Println("Running in Testnet Mode")
-	}
-
-	// Initialize peer connections if provided
-	if len(peers) > 0 && peers[0] != "" {
-		log.Printf("Connecting to %d peer nodes", len(peers))
-		// TODO: Implement peer connection logic
-	} else {
-		log.Println("No peers specified, starting as standalone node")
 	}
 
 	// Fetch the Base64-encoded AES key from the environment variable
@@ -186,7 +193,41 @@ func main() {
 
 	// Initialize router with message bus
 	router := network.NewRouter(messageBus)
-	mux := router.SetupRoutes()
+
+	// Create and initialize the peer manager
+	peerManager := network.NewPeerManager(messageBus, 50, 20) // 50 inbound, 20 outbound max connections
+	peerManager.SeedPeers = seedPeers
+
+	// Determine local address for peer connections
+	var localAddress string
+	if domainName != "" {
+		localAddress = domainName
+	} else if serverHost != "" {
+		localAddress = serverHost
+		if !strings.Contains(localAddress, ":") {
+			// Add the WebSocket port if not included
+			if strings.HasPrefix(wsAddress, ":") {
+				localAddress += wsAddress
+			} else {
+				localAddress += ":" + wsAddress
+			}
+		}
+	} else {
+		// Use localhost with port as fallback
+		if strings.HasPrefix(wsAddress, ":") {
+			localAddress = "localhost" + wsAddress
+		} else {
+			localAddress = "localhost:" + wsAddress
+		}
+	}
+
+	log.Printf("Node identity: %s", localAddress)
+
+	// Start peer discovery and management
+	peerManager.StartPeerManagement()
+
+	// Setup HTTP routes with peer manager
+	mux := router.SetupRoutes(peerManager)
 
 	// Setup HTTP/WS servers
 	setupServers(mux, envFile)

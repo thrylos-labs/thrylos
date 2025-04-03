@@ -5,9 +5,10 @@ import (
 )
 
 type Router struct {
-	rpc        *Handler          // JSON-RPC handler
-	ws         *WebSocketManager // WebSocket handler
-	messageBus types.MessageBusInterface
+	rpc         *Handler          // JSON-RPC handler
+	ws          *WebSocketManager // WebSocket handler
+	messageBus  types.MessageBusInterface
+	peerManager *PeerManager // Peer manager reference
 }
 
 func NewRouter(messageBus types.MessageBusInterface) *Router {
