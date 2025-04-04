@@ -81,6 +81,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Only include core handlers
 	switch req.Method {
+	case "registerAddress":
+		// - Check wallet balances
+		// result, err = h.handleRegisterAddress(req.Params)
 	case "getBalance":
 		// - Check wallet balances
 		result, err = h.handleGetBalance(req.Params)
@@ -134,6 +137,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// func (h *Handler) handleRegisterAddress(params []interface{}) (interface{}, error) {
+// 	if len(params) < 1 {
+// 		return nil, fmt.Errorf("address parameter required")
+// 	}
+// 	address, ok := params[0].(string)
+// 	if !ok {
+// 		return nil, fmt.Errorf("invalid address parameter")
+// 	}
+
+// 	err := h.block.RegisterNewAddress(address)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("failed to register address: %v", err)
+// 	}
+// 	return "Address registered successfully", nil
+// }
+
 // Method handlers using message bus
 func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
@@ -157,12 +176,10 @@ func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 
 	// Wait for response
 	response := <-responseCh
-
 	if response.Error != nil {
 		log.Printf("Error getting balance for address %s: %v", address, response.Error)
 		if strings.Contains(response.Error.Error(), "wallet not found") {
-			// Default balance for new wallets
-			balance := int64(700000000) // 70 Thrylos in nanoTHR
+			balance := int64(700000000)
 			return struct {
 				Balance        int64   `json:"balance"`
 				BalanceThrylos float64 `json:"balanceThrylos"`
@@ -173,13 +190,14 @@ func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 		}
 		return nil, fmt.Errorf("error getting balance: %v", response.Error)
 	}
-
-	// Convert response data to int64
 	balance, ok := response.Data.(int64)
 	if !ok {
 		return nil, fmt.Errorf("invalid balance data type")
 	}
-
+	if balance == 0 { // Add this check
+		log.Printf("Balance is 0 for %s, returning default 70 THR", address)
+		balance = int64(700000000)
+	}
 	return struct {
 		Balance        int64   `json:"balance"`
 		BalanceThrylos float64 `json:"balanceThrylos"`

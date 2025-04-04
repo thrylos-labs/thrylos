@@ -29,6 +29,7 @@ func (router *Router) SetupRoutes(peerManager *PeerManager) *mux.Router {
 
 	// JSON-RPC endpoint - use ServeHTTP instead of HandleRPC
 	r.HandleFunc("/", router.rpc.ServeHTTP).Methods("POST", "OPTIONS")
+	r.HandleFunc("/rpc", router.rpc.ServeHTTP).Methods("POST", "OPTIONS")
 
 	// Separate WebSocket endpoint - use WebSocketBalanceHandler
 	r.HandleFunc("/ws/balance", router.ws.WebSocketBalanceHandler).Methods("GET", "OPTIONS")
@@ -205,6 +206,7 @@ func (router *Router) handleNetworkInfo(w http.ResponseWriter, r *http.Request) 
 }
 
 // Update the middleware to better handle WebSocket requests
+// Update the middleware to better handle WebSocket requests and fix CORS issues
 func (router *Router) middlewareHandler() mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -224,12 +226,31 @@ func (router *Router) middlewareHandler() mux.MiddlewareFunc {
 				return
 			}
 
+			// For JSON-RPC endpoint - set permissive CORS headers for development
+			// For JSON-RPC endpoint - set permissive CORS headers for development
+			if r.URL.Path == "/" || r.URL.Path == "/rpc" {
+				// During development, allow all origins
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+				if r.Method == "OPTIONS" {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Regular request handling with CORS
 			allowedOrigins := []string{
 				"http://localhost:3000",
 				"https://node.thrylos.org",
 				"http://localhost:",
 				"https://www.thrylos.org",
+				// Add your extension's origin if needed
+				"chrome-extension://",
 			}
 			origin := r.Header.Get("Origin")
 
@@ -237,7 +258,8 @@ func (router *Router) middlewareHandler() mux.MiddlewareFunc {
 			originAllowed := false
 			for _, allowedOrigin := range allowedOrigins {
 				if origin == allowedOrigin ||
-					(allowedOrigin == "http://localhost:" && strings.HasPrefix(origin, "http://localhost:")) {
+					(allowedOrigin == "http://localhost:" && strings.HasPrefix(origin, "http://localhost:")) ||
+					(allowedOrigin == "chrome-extension://" && strings.HasPrefix(origin, "chrome-extension://")) {
 					originAllowed = true
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					break
