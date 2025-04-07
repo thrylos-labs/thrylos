@@ -34,42 +34,6 @@ type BlockchainImpl struct {
 	dagManager            *processor.DAGManager
 }
 
-func (b *BlockchainImpl) RegisterNewAddress(address string) error {
-	// Check if address already has a balance
-	if _, exists := b.Blockchain.Stakeholders[address]; exists {
-		return nil // Already registered
-	}
-
-	// Create a transaction from genesis to new address
-	initialBalanceNano := utils.ThrylosToNano(70.0)
-	tx := &thrylos.Transaction{
-		Id:        fmt.Sprintf("initial_tx_%s_%d", address, time.Now().Unix()),
-		Timestamp: time.Now().Unix(),
-		Inputs:    []*thrylos.UTXO{}, // No inputs, funded by genesis
-		Outputs: []*thrylos.UTXO{{
-			OwnerAddress: address,
-			Amount:       initialBalanceNano,
-		}},
-		Signature:       []byte("genesis_funded_signature"), // Simplified for now
-		SenderPublicKey: b.Blockchain.GenesisAccount.PublicKey().Bytes(),
-	}
-
-	// Add to UTXO map
-	utxoKey := fmt.Sprintf("%s:%d", tx.Id, 0)
-	b.Blockchain.UTXOs[utxoKey] = []*thrylos.UTXO{tx.Outputs[0]}
-
-	// Update stakeholders
-	b.Blockchain.Stakeholders[address] = initialBalanceNano
-	genesisAddr, _ := b.Blockchain.GenesisAccount.PublicKey().Address()
-	b.Blockchain.Stakeholders[genesisAddr.String()] -= initialBalanceNano
-
-	// Add to pending transactions
-	b.Blockchain.PendingTransactions = append(b.Blockchain.PendingTransactions, tx)
-
-	log.Printf("Registered new address %s with initial balance: %.2f THR", address, utils.NanoToThrylos(initialBalanceNano))
-	return nil
-}
-
 func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
 	// Initialize the database
 	database, err := store.NewDatabase(config.DataDir)
@@ -106,7 +70,8 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
 
 	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
-
+	// After creating the genesis account and setting up the stakeholder map
+	log.Printf("Genesis account address: %s", addr.String())
 	// Generate a new key pair for the genesis account
 	log.Println("Generating key pair for genesis account")
 
