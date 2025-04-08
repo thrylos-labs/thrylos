@@ -30,8 +30,9 @@ type BlockchainImpl struct {
 	Blockchain            *types.Blockchain
 	TransactionPropagator *types.TransactionPropagator
 	modernProcessor       *processor.ModernProcessor
-	txPool                types.TxPool // Not *types.TxPool
+	txPool                types.TxPool
 	dagManager            *processor.DAGManager
+	MessageBus            types.MessageBusInterface
 }
 
 func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
@@ -41,53 +42,32 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
 
-	// Create the store instance
 	storeInstance, err := store.NewStore(database, config.AESKey)
 	if err != nil {
-		database.Close() // Clean up if store creation fails
+		database.Close()
 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
 	}
 
-	// Set the Blockchain field of the database
 	database.Blockchain = storeInstance
-
 	log.Println("BlockchainDB created")
 
-	// Create the genesis block
 	genesis := NewGenesisBlock()
 	log.Println("Genesis block created")
-
-	// Initialize the map for public keys
 	publicKeyMap := make(map[string]*crypto.PublicKey)
-
-	// Initialize Stakeholders map with the genesis account
-	totalSupplyNano := utils.ThrylosToNano()
-
-	log.Printf("Initializing genesis account with total supply: %.2f THR", utils.NanoToThrylos(totalSupplyNano))
+	totalSupplyNano := int64(120000000 * 1e9) // 120M THRYLOS in nanoTHRYLOS
+	log.Printf("Initializing genesis account with total supply: %.2f THR", float64(totalSupplyNano)/1e9)
 
 	stakeholdersMap := make(map[string]int64)
-	addr, _ := config.GenesisAccount.PublicKey().Address()
-	stakeholdersMap[addr.String()] = totalSupplyNano // Genesis holds total supply including staking reserve
-
-	log.Printf("Initializing genesis account: %s", config.GenesisAccount)
-	// After creating the genesis account and setting up the stakeholder map
-	log.Printf("Genesis account address: %s", addr.String())
-	// Generate a new key pair for the genesis account
-	log.Println("Generating key pair for genesis account")
-
 	privKey, err := crypto.NewPrivateKey()
 	if err != nil {
-		log.Printf("error generating private key for the genesis account: %v", err)
+		log.Printf("error generating private key for genesis account: %v", err)
 		return nil, nil, err
 	}
+	var pubKey crypto.PublicKey = privKey.PublicKey() // Declare as variable
+	addr, _ := pubKey.Address()
+	stakeholdersMap[addr.String()] = totalSupplyNano
+	log.Printf("Genesis account address: %s", addr.String())
 
-	pubKey := privKey.PublicKey()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to generate genesis account key pair: %v", err)
-	}
-	log.Println("Genesis account key pair generated successfully")
-
-	// Create genesis transaction
 	genesisTx := &thrylos.Transaction{
 		Id:        "genesis_tx_" + addr.String(),
 		Timestamp: time.Now().Unix(),
@@ -99,7 +79,6 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		SenderPublicKey: nil,
 	}
 
-	// Initialize UTXO map with the genesis transaction
 	utxoMap := make(map[string][]*thrylos.UTXO)
 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
@@ -107,17 +86,13 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	genesis.Transactions = []*types.Transaction{utils.ConvertToSharedTransaction(genesisTx)}
 
 	stateNetwork := network.NewDefaultNetwork()
-	// stateManager := state.NewStateManager(stateNetwork, 4)
-
-	log.Println("Genesis account private key stored and verified successfully")
-
-	// Create initial blockchain instance
+	messageBus := types.GetGlobalMessageBus()
 	temp := &BlockchainImpl{
 		Blockchain: &types.Blockchain{
 			Blocks:              []*types.Block{genesis},
 			Genesis:             genesis,
 			Stakeholders:        stakeholdersMap,
-			Database:            storeInstance, // Use storeInstance instead of database.Blockchain
+			Database:            storeInstance,
 			PublicKeyMap:        publicKeyMap,
 			UTXOs:               utxoMap,
 			Forks:               make([]*types.Fork, 0),
@@ -127,41 +102,43 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			StateNetwork:        stateNetwork,
 			TestMode:            config.TestMode,
 		},
+		MessageBus: messageBus,
 	}
 
-	// Create the propagator
-	propagator := &types.TransactionPropagator{
+	temp.TransactionPropagator = &types.TransactionPropagator{
 		Blockchain: temp,
 		Mu:         sync.RWMutex{},
 	}
-
-	temp.TransactionPropagator = propagator
-
-	// Create the transaction pool
 	temp.txPool = NewTxPool(database, temp)
 
-	// Add the blockchain public key to the publicKeyMap
+	// Subscribe to FundNewAddress using BlockchainImpl's MessageBus
+	ch := make(chan types.Message, 100)
+	temp.MessageBus.Subscribe(types.FundNewAddress, ch)
+	go func() {
+		log.Println("Started FundNewAddress message listener")
+		for msg := range ch {
+			log.Printf("Received message: %s", msg.Type)
+			if msg.Type == types.FundNewAddress {
+				temp.HandleFundNewAddress(msg)
+			}
+		}
+	}()
+
 	publicKeyMap[addr.String()] = &pubKey
 	log.Println("Genesis account public key added to publicKeyMap")
 
-	// Commented out validator key generation check to avoid error
-	if err != nil {
-		log.Printf("Warning: Failed to generate validator keys: %v", err)
-		return nil, nil, fmt.Errorf("failed to generate validator keys: %v", err)
-	}
-
-	// log.Printf("Total ActiveValidators: %d", len(blockchain.ActiveValidators))
-
-	// Save genesis block
 	if err := database.Blockchain.SaveBlock(genesis); err != nil {
 		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
 	}
 
-	log.Printf("Genesis account %s initialized with total supply: %d", config.GenesisAccount, totalSupplyNano)
+	log.Printf("Genesis account %s initialized with total supply: %d nanoTHRYLOS", addr.String(), totalSupplyNano)
 
-	log.Println("NewBlockchain initialization completed successfully")
+	if err := database.Blockchain.SaveBlock(genesis); err != nil {
+		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+	}
 
-	// Add shutdown handler for clean termination
+	log.Printf("Genesis account %s initialized with total supply: %d nanoTHRYLOS", addr.String(), totalSupplyNano)
+	// Shutdown handler
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -170,31 +147,21 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	}()
 
 	if !config.DisableBackground {
-		// Start block creation routine
 		go func() {
 			log.Println("Starting block creation process")
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
-
-			for {
-				select {
-				case <-ticker.C:
-					// First fetch transactions from the pool
-					txs, err := temp.txPool.GetAllTransactions()
-					if err != nil {
-						log.Printf("Error getting transactions from pool: %v", err)
-						continue
-					}
-
-					// then process each of them through the modern transaction processor
-					if len(txs) > 0 {
-						log.Printf("Processing %d transactions from pool", len(txs))
-						for _, tx := range txs {
-							err := temp.ProcessIncomingTransaction(tx)
-							if err != nil {
-								log.Printf("Error processing transaction: %v", err)
-								continue
-							}
+			for range ticker.C {
+				txs, err := temp.txPool.GetAllTransactions()
+				if err != nil {
+					log.Printf("Error getting transactions from pool: %v", err)
+					continue
+				}
+				if len(txs) > 0 {
+					log.Printf("Processing %d transactions from pool", len(txs))
+					for _, tx := range txs {
+						if err := temp.ProcessIncomingTransaction(tx); err != nil {
+							log.Printf("Error processing transaction: %v", err)
 						}
 					}
 				}
@@ -247,6 +214,68 @@ func (bc *BlockchainImpl) Status() string {
 	return fmt.Sprintf("Height: %d, Blocks: %d",
 		len(bc.Blockchain.Blocks)-1,
 		len(bc.Blockchain.Blocks))
+}
+
+func (bc *BlockchainImpl) HandleGetBalance(msg types.Message) {
+	address, ok := msg.Data.(string)
+	if !ok {
+		msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid address format")}
+		return
+	}
+
+	log.Printf("DEBUG: HandleGetBalance called for address: %s", address)
+
+	// Get balance from stakeholders map
+	bc.Blockchain.Mu.RLock()
+
+	log.Printf("DEBUG: Full stakeholders map in HandleGetBalance:")
+	for addr, bal := range bc.Blockchain.Stakeholders {
+		log.Printf("  %s: %d", addr, bal)
+	}
+
+	balance, exists := bc.Blockchain.Stakeholders[address]
+	bc.Blockchain.Mu.RUnlock()
+
+	log.Printf("DEBUG: HandleGetBalance for %s - Exists: %v, Balance: %d",
+		address, exists, balance)
+
+	// Return the balance
+	msg.ResponseCh <- types.Response{Data: balance}
+}
+
+func (bc *BlockchainImpl) TestStakeholdersMap() {
+	testAddress := "test_address_123"
+
+	// Print initial state
+	bc.Blockchain.Mu.RLock()
+	log.Printf("TEST: Initial stakeholders map:")
+	for addr, bal := range bc.Blockchain.Stakeholders {
+		log.Printf("  %s: %d", addr, bal)
+	}
+	initialBalance, exists := bc.Blockchain.Stakeholders[testAddress]
+	bc.Blockchain.Mu.RUnlock()
+
+	log.Printf("TEST: Initial balance for %s: %d (exists: %v)", testAddress, initialBalance, exists)
+
+	// Modify the map
+	bc.Blockchain.Mu.Lock()
+	bc.Blockchain.Stakeholders[testAddress] = 12345
+	bc.Blockchain.Mu.Unlock()
+
+	// Check if the modification worked
+	bc.Blockchain.Mu.RLock()
+	newBalance, exists := bc.Blockchain.Stakeholders[testAddress]
+	bc.Blockchain.Mu.RUnlock()
+
+	log.Printf("TEST: After modification, balance for %s: %d (exists: %v)", testAddress, newBalance, exists)
+
+	// Print final state
+	bc.Blockchain.Mu.RLock()
+	log.Printf("TEST: Final stakeholders map:")
+	for addr, bal := range bc.Blockchain.Stakeholders {
+		log.Printf("  %s: %d", addr, bal)
+	}
+	bc.Blockchain.Mu.RUnlock()
 }
 
 // Block functions

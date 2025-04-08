@@ -151,33 +151,29 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 		}
 	}
 
-	if total == 0 {
+	// If no UTXOs (new address), fund from genesis
+	if len(utxos) == 0 && total == 0 {
 		initialBalanceThrylos := 70.0
 		initialBalanceNano, _ := amount.NewAmount(initialBalanceThrylos)
 
-		newUtxo := types.UTXO{
-			OwnerAddress:  address,
-			Amount:        initialBalanceNano,
-			TransactionID: fmt.Sprintf("genesis-%s", address),
-			IsSpent:       false,
-			Index:         0,
-		}
-
-		// Add UTXO through message bus
-		addUTXOResponse := make(chan types.Response)
+		// Request funding from genesis account
+		fundCh := make(chan types.Response)
 		m.messageBus.Publish(types.Message{
-			Type: types.AddUTXO,
-			Data: types.AddUTXORequest{
-				UTXO: newUtxo,
+			Type: types.FundNewAddress, // New message type
+			Data: types.FundAddressRequest{
+				Address: address,
+				Amount:  initialBalanceNano,
 			},
-			ResponseCh: addUTXOResponse,
+			ResponseCh: fundCh,
 		})
 
-		if response := <-addUTXOResponse; response.Error != nil {
-			return 0, response.Error
+		fundResp := <-fundCh
+		if fundResp.Error != nil {
+			return 0, fmt.Errorf("failed to fund new address: %v", fundResp.Error)
 		}
 
 		total = initialBalanceNano
+		log.Printf("Funded new address %s with %d nanoTHRYLOS from genesis", address, initialBalanceNano)
 	}
 
 	// Update cache
@@ -191,9 +187,9 @@ func (m *Manager) GetBalance(address string) (amount.Amount, error) {
 		Type: types.UpdateState,
 		Data: types.UpdateStateRequest{
 			Address: address,
-			Balance: int64(total), // Cast to int64
+			Balance: int64(total),
 		},
-		ResponseCh: make(chan types.Response),
+		ResponseCh: nil, // No response needed
 	})
 
 	return total, nil

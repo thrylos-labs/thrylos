@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
@@ -351,6 +352,14 @@ func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus 
 	messageBus.Subscribe(types.ProcessTransaction, txCh)
 	messageBus.Subscribe(types.ProcessBlock, blockCh)
 	messageBus.Subscribe(types.GetBlockchainInfo, infoCh)
+
+	// Add to your server initialization code
+	go func() {
+		time.Sleep(5 * time.Second) // Wait for everything to start up
+		log.Println("Running stakeholders map test...")
+		blockchain.TestStakeholdersMap()
+		log.Println("Stakeholders map test completed.")
+	}()
 
 	// Handle balance-related messages
 	go func() {

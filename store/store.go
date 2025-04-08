@@ -1177,6 +1177,35 @@ func (s *store) GetBalance(address string, utxos map[string][]types.UTXO) (amoun
 	return balance, nil
 }
 
+// UpdateBalance updates a stakeholder's balance in the database
+func (s *store) UpdateBalance(address string, balance int64) error {
+	db := s.db.GetDB()
+	log.Printf("DEBUG: Updating balance for address %s to %d nanoTHRYLOS", address, balance)
+
+	key := []byte("balance-" + address)
+
+	err := db.Update(func(txn *badger.Txn) error {
+		balanceBytes := make([]byte, 8) // int64 uses 8 bytes
+		binary.BigEndian.PutUint64(balanceBytes, uint64(balance))
+
+		err := txn.Set(key, balanceBytes)
+		if err != nil {
+			log.Printf("Failed to update balance for address %s: %v", address, err)
+			return fmt.Errorf("error updating balance in BadgerDB: %v", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("ERROR: Failed to update balance for %s: %v", address, err)
+	} else {
+		log.Printf("SUCCESS: Updated balance for %s to %d nanoTHRYLOS", address, balance)
+	}
+
+	return err
+}
+
 // ADDRESS
 
 func (s *store) SanitizeAndFormatAddress(address string) (string, error) {

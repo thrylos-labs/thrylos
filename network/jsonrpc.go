@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/types"
@@ -90,6 +90,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Only include core handlers
 	switch req.Method {
+	case "fundNewAddress":
+		result, err = h.handleFundNewAddress(req.Params)
 	case "getBalance":
 		// - Check wallet balances
 		result, err = h.handleGetBalance(req.Params)
@@ -166,34 +168,87 @@ func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 
 	// Wait for response
 	response := <-responseCh
+
+	// Add debug logging
+	log.Printf("DEBUG: handleGetBalance network handler received response: %+v", response)
+
 	if response.Error != nil {
 		log.Printf("Error getting balance for address %s: %v", address, response.Error)
-		if strings.Contains(response.Error.Error(), "wallet not found") {
-			balance := int64(700000000)
-			return struct {
-				Balance        int64   `json:"balance"`
-				BalanceThrylos float64 `json:"balanceThrylos"`
-			}{
-				Balance:        balance,
-				BalanceThrylos: float64(balance) / 1e7,
-			}, nil
-		}
-		return nil, fmt.Errorf("error getting balance: %v", response.Error)
+
+		// If error contains "no balance found", return zero
+		return struct {
+			Balance        int64   `json:"balance"`
+			BalanceThrylos float64 `json:"balanceThrylos"`
+		}{
+			Balance:        0,
+			BalanceThrylos: 0,
+		}, nil
 	}
+
 	balance, ok := response.Data.(int64)
 	if !ok {
 		return nil, fmt.Errorf("invalid balance data type")
 	}
-	if balance == 0 { // Add this check
-		log.Printf("Balance is 0 for %s, returning default 70 THR", address)
-		balance = int64(700000000)
-	}
+
 	return struct {
 		Balance        int64   `json:"balance"`
 		BalanceThrylos float64 `json:"balanceThrylos"`
 	}{
 		Balance:        balance,
 		BalanceThrylos: float64(balance) / 1e7,
+	}, nil
+}
+
+// Fund addresses from the genesis account or can it fund the address from the balance?
+
+// Add this method to your Handler struct in Go
+func (h *Handler) handleFundNewAddress(params []interface{}) (interface{}, error) {
+	if len(params) < 1 {
+		return nil, fmt.Errorf("address parameter required")
+	}
+
+	address, ok := params[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid address parameter")
+	}
+
+	// Default amount: 70 THRYLOS in nano
+	amountInt64 := int64(700000000)
+
+	// If amount is specified as a second parameter, use that instead
+	if len(params) > 1 {
+		if amountParam, ok := params[1].(float64); ok {
+			amountInt64 = int64(amountParam)
+		}
+	}
+
+	// Convert int64 to amount.Amount
+	// Using simple type casting since amount.Amount is a type alias for int64
+	amountValue := amount.Amount(amountInt64)
+
+	// Create response channel
+	responseCh := make(chan types.Response)
+
+	// Send message to fund new address
+	h.messageBus.Publish(types.Message{
+		Type: types.FundNewAddress,
+		Data: types.FundAddressRequest{
+			Address: address,
+			Amount:  amountValue,
+		},
+		ResponseCh: responseCh,
+	})
+
+	// Wait for response
+	response := <-responseCh
+	if response.Error != nil {
+		return nil, fmt.Errorf("error funding address: %v", response.Error)
+	}
+
+	return map[string]interface{}{
+		"status":  "funded",
+		"message": fmt.Sprintf("Address %s has been funded with %0.2f THRYLOS", address, float64(amountValue)/1e7),
+		"amount":  float64(amountValue) / 1e7,
 	}, nil
 }
 

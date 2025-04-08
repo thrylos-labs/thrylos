@@ -4,6 +4,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/thrylos-labs/thrylos/amount"
 )
 
 // The message system is mainly for:
@@ -33,10 +35,11 @@ type MessageBusInterface interface {
 
 const (
 	// Balance related
-	GetBalance  MessageType = "GET_BALANCE"
-	GetUTXOs    MessageType = "GET_UTXOS"
-	AddUTXO     MessageType = "ADD_UTXO"
-	UpdateState MessageType = "UPDATE_STATE"
+	GetBalance     MessageType = "GET_BALANCE"
+	GetUTXOs       MessageType = "GET_UTXOS"
+	AddUTXO        MessageType = "ADD_UTXO"
+	UpdateState    MessageType = "UPDATE_STATE"
+	FundNewAddress MessageType = "FUND_NEW_ADDRESS"
 
 	// Transaction related
 	ProcessTransaction         MessageType = "PROCESS_TRANSACTION"
@@ -96,6 +99,11 @@ type Vote struct {
 	ValidationPass bool      `json:"validation_pass,omitempty"`
 	Timestamp      time.Time `json:"timestamp"`
 	VoterNode      string    `json:"voter_node"`
+}
+
+type FundAddressRequest struct {
+	Address string
+	Amount  amount.Amount // Change from int64 to amount.Amount
 }
 
 // Response represents a generic response
