@@ -35,11 +35,12 @@ type MessageBusInterface interface {
 
 const (
 	// Balance related
-	GetBalance     MessageType = "GET_BALANCE"
-	GetUTXOs       MessageType = "GET_UTXOS"
-	AddUTXO        MessageType = "ADD_UTXO"
-	UpdateState    MessageType = "UPDATE_STATE"
-	FundNewAddress MessageType = "FUND_NEW_ADDRESS"
+	GetBalance            MessageType = "GET_BALANCE"
+	GetUTXOs              MessageType = "GET_UTXOS"
+	AddUTXO               MessageType = "ADD_UTXO"
+	UpdateState           MessageType = "UPDATE_STATE"
+	FundNewAddress        MessageType = "FUND_NEW_ADDRESS"
+	GetStakeholderBalance MessageType = "GET_STAKEHOLDER_BALANCE"
 
 	// Transaction related
 	ProcessTransaction         MessageType = "PROCESS_TRANSACTION"

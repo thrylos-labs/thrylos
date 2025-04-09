@@ -145,7 +145,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// Method handlers using message bus
 func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
 		return nil, fmt.Errorf("address parameter required")
@@ -156,10 +155,31 @@ func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 		return nil, fmt.Errorf("invalid address parameter")
 	}
 
-	// Create response channel
-	responseCh := make(chan types.Response)
+	// First try the direct stakeholders lookup
+	stakeholderCh := make(chan types.Response)
+	h.messageBus.Publish(types.Message{
+		Type:       types.GetStakeholderBalance,
+		Data:       address,
+		ResponseCh: stakeholderCh,
+	})
 
-	// Send message to get balance
+	// Wait for response
+	stakeholderResp := <-stakeholderCh
+	if stakeholderResp.Error == nil {
+		if balance, ok := stakeholderResp.Data.(int64); ok {
+			log.Printf("Found balance from stakeholders map for %s: %d", address, balance)
+			return struct {
+				Balance        int64   `json:"balance"`
+				BalanceThrylos float64 `json:"balanceThrylos"`
+			}{
+				Balance:        balance,
+				BalanceThrylos: float64(balance) / 1e7,
+			}, nil
+		}
+	}
+
+	// Fallback to original UTXO-based balance lookup
+	responseCh := make(chan types.Response)
 	h.messageBus.Publish(types.Message{
 		Type:       types.GetBalance,
 		Data:       address,
@@ -168,14 +188,10 @@ func (h *Handler) handleGetBalance(params []interface{}) (interface{}, error) {
 
 	// Wait for response
 	response := <-responseCh
-
-	// Add debug logging
 	log.Printf("DEBUG: handleGetBalance network handler received response: %+v", response)
 
 	if response.Error != nil {
 		log.Printf("Error getting balance for address %s: %v", address, response.Error)
-
-		// If error contains "no balance found", return zero
 		return struct {
 			Balance        int64   `json:"balance"`
 			BalanceThrylos float64 `json:"balanceThrylos"`

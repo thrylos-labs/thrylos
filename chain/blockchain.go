@@ -35,6 +35,18 @@ type BlockchainImpl struct {
 	MessageBus            types.MessageBusInterface
 }
 
+func (bc *BlockchainImpl) CheckStakeholdersMap() {
+	mapAddress := fmt.Sprintf("%p", &bc.Blockchain.Stakeholders)
+
+	bc.Blockchain.Mu.RLock()
+	count := len(bc.Blockchain.Stakeholders)
+	testBalance, testExists := bc.Blockchain.Stakeholders["test_address_123"]
+	bc.Blockchain.Mu.RUnlock()
+
+	log.Printf("PERIODIC CHECK: Stakeholders map at %s has %d entries", mapAddress, count)
+	log.Printf("PERIODIC CHECK: Test address exists? %v with balance %d", testExists, testBalance)
+}
+
 func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
 	// Initialize the database
 	database, err := store.NewDatabase(config.DataDir)
@@ -120,6 +132,19 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			log.Printf("Received message: %s", msg.Type)
 			if msg.Type == types.FundNewAddress {
 				temp.HandleFundNewAddress(msg)
+			}
+		}
+	}()
+
+	// In your NewBlockchain function, add this after the other subscriptions:
+	balanceCh := make(chan types.Message, 100)
+	temp.MessageBus.Subscribe(types.GetStakeholderBalance, balanceCh)
+	go func() {
+		log.Println("Started GetStakeholderBalance message listener")
+		for msg := range balanceCh {
+			log.Printf("Received balance message: %s", msg.Type)
+			if msg.Type == types.GetStakeholderBalance {
+				temp.HandleGetBalance(msg)
 			}
 		}
 	}()
@@ -223,23 +248,49 @@ func (bc *BlockchainImpl) HandleGetBalance(msg types.Message) {
 		return
 	}
 
-	log.Printf("DEBUG: HandleGetBalance called for address: %s", address)
+	log.Printf("DEBUG-BALANCE: HandleGetBalance called for address: %s", address)
 
-	// Get balance from stakeholders map
+	// Access the stakeholders map
 	bc.Blockchain.Mu.RLock()
 
-	log.Printf("DEBUG: Full stakeholders map in HandleGetBalance:")
+	// Direct map access check
+	mapSize := len(bc.Blockchain.Stakeholders)
+	log.Printf("DEBUG-BALANCE: Stakeholders map has %d entries", mapSize)
+
+	// Check for specific addresses
+	genesis, _ := bc.Blockchain.GenesisAccount.PublicKey().Address()
+	genesisAddr := genesis.String()
+	genesisBalance, genesisExists := bc.Blockchain.Stakeholders[genesisAddr]
+	log.Printf("DEBUG-BALANCE: Genesis address %s exists: %v, balance: %d",
+		genesisAddr, genesisExists, genesisBalance)
+
+	testBalance, testExists := bc.Blockchain.Stakeholders["test_address_123"]
+	log.Printf("DEBUG-BALANCE: Test address exists: %v, balance: %d", testExists, testBalance)
+
+	// Check the target address
+	targetBalance, targetExists := bc.Blockchain.Stakeholders[address]
+	log.Printf("DEBUG-BALANCE: Target address %s exists: %v, balance: %d",
+		address, targetExists, targetBalance)
+
+	// Print all entries in the map
+	log.Printf("DEBUG-BALANCE: All addresses in map:")
 	for addr, bal := range bc.Blockchain.Stakeholders {
 		log.Printf("  %s: %d", addr, bal)
 	}
 
-	balance, exists := bc.Blockchain.Stakeholders[address]
+	// Get the final balance
+	balance := int64(0)
+	if targetExists {
+		balance = targetBalance
+		log.Printf("DEBUG-BALANCE: Using balance %d from map", balance)
+	} else {
+		log.Printf("DEBUG-BALANCE: No balance found, using 0")
+	}
+
 	bc.Blockchain.Mu.RUnlock()
 
-	log.Printf("DEBUG: HandleGetBalance for %s - Exists: %v, Balance: %d",
-		address, exists, balance)
-
-	// Return the balance
+	// Send the response
+	log.Printf("DEBUG-BALANCE: Sending final balance: %d", balance)
 	msg.ResponseCh <- types.Response{Data: balance}
 }
 

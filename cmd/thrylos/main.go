@@ -361,6 +361,13 @@ func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus 
 		log.Println("Stakeholders map test completed.")
 	}()
 
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			blockchain.CheckStakeholdersMap()
+		}
+	}()
+
 	// Handle balance-related messages
 	go func() {
 		for msg := range balanceCh {
