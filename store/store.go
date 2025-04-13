@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -92,6 +93,33 @@ func (s *store) CreateAndStoreUTXO(id, txID string, index int, owner string, amo
 	}
 
 	return nil
+}
+
+// Close closes the underlying database
+func (s *store) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
+}
+
+// GetDataDir returns the data directory path
+func (s *store) GetDataDir() string {
+	if s.db != nil {
+		// This assumes your Database struct has access to the path
+		// You might need to add a dataDir field to your Database struct
+		return s.db.GetDataDir()
+	}
+	return ""
+}
+
+// GetLockFilePath returns the path to the database lock file
+func (s *store) GetLockFilePath() string {
+	dataDir := s.GetDataDir()
+	if dataDir != "" {
+		return filepath.Join(dataDir, "LOCK")
+	}
+	return ""
 }
 
 // MarkUTXOAsSpent marks a UTXO as spent in the database.

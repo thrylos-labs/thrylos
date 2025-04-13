@@ -35,6 +35,28 @@ type BlockchainImpl struct {
 	MessageBus            types.MessageBusInterface
 }
 
+// Now you can simplify the Close method to use the interface methods
+func (bc *BlockchainImpl) Close() error {
+	log.Println("Closing blockchain resources...")
+
+	if bc.Blockchain != nil && bc.Blockchain.Database != nil {
+		// Get lock file path
+		lockFile := bc.Blockchain.Database.GetLockFilePath()
+		if lockFile != "" {
+			log.Printf("Lock file path: %s", lockFile)
+		}
+
+		// Close the database
+		if err := bc.Blockchain.Database.Close(); err != nil {
+			return fmt.Errorf("error closing database: %v", err)
+		}
+		log.Println("Database closed successfully")
+	}
+
+	log.Println("Blockchain resources closed successfully")
+	return nil
+}
+
 func (bc *BlockchainImpl) CheckStakeholdersMap() {
 	mapAddress := fmt.Sprintf("%p", &bc.Blockchain.Stakeholders)
 

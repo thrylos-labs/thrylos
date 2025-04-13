@@ -55,4 +55,9 @@ type Store interface {
 	//Balance
 	GetBalance(address string, utxos map[string][]UTXO) (amount.Amount, error)
 	UpdateBalance(address string, balance int64) error
+
+	// Close
+	Close() error
+	GetDataDir() string
+	GetLockFilePath() string
 }

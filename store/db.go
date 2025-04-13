@@ -17,6 +17,7 @@ type Database struct {
 	db            *badger.DB
 	utxos         map[string]types.UTXO
 	once          sync.Once
+	dataDir       string
 	Blockchain    types.Store // Use the interface here
 	encryptionKey []byte      // The AES-256 key used for encryption and decryption
 }
@@ -33,7 +34,9 @@ func NewDatabase(path string) (*Database, error) {
 		return nil, fmt.Errorf("failed to remove existing lock file: %v", err)
 	}
 
-	d := &Database{}
+	d := &Database{
+		dataDir: path,
+	}
 	var err error
 	d.once.Do(func() {
 		opts := badger.DefaultOptions(path).
@@ -60,6 +63,14 @@ func NewDatabase(path string) (*Database, error) {
 	}
 
 	return d, nil
+}
+
+func (d *Database) GetDataDir() string {
+	return d.dataDir
+}
+
+func (d *Database) GetLockFilePath() string {
+	return filepath.Join(d.dataDir, "LOCK")
 }
 
 // GetDB returns the underlying BadgerDB instance

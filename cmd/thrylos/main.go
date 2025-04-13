@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -9,9 +10,11 @@ import (
 	"net/http"
 	_ "net/http/pprof" // This is important as it registers pprof handlers with the default mux.
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/thrylos-labs/thrylos"
@@ -100,6 +103,37 @@ func loadEnv() (map[string]string, error) {
 }
 
 func main() {
+	// Setup clean shutdown with context
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup signal handling for graceful shutdown
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+
+	// Handle shutdown in a separate goroutine
+	go func() {
+		<-signalCh
+		log.Println("Stopping blockchain...")
+
+		// Give time for cleanup operations
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+
+		// Signal all goroutines to stop
+		cancel()
+
+		// Wait for graceful shutdown or timeout
+		select {
+		case <-shutdownCtx.Done():
+			log.Println("Shutdown grace period elapsed, exiting")
+		}
+
+		// Force exit if needed
+		log.Println("Shutdown complete")
+		os.Exit(0)
+	}()
+
 	// Load environment variables
 	envFile, err := loadEnv()
 	if err != nil {
@@ -160,6 +194,11 @@ func main() {
 	}
 	log.Printf("Using blockchain data directory: %s", absPath)
 
+	// Attempt to remove any existing lock file
+	lockFile := filepath.Join(absPath, "LOCK")
+	log.Printf("Attempting to remove lock file: %s", lockFile)
+	_ = os.Remove(lockFile) // Ignore errors if file doesn't exist or can't be removed
+
 	// Create a private key for genesis account
 	privKey, err := crypto.NewPrivateKey()
 	if err != nil {
@@ -179,6 +218,18 @@ func main() {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
 
+	// Ensure blockchain is properly closed on shutdown
+	defer func() {
+		log.Println("Closing blockchain in defer function...")
+		if blockchain != nil {
+			if err := blockchain.Close(); err != nil {
+				log.Printf("Error closing blockchain: %v", err)
+			} else {
+				log.Println("Blockchain closed successfully")
+			}
+		}
+	}()
+
 	// Perform an integrity check on the blockchain
 	if !blockchain.CheckChainIntegrity() {
 		log.Fatal("Blockchain integrity check failed.")
@@ -190,7 +241,7 @@ func main() {
 	messageBus := types.GetGlobalMessageBus()
 
 	// Connect blockchain to message bus
-	connectBlockchainToMessageBus(blockchain, messageBus, chainID)
+	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID)
 
 	// Initialize router with message bus
 	router := network.NewRouter(messageBus)
@@ -230,8 +281,12 @@ func main() {
 	// Setup HTTP routes with peer manager
 	mux := router.SetupRoutes(peerManager)
 
-	// Setup HTTP/WS servers
-	setupServers(mux, envFile)
+	// Setup HTTP/WS servers with context for graceful shutdown
+	wsServer, httpServer := setupServers(mux, envFile)
+
+	// Start servers
+	go startServer(ctx, wsServer, "WebSocket", envFile["ENV"] == "development")
+	go startServer(ctx, httpServer, "HTTP(S)", envFile["ENV"] == "development")
 
 	// Setup and start gRPC server
 	lis, err := net.Listen("tcp", grpcAddress)
@@ -253,13 +308,26 @@ func main() {
 	// Register the blockchain service
 	thrylos.RegisterBlockchainServiceServer(s, &server{blockchain: blockchain})
 
-	log.Printf("Starting gRPC server on %s\n", grpcAddress)
-	if err := s.Serve(lis); err != nil {
-		log.Fatalf("Failed to serve gRPC on %s: %v", grpcAddress, err)
-	}
+	// Start gRPC server in a goroutine
+	go func() {
+		log.Printf("Starting gRPC server on %s\n", grpcAddress)
+		if err := s.Serve(lis); err != nil {
+			log.Printf("gRPC server stopped: %v", err)
+		}
+	}()
+
+	// Handle gRPC server shutdown
+	go func() {
+		<-ctx.Done()
+		log.Println("Shutting down gRPC server...")
+		s.GracefulStop()
+	}()
+
+	// Keep main goroutine running until context is canceled
+	<-ctx.Done()
 }
 
-func setupServers(r http.Handler, envFile map[string]string) {
+func setupServers(r http.Handler, envFile map[string]string) (*http.Server, *http.Server) {
 	wsAddress := envFile["WS_ADDRESS"]
 	httpAddress := envFile["HTTP_NODE_ADDRESS"]
 	isDevelopment := envFile["ENV"] == "development"
@@ -284,26 +352,41 @@ func setupServers(r http.Handler, envFile map[string]string) {
 		TLSConfig: tlsConfig,
 	}
 
-	// Start servers
-	go startServer(wsServer, "WebSocket", isDevelopment)
-	go startServer(httpServer, "HTTP(S)", isDevelopment)
+	return wsServer, httpServer
 }
 
-func startServer(server *http.Server, serverType string, isDevelopment bool) {
-	var err error
-	protocol := "HTTP"
-	if !isDevelopment {
-		protocol = "HTTPS"
-		log.Printf("Starting %s server in production mode (with TLS) on %s\n", serverType, server.Addr)
-		err = server.ListenAndServeTLS("", "")
-	} else {
-		log.Printf("Starting %s server in development mode (no TLS) on %s\n", serverType, server.Addr)
-		err = server.ListenAndServe()
-	}
+func startServer(ctx context.Context, server *http.Server, serverType string, isDevelopment bool) {
+	// Start server in a goroutine
+	go func() {
+		var err error
+		protocol := "HTTP"
+		if !isDevelopment {
+			protocol = "HTTPS"
+			log.Printf("Starting %s server in production mode (with TLS) on %s\n", serverType, server.Addr)
+			err = server.ListenAndServeTLS("", "")
+		} else {
+			log.Printf("Starting %s server in development mode (no TLS) on %s\n", serverType, server.Addr)
+			err = server.ListenAndServe()
+		}
 
-	if err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Failed to start %s %s server: %v", protocol, serverType, err)
-	}
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start %s %s server: %v", protocol, serverType, err)
+		}
+	}()
+
+	// Handle server shutdown when context is canceled
+	go func() {
+		<-ctx.Done()
+		log.Printf("Shutting down %s server...", serverType)
+
+		// Create a timeout context for shutdown
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Error during %s server shutdown: %v", serverType, err)
+		}
+	}()
 }
 
 func loadTLSCredentials(envFile map[string]string) credentials.TransportCredentials {
@@ -338,8 +421,8 @@ func loadCertificate(envFile map[string]string) tls.Certificate {
 	return cert
 }
 
-// Helper function to connect blockchain to the message bus
-func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string) {
+// Helper function to connect blockchain to the message bus with context support
+func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string) {
 	// Create channels to receive messages
 	balanceCh := make(chan types.Message, 100)
 	blockCh := make(chan types.Message, 100)
@@ -355,130 +438,161 @@ func connectBlockchainToMessageBus(blockchain *chain.BlockchainImpl, messageBus 
 
 	// Add to your server initialization code
 	go func() {
-		time.Sleep(5 * time.Second) // Wait for everything to start up
-		log.Println("Running stakeholders map test...")
-		blockchain.TestStakeholdersMap()
-		log.Println("Stakeholders map test completed.")
+		select {
+		case <-time.After(5 * time.Second): // Wait for everything to start up
+			log.Println("Running stakeholders map test...")
+			blockchain.TestStakeholdersMap()
+			log.Println("Stakeholders map test completed.")
+		case <-ctx.Done():
+			return
+		}
 	}()
 
 	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
 		for {
-			time.Sleep(10 * time.Second)
-			blockchain.CheckStakeholdersMap()
+			select {
+			case <-ticker.C:
+				blockchain.CheckStakeholdersMap()
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
 	// Handle balance-related messages
 	go func() {
-		for msg := range balanceCh {
-			switch msg.Type {
-			case types.GetBalance:
-				if address, ok := msg.Data.(string); ok {
-					// Sum unspent outputs for this address
-					balance := int64(0)
-					for _, utxoList := range blockchain.Blockchain.UTXOs {
-						for _, utxo := range utxoList {
-							if utxo.OwnerAddress == address && !utxo.IsSpent {
-								balance += utxo.Amount
-							}
-						}
-					}
-					msg.ResponseCh <- types.Response{Data: balance}
-				} else {
-					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid address format")}
-				}
-			case types.GetUTXOs:
-				if req, ok := msg.Data.(types.UTXORequest); ok {
-					address := req.Address
-					utxos := []types.UTXO{}
-
-					// Find all UTXOs for this address
-					for utxoKey, utxoList := range blockchain.Blockchain.UTXOs {
-						for _, utxo := range utxoList {
-							if utxo.OwnerAddress == address && !utxo.IsSpent {
-								// Convert thrylos.UTXO to types.UTXO
-								parts := strings.Split(utxoKey, ":")
-								txID := parts[0]
-								index, _ := strconv.Atoi(parts[1])
-
-								typesUtxo := types.UTXO{
-									ID:            utxoKey,
-									TransactionID: txID,
-									Index:         index,
-									OwnerAddress:  utxo.OwnerAddress,
-									Amount:        amount.Amount(utxo.Amount),
-									IsSpent:       utxo.IsSpent,
+		for {
+			select {
+			case msg := <-balanceCh:
+				switch msg.Type {
+				case types.GetBalance:
+					if address, ok := msg.Data.(string); ok {
+						// Sum unspent outputs for this address
+						balance := int64(0)
+						for _, utxoList := range blockchain.Blockchain.UTXOs {
+							for _, utxo := range utxoList {
+								if utxo.OwnerAddress == address && !utxo.IsSpent {
+									balance += utxo.Amount
 								}
-								utxos = append(utxos, typesUtxo)
 							}
 						}
+						msg.ResponseCh <- types.Response{Data: balance}
+					} else {
+						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid address format")}
 					}
-					msg.ResponseCh <- types.Response{Data: utxos}
-				} else {
-					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid UTXO request format")}
+				case types.GetUTXOs:
+					if req, ok := msg.Data.(types.UTXORequest); ok {
+						address := req.Address
+						utxos := []types.UTXO{}
+
+						// Find all UTXOs for this address
+						for utxoKey, utxoList := range blockchain.Blockchain.UTXOs {
+							for _, utxo := range utxoList {
+								if utxo.OwnerAddress == address && !utxo.IsSpent {
+									// Convert thrylos.UTXO to types.UTXO
+									parts := strings.Split(utxoKey, ":")
+									txID := parts[0]
+									index, _ := strconv.Atoi(parts[1])
+
+									typesUtxo := types.UTXO{
+										ID:            utxoKey,
+										TransactionID: txID,
+										Index:         index,
+										OwnerAddress:  utxo.OwnerAddress,
+										Amount:        amount.Amount(utxo.Amount),
+										IsSpent:       utxo.IsSpent,
+									}
+									utxos = append(utxos, typesUtxo)
+								}
+							}
+						}
+						msg.ResponseCh <- types.Response{Data: utxos}
+					} else {
+						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid UTXO request format")}
+					}
 				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
 	// Handle transaction-related messages
 	go func() {
-		for msg := range txCh {
-			switch msg.Type {
-			case types.ProcessTransaction:
-				if tx, ok := msg.Data.(*thrylos.Transaction); ok {
-					// Verify transaction
-					// Add to pending transactions or directly to pool
-					blockchain.Blockchain.PendingTransactions = append(blockchain.Blockchain.PendingTransactions, tx)
+		for {
+			select {
+			case msg := <-txCh:
+				switch msg.Type {
+				case types.ProcessTransaction:
+					if tx, ok := msg.Data.(*thrylos.Transaction); ok {
+						// Verify transaction
+						// Add to pending transactions or directly to pool
+						blockchain.Blockchain.PendingTransactions = append(blockchain.Blockchain.PendingTransactions, tx)
 
-					// If you have a function for processing transactions, use it here
-					// err := blockchain.ProcessIncomingTransaction(tx)
+						// If you have a function for processing transactions, use it here
+						// err := blockchain.ProcessIncomingTransaction(tx)
 
-					msg.ResponseCh <- types.Response{
-						Data:  tx.Id,
-						Error: nil,
+						msg.ResponseCh <- types.Response{
+							Data:  tx.Id,
+							Error: nil,
+						}
+					} else {
+						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid transaction format")}
 					}
-				} else {
-					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid transaction format")}
 				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
 	// Handle block-related messages
 	go func() {
-		for msg := range blockCh {
-			switch msg.Type {
-			case types.ProcessBlock:
-				if blockID, ok := msg.Data.(string); ok {
-					// Get block by ID
-					block, err := blockchain.GetBlockByID(blockID)
-					msg.ResponseCh <- types.Response{Data: block, Error: err}
-				} else if blockNum, ok := msg.Data.(int32); ok {
-					// Get block by number
-					block, err := blockchain.GetBlock(int(blockNum))
-					msg.ResponseCh <- types.Response{Data: block, Error: err}
-				} else {
-					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid block identifier")}
+		for {
+			select {
+			case msg := <-blockCh:
+				switch msg.Type {
+				case types.ProcessBlock:
+					if blockID, ok := msg.Data.(string); ok {
+						// Get block by ID
+						block, err := blockchain.GetBlockByID(blockID)
+						msg.ResponseCh <- types.Response{Data: block, Error: err}
+					} else if blockNum, ok := msg.Data.(int32); ok {
+						// Get block by number
+						block, err := blockchain.GetBlock(int(blockNum))
+						msg.ResponseCh <- types.Response{Data: block, Error: err}
+					} else {
+						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid block identifier")}
+					}
 				}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
 	// Handle blockchain info messages
 	go func() {
-		for msg := range infoCh {
-			switch msg.Type {
-			case types.GetBlockchainInfo:
-				lastBlock, _, _ := blockchain.GetLastBlock()
-				info := map[string]interface{}{
-					"height":    blockchain.GetBlockCount() - 1,
-					"lastBlock": lastBlock,
-					"nodeCount": 1, // Default for now
-					"chainId":   chainID,
-					"isSyncing": false,
+		for {
+			select {
+			case msg := <-infoCh:
+				switch msg.Type {
+				case types.GetBlockchainInfo:
+					lastBlock, _, _ := blockchain.GetLastBlock()
+					info := map[string]interface{}{
+						"height":    blockchain.GetBlockCount() - 1,
+						"lastBlock": lastBlock,
+						"nodeCount": 1, // Default for now
+						"chainId":   chainID,
+						"isSyncing": false,
+					}
+					msg.ResponseCh <- types.Response{Data: info}
 				}
-				msg.ResponseCh <- types.Response{Data: info}
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
