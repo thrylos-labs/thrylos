@@ -6,11 +6,8 @@ toolchain go1.22.10
 
 require (
 	github.com/btcsuite/btcutil v1.0.2
-	github.com/dgraph-io/badger v1.6.2
 	github.com/gballet/go-verkle v0.1.0
-	github.com/hashicorp/golang-lru v1.0.2
 	github.com/joho/godotenv v1.5.1
-	github.com/shopspring/decimal v1.4.0
 	github.com/stretchr/testify v1.9.0
 	github.com/willf/bloom v2.0.3+incompatible
 	golang.org/x/crypto v0.31.0
@@ -30,11 +27,10 @@ require (
 )
 
 require (
-	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
 	github.com/BurntSushi/toml v1.4.0
 	github.com/bits-and-blooms/bitset v1.7.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cloudflare/circl v1.5.0
+	github.com/cloudflare/circl v1.6.1
 	github.com/consensys/bavard v0.1.13 // indirect
 	github.com/consensys/gnark-crypto v0.12.1 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240223125850-b1e8a79f509c // indirect

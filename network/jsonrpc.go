@@ -2,13 +2,13 @@ package network
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
 
-	"github.com/btcsuite/btcutil/bech32"
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
@@ -452,22 +452,6 @@ func (h *Handler) handleGetBlockTransactions(params []interface{}) (interface{},
 	}, nil
 }
 
-func deriveAddressFromPublicKey(publicKey []byte) (string, error) {
-	// Convert public key bytes to 5-bit words for bech32 encoding
-	words, err := bech32.ConvertBits(publicKey, 8, 5, true)
-	if err != nil {
-		return "", fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
-	}
-
-	// Encode with your tl1 prefix (matching your frontend)
-	address, err := bech32.Encode("tl1", words)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode bech32 address: %v", err)
-	}
-
-	return address, nil
-}
-
 const MinTransactionAmount int64 = 1 * config.NanoPerThrylos // 1 THRYLOS in nanoTHRYLOS
 
 func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface{}, error) {
@@ -476,182 +460,238 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		return nil, fmt.Errorf("transaction parameter required")
 	}
 
-	// Extract the request data
+	// Extract the request data map
 	reqData, ok := params[0].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid request format")
+		return nil, fmt.Errorf("invalid request format, expected JSON object in params[0]")
 	}
 
-	// Extract and validate the main components
+	// --- Extract payload map (still useful for building the final transaction object) ---
 	payload, ok := reqData["payload"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid payload format")
+		return nil, fmt.Errorf("invalid or missing 'payload' object in request data")
 	}
 
-	signature, ok := reqData["signature"].(string)
+	// --- Extract other required fields ---
+	signatureString, ok := reqData["signature"].(string)
 	if !ok {
-		return nil, fmt.Errorf("invalid signature format")
+		return nil, fmt.Errorf("invalid or missing 'signature' string in request data")
 	}
 
-	publicKey, ok := reqData["publicKey"].(string)
+	publicKeyString, ok := reqData["publicKey"].(string)
 	if !ok {
-		return nil, fmt.Errorf("invalid publicKey format")
+		return nil, fmt.Errorf("invalid or missing 'publicKey' string in request data")
 	}
 
-	// Fast path validation
+	// --- Extract payloadString (Canonical JSON from frontend) --- <--- NEW EXTRACTION
+	payloadString, ok := reqData["payloadString"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid or missing 'payloadString' string in request data")
+	}
+	// --- End Extract ---
+
+	// Extract sender from payload map for quick check
 	sender, ok := payload["sender"].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid sender in payload")
+	if !ok || sender == "" {
+		return nil, fmt.Errorf("invalid or missing 'sender' string in payload")
 	}
 
-	// Critical validation
+	// --- Validation Goroutine ---
 	validationDone := make(chan error, 1)
-	var signatureBytes []byte
-	var messageBytes []byte
-	var publicKeyBytes []byte
+	var finalSignatureBytes []byte // Renamed to avoid shadowing inside goroutine
 
 	go func() {
 		var err error
-		// Get public key
-		publicKeyBytes, err = base64.StdEncoding.DecodeString(publicKey)
+		var signatureBytes []byte // Local signature bytes
+		var publicKeyBytes []byte
+		var messageBytes []byte
+
+		// Decode Public Key
+		publicKeyBytes, err = base64.StdEncoding.DecodeString(publicKeyString)
 		if err != nil {
 			validationDone <- fmt.Errorf("invalid public key encoding: %v", err)
 			return
 		}
+		log.Println("TX_VALIDATE: Decoded PK Bytes (first 16):", hex.EncodeToString(publicKeyBytes[:16]))
 
-		// Verify the public key corresponds to the sender address
-		derivedAddress, err := deriveAddressFromPublicKey(publicKeyBytes)
+		// Unmarshal Public Key into CIRCL object
+		pk := new(mldsa44.PublicKey)
+		if err = pk.UnmarshalBinary(publicKeyBytes); err != nil {
+			log.Printf("TX_VALIDATE_ERROR: Failed to unmarshal public key: %v", err) // <<< Added Log
+			validationDone <- fmt.Errorf("failed to unmarshal public key: %v", err)
+			return
+		}
+		log.Printf("TX_VALIDATE_INFO: Successfully unmarshalled public key into type %T", pk) // <<< Added Log
+
+		// Derive Address from the *unmarshalled CIRCL key*
+		derivedAddress, err := address.ConvertToBech32Address(pk) // Use the unmarshalled pk
 		if err != nil {
-			validationDone <- fmt.Errorf("failed to derive address: %v", err)
+			log.Printf("TX_VALIDATE_ERROR: Failed to derive address from PK object: %v", err)
+			validationDone <- fmt.Errorf("failed to derive address using correct method: %v", err)
 			return
 		}
+		log.Printf("TX_VALIDATE_INFO: Derived Address from PK object: %s", derivedAddress)
 
-		// Verify the sender address matches the derived address
+		// Verify Sender Address matches derived address
 		if derivedAddress != sender {
-			validationDone <- fmt.Errorf("public key does not match sender address: derived=%s, claimed=%s",
-				derivedAddress, sender)
+			log.Printf("TX_VALIDATE_ERROR: Address mismatch! Derived: %s, Claimed in Payload: %s\n", derivedAddress, sender)
+			validationDone <- fmt.Errorf("public key does not match sender address: derived=%s, claimed=%s", derivedAddress, sender)
 			return
 		}
+		log.Println("TX_VALIDATE_INFO: Sender address matches derived address.")
 
+		// --- Signature Verification ---
 		// Decode signature
-		signatureBytes, err = base64.StdEncoding.DecodeString(signature)
+		signatureBytes, err = base64.StdEncoding.DecodeString(signatureString)
 		if err != nil {
 			validationDone <- fmt.Errorf("invalid signature encoding: %v", err)
 			return
 		}
-
-		// Marshal payload
-		messageBytes, err = json.Marshal(payload)
-		if err != nil {
-			validationDone <- fmt.Errorf("failed to marshal payload: %v", err)
+		if len(signatureBytes) != mldsa44.SignatureSize { // <<< Add Size Check
+			log.Printf("TX_VALIDATE_ERROR: Decoded signature has wrong size: got %d, want %d", len(signatureBytes), mldsa44.SignatureSize)
+			validationDone <- fmt.Errorf("decoded signature has incorrect size")
 			return
 		}
+		log.Printf("TX_VALIDATE: Decoded Signature Length: %d\n", len(signatureBytes))
+		log.Println("TX_VALIDATE: Decoded Signature Bytes (first 16):", hex.EncodeToString(signatureBytes[:min(16, len(signatureBytes))])) // Use min helper
 
-		// Verify signature
-		pk := new(mldsa44.PublicKey)
-		if err := pk.UnmarshalBinary(publicKeyBytes); err != nil {
-			validationDone <- fmt.Errorf("failed to unmarshal public key: %v", err)
-			return
-		}
+		// --- USE PAYLOAD STRING FOR VERIFICATION ---
+		messageBytes = []byte(payloadString)
+		log.Println("TX_VALIDATE: Using Payload String for verification:", payloadString) // Log the string
+		log.Println("TX_VALIDATE: Payload Bytes for Verify (hex):", hex.EncodeToString(messageBytes))
 
-		// Verify signature using mldsa44
-		if !mldsa44.Verify(pk, messageBytes, signatureBytes, nil) {
+		// --- Detailed Logging Before Verify ---
+		log.Printf("TX_VALIDATE_INFO: Preparing for final mldsa44.Verify call.")
+		ctxForVerify := []byte(nil) // Explicitly nil context
+		// Log hex values right before the call
+		log.Printf("TX_VALIDATE_DEBUG: PK bytes (hex, first 16): %x", pk.Bytes()[:min(16, len(pk.Bytes()))])
+		log.Printf("TX_VALIDATE_DEBUG: Payload bytes (len %d, hex, first 64): %x", len(messageBytes), messageBytes[:min(64, len(messageBytes))])
+		log.Printf("TX_VALIDATE_DEBUG: Signature bytes (len %d, hex, first 16): %x", len(signatureBytes), signatureBytes[:min(16, len(signatureBytes))])
+		log.Printf("TX_VALIDATE_DEBUG: Context being passed to Verify: %v", ctxForVerify)
+		// --- End Detailed Logging ---
+
+		// --- Verify Signature ---
+		// CORRECTED ARGUMENT ORDER: pk, msg, ctx, sig
+		isValid := mldsa44.Verify(pk, messageBytes, ctxForVerify, signatureBytes)
+		// --- End Verify Signature ---
+
+		log.Printf("TX_VALIDATE_INFO: Signature verification result: %v", isValid) // Log Result
+
+		if !isValid {
+			log.Printf("TX_VALIDATE_ERROR: Signature verification FAILED! (Verify returned false)") // Log Failure
 			validationDone <- fmt.Errorf("invalid signature")
 			return
 		}
+		// --- Verification Success ---
+		log.Printf("TX_VALIDATE_SUCCESS: Signature verified successfully!") // Log Success
+		finalSignatureBytes = signatureBytes                                // Assign to outer scope variable now (Ensure finalSignatureBytes is declared outside goroutine)
+		validationDone <- nil                                               // Signal success
+	}() // End of goroutine
 
-		validationDone <- nil
-	}()
-
-	// Wait for validation with timeout
+	// --- Wait for Validation Result ---
 	select {
 	case err := <-validationDone:
 		if err != nil {
-			return nil, err
+			log.Printf("Validation failed: %v", err) // Log the specific validation error
+			// Return a more specific JSON-RPC error if possible, otherwise the generic one
+			// This helps the frontend distinguish validation errors from other issues
+			// Example: return nil, &jsonrpc.Error{Code: -32000, Message: err.Error()}
+			return nil, err // Return the validation error
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second): // Increased timeout slightly
+		log.Println("Validation timeout occurred")
 		return nil, fmt.Errorf("validation timeout")
 	}
+	// --- Validation Successful ---
+	log.Println("Validation completed successfully.")
 
-	// Create transaction data
-	// Create transaction data
+	// --- Create Transaction Object (using the 'payload' map for structure) ---
 	var transactionData types.Transaction
-	transactionData.ID = payload["id"].(string)
-
-	// Use the correct field name: SenderAddress instead of Sender
-	senderAddr, err := address.FromString(sender)
-	if err != nil {
-		return nil, fmt.Errorf("invalid sender address: %v", err)
+	// Extract ID directly from payload map
+	idStr, ok := payload["id"].(string)
+	if !ok || idStr == "" {
+		return nil, fmt.Errorf("invalid or missing 'id' in payload")
 	}
-	// Dereference the pointer to get the actual Address value
-	transactionData.SenderAddress = *senderAddr
+	transactionData.ID = idStr
 
-	// Process numeric fields
+	// Use sender string extracted earlier
+	senderAddr, err := address.FromString(sender) // Convert sender string to address type
+	if err != nil {
+		return nil, fmt.Errorf("invalid sender address format '%s': %v", sender, err)
+	}
+	transactionData.SenderAddress = *senderAddr // Assign address value
+
+	// Process numeric fields from payload map
 	if gasFeeFloat, ok := payload["gasfee"].(float64); ok {
 		transactionData.GasFee = int(gasFeeFloat)
 	} else {
-		return nil, fmt.Errorf("invalid gasfee in payload")
+		return nil, fmt.Errorf("invalid or missing 'gasfee' number in payload")
 	}
 
 	if timestampFloat, ok := payload["timestamp"].(float64); ok {
-		transactionData.Timestamp = int64(timestampFloat)
+		transactionData.Timestamp = int64(timestampFloat) // Convert float64 from JSON to int64
 	} else {
-		return nil, fmt.Errorf("invalid timestamp in payload")
+		return nil, fmt.Errorf("invalid or missing 'timestamp' number in payload")
 	}
 
-	// Process inputs/outputs
+	// Process inputs/outputs from payload map
+	// Using json marshal/unmarshal is a common way to convert []interface{} to []struct{}
 	if inputsData, ok := payload["inputs"].([]interface{}); ok {
 		inputsJSON, err := json.Marshal(inputsData)
 		if err != nil {
-			return nil, fmt.Errorf("invalid inputs in payload: %v", err)
+			return nil, fmt.Errorf("failed to marshal inputs from payload: %v", err)
 		}
 		if err := json.Unmarshal(inputsJSON, &transactionData.Inputs); err != nil {
-			return nil, fmt.Errorf("failed to parse inputs: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal inputs structure: %v", err)
 		}
+	} else {
+		return nil, fmt.Errorf("invalid or missing 'inputs' array in payload")
 	}
 
 	if outputsData, ok := payload["outputs"].([]interface{}); ok {
 		outputsJSON, err := json.Marshal(outputsData)
 		if err != nil {
-			return nil, fmt.Errorf("invalid outputs in payload: %v", err)
+			return nil, fmt.Errorf("failed to marshal outputs from payload: %v", err)
 		}
 		if err := json.Unmarshal(outputsJSON, &transactionData.Outputs); err != nil {
-			return nil, fmt.Errorf("failed to parse outputs: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal outputs structure: %v", err)
 		}
+	} else {
+		return nil, fmt.Errorf("invalid or missing 'outputs' array in payload")
 	}
+	// --- Transaction Object Created ---
 
-	// Create proper Thrylos transaction and set signature
-	thrylosTx := convertToThrylosTransaction(&transactionData)
+	// Convert to final Thrylos transaction type and add signature
+	thrylosTx := convertToThrylosTransaction(&transactionData) // Assuming this converts/validates further
 	if thrylosTx == nil {
-		return nil, fmt.Errorf("failed to convert transaction data")
+		return nil, fmt.Errorf("failed to convert to final transaction type")
 	}
-	thrylosTx.Signature = signatureBytes
+	thrylosTx.Signature = finalSignatureBytes // Use the validated signature bytes
 
-	log.Printf("[TX Handler] Created transaction with ID: %s", thrylosTx.GetId())
+	log.Printf("[TX Handler] Converted transaction with ID: %s", thrylosTx.GetId())
 
-	// Create response channel for transaction processing
+	// --- Process Transaction via Message Bus ---
 	processTxCh := make(chan types.Response)
-
-	// Send message to process transaction
 	h.messageBus.Publish(types.Message{
 		Type:       types.ProcessTransaction,
 		Data:       thrylosTx,
 		ResponseCh: processTxCh,
 	})
 
-	// Wait for processing response with timeout
+	// Wait for processing response
 	var processTxResponse types.Response
 	select {
 	case processTxResponse = <-processTxCh:
 		if processTxResponse.Error != nil {
+			log.Printf("Transaction processing failed for %s: %v", thrylosTx.GetId(), processTxResponse.Error)
 			return nil, fmt.Errorf("failed to process transaction: %v", processTxResponse.Error)
 		}
+		log.Printf("Transaction %s processed successfully by message bus.", thrylosTx.GetId())
 	case <-time.After(10 * time.Second):
+		log.Printf("Transaction processing timeout for %s", thrylosTx.GetId())
 		return nil, fmt.Errorf("transaction processing timeout")
 	}
 
-	// Handle balance updates and broadcasting in background
-	// Update the goroutine with the correct field name
 	// Handle balance updates in background
 	go func() {
 		addresses := make(map[string]bool)
@@ -695,14 +735,15 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		}
 	}()
 
-	// Return success response
+	// --- Return Success ---
+	log.Printf("Successfully submitted transaction %s", transactionData.ID)
 	return struct {
 		Message string `json:"message"`
 		Status  string `json:"status"`
 		TxID    string `json:"txId"`
 	}{
 		Message: fmt.Sprintf("Transaction %s submitted successfully", transactionData.ID),
-		Status:  "pending",
+		Status:  "pending", // Or "confirmed" if processTxResponse indicates completion
 		TxID:    transactionData.ID,
 	}, nil
 }

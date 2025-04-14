@@ -6,8 +6,8 @@ import "github.com/thrylos-labs/thrylos/types"
 func (node *Node) handleMessages() {
 	for msg := range node.messageCh {
 		switch msg.Type {
-		case types.GetUTXOs:
-			node.handleGetUTXOs(msg)
+		// case types.GetUTXOs:
+		// 	node.handleGetUTXOs(msg)
 		case types.AddUTXO:
 			node.handleAddUTXO(msg)
 			// case types.UpdateState:

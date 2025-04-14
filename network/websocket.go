@@ -65,7 +65,6 @@ func NewWebSocketManager(messageBus types.MessageBusInterface) *WebSocketManager
 
 	// Subscribe to relevant message types
 	messageBus.Subscribe(types.GetBalance, manager.messageCh)
-	messageBus.Subscribe(types.GetUTXOs, manager.messageCh)
 	messageBus.Subscribe(types.ProcessTransaction, manager.messageCh)
 	messageBus.Subscribe(types.ProcessBlock, manager.messageCh)
 

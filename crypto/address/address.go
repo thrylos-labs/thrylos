@@ -2,6 +2,8 @@ package address
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 
 	mldsa "github.com/cloudflare/circl/sign/mldsa/mldsa44"
@@ -19,15 +21,30 @@ const (
 type Address [AddressSize]byte
 
 func New(pubKey *mldsa.PublicKey) (*Address, error) {
-	hashBytes := hash.NewHash(pubKey.Bytes())
+	pubKeyBytes := pubKey.Bytes()
+	// 1. Log Input Public Key (as base64 for comparison)
+	fmt.Println("BE: Input PK Base64:", base64.StdEncoding.EncodeToString(pubKeyBytes[:15])+"...") // Log first few bytes as base64
+	// 2. Log Raw Bytes (first few)
+	fmt.Println("BE: PK Bytes:", hex.EncodeToString(pubKeyBytes[:16]))
+
+	hashBytes := hash.NewHash(pubKeyBytes)
+	// 3. Log Full Hash
+	fmt.Println("BE: Full Blake2b-256:", hex.EncodeToString(hashBytes[:]))
+
 	addressBytes := hashBytes[:20]
+	// 4. Log Truncated Hash (Address Bytes)
+	fmt.Println("BE: Truncated Hash (Addr Bytes):", hex.EncodeToString(addressBytes[:]))
+
 	words, err := bech32.ConvertBits(addressBytes[:], 8, 5, true)
-	fmt.Printf("words: %v, length: %v\n", words, len(words))
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert public key to 5-bit words: %v", err)
 	}
 	var address Address
 	copy(address[:], words)
+
+	// 6. Log Final Address (using the String method which now uses "tl")
+	fmt.Println("BE: Final Address:", address.String())
+
 	return &address, nil
 }
 
@@ -84,9 +101,12 @@ func (a *Address) Bytes() []byte {
 	return a[:]
 }
 func (a *Address) String() string {
-	encoded, _ := bech32.Encode(AddressPrefix, a.Bytes())
+	// Pass only the HRP "tl" to the Encode function
+	hrp := "tl"
+	encoded, _ := bech32.Encode(hrp, a.Bytes()) // Use "tl", not "tl1"
 	return encoded
 }
+
 func (a *Address) Marshal() ([]byte, error) {
 	return cbor.Marshal(a[:])
 }
