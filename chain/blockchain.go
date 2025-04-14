@@ -57,18 +57,6 @@ func (bc *BlockchainImpl) Close() error {
 	return nil
 }
 
-func (bc *BlockchainImpl) CheckStakeholdersMap() {
-	mapAddress := fmt.Sprintf("%p", &bc.Blockchain.Stakeholders)
-
-	bc.Blockchain.Mu.RLock()
-	count := len(bc.Blockchain.Stakeholders)
-	testBalance, testExists := bc.Blockchain.Stakeholders["test_address_123"]
-	bc.Blockchain.Mu.RUnlock()
-
-	log.Printf("PERIODIC CHECK: Stakeholders map at %s has %d entries", mapAddress, count)
-	log.Printf("PERIODIC CHECK: Test address exists? %v with balance %d", testExists, testBalance)
-}
-
 func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
 	// Initialize the database
 	database, err := store.NewDatabase(config.DataDir)

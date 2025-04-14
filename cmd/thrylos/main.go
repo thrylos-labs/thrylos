@@ -448,20 +448,6 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 		}
 	}()
 
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				blockchain.CheckStakeholdersMap()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
 	// Handle balance-related messages
 	go func() {
 		for {
