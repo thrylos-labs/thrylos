@@ -16,4 +16,7 @@ const (
 
 	// Delegation Related
 	DelegationRewardPercent = 0.5 // 50%
+
+	DefaultGasFee int = 1000000 // Example: 0.1 THRYLOS (1,000,000 nanoTHR) - Adjust as needed
+	MinGasFee     int = 10000   // Example: 0.001 THRYLOS (10,000 nanoTHR) - Adjust as needed
 )

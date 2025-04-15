@@ -16,12 +16,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/types"
 
+	// Add this line
 	"github.com/joho/godotenv"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"google.golang.org/grpc"
@@ -116,7 +118,7 @@ func convertProtoToTypesUTXO(protoUTXO *thrylos.UTXO) types.UTXO {
 		ID:            utxoID,                          // Generated composite key
 		TransactionID: protoUTXO.TransactionId,         // Direct mapping
 		Index:         int(protoUTXO.Index),            // Cast proto's int32 to Go's int
-		OwnerAddress:  protoUTXO.OwnerAddress,        // Direct mapping (string)
+		OwnerAddress:  protoUTXO.OwnerAddress,          // Direct mapping (string)
 		Amount:        amount.Amount(protoUTXO.Amount), // Cast proto's int64 to amount.Amount
 		IsSpent:       protoUTXO.IsSpent,               // Direct mapping (bool)
 	}
@@ -489,81 +491,80 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					} else {
 						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid address format")}
 					}
-				// Inside the `select` within the goroutine handling `balanceCh`
-			case types.GetUTXOs:
-				if req, ok := msg.Data.(types.UTXORequest); ok {
-					address := req.Address
-					log.Printf("DEBUG: [GetUTXOs Handler] Request received for address: %s", address)
-					utxosResult := []types.UTXO{} // Initialize empty slice for results
+					// Inside the `select` within the goroutine handling `balanceCh`
+				case types.GetUTXOs:
+					if req, ok := msg.Data.(types.UTXORequest); ok {
+						address := req.Address
+						log.Printf("DEBUG: [GetUTXOs Handler] Request received for address: %s", address)
+						utxosResult := []types.UTXO{} // Initialize empty slice for results
 
-					log.Printf("DEBUG: [GetUTXOs Handler] Iterating through %d keys in UTXO map", len(blockchain.Blockchain.UTXOs))
-					for utxoKey, utxoListProto := range blockchain.Blockchain.UTXOs { // utxoListProto is []*thrylos.UTXO
-						log.Printf("DEBUG: [GetUTXOs Handler] Processing key: %q", utxoKey)
+						log.Printf("DEBUG: [GetUTXOs Handler] Iterating through %d keys in UTXO map", len(blockchain.Blockchain.UTXOs))
+						for utxoKey, utxoListProto := range blockchain.Blockchain.UTXOs { // utxoListProto is []*thrylos.UTXO
+							log.Printf("DEBUG: [GetUTXOs Handler] Processing key: %q", utxoKey)
 
-						var txID string
-						var index int
-						var err error
+							var txID string
+							var index int
+							var err error
 
-						// --- CORRECTED Key Parsing using LastIndex ---
-						lastDashIndex := strings.LastIndex(utxoKey, "-")
-						if lastDashIndex != -1 && lastDashIndex < len(utxoKey)-1 { // Found dash, not at end
-							txID = utxoKey[:lastDashIndex]
-							indexPart := utxoKey[lastDashIndex+1:]
-							index, err = strconv.Atoi(indexPart)
-							if err != nil {
-								log.Printf("WARN: [GetUTXOs Handler] Could not parse index part %q from key %q using '-': %v. Skipping key.", indexPart, utxoKey, err)
-								continue // Skip if index part isn't integer after '-'
-							}
-							log.Printf("DEBUG: [GetUTXOs Handler] Parsed Key %q using '-' -> TxID: %s, Index: %d", utxoKey, txID, index)
-						} else {
-							// Fallback attempt for ":" separator (e.g., old genesis key)
-							lastColonIndex := strings.LastIndex(utxoKey, ":")
-							if lastColonIndex != -1 && lastColonIndex < len(utxoKey)-1 {
-								txID = utxoKey[:lastColonIndex]
-								indexPart := utxoKey[lastColonIndex+1:]
+							// --- CORRECTED Key Parsing using LastIndex ---
+							lastDashIndex := strings.LastIndex(utxoKey, "-")
+							if lastDashIndex != -1 && lastDashIndex < len(utxoKey)-1 { // Found dash, not at end
+								txID = utxoKey[:lastDashIndex]
+								indexPart := utxoKey[lastDashIndex+1:]
 								index, err = strconv.Atoi(indexPart)
 								if err != nil {
-									log.Printf("WARN: [GetUTXOs Handler] Could not parse index part %q from key %q using ':': %v. Skipping key.", indexPart, utxoKey, err)
-									continue
+									log.Printf("WARN: [GetUTXOs Handler] Could not parse index part %q from key %q using '-': %v. Skipping key.", indexPart, utxoKey, err)
+									continue // Skip if index part isn't integer after '-'
 								}
-								log.Printf("DEBUG: [GetUTXOs Handler] Parsed Key %q using ':' -> TxID: %s, Index: %d", utxoKey, txID, index)
+								log.Printf("DEBUG: [GetUTXOs Handler] Parsed Key %q using '-' -> TxID: %s, Index: %d", utxoKey, txID, index)
 							} else {
-								// Neither separator worked or format is wrong
-								log.Printf("WARN: [GetUTXOs Handler] Could not find valid separator '-' or ':' in key %q to determine TxID/Index. Skipping key.", utxoKey)
-								continue // Skip malformed key
-							}
-						}
-						// --- End CORRECTED Key Parsing ---
-
-
-						// Iterate through the UTXOs associated with this *parsed* key
-						for _, utxoProto := range utxoListProto { // utxoProto is *thrylos.UTXO
-							// Check owner and spent status
-							if utxoProto.OwnerAddress == address && !utxoProto.IsSpent {
-								log.Printf("DEBUG: [GetUTXOs Handler] Found matching UTXO for key %q: Owner=%s, Amount=%d", utxoKey, utxoProto.OwnerAddress, utxoProto.Amount)
-								// Convert *thrylos.UTXO (proto) to types.UTXO
-								typesUtxo := convertProtoToTypesUTXO(utxoProto) // Use helper
-
-								// Assign the key used for lookup as the ID in the result, and ensure parsed TxID/Index match
-								typesUtxo.ID = utxoKey
-								if typesUtxo.TransactionID != txID || typesUtxo.Index != index {
-                                     log.Printf("WARN: [GetUTXOs Handler] Mismatch after conversion for key %q: Parsed(%s, %d) != Struct(%s, %d). Using parsed values.",
-                                         utxoKey, txID, index, typesUtxo.TransactionID, typesUtxo.Index)
-                                     typesUtxo.TransactionID = txID
-                                     typesUtxo.Index = index
+								// Fallback attempt for ":" separator (e.g., old genesis key)
+								lastColonIndex := strings.LastIndex(utxoKey, ":")
+								if lastColonIndex != -1 && lastColonIndex < len(utxoKey)-1 {
+									txID = utxoKey[:lastColonIndex]
+									indexPart := utxoKey[lastColonIndex+1:]
+									index, err = strconv.Atoi(indexPart)
+									if err != nil {
+										log.Printf("WARN: [GetUTXOs Handler] Could not parse index part %q from key %q using ':': %v. Skipping key.", indexPart, utxoKey, err)
+										continue
+									}
+									log.Printf("DEBUG: [GetUTXOs Handler] Parsed Key %q using ':' -> TxID: %s, Index: %d", utxoKey, txID, index)
+								} else {
+									// Neither separator worked or format is wrong
+									log.Printf("WARN: [GetUTXOs Handler] Could not find valid separator '-' or ':' in key %q to determine TxID/Index. Skipping key.", utxoKey)
+									continue // Skip malformed key
 								}
-
-								utxosResult = append(utxosResult, typesUtxo)
 							}
-						}
-					} // End loop through map keys
+							// --- End CORRECTED Key Parsing ---
 
-					log.Printf("DEBUG: [GetUTXOs Handler] Sending %d UTXOs back for address %s", len(utxosResult), address)
-					msg.ResponseCh <- types.Response{Data: utxosResult} // Send the results
-				} else {
-					msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid UTXO request format")}
+							// Iterate through the UTXOs associated with this *parsed* key
+							for _, utxoProto := range utxoListProto { // utxoProto is *thrylos.UTXO
+								// Check owner and spent status
+								if utxoProto.OwnerAddress == address && !utxoProto.IsSpent {
+									log.Printf("DEBUG: [GetUTXOs Handler] Found matching UTXO for key %q: Owner=%s, Amount=%d", utxoKey, utxoProto.OwnerAddress, utxoProto.Amount)
+									// Convert *thrylos.UTXO (proto) to types.UTXO
+									typesUtxo := convertProtoToTypesUTXO(utxoProto) // Use helper
+
+									// Assign the key used for lookup as the ID in the result, and ensure parsed TxID/Index match
+									typesUtxo.ID = utxoKey
+									if typesUtxo.TransactionID != txID || typesUtxo.Index != index {
+										log.Printf("WARN: [GetUTXOs Handler] Mismatch after conversion for key %q: Parsed(%s, %d) != Struct(%s, %d). Using parsed values.",
+											utxoKey, txID, index, typesUtxo.TransactionID, typesUtxo.Index)
+										typesUtxo.TransactionID = txID
+										typesUtxo.Index = index
+									}
+
+									utxosResult = append(utxosResult, typesUtxo)
+								}
+							}
+						} // End loop through map keys
+
+						log.Printf("DEBUG: [GetUTXOs Handler] Sending %d UTXOs back for address %s", len(utxosResult), address)
+						msg.ResponseCh <- types.Response{Data: utxosResult} // Send the results
+					} else {
+						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid UTXO request format")}
+					}
 				}
-			}
 				// End case types.GetUTXOs
 			// End case types.GetUTXOs
 			case <-ctx.Done():
@@ -572,228 +573,262 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 		}
 	}()
 
-
-// Handle transaction-related messages
-go func() {
-	for {
-		select {
-		case msg := <-txCh: // Got a message
-			switch msg.Type {
-			case types.ProcessTransaction:
-				tx, ok := msg.Data.(*thrylos.Transaction) // Protobuf type
-				if !ok {
-					log.Printf("ERROR: [txCh Handler] Invalid data type for ProcessTransaction")
-					if msg.ResponseCh != nil { msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid tx data type")} }
-					continue
-				}
-
-				log.Printf("INFO: [txCh Handler] Processing TX ID: %s", tx.Id)
-
-				// --- Declare ALL variables used across potential goto jumps ---
-				var processingError error
-				var dbTxContext types.TransactionContext
-				var dbErr error
-				var calculatedFee int64
-				var totalInputValue int64
-				var totalOutputValue int64
-				var commitErr error // <<< DECLARED commitErr HERE
-
-				// Data structures to hold changes for DB persistence
-				var inputsToMarkSpentDB []types.UTXO
-				var outputsToAddDB []types.UTXO
-				balancesToUpdateDB := make(map[string]int64)
-
-				// --- Trim Sender Key ---
-				senderKey := strings.TrimSpace(tx.Sender)
-				log.Printf("DEBUG: [txCh Handler] Trimmed sender key for lookup: %q", senderKey)
-
-
-				// === BEGIN In-Memory Operations (Under Lock) ===
-				blockchain.Blockchain.Mu.Lock() // <<< LOCK MEMORY
-
-				// 1. Check Sender Exists
-				_, senderExists := blockchain.Blockchain.Stakeholders[senderKey]
-				if !senderExists {
-					keys := make([]string, 0, len(blockchain.Blockchain.Stakeholders))
-					for k := range blockchain.Blockchain.Stakeholders { keys = append(keys, k) }
-					log.Printf("DEBUG: [txCh Handler] Keys currently in Stakeholders map: %q", keys)
-					processingError = fmt.Errorf("sender %q not found in stakeholders map", senderKey)
-					blockchain.Blockchain.Mu.Unlock() // Unlock before goto
-					goto SendResponse // Jump directly to SendResponse logic
-				}
-
-				// 2. Validate Inputs, Calculate Value & Mark Spent (In Memory)
-				totalInputValue = 0
-				if len(tx.Inputs) == 0 {
-					processingError = fmt.Errorf("transaction %s has no inputs", tx.Id)
-					blockchain.Blockchain.Mu.Unlock(); goto SendResponse
-				}
-
-				inputsToMarkSpentDB = make([]types.UTXO, 0, len(tx.Inputs)) // Initialize slice
-
-				for _, inputProto := range tx.Inputs {
-					inputKey := fmt.Sprintf("%s-%d", inputProto.TransactionId, inputProto.Index)
-					utxoList, exists := blockchain.Blockchain.UTXOs[inputKey]
-					// Add fallback check for ':' if necessary
-					if !exists {
-						 altInputKey := fmt.Sprintf("%s:%d", inputProto.TransactionId, inputProto.Index)
-						 utxoList, exists = blockchain.Blockchain.UTXOs[altInputKey]
-						 if !exists {
-							 processingError = fmt.Errorf("input UTXO key %s (or %s) not found tx %s", inputKey, altInputKey, tx.Id); blockchain.Blockchain.Mu.Unlock(); goto SendResponse
-						 } else {
-							 inputKey = altInputKey
-							 log.Printf("WARN: [txCh Handler] Used fallback key format '%s' for UTXO map lookup.", inputKey)
-						 }
-					}
-
-
-					found := false
-					for _, utxoInMap := range utxoList { // utxoInMap is *thrylos.UTXO
-						if utxoInMap.OwnerAddress == senderKey && !utxoInMap.IsSpent && utxoInMap.Amount == inputProto.Amount {
-							if utxoInMap.IsSpent { processingError = fmt.Errorf("attempt double-spend UTXO %s tx %s", inputKey, tx.Id); blockchain.Blockchain.Mu.Unlock(); goto SendResponse }
-
-							utxoInMap.IsSpent = true // Mark spent in memory
-							totalInputValue += utxoInMap.Amount
-							found = true
-							// Add types.UTXO version to list for DB update LATER
-							inputsToMarkSpentDB = append(inputsToMarkSpentDB, convertProtoToTypesUTXO(utxoInMap))
-							log.Printf("INFO: [txCh Handler] Marked UTXO %s (Val: %d) spent in memory TX %s", inputKey, utxoInMap.Amount, tx.Id)
-							break
+	// Handle transaction-related messages
+	go func() {
+		for {
+			select {
+			case msg := <-txCh: // Got a message
+				switch msg.Type {
+				case types.ProcessTransaction:
+					tx, ok := msg.Data.(*thrylos.Transaction) // Protobuf type
+					if !ok {
+						log.Printf("ERROR: [txCh Handler] Invalid data type for ProcessTransaction")
+						if msg.ResponseCh != nil {
+							msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid tx data type")}
 						}
+						continue
 					}
-					if !found { processingError = fmt.Errorf("spendable input UTXO %s sender %q not found/spent tx %s", inputKey, senderKey, tx.Id); blockchain.Blockchain.Mu.Unlock(); goto SendResponse }
-				} // End input loop
 
-				// 3. Calculate Output Value
-				totalOutputValue = 0
-				for _, output := range tx.Outputs { totalOutputValue += output.Amount }
+					log.Printf("INFO: [txCh Handler] Processing TX ID: %s", tx.Id)
 
-				// 4. Verify Fee & Sufficient Input
-				calculatedFee = totalInputValue - totalOutputValue
-				if calculatedFee < 0 { processingError = fmt.Errorf("tx %s outputs exceed inputs (%d > %d)", tx.Id, totalOutputValue, totalInputValue); blockchain.Blockchain.Mu.Unlock(); goto SendResponse }
-				if calculatedFee != int64(tx.Gasfee) { log.Printf("WARN: Fee mismatch tx %s: Calc %d != Stated %d. ALLOWING.", tx.Id, calculatedFee, tx.Gasfee) }
-				if totalInputValue < totalOutputValue+int64(tx.Gasfee) { processingError = fmt.Errorf("insufficient input %d for outputs+fee %d tx %s", totalInputValue, totalOutputValue+int64(tx.Gasfee), tx.Id); blockchain.Blockchain.Mu.Unlock(); goto SendResponse }
+					// --- Declare ALL variables used across potential goto jumps ---
+					var processingError error
+					var dbTxContext types.TransactionContext
+					var dbErr error
+					var calculatedFee int64
+					var totalInputValue int64
+					var totalOutputValue int64
+					var commitErr error // <<< DECLARED commitErr HERE
 
-				// 5. Update Stakeholders Map (In Memory) & Collect Balances for DB
-				log.Printf("INFO: [txCh Handler] Updating stakeholder balances in memory TX %s", tx.Id)
-				blockchain.Blockchain.Stakeholders[senderKey] -= totalInputValue
-				balancesToUpdateDB[senderKey] = blockchain.Blockchain.Stakeholders[senderKey] // Store final sender balance
+					// Data structures to hold changes for DB persistence
+					var inputsToMarkSpentDB []types.UTXO
+					var outputsToAddDB []types.UTXO
+					balancesToUpdateDB := make(map[string]int64)
 
-				for _, output := range tx.Outputs {
-					receiverKey := strings.TrimSpace(output.OwnerAddress)
-					blockchain.Blockchain.Stakeholders[receiverKey] += output.Amount
-					balancesToUpdateDB[receiverKey] = blockchain.Blockchain.Stakeholders[receiverKey] // Store final receiver balance
-					log.Printf("DEBUG: [txCh Handler] Updated receiver %s in memory: %d", receiverKey, blockchain.Blockchain.Stakeholders[receiverKey])
-				}
+					// --- Trim Sender Key ---
+					senderKey := strings.TrimSpace(tx.Sender)
+					log.Printf("DEBUG: [txCh Handler] Trimmed sender key for lookup: %q", senderKey)
 
-				// 6. Add New UTXOs to Memory Map & Collect for DB
-				log.Printf("INFO: [txCh Handler] Adding %d new UTXOs memory TX %s", len(tx.Outputs), tx.Id)
-				outputsToAddDB = make([]types.UTXO, 0, len(tx.Outputs)) // Initialize slice
+					// === BEGIN In-Memory Operations (Under Lock) ===
+					blockchain.Blockchain.Mu.Lock() // <<< LOCK MEMORY
 
-				for i, outputProto := range tx.Outputs {
-					outputKey := fmt.Sprintf("%s-%d", tx.Id, i)
-					ownerAddrKey := strings.TrimSpace(outputProto.OwnerAddress)
-					newUTXOProto := &thrylos.UTXO{TransactionId: tx.Id, Index: int32(i), OwnerAddress: ownerAddrKey, Amount: outputProto.Amount, IsSpent: false}
-					blockchain.Blockchain.UTXOs[outputKey] = append(blockchain.Blockchain.UTXOs[outputKey], newUTXOProto)
-					// Add types.UTXO version to list for DB update LATER
-					outputsToAddDB = append(outputsToAddDB, convertProtoToTypesUTXO(newUTXOProto))
-					log.Printf("INFO: [txCh Handler] Added new UTXO %s to memory TX %s", outputKey, tx.Id)
-				}
-
-				// --- Unlock In-Memory State ---
-				log.Printf("DEBUG: [txCh Handler] Releasing memory lock before DB operations for TX %s", tx.Id)
-				blockchain.Blockchain.Mu.Unlock() // <<< UNLOCK MEMORY NOW
-				// === END In-Memory Operations ===
-
-
-				// --- Perform Database Operations (Outside Memory Lock, Within DB Transaction) ---
-				log.Printf("DEBUG: [txCh Handler] Starting DB operations for TX %s", tx.Id)
-
-				dbTxContext, dbErr = blockchain.Blockchain.Database.BeginTransaction()
-				if dbErr != nil {
-					log.Printf("ERROR: [txCh Handler] Failed DB begin TX %s: %v", tx.Id, dbErr)
-					processingError = fmt.Errorf("failed to begin DB tx: %v", dbErr)
-					goto SendResponse // Jump to send error response
-				}
-				// Defer rollback for DB transaction specifically
-				defer func() {
-					if processingError != nil && dbTxContext != nil { // Check processingError from outer scope
-						log.Printf("WARN: Rolling back DB TX %s: %v", tx.Id, processingError)
-						rbErr := blockchain.Blockchain.Database.RollbackTransaction(dbTxContext)
-						if rbErr != nil { log.Printf("ERROR: Rollback failed TX %s: %v", tx.Id, rbErr) }
+					// 1. Check Sender Exists
+					_, senderExists := blockchain.Blockchain.Stakeholders[senderKey]
+					if !senderExists {
+						keys := make([]string, 0, len(blockchain.Blockchain.Stakeholders))
+						for k := range blockchain.Blockchain.Stakeholders {
+							keys = append(keys, k)
+						}
+						log.Printf("DEBUG: [txCh Handler] Keys currently in Stakeholders map: %q", keys)
+						processingError = fmt.Errorf("sender %q not found in stakeholders map", senderKey)
+						blockchain.Blockchain.Mu.Unlock() // Unlock before goto
+						goto SendResponse                 // Jump directly to SendResponse logic
 					}
-				}()
 
-				// Persist Spent UTXOs
-				log.Printf("DEBUG: [txCh Handler] Persisting %d spent inputs to DB for TX %s", len(inputsToMarkSpentDB), tx.Id)
-				for _, spentUtxo := range inputsToMarkSpentDB {
-					dbErr = blockchain.Blockchain.Database.MarkUTXOAsSpent(dbTxContext, spentUtxo) // Assign to dbErr
-					if dbErr != nil { processingError = fmt.Errorf("failed DB mark spent %s-%d: %v", spentUtxo.TransactionID, spentUtxo.Index, dbErr); goto EndProcessingDB }
-					log.Printf("INFO: [txCh Handler] Marked UTXO %s-%d spent in DB TX %s", spentUtxo.TransactionID, spentUtxo.Index, tx.Id)
-				}
+					// 2. Validate Inputs, Calculate Value & Mark Spent (In Memory)
+					totalInputValue = 0
+					if len(tx.Inputs) == 0 {
+						processingError = fmt.Errorf("transaction %s has no inputs", tx.Id)
+						blockchain.Blockchain.Mu.Unlock()
+						goto SendResponse
+					}
 
-				// Persist Stakeholder Balances
-				log.Printf("DEBUG: [txCh Handler] Persisting %d stakeholder balances to DB for TX %s", len(balancesToUpdateDB), tx.Id)
-				for addr, balance := range balancesToUpdateDB {
-					dbErr = blockchain.Blockchain.Database.UpdateBalance(addr, balance) // Assign to dbErr
-					if dbErr != nil { processingError = fmt.Errorf("failed DB update balance %s: %v", addr, dbErr); goto EndProcessingDB }
-					log.Printf("SUCCESS: Updated balance for %s in DB to %d", addr, balance)
-				}
+					inputsToMarkSpentDB = make([]types.UTXO, 0, len(tx.Inputs)) // Initialize slice
 
-				// Persist New UTXOs
-				log.Printf("DEBUG: [txCh Handler] Persisting %d new outputs to DB for TX %s", len(outputsToAddDB), tx.Id)
-				for _, newUtxo := range outputsToAddDB {
-					dbErr = blockchain.Blockchain.Database.AddNewUTXO(dbTxContext, newUtxo) // Assign to dbErr
-					if dbErr != nil { processingError = fmt.Errorf("failed DB add new UTXO %s-%d: %v", newUtxo.TransactionID, newUtxo.Index, dbErr); goto EndProcessingDB }
-					log.Printf("INFO: [txCh Handler] Added new UTXO %s-%d to DB TX %s", newUtxo.TransactionID, newUtxo.Index, tx.Id)
-				}
+					for _, inputProto := range tx.Inputs {
+						inputKey := fmt.Sprintf("%s-%d", inputProto.TransactionId, inputProto.Index)
+						utxoList, exists := blockchain.Blockchain.UTXOs[inputKey]
+						// Add fallback check for ':' if necessary
+						if !exists {
+							altInputKey := fmt.Sprintf("%s:%d", inputProto.TransactionId, inputProto.Index)
+							utxoList, exists = blockchain.Blockchain.UTXOs[altInputKey]
+							if !exists {
+								processingError = fmt.Errorf("input UTXO key %s (or %s) not found tx %s", inputKey, altInputKey, tx.Id)
+								blockchain.Blockchain.Mu.Unlock()
+								goto SendResponse
+							} else {
+								inputKey = altInputKey
+								log.Printf("WARN: [txCh Handler] Used fallback key format '%s' for UTXO map lookup.", inputKey)
+							}
+						}
 
-			EndProcessingDB: // Label for errors DURING DB operations
-				if processingError != nil {
-					// Error already set, defer func above will rollback
-					log.Printf("ERROR: [txCh Handler] Error occurred during DB operations for TX %s: %v", tx.Id, processingError)
-					goto SendResponse // Jump to send error response
-				}
+						found := false
+						for _, utxoInMap := range utxoList { // utxoInMap is *thrylos.UTXO
+							if utxoInMap.OwnerAddress == senderKey && !utxoInMap.IsSpent && utxoInMap.Amount == inputProto.Amount {
+								if utxoInMap.IsSpent {
+									processingError = fmt.Errorf("attempt double-spend UTXO %s tx %s", inputKey, tx.Id)
+									blockchain.Blockchain.Mu.Unlock()
+									goto SendResponse
+								}
 
-				// Commit DB Transaction if no errors occurred during DB phase
-				log.Printf("DEBUG: [txCh Handler] Attempting DB commit for TX %s", tx.Id)
-				commitErr = blockchain.Blockchain.Database.CommitTransaction(dbTxContext) // <<< ASSIGN to commitErr
-				if commitErr != nil {
-					log.Printf("ERROR: [txCh Handler] Failed DB commit TX %s: %v", tx.Id, commitErr)
-					processingError = fmt.Errorf("failed DB commit: %v", commitErr)
-					// Rollback handled by defer
-					goto SendResponse
-				}
-				dbTxContext = nil // Prevent rollback by defer if commit succeeded
-				log.Printf("INFO: [txCh Handler] Committed DB TX %s", tx.Id)
+								utxoInMap.IsSpent = true // Mark spent in memory
+								totalInputValue += utxoInMap.Amount
+								found = true
+								// Add types.UTXO version to list for DB update LATER
+								inputsToMarkSpentDB = append(inputsToMarkSpentDB, convertProtoToTypesUTXO(utxoInMap))
+								log.Printf("INFO: [txCh Handler] Marked UTXO %s (Val: %d) spent in memory TX %s", inputKey, utxoInMap.Amount, tx.Id)
+								break
+							}
+						}
+						if !found {
+							processingError = fmt.Errorf("spendable input UTXO %s sender %q not found/spent tx %s", inputKey, senderKey, tx.Id)
+							blockchain.Blockchain.Mu.Unlock()
+							goto SendResponse
+						}
+					} // End input loop
 
+					// 3. Calculate Output Value
+					totalOutputValue = 0
+					for _, output := range tx.Outputs {
+						totalOutputValue += output.Amount
+					}
 
-			SendResponse: // Label for sending response
+					// 4. Verify Fee & Sufficient Input
+					calculatedFee = totalInputValue - totalOutputValue
+					if calculatedFee < 0 {
+						processingError = fmt.Errorf("tx %s outputs exceed inputs (%d > %d)", tx.Id, totalOutputValue, totalInputValue)
+						blockchain.Blockchain.Mu.Unlock()
+						goto SendResponse
+					}
+					if calculatedFee != int64(tx.Gasfee) {
+						log.Printf("WARN: Fee mismatch tx %s: Calc %d != Stated %d. ALLOWING.", tx.Id, calculatedFee, tx.Gasfee)
+					}
+					if totalInputValue < totalOutputValue+int64(tx.Gasfee) {
+						processingError = fmt.Errorf("insufficient input %d for outputs+fee %d tx %s", totalInputValue, totalOutputValue+int64(tx.Gasfee), tx.Id)
+						blockchain.Blockchain.Mu.Unlock()
+						goto SendResponse
+					}
 
-				// --- Send Response ---
-				if msg.ResponseCh != nil {
+					// 5. Update Stakeholders Map (In Memory) & Collect Balances for DB
+					log.Printf("INFO: [txCh Handler] Updating stakeholder balances in memory TX %s", tx.Id)
+					blockchain.Blockchain.Stakeholders[senderKey] -= totalInputValue
+					balancesToUpdateDB[senderKey] = blockchain.Blockchain.Stakeholders[senderKey] // Store final sender balance
+
+					for _, output := range tx.Outputs {
+						receiverKey := strings.TrimSpace(output.OwnerAddress)
+						blockchain.Blockchain.Stakeholders[receiverKey] += output.Amount
+						balancesToUpdateDB[receiverKey] = blockchain.Blockchain.Stakeholders[receiverKey] // Store final receiver balance
+						log.Printf("DEBUG: [txCh Handler] Updated receiver %s in memory: %d", receiverKey, blockchain.Blockchain.Stakeholders[receiverKey])
+					}
+
+					// 6. Add New UTXOs to Memory Map & Collect for DB
+					log.Printf("INFO: [txCh Handler] Adding %d new UTXOs memory TX %s", len(tx.Outputs), tx.Id)
+					outputsToAddDB = make([]types.UTXO, 0, len(tx.Outputs)) // Initialize slice
+
+					for i, outputProto := range tx.Outputs {
+						outputKey := fmt.Sprintf("%s-%d", tx.Id, i)
+						ownerAddrKey := strings.TrimSpace(outputProto.OwnerAddress)
+						newUTXOProto := &thrylos.UTXO{TransactionId: tx.Id, Index: int32(i), OwnerAddress: ownerAddrKey, Amount: outputProto.Amount, IsSpent: false}
+						blockchain.Blockchain.UTXOs[outputKey] = append(blockchain.Blockchain.UTXOs[outputKey], newUTXOProto)
+						// Add types.UTXO version to list for DB update LATER
+						outputsToAddDB = append(outputsToAddDB, convertProtoToTypesUTXO(newUTXOProto))
+						log.Printf("INFO: [txCh Handler] Added new UTXO %s to memory TX %s", outputKey, tx.Id)
+					}
+
+					// --- Unlock In-Memory State ---
+					log.Printf("DEBUG: [txCh Handler] Releasing memory lock before DB operations for TX %s", tx.Id)
+					blockchain.Blockchain.Mu.Unlock() // <<< UNLOCK MEMORY NOW
+					// === END In-Memory Operations ===
+
+					// --- Perform Database Operations (Outside Memory Lock, Within DB Transaction) ---
+					log.Printf("DEBUG: [txCh Handler] Starting DB operations for TX %s", tx.Id)
+
+					dbTxContext, dbErr = blockchain.Blockchain.Database.BeginTransaction()
+					if dbErr != nil {
+						log.Printf("ERROR: [txCh Handler] Failed DB begin TX %s: %v", tx.Id, dbErr)
+						processingError = fmt.Errorf("failed to begin DB tx: %v", dbErr)
+						goto SendResponse // Jump to send error response
+					}
+					// Defer rollback for DB transaction specifically
+					defer func() {
+						if processingError != nil && dbTxContext != nil { // Check processingError from outer scope
+							log.Printf("WARN: Rolling back DB TX %s: %v", tx.Id, processingError)
+							rbErr := blockchain.Blockchain.Database.RollbackTransaction(dbTxContext)
+							if rbErr != nil {
+								log.Printf("ERROR: Rollback failed TX %s: %v", tx.Id, rbErr)
+							}
+						}
+					}()
+
+					// Persist Spent UTXOs
+					log.Printf("DEBUG: [txCh Handler] Persisting %d spent inputs to DB for TX %s", len(inputsToMarkSpentDB), tx.Id)
+					for _, spentUtxo := range inputsToMarkSpentDB {
+						dbErr = blockchain.Blockchain.Database.MarkUTXOAsSpent(dbTxContext, spentUtxo) // Assign to dbErr
+						if dbErr != nil {
+							processingError = fmt.Errorf("failed DB mark spent %s-%d: %v", spentUtxo.TransactionID, spentUtxo.Index, dbErr)
+							goto EndProcessingDB
+						}
+						log.Printf("INFO: [txCh Handler] Marked UTXO %s-%d spent in DB TX %s", spentUtxo.TransactionID, spentUtxo.Index, tx.Id)
+					}
+
+					// Persist Stakeholder Balances
+					log.Printf("DEBUG: [txCh Handler] Persisting %d stakeholder balances to DB for TX %s", len(balancesToUpdateDB), tx.Id)
+					for addr, balance := range balancesToUpdateDB {
+						dbErr = blockchain.Blockchain.Database.UpdateBalance(addr, balance) // Assign to dbErr
+						if dbErr != nil {
+							processingError = fmt.Errorf("failed DB update balance %s: %v", addr, dbErr)
+							goto EndProcessingDB
+						}
+						log.Printf("SUCCESS: Updated balance for %s in DB to %d", addr, balance)
+					}
+
+					// Persist New UTXOs
+					log.Printf("DEBUG: [txCh Handler] Persisting %d new outputs to DB for TX %s", len(outputsToAddDB), tx.Id)
+					for _, newUtxo := range outputsToAddDB {
+						dbErr = blockchain.Blockchain.Database.AddNewUTXO(dbTxContext, newUtxo) // Assign to dbErr
+						if dbErr != nil {
+							processingError = fmt.Errorf("failed DB add new UTXO %s-%d: %v", newUtxo.TransactionID, newUtxo.Index, dbErr)
+							goto EndProcessingDB
+						}
+						log.Printf("INFO: [txCh Handler] Added new UTXO %s-%d to DB TX %s", newUtxo.TransactionID, newUtxo.Index, tx.Id)
+					}
+
+				EndProcessingDB: // Label for errors DURING DB operations
 					if processingError != nil {
-						log.Printf("ERROR: [txCh Handler] Final Failure processing TX %s: %v", tx.Id, processingError)
-						msg.ResponseCh <- types.Response{Error: processingError}
-					} else {
-						log.Printf("INFO: [txCh Handler] Final Success processing TX %s", tx.Id)
-						msg.ResponseCh <- types.Response{Data: tx.Id, Error: nil} // Send success
+						// Error already set, defer func above will rollback
+						log.Printf("ERROR: [txCh Handler] Error occurred during DB operations for TX %s: %v", tx.Id, processingError)
+						goto SendResponse // Jump to send error response
 					}
-				} else { /* Log no response channel */ }
 
-			// End of case types.ProcessTransaction
-			default:
-				log.Printf("WARN: [txCh Handler] Received unhandled message type: %s", msg.Type)
+					// Commit DB Transaction if no errors occurred during DB phase
+					log.Printf("DEBUG: [txCh Handler] Attempting DB commit for TX %s", tx.Id)
+					commitErr = blockchain.Blockchain.Database.CommitTransaction(dbTxContext) // <<< ASSIGN to commitErr
+					if commitErr != nil {
+						log.Printf("ERROR: [txCh Handler] Failed DB commit TX %s: %v", tx.Id, commitErr)
+						processingError = fmt.Errorf("failed DB commit: %v", commitErr)
+						// Rollback handled by defer
+						goto SendResponse
+					}
+					dbTxContext = nil // Prevent rollback by defer if commit succeeded
+					log.Printf("INFO: [txCh Handler] Committed DB TX %s", tx.Id)
 
-			} // End switch msg.Type
+				SendResponse: // Label for sending response
 
-		case <-ctx.Done(): // Got context cancellation
-			log.Println("INFO: [txCh Handler] Context cancelled, stopping message processing.")
-			return // Exit goroutine
+					// --- Send Response ---
+					if msg.ResponseCh != nil {
+						if processingError != nil {
+							log.Printf("ERROR: [txCh Handler] Final Failure processing TX %s: %v", tx.Id, processingError)
+							msg.ResponseCh <- types.Response{Error: processingError}
+						} else {
+							log.Printf("INFO: [txCh Handler] Final Success processing TX %s", tx.Id)
+							msg.ResponseCh <- types.Response{Data: tx.Id, Error: nil} // Send success
+						}
+					} else { /* Log no response channel */
+					}
 
-		} // End select
-	} // End for loop
-}() // End goroutine func
+				// End of case types.ProcessTransaction
+				default:
+					log.Printf("WARN: [txCh Handler] Received unhandled message type: %s", msg.Type)
+
+				} // End switch msg.Type
+
+			case <-ctx.Done(): // Got context cancellation
+				log.Println("INFO: [txCh Handler] Context cancelled, stopping message processing.")
+				return // Exit goroutine
+
+			} // End select
+		} // End for loop
+	}() // End goroutine func
 
 	// Handle block-related messages
 	go func() {

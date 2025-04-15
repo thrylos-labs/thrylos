@@ -2,12 +2,15 @@ package network
 
 import (
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"time"
+
+	canonicaljson "github.com/gibson042/canonicaljson-go" // For canonical signing payload
+	"github.com/google/uuid"                              // <<< Added Import
 	"github.com/thrylos-labs/thrylos/crypto"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
@@ -21,6 +24,130 @@ import (
 // Handler struct now contains a messageBus instead of a direct node reference
 type Handler struct {
 	messageBus types.MessageBusInterface
+}
+
+// --- START: Canonical Serialization Logic ---
+
+// Define a struct specifically for signing, ensuring deterministic fields
+type TransactionSigningPayload struct {
+	ID              string               `json:"id"`
+	Timestamp       int64                `json:"timestamp"`
+	SenderAddress   string               `json:"senderAddress"` // Use string representation
+	GasFee          int                  `json:"gasFee"`
+	SenderPublicKey string               `json:"senderPublicKey"` // Base64 encoded PK
+	Inputs          []UTXOSigningPayload `json:"inputs"`
+	Outputs         []UTXOSigningPayload `json:"outputs"`
+	// Add any other fields that MUST be covered by the signature (e.g., Nonce, NetworkID)
+}
+
+type UTXOSigningPayload struct {
+	TransactionID string `json:"transactionId"`
+	Index         int    `json:"index"`
+	OwnerAddress  string `json:"ownerAddress"` // Use string representation
+	Amount        int64  `json:"amount"`       // Use int64 directly
+}
+
+// SerializeTransactionForSigning creates the canonical byte representation for signing.
+// It takes the backend-constructed transaction and prepares it for the client to sign.
+func SerializeTransactionForSigning(tx *types.Transaction) ([]byte, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("cannot serialize nil transaction")
+	}
+
+	// Check if SenderAddress is the zero value for its type
+	if tx.SenderAddress == (address.Address{}) { // <<< CORRECTED CHECK
+		return nil, fmt.Errorf("cannot serialize transaction with uninitialized sender address")
+	}
+	if tx.SenderPublicKey == nil {
+		return nil, fmt.Errorf("cannot serialize transaction with nil sender public key")
+	}
+	// ID and Timestamp should likely be non-zero/non-empty as well
+	if tx.ID == "" {
+		return nil, fmt.Errorf("transaction ID cannot be empty for signing payload")
+	}
+	if tx.Timestamp == 0 {
+		return nil, fmt.Errorf("transaction timestamp cannot be zero for signing payload")
+	}
+
+	// Convert SenderPublicKey to base64 string
+	// Ensure your crypto.PublicKey interface has Marshal() or Bytes()
+	pubKeyBytes, err := tx.SenderPublicKey.Marshal() // Or .Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal sender public key for signing payload: %v", err)
+	}
+	if len(pubKeyBytes) == 0 {
+		return nil, fmt.Errorf("marshalled sender public key is empty")
+	}
+	pubKeyString := base64.StdEncoding.EncodeToString(pubKeyBytes)
+
+	payload := TransactionSigningPayload{
+		ID:              tx.ID,
+		Timestamp:       tx.Timestamp,
+		SenderAddress:   tx.SenderAddress.String(),
+		GasFee:          tx.GasFee,
+		SenderPublicKey: pubKeyString,
+		Inputs:          make([]UTXOSigningPayload, len(tx.Inputs)),
+		Outputs:         make([]UTXOSigningPayload, len(tx.Outputs)),
+	}
+
+	// Convert Inputs (ensure types.UTXO has these fields)
+	for i, input := range tx.Inputs {
+		// Assuming input.OwnerAddress is string; if it's address.Address, use .String()
+		ownerAddrStr := input.OwnerAddress
+		// if addrObj, ok := input.OwnerAddress.(address.Address); ok { // Example if it was address.Address type
+		// 	ownerAddrStr = addrObj.String()
+		// } else if strAddr, ok := input.OwnerAddress.(string); ok {
+		//  ownerAddrStr = strAddr
+		// } else {
+		//  return nil, fmt.Errorf("invalid type for input %d owner address", i)
+		// }
+
+		payload.Inputs[i] = UTXOSigningPayload{
+			TransactionID: input.TransactionID, // Should be present for inputs
+			Index:         input.Index,
+			OwnerAddress:  ownerAddrStr,        // Use the determined string address
+			Amount:        int64(input.Amount), // Assuming types.Amount is int64 or convertible
+		}
+	}
+
+	// Convert Outputs (ensure types.UTXO has these fields)
+	for i, output := range tx.Outputs {
+		// Assuming output.OwnerAddress is string
+		ownerAddrStr := output.OwnerAddress
+		// Similar type check as above if needed
+
+		payload.Outputs[i] = UTXOSigningPayload{
+			// TransactionID might be empty for new outputs, that's okay
+			TransactionID: output.TransactionID,
+			Index:         output.Index,
+			OwnerAddress:  ownerAddrStr,
+			Amount:        int64(output.Amount),
+		}
+	}
+
+	// --- Deterministic Sorting (CRUCIAL for Canonicalization) ---
+	// Sort Inputs by TransactionID then Index
+	sort.SliceStable(payload.Inputs, func(i, j int) bool {
+		if payload.Inputs[i].TransactionID != payload.Inputs[j].TransactionID {
+			return payload.Inputs[i].TransactionID < payload.Inputs[j].TransactionID
+		}
+		return payload.Inputs[i].Index < payload.Inputs[j].Index
+	})
+	// Sort Outputs by Index (assuming index is unique and sequential 0, 1, ...)
+	sort.SliceStable(payload.Outputs, func(i, j int) bool {
+		return payload.Outputs[i].Index < payload.Outputs[j].Index
+	})
+
+	// Serialize using canonical JSON
+	canonicalBytes, err := canonicaljson.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal transaction payload canonically: %v", err)
+	}
+
+	// Log the canonical string for debugging verification on frontend/backend
+	// log.Printf("DEBUG: Canonical Payload for Signing (TxID: %s): %s", tx.ID, string(canonicalBytes))
+
+	return canonicalBytes, nil
 }
 
 // NewHandler creates a new Handler with the message bus
@@ -108,6 +235,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "getBlockTransactions":
 		// - Get transactions in a block
 		result, err = h.handleGetBlockTransactions(req.Params)
+	case "prepareTransaction": // NEW
+		result, err = h.handlePrepareTransaction(req.Params)
 	case "submitSignedTransaction":
 		//  - Send transactions
 		result, err = h.handleSubmitSignedTransaction(req.Params)
@@ -453,168 +582,93 @@ func (h *Handler) handleGetBlockTransactions(params []interface{}) (interface{},
 	}, nil
 }
 
-const MinTransactionAmount int64 = 1 * config.NanoPerThrylos // 1 THRYLOS in nanoTHRYLOS
-
-// Helper function (add if not present)
-func min(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
-}
-
-func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface{}, error) {
-	// Check if params exist
+func (h *Handler) handlePrepareTransaction(params []interface{}) (interface{}, error) {
 	if len(params) < 1 {
-		return nil, fmt.Errorf("transaction parameter required")
+		return nil, fmt.Errorf("parameters object required")
 	}
-
-	// Extract the request data map
 	reqData, ok := params[0].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("invalid request format, expected JSON object in params[0]")
+		return nil, fmt.Errorf("invalid parameters format, expected JSON object")
 	}
 
-	// --- Extract payload map ---
-	payload, ok := reqData["payload"].(map[string]interface{})
+	// --- Extract Input Parameters ---
+	sender, ok := reqData["sender"].(string)
+	if !ok || sender == "" {
+		return nil, fmt.Errorf("missing or invalid 'sender' address")
+	}
+	recipientAddress, ok := reqData["recipient"].(string)
+	if !ok || recipientAddress == "" {
+		return nil, fmt.Errorf("missing or invalid 'recipient' address")
+	}
+	amountNanoFloat, ok := reqData["amountNano"].(float64) // Amount in nano units
 	if !ok {
-		return nil, fmt.Errorf("invalid or missing 'payload' object in request data")
+		return nil, fmt.Errorf("missing or invalid 'amountNano'")
+	}
+	amountToSendNano := int64(amountNanoFloat)
+	publicKeyString, ok := reqData["publicKey"].(string) // Sender's public key (base64) - REQUIRED
+	if !ok || publicKeyString == "" {
+		return nil, fmt.Errorf("missing or invalid 'publicKey'")
+	}
+	suggestedGasFeeFloat, hasSuggestedFee := reqData["gasFee"].(float64)
+
+	// --- Basic Validations ---
+	if amountToSendNano <= 0 {
+		return nil, fmt.Errorf("transaction amount must be positive")
+	}
+	// Consider adding address format validation here if needed using address.FromString
+
+	// --- Decode Sender Public Key & Verify Address Match ---
+	senderPubKeyBytes, err := base64.StdEncoding.DecodeString(publicKeyString)
+	if err != nil {
+		return nil, fmt.Errorf("invalid public key encoding: %v", err)
+	}
+	senderPubKey, err := crypto.NewPublicKeyFromBytes(senderPubKeyBytes) // Returns crypto.PublicKey interface
+	if err != nil {
+		return nil, fmt.Errorf("failed to create public key object from bytes: %v", err)
+	}
+	if senderPubKey == nil {
+		return nil, fmt.Errorf("failed to reconstruct sender public key (nil result)")
 	}
 
-	// --- Extract other required fields ---
-	signatureString, ok := reqData["signature"].(string)
-	if !ok { return nil, fmt.Errorf("invalid or missing 'signature' string") }
-	publicKeyString, ok := reqData["publicKey"].(string)
-	if !ok { return nil, fmt.Errorf("invalid or missing 'publicKey' string") }
-	payloadString, ok := reqData["payloadString"].(string)
-	if !ok { return nil, fmt.Errorf("invalid or missing 'payloadString' string") }
-
-	// --- Extract necessary info from ORIGINAL payload for intent ---
-	sender, ok := payload["sender"].(string)
-	if !ok || sender == "" { return nil, fmt.Errorf("invalid or missing 'sender' in payload") }
-	idStr, ok := payload["id"].(string)
-	if !ok || idStr == "" { return nil, fmt.Errorf("invalid or missing 'id' in payload") }
-	gasFeeFloat, ok := payload["gasfee"].(float64)
-	if !ok { return nil, fmt.Errorf("invalid or missing 'gasfee' in payload") }
-	gasFee := int(gasFeeFloat) // Store as int matching types.Transaction
-	timestampFloat, ok := payload["timestamp"].(float64)
-	if !ok { return nil, fmt.Errorf("invalid or missing 'timestamp' in payload") }
-	timestamp := int64(timestampFloat)
-
-	// Extract intended recipient and amount from ORIGINAL payload outputs
-	// NOTE: This assumes the structure sent by the frontend.
-	// We IGNORE the frontend's change output calculation.
-	var recipientAddress string
-	var amountToSendNano int64 // Amount intended for the primary recipient
-	payloadOutputs, ok := payload["outputs"].([]interface{})
-	if !ok || len(payloadOutputs) == 0 { return nil, fmt.Errorf("invalid or missing 'outputs' in payload") }
-
-	// Assume first output is the primary recipient
-	firstOutputMap, ok := payloadOutputs[0].(map[string]interface{})
-	if !ok { return nil, fmt.Errorf("invalid format for first output in payload") }
-	recipientAddress, ok = firstOutputMap["OwnerAddress"].(string)
-	if !ok || recipientAddress == "" { return nil, fmt.Errorf("invalid or missing 'OwnerAddress' in first output") }
-	amountFloat, ok := firstOutputMap["Amount"].(float64)
-	if !ok { return nil, fmt.Errorf("invalid or missing 'Amount' in first output") }
-	amountToSendNano = int64(amountFloat)
-
-	log.Printf("INFO: Intent: Send %d nanoTHR from %s to %s (TxID: %s, Fee: %d)", amountToSendNano, sender, recipientAddress, idStr, gasFee)
-
-
-	// --- Validation Goroutine ---
-	// Modification: Need to get pkBytes back for populating transactionData later
-	type validationResult struct {
-		 SignatureBytes []byte
-		 PublicKeyBytes []byte
-		 Err            error
+	// --- Derive address USING the interface method ---
+	// The previous compiler error guaranteed senderPubKey has an Address() method.
+	derivedAddrObject, err := senderPubKey.Address() // Call the method required by the crypto.PublicKey interface
+	if err != nil {
+		// Handle error if the Address() method itself can fail
+		log.Printf("ERROR: [Prepare] Failed to derive address using public key's Address() method: %v", err)
+		return nil, fmt.Errorf("failed to derive address using public key's Address() method: %v", err)
 	}
-	validationDone := make(chan validationResult, 1)
 
-	go func() {
-		var vr validationResult // Result to send back
-		var pk *mldsa44.PublicKey // Keep the unmarshalled key
+	// Convert the resulting address object (likely address.Address type) to string for comparison
+	// Ensure the object returned by Address() has a String() method
+	derivedSenderAddrString := derivedAddrObject.String()
+	// --- End Address Derivation ---
 
-		// Decode Public Key
-		vr.PublicKeyBytes, vr.Err = base64.StdEncoding.DecodeString(publicKeyString)
-		if vr.Err != nil { vr.Err = fmt.Errorf("invalid public key encoding: %v", vr.Err); validationDone <- vr; return }
-		log.Println("TX_VALIDATE: Decoded PK Bytes (first 16):", hex.EncodeToString(vr.PublicKeyBytes[:min(16, len(vr.PublicKeyBytes))]))
-
-		// Unmarshal Public Key
-		pk = new(mldsa44.PublicKey)
-		if vr.Err = pk.UnmarshalBinary(vr.PublicKeyBytes); vr.Err != nil {
-			log.Printf("TX_VALIDATE_ERROR: Failed to unmarshal public key: %v", vr.Err)
-			vr.Err = fmt.Errorf("failed to unmarshal public key: %v", vr.Err); validationDone <- vr; return
-		}
-		log.Printf("TX_VALIDATE_INFO: Successfully unmarshalled public key")
-
-		// Derive Address
-		derivedAddress, err := address.ConvertToBech32Address(pk)
-		if err != nil {
-			log.Printf("TX_VALIDATE_ERROR: Failed to derive address: %v", err)
-			vr.Err = fmt.Errorf("failed to derive address: %v", err); validationDone <- vr; return
-		}
-		log.Printf("TX_VALIDATE_INFO: Derived Address: %s", derivedAddress)
-
-		// Verify Sender Address
-		if derivedAddress != sender {
-			log.Printf("TX_VALIDATE_ERROR: Address mismatch! Derived: %s, Claimed: %s", derivedAddress, sender)
-			vr.Err = fmt.Errorf("public key does not match sender address: derived=%s, claimed=%s", derivedAddress, sender)
-			validationDone <- vr; return
-		}
-		log.Println("TX_VALIDATE_INFO: Sender address matches derived address.")
-
-		// --- Signature Verification ---
-		// Decode signature
-		vr.SignatureBytes, vr.Err = base64.StdEncoding.DecodeString(signatureString)
-		if vr.Err != nil { vr.Err = fmt.Errorf("invalid signature encoding: %v", vr.Err); validationDone <- vr; return }
-		if len(vr.SignatureBytes) != mldsa44.SignatureSize {
-			log.Printf("TX_VALIDATE_ERROR: Sig size mismatch: got %d, want %d", len(vr.SignatureBytes), mldsa44.SignatureSize)
-			vr.Err = fmt.Errorf("decoded signature has incorrect size"); validationDone <- vr; return
-		}
-		log.Printf("TX_VALIDATE: Decoded Signature Length: %d", len(vr.SignatureBytes))
-
-		// Verify Signature against ORIGINAL payload string
-		messageBytes := []byte(payloadString)
-		log.Println("TX_VALIDATE: Using Payload String for verification:", payloadString)
-		ctxForVerify := []byte(nil)
-		isValid := mldsa44.Verify(pk, messageBytes, ctxForVerify, vr.SignatureBytes)
-		log.Printf("TX_VALIDATE_INFO: Signature verification result: %v", isValid)
-
-		if !isValid {
-			log.Printf("TX_VALIDATE_ERROR: Signature verification FAILED!")
-			vr.Err = fmt.Errorf("invalid signature"); validationDone <- vr; return
-		}
-
-		log.Printf("TX_VALIDATE_SUCCESS: Signature verified successfully!")
-		vr.Err = nil // Explicitly set error to nil on success
-		validationDone <- vr // Signal success
-	}() // End of goroutine
-
-
-	// --- Wait for Validation Result ---
-	var validationRes validationResult
-	select {
-	case validationRes = <-validationDone:
-		if validationRes.Err != nil {
-			log.Printf("Validation failed: %v", validationRes.Err)
-			return nil, validationRes.Err // Return the validation error
-		}
-	case <-time.After(5 * time.Second):
-		log.Println("Validation timeout occurred")
-		return nil, fmt.Errorf("validation timeout")
+	// --- Perform the check ---
+	if derivedSenderAddrString != sender {
+		return nil, fmt.Errorf("sender address %s does not match provided public key (derived %s)", sender, derivedSenderAddrString)
 	}
-	// --- Validation Successful ---
-	log.Println("Validation completed successfully.")
-	finalSignatureBytes := validationRes.SignatureBytes // Keep original signature
-	finalPublicKeyBytes := validationRes.PublicKeyBytes // Keep original public key bytes
+	log.Printf("INFO: [Prepare] Sender address successfully verified against public key.")
 
+	// --- Determine Gas Fee ---
+	// Ensure config constants are exported (uppercase) and package is imported
+	gasFee := int(config.DefaultGasFee)
+	if hasSuggestedFee {
+		gasFee = int(suggestedGasFeeFloat)
+		if gasFee < config.MinGasFee {
+			log.Printf("WARN: Suggested gas fee %d below minimum %d, using minimum.", gasFee, config.MinGasFee)
+			gasFee = config.MinGasFee
+		}
+	}
 
-	// --- Fetch Sender's REAL UTXOs ---
-	log.Printf("INFO: Fetching UTXOs for sender %s", sender)
+	amountNeeded := amountToSendNano + int64(gasFee)
+
+	// --- Fetch Sender's UTXOs (Add timeout) ---
+	log.Printf("INFO: [Prepare] Fetching UTXOs for sender %s", sender)
 	utxoResponseCh := make(chan types.Response)
 	h.messageBus.Publish(types.Message{
-		Type: types.GetUTXOs,
-		Data: types.UTXORequest{ Address: sender },
+		Type:       types.GetUTXOs,
+		Data:       types.UTXORequest{Address: sender},
 		ResponseCh: utxoResponseCh,
 	})
 
@@ -622,123 +676,344 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 	select {
 	case utxoResponse = <-utxoResponseCh:
 		if utxoResponse.Error != nil {
-			log.Printf("ERROR: Failed to fetch UTXOs for %s: %v", sender, utxoResponse.Error)
+			log.Printf("ERROR: [Prepare] Failed to fetch UTXOs for %s: %v", sender, utxoResponse.Error)
 			return nil, fmt.Errorf("failed to fetch UTXOs: %v", utxoResponse.Error)
 		}
-	case <-time.After(5 * time.Second): // Timeout for UTXO fetch
-		log.Printf("ERROR: Timeout fetching UTXOs for %s", sender)
+	case <-time.After(5 * time.Second): // Timeout
+		log.Printf("ERROR: [Prepare] Timeout fetching UTXOs for %s", sender)
 		return nil, fmt.Errorf("timeout fetching UTXOs")
 	}
 
 	availableUTXOs, ok := utxoResponse.Data.([]types.UTXO)
 	if !ok {
-		log.Printf("ERROR: Invalid UTXO data type received for %s", sender)
+		log.Printf("ERROR: [Prepare] Invalid UTXO data type received for %s", sender)
 		return nil, fmt.Errorf("invalid UTXO data type received")
 	}
-	log.Printf("INFO: Found %d UTXOs for sender %s", len(availableUTXOs), sender)
+	log.Printf("INFO: [Prepare] Found %d UTXOs for sender %s", len(availableUTXOs), sender)
 
-
-	// --- UTXO Selection ---
-	amountNeeded := amountToSendNano + int64(gasFee)
+	// --- UTXO Selection (With deterministic sorting) ---
 	var selectedUTXOs []types.UTXO
 	var selectedTotal int64 = 0
 
-	// Optional: Sort available UTXOs (e.g., smallest first to consolidate, or largest first)
-	// sort.Slice(availableUTXOs, func(i, j int) bool {
-	// 	return availableUTXOs[i].Amount < availableUTXOs[j].Amount
-	// })
-
+	unspentUTXOs := make([]types.UTXO, 0, len(availableUTXOs))
 	for _, utxo := range availableUTXOs {
-		if !utxo.IsSpent { // Ensure we only consider unspent ones
-			selectedUTXOs = append(selectedUTXOs, utxo)
-			selectedTotal += int64(utxo.Amount) // Assuming utxo.Amount is amount.Amount (int64)
-			log.Printf("DEBUG: Selected UTXO %s-%d (Amount: %d), Total selected: %d", utxo.TransactionID, utxo.Index, utxo.Amount, selectedTotal)
-			if selectedTotal >= amountNeeded {
-				break // Found enough value
-			}
+		if !utxo.IsSpent {
+			unspentUTXOs = append(unspentUTXOs, utxo)
+		}
+	}
+
+	sort.SliceStable(unspentUTXOs, func(i, j int) bool {
+		if unspentUTXOs[i].Amount != unspentUTXOs[j].Amount {
+			return unspentUTXOs[i].Amount < unspentUTXOs[j].Amount
+		}
+		if unspentUTXOs[i].TransactionID != unspentUTXOs[j].TransactionID {
+			return unspentUTXOs[i].TransactionID < unspentUTXOs[j].TransactionID
+		}
+		return unspentUTXOs[i].Index < unspentUTXOs[j].Index
+	})
+
+	for _, utxo := range unspentUTXOs {
+		selectedUTXOs = append(selectedUTXOs, utxo)
+		selectedTotal += int64(utxo.Amount)
+		if selectedTotal >= amountNeeded {
+			break
 		}
 	}
 
 	if selectedTotal < amountNeeded {
-		log.Printf("ERROR: Insufficient funds for %s. Needed: %d, Available in UTXOs: %d", sender, amountNeeded, selectedTotal)
+		log.Printf("ERROR: [Prepare] Insufficient funds for %s. Needed: %d, Available in UTXOs: %d", sender, amountNeeded, selectedTotal)
 		return nil, fmt.Errorf("insufficient funds. Needed %d nanoTHR, have %d nanoTHR in available UTXOs", amountNeeded, selectedTotal)
 	}
-	log.Printf("INFO: Selected %d UTXOs with total value %d nanoTHR for amount %d + fee %d", len(selectedUTXOs), selectedTotal, amountToSendNano, gasFee)
-
+	log.Printf("INFO: [Prepare] Selected %d UTXOs with total value %d for amount %d + fee %d", len(selectedUTXOs), selectedTotal, amountToSendNano, gasFee)
 
 	// --- Calculate Change ---
 	changeAmount := selectedTotal - amountNeeded
-	log.Printf("INFO: Calculated change: %d nanoTHR", changeAmount)
+	log.Printf("INFO: [Prepare] Calculated change: %d nanoTHR", changeAmount)
 
+	// --- Construct the *Prepared* Transaction Data ---
+	txID := "tx-" + uuid.NewString()
+	senderAddr, err := address.FromString(sender) // Convert sender string to address.Address type
+	if err != nil {
+		// This check should ideally be done earlier after extracting 'sender'
+		log.Printf("ERROR: [Prepare] Failed to parse sender address string '%s': %v", sender, err)
+		return nil, fmt.Errorf("invalid sender address format: %v", err)
+	}
 
-	// --- Construct Transaction Data with REAL Inputs/Outputs ---
-	var transactionData types.Transaction
-	transactionData.ID = idStr
-	transactionData.Timestamp = timestamp
-	senderAddr, _ := address.FromString(sender) // Already validated sender string
-	transactionData.SenderAddress = *senderAddr
-	transactionData.GasFee = gasFee
-	// --- Assign REAL Inputs ---
-	transactionData.Inputs = selectedUTXOs // Assign the selected UTXOs
-	// --- Create REAL Outputs ---
-	transactionData.Outputs = []types.UTXO{}
-	// Output to recipient
-	transactionData.Outputs = append(transactionData.Outputs, types.UTXO{
-		OwnerAddress: recipientAddress,
-		Amount:       amount.Amount(amountToSendNano), // Cast to amount.Amount
-		Index:        0, // Index for outputs within this tx
-		// TransactionID will be set by processing handler/block creation typically
+	preparedTxData := types.Transaction{
+		ID:              txID,
+		Timestamp:       time.Now().UnixNano() / int64(time.Millisecond), // Milliseconds timestamp
+		SenderAddress:   *senderAddr,                                     // Use the parsed address object
+		GasFee:          gasFee,
+		SenderPublicKey: senderPubKey, // Assign the crypto.PublicKey interface object
+		Inputs:          selectedUTXOs,
+		Outputs:         []types.UTXO{},
+	}
+
+	// Add Recipient Output
+	// Ensure recipientAddress is validated if necessary (e.g., using address.FromString)
+	preparedTxData.Outputs = append(preparedTxData.Outputs, types.UTXO{
+		OwnerAddress: recipientAddress, // Assuming string address type is correct for types.UTXO
+		Amount:       amount.Amount(amountToSendNano),
+		Index:        0,
 	})
-	// Output for change (if any)
+	// Add Change Output
 	if changeAmount > 0 {
-		transactionData.Outputs = append(transactionData.Outputs, types.UTXO{
-			OwnerAddress: sender, // Change goes back to sender
-			Amount:       amount.Amount(changeAmount), // Cast to amount.Amount
-			Index:        1, // Next index
+		preparedTxData.Outputs = append(preparedTxData.Outputs, types.UTXO{
+			OwnerAddress: sender, // Change goes back to sender (string representation is ok here per type?)
+			Amount:       amount.Amount(changeAmount),
+			Index:        1,
 		})
 	}
-	
-	log.Printf("DEBUG: [handleSubmit] finalPublicKeyBytes Length: %d", len(finalPublicKeyBytes))
-// Log first and last few bytes to see if anything looks odd
-log.Printf("DEBUG: [handleSubmit] finalPublicKeyBytes Hex (first 32): %x", finalPublicKeyBytes[:min(32, len(finalPublicKeyBytes))])
-log.Printf("DEBUG: [handleSubmit] finalPublicKeyBytes Hex (last 32): %x", finalPublicKeyBytes[max(0, len(finalPublicKeyBytes)-32):])
 
+	// --- Generate Canonical Payload String ---
+	canonicalPayloadBytes, err := SerializeTransactionForSigning(&preparedTxData)
+	if err != nil {
+		log.Printf("ERROR: [Prepare] Failed to serialize prepared transaction %s: %v", txID, err)
+		return nil, fmt.Errorf("failed to serialize transaction for signing: %v", err)
+	}
+	canonicalPayloadString := base64.StdEncoding.EncodeToString(canonicalPayloadBytes)
 
-    senderPubKey, err := crypto.NewPublicKeyFromBytes(finalPublicKeyBytes) // <<< FIX: Use correct function name
-    if err != nil {
-        log.Printf("ERROR: Failed to reconstruct sender public key from bytes for tx data: %v", err)
-        // Decide if this is fatal. If the public key is needed later, it probably is.
-        return nil, fmt.Errorf("failed to reconstruct sender public key: %v", err)
-    }
-    // Also check if the function returned a nil interface value, even without error
-    if senderPubKey == nil {
-         log.Printf("ERROR: Reconstructed sender public key is nil for tx %s, though NewPublicKeyFromBytes returned no error.", idStr)
-         return nil, fmt.Errorf("reconstructed sender public key is unexpectedly nil")
-    }
+	log.Printf("INFO: [Prepare] Prepared transaction %s successfully.", txID)
 
-    // Assign the crypto.PublicKey interface value to the transaction data
-    transactionData.SenderPublicKey = senderPubKey
-    log.Printf("DEBUG: Reconstructed and assigned SenderPublicKey to transactionData")
+	// --- Return the payload to be signed ---
+	return struct {
+		TxID                   string `json:"txId"`
+		CanonicalPayloadString string `json:"canonicalPayloadString"` // Base64 encoded
+		Message                string `json:"message"`
+	}{
+		TxID:                   txID,
+		CanonicalPayloadString: canonicalPayloadString,
+		Message:                "Transaction prepared. Please sign the canonicalPayloadString and submit.",
+	}, nil
+}
+
+const MinTransactionAmount int64 = 1 * config.NanoPerThrylos // 1 THRYLOS in nanoTHRYLOS
+
+func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface{}, error) {
+	if len(params) < 1 {
+		return nil, fmt.Errorf("parameters object required")
+	}
+	reqData, ok := params[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid request format, expected JSON object")
+	}
+
+	// --- Extract Required Fields ---
+	txId, ok := reqData["txId"].(string) // Use TxID from prepare step
+	if !ok || txId == "" {
+		return nil, fmt.Errorf("missing or invalid 'txId'")
+	}
+	signatureString, ok := reqData["signature"].(string) // Base64 signature
+	if !ok || signatureString == "" {
+		return nil, fmt.Errorf("invalid or missing 'signature' string")
+	}
+	publicKeyString, ok := reqData["publicKey"].(string) // Base64 public key
+	if !ok || publicKeyString == "" {
+		return nil, fmt.Errorf("invalid or missing 'publicKey' string")
+	}
+	// Client sends back the exact payload string they signed
+	canonicalPayloadString, ok := reqData["canonicalPayloadString"].(string)
+	if !ok || canonicalPayloadString == "" {
+		return nil, fmt.Errorf("invalid or missing 'canonicalPayloadString'")
+	}
+
+	// --- Validation Goroutine ---
+	type validationResult struct {
+		SignatureBytes []byte
+		ValidatedTx    *types.Transaction // The deserialized, validated transaction structure
+		Err            error
+	}
+	validationDone := make(chan validationResult, 1)
+
+	go func() {
+		var vr validationResult // Result to send back
+
+		// --- Decode Inputs ---
+		var publicKeyBytes []byte
+		publicKeyBytes, vr.Err = base64.StdEncoding.DecodeString(publicKeyString)
+		if vr.Err != nil {
+			vr.Err = fmt.Errorf("invalid public key encoding: %v", vr.Err)
+			validationDone <- vr
+			return
+		}
+
+		vr.SignatureBytes, vr.Err = base64.StdEncoding.DecodeString(signatureString)
+		if vr.Err != nil {
+			vr.Err = fmt.Errorf("invalid signature encoding: %v", vr.Err)
+			validationDone <- vr
+			return
+		}
+		if len(vr.SignatureBytes) != mldsa44.SignatureSize { // Check signature size
+			log.Printf("TX_VALIDATE_ERROR: Sig size mismatch: got %d, want %d", len(vr.SignatureBytes), mldsa44.SignatureSize)
+			vr.Err = fmt.Errorf("decoded signature has incorrect size")
+			validationDone <- vr
+			return
+		}
+
+		canonicalPayloadBytes, err := base64.StdEncoding.DecodeString(canonicalPayloadString)
+		if err != nil {
+			vr.Err = fmt.Errorf("invalid canonicalPayloadString encoding: %v", err)
+			validationDone <- vr
+			return
+		}
+
+		// --- Unmarshal Public Key (for Verification) ---
+		pk := new(mldsa44.PublicKey) // Use the concrete type needed by mldsa44.Verify
+		if vr.Err = pk.UnmarshalBinary(publicKeyBytes); vr.Err != nil {
+			vr.Err = fmt.Errorf("failed to unmarshal public key for verification: %v", vr.Err)
+			validationDone <- vr
+			return
+		}
+
+		// --- Verify Signature against Canonical Payload ---
+		log.Printf("TX_VALIDATE: Verifying signature for TxID %s against received canonical payload (len %d)", txId, len(canonicalPayloadBytes))
+		ctxForVerify := []byte(nil)                                                           // Assuming no context for ML-DSA
+		isValid := mldsa44.Verify(pk, canonicalPayloadBytes, ctxForVerify, vr.SignatureBytes) // Use the CIRCL pk
+		if !isValid {
+			log.Printf("TX_VALIDATE_ERROR: Signature verification FAILED for TxID %s!", txId)
+			vr.Err = fmt.Errorf("invalid signature")
+			validationDone <- vr
+			return
+		}
+		log.Printf("TX_VALIDATE_SUCCESS: Signature verified successfully for TxID %s!", txId)
+
+		// --- Reconstruct our own PublicKey object (for Address Derivation & Tx Structure) ---
+		senderPubKeyObj, err := crypto.NewPublicKeyFromBytes(publicKeyBytes) // Returns crypto.PublicKey interface
+		if err != nil {
+			vr.Err = fmt.Errorf("failed to reconstruct PublicKey object: %v", err)
+			validationDone <- vr
+			return
+		}
+		if senderPubKeyObj == nil {
+			vr.Err = fmt.Errorf("reconstructed PublicKey object is nil")
+			validationDone <- vr
+			return
+		}
+
+		// --- Deserialize Canonical Payload to check contents ---
+		var signedPayload TransactionSigningPayload
+		if err := json.Unmarshal(canonicalPayloadBytes, &signedPayload); err != nil {
+			vr.Err = fmt.Errorf("failed to unmarshal canonical payload string for validation: %v", err)
+			validationDone <- vr
+			return
+		}
+
+		// --- Sanity Checks on Deserialized Payload ---
+		if signedPayload.ID != txId {
+			log.Printf("TX_VALIDATE_ERROR: TxID mismatch! Claimed: %s, Inside Signed Payload: %s", txId, signedPayload.ID)
+			vr.Err = fmt.Errorf("txId mismatch in signed payload")
+			validationDone <- vr
+			return
+		}
+
+		// --- Verify sender address derived from PK matches sender in payload ---
+		// Use the Address() method from the crypto.PublicKey interface
+		derivedAddrObject, err := senderPubKeyObj.Address() // Call the interface method
+		if err != nil {
+			vr.Err = fmt.Errorf("failed to derive address post-validation using Address() method: %v", err)
+			validationDone <- vr
+			return
+		}
+		derivedAddressString := derivedAddrObject.String() // Convert result to string
+		// --- End Address Derivation ---
+
+		// Compare derived address string with the address string from the signed payload
+		if derivedAddressString != signedPayload.SenderAddress {
+			log.Printf("TX_VALIDATE_ERROR: Address mismatch! Derived: %s, Signed Payload: %s", derivedAddressString, signedPayload.SenderAddress)
+			vr.Err = fmt.Errorf("public key does not match sender address in signed payload")
+			validationDone <- vr
+			return
+		}
+		log.Printf("INFO: [Submit] Sender address verified against public key in signed payload.")
+
+		// Verify public key in payload matches the one sent alongside
+		if signedPayload.SenderPublicKey != publicKeyString {
+			log.Printf("TX_VALIDATE_ERROR: Public key mismatch! Outside B64 != Inside B64")
+			vr.Err = fmt.Errorf("public key mismatch in signed payload")
+			validationDone <- vr
+			return
+		}
+
+		// --- Reconstruct the final types.Transaction from the signed payload ---
+		senderAddrFromPayload, err := address.FromString(signedPayload.SenderAddress)
+		if err != nil {
+			vr.Err = fmt.Errorf("failed to parse sender address from signed payload: %v", err)
+			validationDone <- vr
+			return
+		}
+
+		vr.ValidatedTx = &types.Transaction{
+			ID:              signedPayload.ID,
+			Timestamp:       signedPayload.Timestamp,
+			SenderAddress:   *senderAddrFromPayload,
+			GasFee:          signedPayload.GasFee,
+			SenderPublicKey: senderPubKeyObj, // Use the reconstructed interface object
+			Inputs:          make([]types.UTXO, len(signedPayload.Inputs)),
+			Outputs:         make([]types.UTXO, len(signedPayload.Outputs)),
+			// Signature will be added outside the goroutine
+		}
+		// Convert inputs back to types.UTXO
+		for i, pInput := range signedPayload.Inputs {
+			if pInput.TransactionID == "" {
+				vr.Err = fmt.Errorf("input %d missing transaction ID", i)
+				validationDone <- vr
+				return
+			}
+			vr.ValidatedTx.Inputs[i] = types.UTXO{
+				TransactionID: pInput.TransactionID, Index: pInput.Index, OwnerAddress: pInput.OwnerAddress, Amount: amount.Amount(pInput.Amount),
+			}
+		}
+		// Convert outputs back to types.UTXO
+		for i, pOutput := range signedPayload.Outputs {
+			if pOutput.OwnerAddress == "" {
+				vr.Err = fmt.Errorf("output %d missing owner address", i)
+				validationDone <- vr
+				return
+			}
+			vr.ValidatedTx.Outputs[i] = types.UTXO{
+				TransactionID: pOutput.TransactionID, Index: pOutput.Index, OwnerAddress: pOutput.OwnerAddress, Amount: amount.Amount(pOutput.Amount),
+			}
+		}
+
+		vr.Err = nil // Indicate success
+		validationDone <- vr
+	}() // End of goroutine
+
+	// --- Wait for Validation Result ---
+	var validationRes validationResult
+	select {
+	case validationRes = <-validationDone:
+		if validationRes.Err != nil {
+			log.Printf("[Submit] Validation failed for TxID %s: %v", txId, validationRes.Err)
+			return nil, validationRes.Err
+		}
+	case <-time.After(5 * time.Second): // Adjust timeout
+		log.Printf("[Submit] Validation timeout occurred for TxID %s", txId)
+		return nil, fmt.Errorf("validation timeout")
+	}
+
+	// --- Validation Successful ---
+	log.Printf("[Submit] Validation completed successfully for TxID %s.", txId)
+	validatedTx := validationRes.ValidatedTx // This IS the transaction to process
+	finalSignatureBytes := validationRes.SignatureBytes
 
 	// --- Convert to final Thrylos transaction type ---
-	// NOTE: convertToThrylosTransaction needs to correctly handle the REAL inputs/outputs now
-	thrylosTx := convertToThrylosTransaction(&transactionData)
+	thrylosTx := convertToThrylosTransaction(validatedTx)
 	if thrylosTx == nil {
-		return nil, fmt.Errorf("failed to convert to final transaction type")
+		log.Printf("ERROR: [Submit] Failed to convert validated transaction (ID: %s) to final Thrylos type.", validatedTx.ID)
+		return nil, fmt.Errorf("internal error: failed to convert validated transaction")
 	}
-	// --- Attach ORIGINAL Signature ---
-	// This signature does NOT match the *new* tx structure but is kept for now.
+
+	// --- Attach the VERIFIED Signature ---
 	thrylosTx.Signature = finalSignatureBytes
-	log.Printf("WARN: Attaching original signature to structurally different transaction. Re-signing needed for full validity.")
 
-
-	log.Printf("DEBUG: [handleSubmitSignedTransaction] Sending CORRECTED tx %s to bus. Sender: %q, Inputs: %d, Outputs: %d", thrylosTx.Id, thrylosTx.Sender, len(thrylosTx.Inputs), len(thrylosTx.Outputs))
+	log.Printf("DEBUG: [handleSubmitSignedTransaction] Sending VALIDATED tx %s to bus. Sender: %q, Inputs: %d, Outputs: %d", thrylosTx.Id, thrylosTx.Sender, len(thrylosTx.Inputs), len(thrylosTx.Outputs))
 
 	// --- Process Transaction via Message Bus ---
 	processTxCh := make(chan types.Response)
 	h.messageBus.Publish(types.Message{
 		Type:       types.ProcessTransaction,
-		Data:       thrylosTx, // Send the transaction with REAL inputs/outputs
+		Data:       thrylosTx,
 		ResponseCh: processTxCh,
 	})
 
@@ -747,37 +1022,27 @@ log.Printf("DEBUG: [handleSubmit] finalPublicKeyBytes Hex (last 32): %x", finalP
 	select {
 	case processTxResponse = <-processTxCh:
 		if processTxResponse.Error != nil {
-			log.Printf("Transaction processing failed for %s: %v", thrylosTx.GetId(), processTxResponse.Error)
-			// Provide more context if the error is about UTXOs not found, as it might indicate state issues
+			log.Printf("[Submit] Transaction processing failed for %s via message bus: %v", thrylosTx.GetId(), processTxResponse.Error)
 			return nil, fmt.Errorf("failed to process transaction: %v", processTxResponse.Error)
 		}
-		log.Printf("Transaction %s processed successfully by message bus.", thrylosTx.GetId())
-	case <-time.After(10 * time.Second):
-		log.Printf("Transaction processing timeout for %s", thrylosTx.GetId())
+		log.Printf("[Submit] Transaction %s processed successfully by message bus.", thrylosTx.GetId())
+	case <-time.After(10 * time.Second): // Adjust timeout
+		log.Printf("[Submit] Transaction processing timeout for %s", thrylosTx.GetId())
 		return nil, fmt.Errorf("transaction processing timeout")
 	}
 
-
-	// --- Remove background balance update ---
-	// This background update is likely unreliable and unnecessary if ProcessTransaction updates state correctly.
-	/*
-	go func() { ... }()
-	*/
-
-
 	// --- Return Success ---
-	log.Printf("Successfully submitted transaction %s (pending final processing)", transactionData.ID)
+	log.Printf("[Submit] Successfully submitted transaction %s", thrylosTx.Id)
 	return struct {
 		Message string `json:"message"`
 		Status  string `json:"status"`
 		TxID    string `json:"txId"`
 	}{
-		Message: fmt.Sprintf("Transaction %s submitted successfully", transactionData.ID),
-		Status:  "submitted", // Changed status to reflect it's sent for processing
-		TxID:    transactionData.ID,
+		Message: fmt.Sprintf("Transaction %s submitted successfully", thrylosTx.Id),
+		Status:  "submitted",
+		TxID:    thrylosTx.Id,
 	}, nil
 }
-
 
 // Helper function to convert types.Transaction to *thrylos.Transaction (protobuf)
 func convertToThrylosTransaction(tx *types.Transaction) *thrylos.Transaction {
@@ -811,8 +1076,8 @@ func convertToThrylosTransaction(tx *types.Transaction) *thrylos.Transaction {
 			thrylosTx.SenderPublicKey = pubKeyBytes // Assign ONLY if not nil and marshaled ok
 			log.Printf("DEBUG: [convertToThrylosTransaction] Assigned SenderPublicKey bytes (len %d)", len(pubKeyBytes))
 		} else {
-            log.Printf("WARN: [convertToThrylosTransaction] SenderPublicKey marshalled to empty bytes for tx %s", tx.ID)
-        }
+			log.Printf("WARN: [convertToThrylosTransaction] SenderPublicKey marshalled to empty bytes for tx %s", tx.ID)
+		}
 	} else {
 		log.Printf("WARN: [convertToThrylosTransaction] Input tx.SenderPublicKey is nil for tx %s.", tx.ID)
 		// thrylosTx.SenderPublicKey will remain its zero value (likely nil or empty slice)
@@ -826,8 +1091,9 @@ func convertToThrylosTransaction(tx *types.Transaction) *thrylos.Transaction {
 		for i, inputUtxo := range tx.Inputs {
 			thrylosTx.Inputs[i] = convertTypesUTXOToProtoUTXO(inputUtxo)
 		}
-	} else { /* Assign empty slice */ thrylosTx.Inputs = []*thrylos.UTXO{} }
-
+	} else { /* Assign empty slice */
+		thrylosTx.Inputs = []*thrylos.UTXO{}
+	}
 
 	// --- Convert Outputs --- (Ensure this logic is correct from previous steps)
 	if len(tx.Outputs) > 0 {
@@ -836,8 +1102,9 @@ func convertToThrylosTransaction(tx *types.Transaction) *thrylos.Transaction {
 		for i, outputUtxo := range tx.Outputs {
 			thrylosTx.Outputs[i] = convertTypesUTXOToProtoUTXO(outputUtxo)
 		}
-	} else { /* Assign empty slice */ thrylosTx.Outputs = []*thrylos.UTXO{} }
-
+	} else { /* Assign empty slice */
+		thrylosTx.Outputs = []*thrylos.UTXO{}
+	}
 
 	// TODO: Assign other fields like Signature safely (with nil checks) if needed
 
@@ -847,16 +1114,20 @@ func convertToThrylosTransaction(tx *types.Transaction) *thrylos.Transaction {
 
 // Ensure convertTypesUTXOToProtoUTXO exists and is correct
 func convertTypesUTXOToProtoUTXO(typeUtxo types.UTXO) *thrylos.UTXO {
-    // ... implementation ...
+	// Add nil checks or validation if necessary
+	if typeUtxo.OwnerAddress == "" {
+		log.Printf("WARN: [convertTypesUTXOToProtoUTXO] converting UTXO with empty OwnerAddress (TxID: %s, Index: %d)", typeUtxo.TransactionID, typeUtxo.Index)
+		// Depending on rules, maybe return nil or allow empty address?
+	}
 	return &thrylos.UTXO{
-		 TransactionId: typeUtxo.TransactionID,
-		 Index:         int32(typeUtxo.Index),
-		 OwnerAddress:  typeUtxo.OwnerAddress,
-		 Amount:        int64(typeUtxo.Amount),
-		 IsSpent:       typeUtxo.IsSpent,
+		TransactionId: typeUtxo.TransactionID,
+		Index:         int32(typeUtxo.Index),  // Convert int to int32
+		OwnerAddress:  typeUtxo.OwnerAddress,  // Assuming string
+		Amount:        int64(typeUtxo.Amount), // Assuming amount.Amount is int64 or convertible
+		IsSpent:       typeUtxo.IsSpent,
+		// Ensure all relevant fields from types.UTXO are mapped
 	}
 }
-
 
 func (h *Handler) handleEstimateGas(params []interface{}) (interface{}, error) {
 	// Log the incoming request
