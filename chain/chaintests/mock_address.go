@@ -177,13 +177,13 @@ func CreateMockTransaction() ([]byte, error) {
 }
 
 // MockAddress matches the actual Address type structure
-type MockAddress [address.AddressSize]byte
+type MockAddress [address.AddressWords]byte // <<< Use AddressWords
 
 // NewMockAddress creates a new mock address from a string
 func NewMockAddress(addr string) *address.Address {
 	var mockAddr address.Address
 	hash := sha256.Sum256([]byte(addr))
-	copy(mockAddr[:], hash[:address.AddressSize])
+	copy(mockAddr[:], hash[:address.AddressWords]) // <<< Use AddressWords
 	return &mockAddr
 }
 
