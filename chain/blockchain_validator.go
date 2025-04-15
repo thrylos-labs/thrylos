@@ -224,69 +224,83 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int, addr string) 
 }
 
 func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
-	// First validate the address format
+	// Use the improved address.Validate which checks HRP and length
 	if !address.Validate(validatorAddress) {
-		return nil, fmt.Errorf("invalid validator address format: %s", validatorAddress)
+		return nil, fmt.Errorf("invalid validator address format or content: %s", validatorAddress)
 	}
 
-	// Create an address instance by decoding the bech32 string
-	prefix, decoded, err := bech32.Decode(validatorAddress)
+	// Use address.FromString to get the address object directly.
+	// This is cleaner than decoding again.
+	addrPtr, err := address.FromString(validatorAddress)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode validator address %s: %v", validatorAddress, err)
+		// This ideally shouldn't happen if address.Validate passed, indicates internal inconsistency
+		log.Printf("ERROR: Failed to get address object from validated string '%s': %v", validatorAddress, err)
+		return nil, fmt.Errorf("internal error converting validated address string: %v", err)
 	}
+	addr := *addrPtr // Dereference pointer if GetPublicKey expects the value type address.Address
 
-	if prefix != address.AddressPrefix {
-		return nil, fmt.Errorf("invalid address prefix: got %s, want %s", prefix, address.AddressPrefix)
-	}
-
-	var addr address.Address
-	copy(addr[:], decoded)
-
-	// Get the public key using the store's method
+	// Get the public key using the store's method, passing the address object
+	// Assuming bc.Blockchain.Database.GetPublicKey expects address.Address type
 	pubKey, err := bc.Blockchain.Database.GetPublicKey(addr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get public key for validator %s: %v", validatorAddress, err)
+		// Log the specific address object used for lookup might be helpful
+		log.Printf("DEBUG: Failed GetPublicKey lookup for address object: %+v", addr)
+		return nil, fmt.Errorf("failed to get public key for validator %s from DB: %v", validatorAddress, err)
 	}
 
-	// Convert crypto.PublicKey to bytes
-	pubKeyBytes, err := pubKey.Marshal()
+	// Ensure pubKey is not nil (depends on how GetPublicKey indicates "not found" vs other errors)
+	if pubKey == nil { // You might need a more specific check depending on crypto.PublicKey type
+		 return nil, fmt.Errorf("public key not found in DB for validator %s", validatorAddress)
+	}
+
+
+	// Convert crypto.PublicKey to bytes (assuming it has a Marshal method)
+	pubKeyBytes, err := pubKey.Marshal() // Use the retrieved crypto.PublicKey
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal public key for validator %s: %v", validatorAddress, err)
 	}
+	if len(pubKeyBytes) == 0 {
+		 return nil, fmt.Errorf("marshaled public key is empty for validator %s", validatorAddress)
+	}
+
 
 	// Create and unmarshal into MLDSA44 public key
 	mldsa44PubKey := new(mldsa44.PublicKey)
 	err = mldsa44PubKey.UnmarshalBinary(pubKeyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert to MLDSA44 public key for validator %s: %v", validatorAddress, err)
+		// Log the bytes that failed to unmarshal for debugging
+		log.Printf("ERROR: Failed to unmarshal MLDSA44 key for %s. Bytes (hex): %x", validatorAddress, pubKeyBytes)
+		return nil, fmt.Errorf("failed to convert DB key to MLDSA44 public key for validator %s: %v", validatorAddress, err)
 	}
 
 	return mldsa44PubKey, nil
 }
 
-func (bc *BlockchainImpl) validatorExists(addr string) bool {
-	// Convert string to Address type using the package function
-	validatorAddr, err := address.FromString(addr)
-	if err != nil {
-		log.Printf("Failed to convert address string to Address type: %v", err)
-		return false
-	}
 
-	// Use the Address type with GetPublicKey
-	_, err = bc.Blockchain.Database.GetPublicKey(*validatorAddr)
-	return err == nil
+// Keep the other functions as they were, they seem okay:
+func (bc *BlockchainImpl) validatorExists(addr string) bool {
+    // Convert string to Address type using the package function
+    validatorAddr, err := address.FromString(addr)
+    if err != nil {
+        log.Printf("Failed to convert address string to Address type: %v", err)
+        return false
+    }
+
+    // Use the Address type with GetPublicKey
+    _, err = bc.Blockchain.Database.GetPublicKey(*validatorAddr)
+    return err == nil
 }
 
 func (bc *BlockchainImpl) IsActiveValidator(address string) bool {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
+    bc.Blockchain.Mu.RLock()
+    defer bc.Blockchain.Mu.RUnlock()
 
-	for _, validator := range bc.Blockchain.ActiveValidators {
-		if validator == address {
-			return true
-		}
-	}
-	return false
+    for _, validator := range bc.Blockchain.ActiveValidators {
+        if validator == address {
+            return true
+        }
+    }
+    return false
 }
 
 func (bc *BlockchainImpl) UpdateActiveValidators(count int) {

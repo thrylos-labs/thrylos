@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log" 
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/fxamacker/cbor/v2"
+	// "github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 )
+
 
 type publicKey struct {
 	pubKey *mldsa44.PublicKey
@@ -26,13 +28,14 @@ func NewPublicKey(key *mldsa44.PublicKey) PublicKey {
 }
 
 func NewPublicKeyFromBytes(keyData []byte) (PublicKey, error) {
-	pub := &publicKey{} // Create zero struct
-	// Unmarshal will allocate underlying key if needed
-	err := pub.Unmarshal(keyData) // Call Unmarshal method
+	pub := &publicKey{}
+	err := pub.Unmarshal(keyData) // Calls the *corrected* Unmarshal
 	if err != nil {
+		// Log the raw key data on error for debugging
+		log.Printf("ERROR: NewPublicKeyFromBytes failed Unmarshal. Input keyData (hex, max 64 bytes): %x", keyData[:min(64, len(keyData))])
 		return nil, fmt.Errorf("failed to unmarshal public key data: %w", err)
 	}
-	// Check if unmarshal resulted in a non-nil key
+	// This check might be redundant if UnmarshalBinary errors correctly, but safe to keep
 	if pub.pubKey == nil {
 		return nil, errors.New("unmarshaling resulted in a nil underlying key")
 	}
@@ -105,36 +108,49 @@ func (p *publicKey) Marshal() ([]byte, error) {
 	if p.pubKey == nil {
 		return nil, errors.New("cannot marshal nil public key")
 	}
-	keyBytes := p.Bytes()
+	// Return raw bytes directly, NO CBOR encoding
+	keyBytes := p.Bytes() // Assumes p.Bytes() returns the raw mldsa44 bytes
 	if keyBytes == nil {
 		return nil, errors.New("failed to get public key bytes for marshaling")
 	}
-	return cbor.Marshal(keyBytes)
+	log.Printf("DEBUG: [publicKey.Marshal] Returning %d raw bytes.", len(keyBytes))
+	return keyBytes, nil
 }
 
+
 func (p *publicKey) Unmarshal(data []byte) error {
-	var keyBytes []byte
-	err := cbor.Unmarshal(data, &keyBytes)
-	if err != nil {
-		return fmt.Errorf("cbor unmarshal failed: %w", err)
-	}
+	// --- REMOVED CBOR Unmarshal Step ---
+	// var keyBytes []byte
+	// err := cbor.Unmarshal(data, &keyBytes)
+	// if err != nil { ... }
+	// ---
+
+	// Use the input 'data' directly as the raw key bytes
+	keyBytes := data
+	log.Printf("DEBUG: [publicKey.Unmarshal] Received %d raw bytes to unmarshal directly.", len(keyBytes))
+
 	if len(keyBytes) == 0 {
-		return errors.New("unmarshaled key data is empty")
+		return errors.New("input key data is empty")
 	}
+	// Check against the expected *raw* key size for mldsa44
 	if len(keyBytes) != mldsa44.PublicKeySize {
-		return fmt.Errorf("invalid public key size after cbor unmarshal: got %d, want %d", len(keyBytes), mldsa44.PublicKeySize)
+		return fmt.Errorf("invalid public key size: got %d, want %d", len(keyBytes), mldsa44.PublicKeySize)
 	}
 
+	// Ensure the underlying key struct exists
 	if p.pubKey == nil {
 		p.pubKey = new(mldsa44.PublicKey)
 	}
 
-	err = p.pubKey.UnmarshalBinary(keyBytes)
+	// Unmarshal directly into the mldsa44 key object using the raw bytes
+	err := p.pubKey.UnmarshalBinary(keyBytes) // <<< USE keyBytes directly
 	if err != nil {
 		return fmt.Errorf("mldsa44 public key unmarshal binary failed: %w", err)
 	}
+	log.Printf("DEBUG: [publicKey.Unmarshal] mldsa44PubKey.UnmarshalBinary successful.")
 	return nil
 }
+
 
 // Equal takes a pointer to a PublicKey interface value.
 func (p *publicKey) Equal(other *PublicKey) bool {
