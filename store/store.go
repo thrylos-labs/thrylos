@@ -1131,18 +1131,60 @@ var publicKeyCache = sync.Map{}
 
 func (s *store) GetPublicKey(addr address.Address) (crypto.PublicKey, error) {
 	key := []byte(PublicKeyPrefix + addr.String())
-	data, err := s.db.Get(key)
+	log.Printf("DEBUG: [GetPublicKey] Attempting to get key: %s", string(key))
+
+	var pubKeyBytes []byte
+	db := s.db.GetDB() // Get the underlying BadgerDB instance
+
+	// Use a read-only transaction (View) for safety
+	err := db.View(func(txn *badger.Txn) error {
+		log.Printf("DEBUG: [GetPublicKey] Inside DB View for key: %s", string(key))
+		item, errGet := txn.Get(key)
+		if errGet != nil {
+			// Log the specific error from Badger
+			log.Printf("DEBUG: [GetPublicKey] txn.Get failed for key %s: %v", string(key), errGet)
+			return errGet // Propagate error (like badger.ErrKeyNotFound)
+		}
+
+		// Copy the value out - essential when using View
+		pubKeyBytes, errGet = item.ValueCopy(nil)
+		if errGet != nil {
+			log.Printf("DEBUG: [GetPublicKey] item.ValueCopy failed for key %s: %v", string(key), errGet)
+		}
+		return errGet
+	})
+
+	// Handle errors from the View operation
 	if err != nil {
-		log.Printf("Failed to retrieve public key: %v", err)
-		return nil, fmt.Errorf("error retrieving public key: %v", err)
+		log.Printf("ERROR: [GetPublicKey] Failed DB view/get operation for key %s: %v", string(key), err)
+		if err == badger.ErrKeyNotFound {
+			// Return a more specific "not found" error
+			return nil, fmt.Errorf("public key not found for address %s", addr.String())
+		}
+		// Return other DB errors
+		return nil, fmt.Errorf("error retrieving public key data for %s: %w", addr.String(), err)
 	}
-	var pub crypto.PublicKey
-	err = pub.Unmarshal(data)
-	if err != nil {
-		log.Printf("Failed to unmarshal public key: %v", err)
-		return nil, fmt.Errorf("error unmarshaling public key: %v", err)
+
+	// Check if retrieved data is empty
+	if len(pubKeyBytes) == 0 {
+		log.Printf("ERROR: [GetPublicKey] Retrieved empty public key data for address %s", addr.String())
+		return nil, fmt.Errorf("retrieved empty public key data for address %s", addr.String())
 	}
-	return pub, nil
+	log.Printf("DEBUG: [GetPublicKey] Retrieved %d bytes for key %s", len(pubKeyBytes), string(key))
+
+	// --- *** CORRECTED UNMARSHALING *** ---
+	// Use a factory function from your crypto package to unmarshal bytes
+	// into the correct concrete type implementing crypto.PublicKey.
+	// Replace 'crypto.NewPublicKeyFromBytes' with your actual function name.
+	pubKey, errUnmarshal := crypto.NewPublicKeyFromBytes(pubKeyBytes)
+	if errUnmarshal != nil {
+		log.Printf("ERROR: [GetPublicKey] Failed to unmarshal PublicKey from bytes for address %s: %v", addr.String(), errUnmarshal)
+		return nil, fmt.Errorf("error unmarshaling public key for %s: %w", addr.String(), errUnmarshal)
+	}
+	// --- *** END CORRECTION *** ---
+
+	log.Printf("DEBUG: [GetPublicKey] Successfully retrieved and unmarshaled key for address %s", addr.String())
+	return pubKey, nil // Return the interface value containing the concrete key
 }
 
 // StoreValidatorPublicKey stores a validator's ML-DSA44 public key
@@ -1154,19 +1196,24 @@ func (s *store) SavePublicKey(pubKey crypto.PublicKey) error {
 		log.Printf("Failed to get address from public key: %v", err)
 		return fmt.Errorf("error getting address from public key: %v", err)
 	}
-	pubKeyData, err := pubKey.Marshal()
+
+	// Use MarshalBinary if that's the standard, otherwise Marshal() as written
+	pubKeyData, err := pubKey.Marshal() // Or pubKey.MarshalBinary()
 	if err != nil {
 		log.Printf("Failed to marshal public key: %v", err)
 		return fmt.Errorf("error marshaling public key: %v", err)
 	}
+	if len(pubKeyData) == 0 {
+		return fmt.Errorf("marshaled public key data is empty")
+	}
 
-	// We'll store the bytes directly since they're already in the correct format
+	// Store the bytes directly
 	return db.Update(func(txn *badger.Txn) error {
 		key := []byte(PublicKeyPrefix + addr.String())
-		log.Printf("Storing public key  %s, key: %s", addr.String(), key)
+		log.Printf("Storing public key %s, key: %s", addr.String(), string(key)) // Log key as string
 		err := txn.Set(key, pubKeyData)
 		if err != nil {
-			log.Printf("Failed to store public key for validator %s: %v", addr.String(), err)
+			log.Printf("Failed to store public key for address %s: %v", addr.String(), err)
 			return fmt.Errorf("failed to store public key: %v", err)
 		}
 		log.Printf("Stored public key for address: %s", addr.String())

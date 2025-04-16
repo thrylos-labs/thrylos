@@ -45,6 +45,13 @@ func (bc *BlockchainImpl) notifyBalanceUpdates(tx *thrylos.Transaction) {
 	}
 }
 
+func (bc *BlockchainImpl) AddTransactionToPool(tx *types.Transaction) error {
+	if bc.txPool == nil {
+		return fmt.Errorf("transaction pool is not initialized")
+	}
+	return bc.txPool.AddTransaction(tx)
+}
+
 func (b *BlockchainImpl) ProcessIncomingTransaction(tx *types.Transaction) error {
 	// Convert the transaction type and handle both return values
 	thrylosTx, err := ConvertToThrylosTransaction(tx)

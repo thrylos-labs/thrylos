@@ -2,6 +2,7 @@ package processor
 
 import (
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 	"time"
@@ -53,36 +54,65 @@ func NewDAGManager() *DAGManager {
 		tips:        make(map[string]*TransactionVertex),
 		processChan: make(chan *txProcessRequest, 1000),
 		msgCh:       make(chan types.Message, 100),
+		// workers field is assigned below if needed, or just used in loop
 	}
 
-	// Subscribe to relevant message types
-	messageBus := shared.GetMessageBus()
+	// Subscribe to relevant message types using the singleton getter
+	// --- CHANGE HERE ---
+	messageBus := types.GetGlobalMessageBus() // Use the canonical singleton getter from 'types'
+	// --- END CHANGE ---
+	log.Printf("DEBUG: [NewDAGManager] Subscribing to MessageBus instance at %p", messageBus) // Keep log
 	messageBus.Subscribe(types.ValidateDAGTx, dm.msgCh)
 	messageBus.Subscribe(types.UpdateDAGState, dm.msgCh)
 	messageBus.Subscribe(types.GetDAGTips, dm.msgCh)
 
 	// Start message handler
+	log.Println("INFO: [DAGManager] Starting internal message handler goroutine...")
 	go dm.handleMessages()
 
 	// Start minimal number of workers
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go dm.processWorker()
+	dm.workers = runtime.NumCPU() // Assign worker count if needed elsewhere
+	log.Printf("INFO: [DAGManager] Starting %d process worker goroutines...", dm.workers)
+	for i := 0; i < dm.workers; i++ {
+		go dm.processWorker() // Pass worker ID for logging
 	}
 
 	return dm
 }
 
 func (dm *DAGManager) handleMessages() {
+	log.Println("INFO: [DAGManager.handleMessages] Goroutine entered loop, waiting for messages...") // You see this
+	// --- ADD THIS ---
+	log.Println("DEBUG: [DAGManager.handleMessages] Entering FOR range loop...")
+	// --- END ADD ---
 	for msg := range dm.msgCh {
+		// --- ADD THIS ---
+		log.Printf("DEBUG: [DAGManager.handleMessages] READ message from channel! Type: %s", msg.Type)
+		// --- END ADD ---
+
+		// Log receipt BEFORE the switch (Already suggested, but confirm it's there)
+		log.Printf("DEBUG: [DAGManager.handleMessages] Received message Type: %s - Processing switch...", msg.Type)
 		switch msg.Type {
 		case types.ValidateDAGTx:
+			log.Printf("DEBUG: [DAGManager.handleMessages] Routing to handleValidateTransaction for Type: %s", msg.Type)
 			dm.handleValidateTransaction(msg)
 		case types.UpdateDAGState:
+			log.Printf("DEBUG: [DAGManager.handleMessages] Routing to handleUpdateState for Type: %s", msg.Type)
 			dm.handleUpdateState(msg)
 		case types.GetDAGTips:
+			log.Printf("DEBUG: [DAGManager.handleMessages] Routing to handleGetTips for Type: %s", msg.Type)
 			dm.handleGetTips(msg)
+		default:
+			log.Printf("WARN: [DAGManager.handleMessages] Received unhandled message type: %s", msg.Type)
+			if msg.ResponseCh != nil {
+				msg.ResponseCh <- types.Response{Error: fmt.Errorf("DAGManager received unhandled message type: %s", msg.Type)}
+			}
 		}
+		// --- ADD THIS ---
+		log.Printf("DEBUG: [DAGManager.handleMessages] Finished processing switch for Type: %s. Looping...", msg.Type)
+		// --- END ADD ---
 	}
+	log.Println("WARN: [DAGManager.handleMessages] msgCh channel closed, handler loop exiting.")
 }
 
 func (dm *DAGManager) handleGetTips(msg types.Message) {
@@ -123,11 +153,20 @@ func (dm *DAGManager) handleUpdateState(msg types.Message) {
 }
 
 func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
-	dm.Lock()
-	defer dm.Unlock()
-
+	// Add logging inside this critical function
 	txID := tx.GetId()
+	log.Printf("DEBUG: [DAGManager.processTransaction] Acquiring lock for TxID: %s", txID)
+	dm.Lock()
+	log.Printf("DEBUG: [DAGManager.processTransaction] Lock acquired for TxID: %s", txID)
+	defer func() {
+		log.Printf("DEBUG: [DAGManager.processTransaction] Releasing lock for TxID: %s", txID)
+		dm.Unlock()
+	}()
+
+	log.Printf("DEBUG: [DAGManager.processTransaction] Checking existence for TxID: %s", txID)
 	if _, exists := dm.vertices[txID]; exists {
+		log.Printf("WARN: [DAGManager.processTransaction] Transaction %s already exists in DAG", txID)
+		// Return the specific error so the handler can potentially ignore it
 		return fmt.Errorf("transaction already exists in DAG")
 	}
 
@@ -137,26 +176,46 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 		ReferencedBy: make([]string, 0),
 		Timestamp:    time.Now(),
 		Score:        1.0,
+		IsConfirmed:  false, // Explicitly false initially
 	}
 
+	log.Printf("DEBUG: [DAGManager.processTransaction] Selecting tips for TxID: %s", txID)
 	tips := dm.selectTips()
-	for _, tip := range tips {
-		vertex.References = append(vertex.References, tip.Transaction.GetId())
-		tip.ReferencedBy = append(tip.ReferencedBy, txID)
+	log.Printf("DEBUG: [DAGManager.processTransaction] Selected %d tips for TxID: %s", len(tips), txID)
 
-		if len(tip.ReferencedBy) >= ConfirmationThreshold {
+	// Check if enough tips were selected
+	if len(tips) < MinReferences && len(dm.vertices) > 0 { // Allow < MinReferences only if DAG is empty
+		log.Printf("WARN: [DAGManager.processTransaction] Not enough tips (%d < %d) found for TxID: %s", len(tips), MinReferences, txID)
+		// Decide how to handle this - return error or proceed with fewer refs?
+		// Returning error for now, prevents adding dangling transactions.
+		return fmt.Errorf("not enough tips (%d) found to reference", len(tips))
+	}
+
+	for _, tip := range tips {
+		tipID := tip.Transaction.GetId()
+		log.Printf("DEBUG: [DAGManager.processTransaction] Referencing tip %s for new TxID: %s", tipID, txID)
+		vertex.References = append(vertex.References, tipID)
+		tip.ReferencedBy = append(tip.ReferencedBy, txID)
+		log.Printf("DEBUG: [DAGManager.processTransaction] Tip %s now referenced by %d transactions.", tipID, len(tip.ReferencedBy))
+
+		if !tip.IsConfirmed && len(tip.ReferencedBy) >= ConfirmationThreshold {
+			log.Printf("INFO: [DAGManager.processTransaction] Confirming Tip %s due to reference count (%d >= %d)", tipID, len(tip.ReferencedBy), ConfirmationThreshold)
 			tip.IsConfirmed = true
-			// Only use message system when communicating with node
-			dm.notifyNodeOfConfirmation(tip.Transaction)
+			dm.notifyNodeOfConfirmation(tip.Transaction) // Notify asynchronously
 		}
 
-		delete(dm.tips, tip.Transaction.GetId())
+		log.Printf("DEBUG: [DAGManager.processTransaction] Removing tip %s from tip set.", tipID)
+		delete(dm.tips, tipID)
 	}
 
+	log.Printf("DEBUG: [DAGManager.processTransaction] Adding new vertex %s to vertices map.", txID)
 	dm.vertices[txID] = vertex
+	log.Printf("DEBUG: [DAGManager.processTransaction] Adding new vertex %s to tip set.", txID)
 	dm.tips[txID] = vertex
+	// Prune tips if pool is too large - implement pruning logic if needed
 
-	return nil
+	log.Printf("DEBUG: [DAGManager.processTransaction] Finished processing TxID: %s successfully.", txID)
+	return nil // Return nil for success
 }
 
 func (dm *DAGManager) notifyTransactionConfirmed(tx *thrylos.Transaction) {

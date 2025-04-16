@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -65,23 +64,23 @@ type workerMetrics struct {
 // NewModernProcessor creates a new transaction processor with multiple worker shards
 func NewModernProcessor(txProcessor *TransactionProcessorImpl, txPool types.TxPool, dagManager *DAGManager) *ModernProcessor {
 	ctx, cancel := context.WithCancel(context.Background())
-	workerCount := runtime.NumCPU() * 2
+	workerCount := runtime.NumCPU() * 2 // Or your desired count
 
 	mp := &ModernProcessor{
 		workerCount:    workerCount,
 		ctx:            ctx,
 		cancel:         cancel,
 		metrics:        &ProcessorMetrics{},
-		txQueues:       make([]chan *thrylos.Transaction, 12),
-		priorityQueues: make([]chan *thrylos.Transaction, 12),
+		txQueues:       make([]chan *thrylos.Transaction, 12), // Assuming 12 shards
+		priorityQueues: make([]chan *thrylos.Transaction, 12), // Assuming 12 shards
 		workerPool:     make(chan struct{}, workerCount),
-		msgCh:          make(chan types.Message, 100),
+		msgCh:          make(chan types.Message, 100), // Channel for subscribed messages
 		txProcessor:    txProcessor,
 		txPool:         txPool,
 		DAGManager:     dagManager,
 	}
 
-	// Initialize queues
+	// Initialize queues (assuming 12 shards)
 	for i := 0; i < 12; i++ {
 		mp.txQueues[i] = make(chan *thrylos.Transaction, 10000)
 		mp.priorityQueues[i] = make(chan *thrylos.Transaction, 1000)
@@ -92,18 +91,22 @@ func NewModernProcessor(txProcessor *TransactionProcessorImpl, txPool types.TxPo
 	for i := 0; i < workerCount; i++ {
 		mp.workers[i] = &txWorker{
 			id:        i,
-			shardID:   i % 12,
+			shardID:   i % 12, // Assign shard ID based on worker index
 			processor: mp,
 			metrics:   &workerMetrics{},
 		}
 	}
 
-	// Subscribe to message types
-	messageBus := shared.GetMessageBus()
-	messageBus.Subscribe(types.ProcessTransaction, mp.msgCh)
-	messageBus.Subscribe(types.UpdateProcessorState, mp.msgCh)
+	// Subscribe to message types using the singleton getter
+	// --- CHANGE HERE ---
+	messageBus := types.GetGlobalMessageBus() // Use the canonical singleton getter
+	// --- END CHANGE ---
+	log.Printf("DEBUG: [NewModernProcessor] Subscribing to MessageBus instance at %p", messageBus) // Add log
+	messageBus.Subscribe(types.ProcessTransaction, mp.msgCh)                                       // Keep if needed
+	messageBus.Subscribe(types.UpdateProcessorState, mp.msgCh)                                     // Keep
 
-	// Start message handler
+	// Start message handler if ModernProcessor needs to react to bus messages
+	log.Println("INFO: [ModernProcessor] Starting internal message handler goroutine...")
 	go mp.handleMessages()
 
 	return mp
@@ -169,101 +172,96 @@ func (mp *ModernProcessor) Stop() {
 // ProcessIncomingTransaction handles a new transaction
 func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) error {
 	if tx == nil {
-		log.Printf("ERROR: Received nil transaction")
+		log.Printf("ERROR: [ModernProcessor.ProcessIncomingTransaction] Received nil transaction")
 		return ErrNilTransaction
 	}
 
 	txID := tx.GetId()
-	log.Printf("=== BEGIN ProcessIncomingTransaction [%s] ===", txID)
+	log.Printf("=== BEGIN ModernProcessor.ProcessIncomingTransaction [%s] ===", txID)
 
-	// Fast path: check processed state
-	if _, exists := mp.processedTxs.Load(txID); exists {
-		log.Printf("Transaction [%s] already processed, skipping", txID)
+	// Check processed status (remains the same)
+	if status, exists := mp.processedTxs.Load(txID); exists {
+		log.Printf("Transaction [%s] already processed/queued by ModernProcessor (Status: %v), skipping", txID, status)
 		return nil
 	}
 
-	// Process DAG first using message system
+	// --- DAG Processing ---
 	log.Printf("Processing DAG for transaction [%s]", txID)
 	responseCh := make(chan types.Response)
-	shared.GetMessageBus().Publish(types.Message{
+	// --- CHANGE HERE ---
+	messageBus := types.GetGlobalMessageBus() // Use the canonical singleton getter
+	// --- END CHANGE ---
+	log.Printf("DEBUG: [ModernProcessor] Publishing ValidateDAGTx using MessageBus instance at %p", messageBus) // Keep log
+	messageBus.Publish(types.Message{
 		Type:       types.ValidateDAGTx,
 		Data:       tx,
 		ResponseCh: responseCh,
 	})
 
-	// Wait for DAG response
-	response := <-responseCh
-	if response.Error != nil {
-		if !strings.Contains(response.Error.Error(), "transaction already exists") {
-			log.Printf("ERROR: DAG processing failed for [%s]: %v", txID, response.Error)
-			return fmt.Errorf("DAG processing failed: %v", response.Error)
+	// Wait for DAG response (with timeout)
+	select {
+	case response := <-responseCh:
+		// ... (handling of DAG response remains the same) ...
+		if response.Error != nil {
+			if !strings.Contains(response.Error.Error(), "already exists") {
+				log.Printf("Warning: DAG processing check returned an error for [%s]: %v", txID, response.Error)
+			} else {
+				log.Printf("Transaction [%s] already exists in DAG (according to DAG manager response)", txID)
+			}
+		} else {
+			log.Printf("DEBUG: DAG processing successful for [%s]", txID)
 		}
-		log.Printf("Transaction [%s] already exists in DAG", txID)
+	case <-time.After(5 * time.Second): // Keep or adjust timeout as needed
+		log.Printf("ERROR: Timeout waiting for DAG processing response for [%s]", txID)
+		return fmt.Errorf("timeout waiting for DAG processing response")
 	}
+	// --- End DAG Processing ---
 
-	// Convert thrylos.Transaction to types.Transaction
-	// You need to implement this conversion function
-	typeTx := ThrylosToShared(tx)
+	// --- *** Transaction Pool Add Logic is Correctly REMOVED *** ---
 
-	// Add to transaction pool
-	log.Printf("Adding to transaction pool [%s]", txID)
-	if err := mp.txPool.AddTransaction(typeTx); err != nil {
-		if !errors.Is(err, ErrTxAlreadyExists) {
-			log.Printf("ERROR: Failed to add [%s] to transaction pool: %v", txID, err)
-			return fmt.Errorf("pool addition failed: %v", err)
-		}
-		log.Printf("Transaction [%s] already exists in pool", txID)
-	}
-
-	// Update transaction status - using message bus for node communication
-	// We need to use a message type that exists in your types package
+	// --- Status Update (Optional at this stage) ---
 	updateStatusCh := make(chan types.Response)
-	shared.GetMessageBus().Publish(types.Message{
+	messageBus.Publish(types.Message{ // Use the same messageBus instance obtained above
 		Type: types.UpdateProcessorState,
 		Data: types.UpdateProcessorStateRequest{
 			TransactionID: txID,
-			State:         "pending", // Use TxStatusPending constant in production
+			State:         TxStatusProcessing, // Use constant if defined
 		},
 		ResponseCh: updateStatusCh,
 	})
+	// Non-blocking wait (remains the same)
+	go func() {
+		select {
+		case statusResponse := <-updateStatusCh:
+			if statusResponse.Error != nil {
+				log.Printf("Warning: Error sending transaction status update via bus for [%s]: %v", txID, statusResponse.Error)
+			} else {
+				log.Printf("DEBUG: Status update '%s' sent to bus for [%s]", TxStatusProcessing, txID)
+			}
+		case <-time.After(2 * time.Second):
+			log.Printf("Warning: Timeout waiting for status update ack for [%s]", txID)
+		}
+	}()
+	// --- End Status Update ---
 
-	// We can optionally wait for the status update confirmation
-	statusResponse := <-updateStatusCh
-	if statusResponse.Error != nil {
-		log.Printf("Warning: Error updating transaction status: %v", statusResponse.Error)
-	}
-
-	// Check pool size and trigger block creation if needed
-	poolSize := mp.txPool.Size()
-	if poolSize == 1 {
-		// Trigger block creation using message bus
-		triggerCh := make(chan types.Response)
-		shared.GetMessageBus().Publish(types.Message{
-			Type:       types.ProcessBlock,
-			Data:       nil, // No specific data needed, just triggering block creation
-			ResponseCh: triggerCh,
-		})
-		// Optionally wait for response
-		<-triggerCh
-	}
-
-	// Clear balance cache using the local cache
+	// --- Clear Balance Cache --- (remains the same)
 	mp.balanceCache.Delete(tx.Sender)
 	for _, output := range tx.Outputs {
 		mp.balanceCache.Delete(output.OwnerAddress)
 	}
 
-	// Process through ModernProcessor
-	log.Printf("Adding to ModernProcessor [%s]", txID)
+	// --- Queue for Internal Worker Processing --- (remains the same)
+	log.Printf("Adding transaction [%s] to ModernProcessor worker queue", txID)
 	if err := mp.AddTransaction(tx); err != nil {
-		// Use the converted transaction for removal
-		mp.txPool.RemoveTransaction(typeTx)
-		log.Printf("ERROR: ModernProcessor failed for [%s]: %v", txID, err)
-		return fmt.Errorf("modern processing failed: %v", err)
+		log.Printf("ERROR: Failed to queue transaction [%s] for worker: %v", txID, err)
+		return fmt.Errorf("modern processing queue failed: %v", err)
 	}
 
-	log.Printf("=== END ProcessIncomingTransaction [%s] - SUCCESS ===", txID)
-	return nil
+	// Mark as processed *by this initial stage* (remains the same)
+	mp.processedTxs.Store(txID, "queued_for_worker")
+
+	log.Printf("=== END ModernProcessor.ProcessIncomingTransaction [%s] - Queued for Worker ===", txID)
+	return nil // Indicate success
 }
 
 // AddTransaction assigns a transaction to a processing shard

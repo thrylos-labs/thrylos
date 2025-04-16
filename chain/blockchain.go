@@ -17,7 +17,9 @@ import (
 	"time"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/balance"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
+	"github.com/thrylos-labs/thrylos/consensus/staking"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/hash"
 	"github.com/thrylos-labs/thrylos/network"
@@ -57,6 +59,77 @@ func (bc *BlockchainImpl) Close() error {
 	return nil
 }
 
+// In blockchain.go (or similar)
+
+// AddBlockToChain handles validation, state updates, and persistence for a new signed block.
+func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
+	if block == nil {
+		return errors.New("cannot add nil block")
+	}
+	log.Printf("Attempting to add Block %d to chain...", block.Index)
+
+	// 1. Verify Signature and Hash
+	log.Printf("Verifying signed block %d...", block.Index)
+	if err := bc.VerifySignedBlock(block); err != nil {
+		log.Printf("ERROR: Block %d failed signature/hash verification: %v", block.Index, err)
+		return fmt.Errorf("signed block verification failed: %w", err)
+	}
+	log.Printf("Block %d signature/hash verified successfully.", block.Index)
+
+	// --- Acquire Lock ---
+	bc.Blockchain.Mu.Lock()
+	defer bc.Blockchain.Mu.Unlock()
+
+	// 2. Basic Validation (Index, PrevHash)
+	if len(bc.Blockchain.Blocks) > 0 {
+		prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
+		if block.Index != prevBlock.Index+1 {
+			return fmt.Errorf("invalid block index: expected %d, got %d", prevBlock.Index+1, block.Index)
+		}
+		if !block.PrevHash.Equal(prevBlock.Hash) {
+			log.Printf("PrevHash mismatch! Expected: %s, Got: %s", prevBlock.Hash.String(), block.PrevHash.String())
+			return fmt.Errorf("invalid PrevHash: expected %s, got %s", prevBlock.Hash.String(), block.PrevHash.String())
+		}
+	} else if block.Index != 0 { // Should not happen if genesis exists
+		return fmt.Errorf("invalid block index for non-genesis: expected > 0, got %d", block.Index)
+	}
+
+	// 3. Append to in-memory list
+	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, block)
+	log.Printf("INFO: [Block Creator] Appended block %d to in-memory chain (Hash: %s)", block.Index, block.Hash.String())
+
+	// 4. Save to Database
+	// if err := bc.Blockchain.Database.SaveBlock(block); err != nil {
+	// 	log.Printf("ERROR: Failed to save block %d to database: %v. CRITICAL: Rolling back in-memory append.", block.Index, err)
+	// 	bc.Blockchain.Blocks = bc.Blockchain.Blocks[:len(bc.Blockchain.Blocks)-1] // Rollback in-memory
+	// 	return fmt.Errorf("failed to save block %d to DB: %w", block.Index, err)
+	// }
+	// log.Printf("INFO: [Block Creator] Successfully saved block %d to database.", block.Index)
+
+	// 5. Update other state
+	bc.Blockchain.LastTimestamp = block.Timestamp
+	// Note: State changes (UTXO spent, Balances) should ideally happen during transaction *processing*
+	// by the ModernProcessor's workers, not here. If they must happen here, add that logic.
+	// bc.updateBalancesForBlock(block) // Example if needed here
+
+	// 6. Trigger Notifications
+	if bc.Blockchain.OnNewBlock != nil {
+		go bc.Blockchain.OnNewBlock(block)
+	}
+
+	// 7. Update transaction statuses in DB
+	go func(txs []*types.Transaction, blockHash []byte) {
+		for _, tx := range txs {
+			if err := bc.UpdateTransactionStatus(tx.ID, "included", blockHash); err != nil {
+				log.Printf("WARN: [Block Creator] Failed to update status for tx %s after block inclusion: %v", tx.ID, err)
+			}
+		}
+	}(block.Transactions, block.Hash.Bytes())
+
+	log.Printf("INFO: Successfully added and persisted Block %d.", block.Index)
+	return nil
+}
+
 func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
 	// Initialize the database
 	database, err := store.NewDatabase(config.DataDir)
@@ -89,6 +162,16 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	addr, _ := pubKey.Address()
 	stakeholdersMap[addr.String()] = totalSupplyNano
 	log.Printf("Genesis account address: %s", addr.String())
+
+	log.Printf("DEBUG: Attempting to save Public Key for address %s", addr.String())
+	err = storeInstance.SavePublicKey(pubKey) // Use the storeInstance variable
+	if err != nil {
+		// This is critical for startup, likely fatal if it fails
+		log.Printf("CRITICAL ERROR: Failed to save genesis public key to database: %v", err)
+		storeInstance.Close() // Clean up DB connection
+		return nil, nil, fmt.Errorf("failed to save genesis public key: %w", err)
+	}
+	log.Printf("DEBUG: Successfully called SavePublicKey for address %s (Error: %v)", addr.String(), err)
 
 	genesisTx := &thrylos.Transaction{
 		Id:        "genesis_tx_" + addr.String(),
@@ -132,6 +215,68 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		Mu:         sync.RWMutex{},
 	}
 	temp.txPool = NewTxPool(database, temp)
+
+	// --- *** ADD Dependency Initializations HERE *** ---
+
+	// 1. Initialize BalanceUpdateQueue
+	// Assuming a simple constructor exists
+	log.Println("Initializing BalanceUpdateQueue...")
+	balanceQueue := balance.NewBalanceUpdateQueue() // Adjust if constructor takes args
+	if balanceQueue == nil {
+		database.Close()
+		return nil, nil, fmt.Errorf("failed to initialize BalanceUpdateQueue")
+	}
+	log.Println("BalanceUpdateQueue initialized successfully.")
+
+	// 2. Initialize StakingService
+	// Assuming NewStakingService needs the store and blockchain state
+	log.Println("Initializing StakingService...")
+	// --- CORRECTED LINE ---
+	// Pass only the required *types.Blockchain argument
+	stakingSvc := staking.NewStakingService(temp.Blockchain)
+	// --- END CORRECTION ---
+	if stakingSvc == nil { // Or check for error if constructor could return one
+		database.Close()
+		return nil, nil, fmt.Errorf("failed to initialize StakingService")
+	}
+	log.Println("StakingService initialized successfully.")
+
+	// 3. Initialize TransactionProcessorImpl (now with correct arguments)
+	log.Println("Initializing TransactionProcessorImpl...")
+	// Ensure arguments are in the order specified by the 'want' part of the error message
+	txProcessor := processor.NewTransactionProcessorImpl(
+		temp.TransactionPropagator, // *types.TransactionPropagator
+		balanceQueue,               // *balance.BalanceUpdateQueue
+		temp.Blockchain,            // *types.Blockchain
+		storeInstance,              // types.Store
+		stakingSvc,                 // *staking.StakingService
+	)
+	if txProcessor == nil { // Or check for error if constructor returns one
+		database.Close()
+		return nil, nil, fmt.Errorf("failed to initialize TransactionProcessorImpl")
+	}
+	log.Println("TransactionProcessorImpl initialized successfully.")
+
+	// 4. Initialize DAGManager
+	log.Println("Initializing DAGManager...")
+	dagMan := processor.NewDAGManager() // Takes no arguments as per previous error
+	if dagMan == nil {
+		database.Close()
+		return nil, nil, fmt.Errorf("failed to initialize DAGManager")
+	}
+	temp.dagManager = dagMan // Assign to the field in BlockchainImpl
+	log.Println("DAGManager initialized successfully.")
+
+	// 5. Initialize ModernProcessor (now with correct dependencies)
+	log.Println("Initializing ModernProcessor...")
+	temp.modernProcessor = processor.NewModernProcessor(txProcessor, temp.txPool, temp.dagManager)
+	if temp.modernProcessor == nil {
+		database.Close()
+		return nil, nil, fmt.Errorf("failed to initialize modern processor")
+	}
+	log.Println("ModernProcessor initialized successfully.")
+
+	// --- *** END Dependency Initializations *** ---
 
 	// Subscribe to FundNewAddress using BlockchainImpl's MessageBus
 	ch := make(chan types.Message, 100)
@@ -184,23 +329,123 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	if !config.DisableBackground {
 		go func() {
 			log.Println("Starting block creation process")
-			ticker := time.NewTicker(10 * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
-				txs, err := temp.txPool.GetAllTransactions()
-				if err != nil {
-					log.Printf("Error getting transactions from pool: %v", err)
-					continue
-				}
-				if len(txs) > 0 {
-					log.Printf("Processing %d transactions from pool", len(txs))
-					for _, tx := range txs {
-						if err := temp.ProcessIncomingTransaction(tx); err != nil {
-							log.Printf("Error processing transaction: %v", err)
-						}
-					}
-				}
+			if temp.modernProcessor == nil { // Keep this check
+				log.Println("ERROR: Block creation loop cannot start, ModernProcessor is nil.")
+				return
 			}
+			// --- FIX 1: Initialize Ticker ---
+			ticker := time.NewTicker(10 * time.Second) // Or your desired interval
+			defer ticker.Stop()
+			// --- END FIX 1 ---
+
+			for range ticker.C {
+				txs, err := temp.txPool.GetAllTransactions() // Outer err
+				if err != nil {
+					log.Printf("ERROR: [Block Creator] Error getting transactions from pool: %v", err)
+					continue // Outer err used and handled
+				}
+
+				log.Printf("INFO: [Block Creator] Retrieved %d transactions from the pool.", len(txs))
+
+				if len(txs) > 0 {
+					log.Printf("INFO: [Block Creator] Processing %d transactions from pool", len(txs))
+					var processedSuccessfully []*types.Transaction // Collect successful ones
+
+					for _, tx := range txs {
+						log.Printf("DEBUG: [Block Creator] Processing TxID: %s from pool", tx.ID)
+						// --- FIX 2: Rename Inner Error Variable ---
+						processErr := temp.ProcessIncomingTransaction(tx) // Use processErr
+						// --- END FIX 2 ---
+						log.Printf("DEBUG: [Block Creator] Result of ProcessIncomingTransaction for %s: %v", tx.ID, processErr)
+
+						if processErr != nil { // Use processErr
+							log.Printf("DEBUG: [Block Creator] Entering IF block for ERROR on %s", tx.ID)
+							log.Printf("ERROR: [Block Creator] Error processing transaction %s: %v. Skipping removal.", tx.ID, processErr)
+						} else {
+							log.Printf("DEBUG: [Block Creator] Entering ELSE block for SUCCESS on %s", tx.ID)
+							log.Printf("INFO: [Block Creator] Successfully processed transaction %s by ModernProcessor.", tx.ID)
+							processedSuccessfully = append(processedSuccessfully, tx)
+
+							log.Printf("DEBUG: [Block Creator] Attempting to remove %s from pool...", tx.ID)
+							if errRem := temp.txPool.RemoveTransaction(tx); errRem != nil {
+								log.Printf("ERROR: [Block Creator] Failed to remove processed transaction %s from pool: %v", tx.ID, errRem)
+								if len(processedSuccessfully) > 0 {
+									processedSuccessfully = processedSuccessfully[:len(processedSuccessfully)-1]
+								}
+							} else {
+								log.Printf("INFO: [Block Creator] Removed processed transaction %s from pool.", tx.ID)
+							}
+						}
+						log.Printf("DEBUG: [Block Creator] Finished IF/ELSE block for %s", tx.ID)
+					} // end for each tx
+
+					// --- BLOCK CREATION LOGIC ---
+					if len(processedSuccessfully) > 0 {
+						log.Printf("INFO: [Block Creator] Ready to create block with %d transactions.", len(processedSuccessfully))
+
+						// 1. Get Validator (Simplified: Use Genesis Account)
+						// --- FIX 3: Handle Address() Error ---
+						var currentValidatorID string
+						if temp.Blockchain.GenesisAccount != nil && temp.Blockchain.GenesisAccount.PublicKey() != nil {
+							genesisAddr, errAddr := temp.Blockchain.GenesisAccount.PublicKey().Address()
+							if errAddr != nil {
+								log.Printf("ERROR: [Block Creator] Failed to get address from GenesisAccount: %v. Skipping block creation.", errAddr)
+								continue // Skip this cycle
+							}
+							currentValidatorID = genesisAddr.String()
+						} else {
+							log.Printf("ERROR: [Block Creator] GenesisAccount or its PublicKey is nil. Skipping block creation.")
+							continue // Skip this cycle
+						}
+						// --- END FIX 3 ---
+						log.Printf("INFO: [Block Creator] Using validator: %s", currentValidatorID)
+
+						// 2. Convert Transactions to Protobuf
+						// --- FIX 4: Ensure utils is imported and function exists ---
+						// Make sure utils is imported: import "github.com/thrylos-labs/thrylos/utils" (or your path)
+						protoTxs, errConv := utils.ConvertMultipleToProto(processedSuccessfully) // Assumes implementation in utils
+						if errConv != nil {
+							log.Printf("ERROR: [Block Creator] Failed to convert transactions for block creation: %v. Skipping block.", errConv)
+							continue
+						}
+						// --- END FIX 4 ---
+
+						// 3. Create Unsigned Block
+						log.Printf("DEBUG: [Block Creator] Calling CreateUnsignedBlock...")
+						unsignedBlock, errCreate := temp.CreateUnsignedBlock(protoTxs, currentValidatorID)
+						if errCreate != nil {
+							log.Printf("ERROR: [Block Creator] Failed to create unsigned block: %v. Skipping block.", errCreate)
+							continue
+						}
+						log.Printf("DEBUG: [Block Creator] Created unsigned block Index: %d, Hash: %s", unsignedBlock.Index, unsignedBlock.Hash.String())
+
+						// 4. Sign Block
+						log.Printf("DEBUG: [Block Creator] Signing block %d...", unsignedBlock.Index)
+						signedBlock, errSign := temp.SimulateValidatorSigning(unsignedBlock)
+						if errSign != nil {
+							log.Printf("ERROR: [Block Creator] Failed to sign block %d: %v", unsignedBlock.Index, errSign)
+							continue
+						}
+						log.Printf("DEBUG: [Block Creator] Signed block %d.", signedBlock.Index)
+
+						// 5. Add Signed Block to Chain
+						log.Printf("DEBUG: [Block Creator] Adding signed block %d to chain...", signedBlock.Index)
+						errAdd := temp.AddBlockToChain(signedBlock) // Use the function created previously
+						if errAdd != nil {
+							log.Printf("ERROR: [Block Creator] Failed to add signed block %d to chain: %v", signedBlock.Index, errAdd)
+							continue
+						}
+						// Success logged within AddBlockToChain
+
+					} else {
+						log.Println("INFO: [Block Creator] No transactions processed successfully in this batch.")
+					}
+					// --- END BLOCK CREATION LOGIC ---
+
+				} else {
+					log.Printf("INFO: [Block Creator] Retrieved 0 transactions from the pool.")
+				}
+			} // end for range ticker.C
 		}()
 	} else {
 		log.Println("Background processes disabled for testing")
@@ -390,137 +635,137 @@ func (bc *BlockchainImpl) GetBlock(blockNumber int) (*types.Block, error) {
 }
 
 // TO DO FIND WHERE VerifyTransaction IS AND SimulateValidatorSigning
-func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+// func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
+// 	bc.Blockchain.Mu.Lock()
+// 	defer bc.Blockchain.Mu.Unlock()
 
-	// Handle potential forks.
-	prevHashObj, err := hash.FromBytes(prevHash)
-	if err != nil {
-		return false, fmt.Errorf("invalid previous hash: %v", err)
-	}
+// 	// Handle potential forks.
+// 	prevHashObj, err := hash.FromBytes(prevHash)
+// 	if err != nil {
+// 		return false, fmt.Errorf("invalid previous hash: %v", err)
+// 	}
 
-	if len(bc.Blockchain.Blocks) > 0 && !bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1].Hash.Equal(prevHashObj) {
-		var selectedFork *types.Fork
-		for _, fork := range bc.Blockchain.Forks {
-			if fork.Blocks != nil && len(fork.Blocks) > 0 {
-				if fork.Blocks[len(fork.Blocks)-1].Hash.Equal(prevHashObj) {
-					selectedFork = fork
-					break
-				}
-			}
-		}
+// 	if len(bc.Blockchain.Blocks) > 0 && !bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1].Hash.Equal(prevHashObj) {
+// 		var selectedFork *types.Fork
+// 		for _, fork := range bc.Blockchain.Forks {
+// 			if fork.Blocks != nil && len(fork.Blocks) > 0 {
+// 				if fork.Blocks[len(fork.Blocks)-1].Hash.Equal(prevHashObj) {
+// 					selectedFork = fork
+// 					break
+// 				}
+// 			}
+// 		}
 
-		// Create unsigned block for the fork
-		unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
-		if err != nil {
-			return false, fmt.Errorf("failed to create unsigned block: %v", err)
-		}
+// 		// Create unsigned block for the fork
+// 		unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
+// 		if err != nil {
+// 			return false, fmt.Errorf("failed to create unsigned block: %v", err)
+// 		}
 
-		// Simulate validator signing
-		signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
-		if err != nil {
-			return false, fmt.Errorf("failed to simulate block signing: %v", err)
-		}
+// 		// Simulate validator signing
+// 		signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+// 		if err != nil {
+// 			return false, fmt.Errorf("failed to simulate block signing: %v", err)
+// 		}
 
-		// Verify the signed block
-		if err := bc.VerifySignedBlock(signedBlock); err != nil {
-			return false, fmt.Errorf("invalid signed block: %v", err)
-		}
+// 		// Verify the signed block
+// 		if err := bc.VerifySignedBlock(signedBlock); err != nil {
+// 			return false, fmt.Errorf("invalid signed block: %v", err)
+// 		}
 
-		blockData, err := json.Marshal(signedBlock)
-		if err != nil {
-			return false, fmt.Errorf("failed to serialize new block: %v", err)
-		}
+// 		blockData, err := json.Marshal(signedBlock)
+// 		if err != nil {
+// 			return false, fmt.Errorf("failed to serialize new block: %v", err)
+// 		}
 
-		blockNumber := len(bc.Blockchain.Blocks)
-		if selectedFork != nil {
-			selectedFork.Blocks = append(selectedFork.Blocks, signedBlock)
-			blockNumber = len(selectedFork.Blocks) - 1
-		} else {
-			bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
-			blockNumber = len(bc.Blockchain.Blocks) - 1
-		}
+// 		blockNumber := len(bc.Blockchain.Blocks)
+// 		if selectedFork != nil {
+// 			selectedFork.Blocks = append(selectedFork.Blocks, signedBlock)
+// 			blockNumber = len(selectedFork.Blocks) - 1
+// 		} else {
+// 			bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
+// 			blockNumber = len(bc.Blockchain.Blocks) - 1
+// 		}
 
-		if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
-			return false, fmt.Errorf("failed to store block in database: %v", err)
-		}
+// 		if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
+// 			return false, fmt.Errorf("failed to store block in database: %v", err)
+// 		}
 
-		return true, nil
-	}
+// 		return true, nil
+// 	}
 
-	// Verify transactions.
-	for _, tx := range transactions {
-		isValid, err := bc.VerifyTransaction(tx)
-		if err != nil || !isValid {
-			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
-		}
-	}
+// 	// Verify transactions.
+// 	for _, tx := range transactions {
+// 		isValid, err := bc.VerifyTransaction(tx)
+// 		if err != nil || !isValid {
+// 			return false, fmt.Errorf("transaction verification failed: %s, error: %v", tx.GetId(), err)
+// 		}
+// 	}
 
-	// Create unsigned block
-	unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
-	if err != nil {
-		return false, fmt.Errorf("failed to create unsigned block: %v", err)
-	}
+// 	// Create unsigned block
+// 	unsignedBlock, err := bc.CreateUnsignedBlock(transactions, validator)
+// 	if err != nil {
+// 		return false, fmt.Errorf("failed to create unsigned block: %v", err)
+// 	}
 
-	// Simulate validator signing
-	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
-	if err != nil {
-		return false, fmt.Errorf("failed to simulate block signing: %v", err)
-	}
+// 	// Simulate validator signing
+// 	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
+// 	if err != nil {
+// 		return false, fmt.Errorf("failed to simulate block signing: %v", err)
+// 	}
 
-	// Verify the signed block
-	if err := bc.VerifySignedBlock(signedBlock); err != nil {
-		return false, fmt.Errorf("invalid signed block: %v", err)
-	}
+// 	// Verify the signed block
+// 	if err := bc.VerifySignedBlock(signedBlock); err != nil {
+// 		return false, fmt.Errorf("invalid signed block: %v", err)
+// 	}
 
-	// Update UTXO set
-	// Update UTXO set
-	for _, tx := range signedBlock.Transactions {
-		// Remove spent UTXOs
-		for _, input := range tx.Inputs {
-			utxoKey := fmt.Sprintf("%s:%d", input.ID, input.Index)
-			delete(bc.Blockchain.UTXOs, utxoKey)
-		}
-		// Add new UTXOs
-		for index, output := range tx.Outputs {
-			utxoKey := fmt.Sprintf("%s:%d", tx.ID, index)
-			// Convert the types.UTXO to thrylos.UTXO with correct protobuf fields
-			thrylosUTXO := &thrylos.UTXO{
-				TransactionId: tx.ID,
-				Index:         int32(index),
-				OwnerAddress:  output.OwnerAddress,
-				Amount:        int64(output.Amount), // Cast amount.Amount to int64
-				IsSpent:       false,
-			}
-			bc.Blockchain.UTXOs[utxoKey] = []*thrylos.UTXO{thrylosUTXO}
-		}
-	}
+// 	// Update UTXO set
+// 	// Update UTXO set
+// 	for _, tx := range signedBlock.Transactions {
+// 		// Remove spent UTXOs
+// 		for _, input := range tx.Inputs {
+// 			utxoKey := fmt.Sprintf("%s:%d", input.ID, input.Index)
+// 			delete(bc.Blockchain.UTXOs, utxoKey)
+// 		}
+// 		// Add new UTXOs
+// 		for index, output := range tx.Outputs {
+// 			utxoKey := fmt.Sprintf("%s:%d", tx.ID, index)
+// 			// Convert the types.UTXO to thrylos.UTXO with correct protobuf fields
+// 			thrylosUTXO := &thrylos.UTXO{
+// 				TransactionId: tx.ID,
+// 				Index:         int32(index),
+// 				OwnerAddress:  output.OwnerAddress,
+// 				Amount:        int64(output.Amount), // Cast amount.Amount to int64
+// 				IsSpent:       false,
+// 			}
+// 			bc.Blockchain.UTXOs[utxoKey] = []*thrylos.UTXO{thrylosUTXO}
+// 		}
+// 	}
 
-	// Serialize and store the block
-	blockData, err := json.Marshal(signedBlock)
-	if err != nil {
-		return false, fmt.Errorf("failed to serialize new block: %v", err)
-	}
+// 	// Serialize and store the block
+// 	blockData, err := json.Marshal(signedBlock)
+// 	if err != nil {
+// 		return false, fmt.Errorf("failed to serialize new block: %v", err)
+// 	}
 
-	blockNumber := len(bc.Blockchain.Blocks)
-	if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
-		return false, fmt.Errorf("failed to store block in database: %v", err)
-	}
+// 	blockNumber := len(bc.Blockchain.Blocks)
+// 	if err := bc.Blockchain.Database.StoreBlock(blockData, blockNumber); err != nil {
+// 		return false, fmt.Errorf("failed to store block in database: %v", err)
+// 	}
 
-	// Update the blockchain with the new block
-	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
-	bc.Blockchain.LastTimestamp = signedBlock.Timestamp
+// 	// Update the blockchain with the new block
+// 	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
+// 	bc.Blockchain.LastTimestamp = signedBlock.Timestamp
 
-	if bc.Blockchain.OnNewBlock != nil {
-		bc.Blockchain.OnNewBlock(signedBlock)
-	}
+// 	if bc.Blockchain.OnNewBlock != nil {
+// 		bc.Blockchain.OnNewBlock(signedBlock)
+// 	}
 
-	// Update balances for affected addresses
-	bc.updateBalancesForBlock(signedBlock)
+// 	// Update balances for affected addresses
+// 	bc.updateBalancesForBlock(signedBlock)
 
-	return true, nil
-}
+// 	return true, nil
+// }
 
 func (bc *BlockchainImpl) GetBlockByID(id string) (*types.Block, error) { // Changed return type to pointer
 	// First, try to parse id as a block index

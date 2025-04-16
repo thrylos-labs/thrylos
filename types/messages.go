@@ -74,14 +74,15 @@ const (
 	GetDAGTips     MessageType = "GET_DAG_TIPS"
 
 	// Node state related
-	GetStakingStats   MessageType = "GET_STAKING_STATS"
-	CreateStake       MessageType = "CREATE_STAKE"
-	UpdatePeerList    MessageType = "UPDATE_PEER_LIST"
-	IsCounterNode     MessageType = "IS_COUNTER_NODE"
-	ValidateValidator MessageType = "VALIDATE_VALIDATOR"
-	GetPoolStats      MessageType = "GET_POOL_STATS"
-	GetValidators     MessageType = "GET_VALIDATORS"
-	IsValidator       MessageType = "IS_VALIDATOR"
+	GetStakingStats      MessageType = "GET_STAKING_STATS"
+	CreateStake          MessageType = "CREATE_STAKE"
+	UpdatePeerList       MessageType = "UPDATE_PEER_LIST"
+	IsCounterNode        MessageType = "IS_COUNTER_NODE"
+	ValidateValidator    MessageType = "VALIDATE_VALIDATOR"
+	GetPoolStats         MessageType = "GET_POOL_STATS"
+	GetValidators        MessageType = "GET_VALIDATORS"
+	IsValidator          MessageType = "IS_VALIDATOR"
+	AddTransactionToPool MessageType = "ADD_TRANSACTION_TO_POOL"
 
 	GetBlockchainInfo MessageType = "GET_BLOCKCHAIN_INFO"
 )

@@ -799,19 +799,18 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 	}
 
 	// --- Extract Required Fields ---
-	txId, ok := reqData["txId"].(string) // Use TxID from prepare step
+	txId, ok := reqData["txId"].(string)
 	if !ok || txId == "" {
 		return nil, fmt.Errorf("missing or invalid 'txId'")
 	}
-	signatureString, ok := reqData["signature"].(string) // Base64 signature
+	signatureString, ok := reqData["signature"].(string)
 	if !ok || signatureString == "" {
 		return nil, fmt.Errorf("invalid or missing 'signature' string")
 	}
-	publicKeyString, ok := reqData["publicKey"].(string) // Base64 public key
+	publicKeyString, ok := reqData["publicKey"].(string)
 	if !ok || publicKeyString == "" {
 		return nil, fmt.Errorf("invalid or missing 'publicKey' string")
 	}
-	// Client sends back the exact payload string they signed
 	canonicalPayloadString, ok := reqData["canonicalPayloadString"].(string)
 	if !ok || canonicalPayloadString == "" {
 		return nil, fmt.Errorf("invalid or missing 'canonicalPayloadString'")
@@ -819,9 +818,8 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 
 	// --- Validation Goroutine ---
 	type validationResult struct {
-		SignatureBytes []byte
-		ValidatedTx    *types.Transaction // The deserialized, validated transaction structure
-		Err            error
+		ValidatedTx *types.Transaction // The deserialized, validated transaction structure
+		Err         error
 	}
 	validationDone := make(chan validationResult, 1)
 
@@ -837,14 +835,15 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 			return
 		}
 
-		vr.SignatureBytes, vr.Err = base64.StdEncoding.DecodeString(signatureString)
+		var signatureBytes []byte // Store decoded signature temporarily
+		signatureBytes, vr.Err = base64.StdEncoding.DecodeString(signatureString)
 		if vr.Err != nil {
 			vr.Err = fmt.Errorf("invalid signature encoding: %v", vr.Err)
 			validationDone <- vr
 			return
 		}
-		if len(vr.SignatureBytes) != mldsa44.SignatureSize { // Check signature size
-			log.Printf("TX_VALIDATE_ERROR: Sig size mismatch: got %d, want %d", len(vr.SignatureBytes), mldsa44.SignatureSize)
+		if len(signatureBytes) != mldsa44.SignatureSize {
+			log.Printf("TX_VALIDATE_ERROR: Sig size mismatch: got %d, want %d", len(signatureBytes), mldsa44.SignatureSize)
 			vr.Err = fmt.Errorf("decoded signature has incorrect size")
 			validationDone <- vr
 			return
@@ -858,7 +857,7 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		}
 
 		// --- Unmarshal Public Key (for Verification) ---
-		pk := new(mldsa44.PublicKey) // Use the concrete type needed by mldsa44.Verify
+		pk := new(mldsa44.PublicKey)
 		if vr.Err = pk.UnmarshalBinary(publicKeyBytes); vr.Err != nil {
 			vr.Err = fmt.Errorf("failed to unmarshal public key for verification: %v", vr.Err)
 			validationDone <- vr
@@ -867,8 +866,8 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 
 		// --- Verify Signature against Canonical Payload ---
 		log.Printf("TX_VALIDATE: Verifying signature for TxID %s against received canonical payload (len %d)", txId, len(canonicalPayloadBytes))
-		ctxForVerify := []byte(nil)                                                           // Assuming no context for ML-DSA
-		isValid := mldsa44.Verify(pk, canonicalPayloadBytes, ctxForVerify, vr.SignatureBytes) // Use the CIRCL pk
+		ctxForVerify := []byte(nil)
+		isValid := mldsa44.Verify(pk, canonicalPayloadBytes, ctxForVerify, signatureBytes)
 		if !isValid {
 			log.Printf("TX_VALIDATE_ERROR: Signature verification FAILED for TxID %s!", txId)
 			vr.Err = fmt.Errorf("invalid signature")
@@ -878,7 +877,7 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		log.Printf("TX_VALIDATE_SUCCESS: Signature verified successfully for TxID %s!", txId)
 
 		// --- Reconstruct our own PublicKey object (for Address Derivation & Tx Structure) ---
-		senderPubKeyObj, err := crypto.NewPublicKeyFromBytes(publicKeyBytes) // Returns crypto.PublicKey interface
+		senderPubKeyObj, err := crypto.NewPublicKeyFromBytes(publicKeyBytes)
 		if err != nil {
 			vr.Err = fmt.Errorf("failed to reconstruct PublicKey object: %v", err)
 			validationDone <- vr
@@ -891,7 +890,7 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		}
 
 		// --- Deserialize Canonical Payload to check contents ---
-		var signedPayload TransactionSigningPayload
+		var signedPayload TransactionSigningPayload // Use the struct defined above
 		if err := json.Unmarshal(canonicalPayloadBytes, &signedPayload); err != nil {
 			vr.Err = fmt.Errorf("failed to unmarshal canonical payload string for validation: %v", err)
 			validationDone <- vr
@@ -906,18 +905,14 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 			return
 		}
 
-		// --- Verify sender address derived from PK matches sender in payload ---
-		// Use the Address() method from the crypto.PublicKey interface
-		derivedAddrObject, err := senderPubKeyObj.Address() // Call the interface method
+		derivedAddrObject, err := senderPubKeyObj.Address()
 		if err != nil {
 			vr.Err = fmt.Errorf("failed to derive address post-validation using Address() method: %v", err)
 			validationDone <- vr
 			return
 		}
-		derivedAddressString := derivedAddrObject.String() // Convert result to string
-		// --- End Address Derivation ---
+		derivedAddressString := derivedAddrObject.String()
 
-		// Compare derived address string with the address string from the signed payload
 		if derivedAddressString != signedPayload.SenderAddress {
 			log.Printf("TX_VALIDATE_ERROR: Address mismatch! Derived: %s, Signed Payload: %s", derivedAddressString, signedPayload.SenderAddress)
 			vr.Err = fmt.Errorf("public key does not match sender address in signed payload")
@@ -926,7 +921,6 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		}
 		log.Printf("INFO: [Submit] Sender address verified against public key in signed payload.")
 
-		// Verify public key in payload matches the one sent alongside
 		if signedPayload.SenderPublicKey != publicKeyString {
 			log.Printf("TX_VALIDATE_ERROR: Public key mismatch! Outside B64 != Inside B64")
 			vr.Err = fmt.Errorf("public key mismatch in signed payload")
@@ -937,42 +931,62 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 		// --- Reconstruct the final types.Transaction from the signed payload ---
 		senderAddrFromPayload, err := address.FromString(signedPayload.SenderAddress)
 		if err != nil {
-			vr.Err = fmt.Errorf("failed to parse sender address from signed payload: %v", err)
+			vr.Err = fmt.Errorf("failed to parse sender address '%s' from signed payload: %v", signedPayload.SenderAddress, err)
 			validationDone <- vr
 			return
 		}
 
+		// Create the types.Transaction object
+		// Note: We use amount.Amount for GasFee and UTXO amounts internally now
 		vr.ValidatedTx = &types.Transaction{
 			ID:              signedPayload.ID,
 			Timestamp:       signedPayload.Timestamp,
 			SenderAddress:   *senderAddrFromPayload,
-			GasFee:          signedPayload.GasFee,
-			SenderPublicKey: senderPubKeyObj, // Use the reconstructed interface object
+			GasFee:          int(signedPayload.GasFee), // Convert int64 payload value to int
+			SenderPublicKey: senderPubKeyObj,
 			Inputs:          make([]types.UTXO, len(signedPayload.Inputs)),
 			Outputs:         make([]types.UTXO, len(signedPayload.Outputs)),
-			// Signature will be added outside the goroutine
+			Status:          "validated", // Mark as validated before adding to pool
+			// Salt will be added by txPool.AddTransaction if needed
+			// Signature is verified, not stored directly here
 		}
-		// Convert inputs back to types.UTXO
-		for i, pInput := range signedPayload.Inputs {
+
+		// Convert inputs from payload (assuming they are types.UTXO in the payload)
+		for i, pInput := range signedPayload.Inputs { // pInput is UTXOSigningPayload
 			if pInput.TransactionID == "" {
 				vr.Err = fmt.Errorf("input %d missing transaction ID", i)
 				validationDone <- vr
 				return
 			}
+			// --- ** FIXES for Inputs ** ---
 			vr.ValidatedTx.Inputs[i] = types.UTXO{
-				TransactionID: pInput.TransactionID, Index: pInput.Index, OwnerAddress: pInput.OwnerAddress, Amount: amount.Amount(pInput.Amount),
+				TransactionID: pInput.TransactionID,
+				Index:         pInput.Index,
+				OwnerAddress:  pInput.OwnerAddress,          // Direct assignment: string -> string
+				Amount:        amount.Amount(pInput.Amount), // Convert: int64 -> amount.Amount
+				IsSpent:       false,
+				// ID field is often contextual, assign if needed, otherwise omit
 			}
+			// --- ** END FIXES for Inputs ** ---
 		}
-		// Convert outputs back to types.UTXO
-		for i, pOutput := range signedPayload.Outputs {
+
+		// Convert outputs from payload (assuming they are types.UTXO in the payload)
+		for i, pOutput := range signedPayload.Outputs { // pOutput is UTXOSigningPayload
 			if pOutput.OwnerAddress == "" {
 				vr.Err = fmt.Errorf("output %d missing owner address", i)
 				validationDone <- vr
 				return
 			}
+			// --- ** FIXES for Outputs ** ---
 			vr.ValidatedTx.Outputs[i] = types.UTXO{
-				TransactionID: pOutput.TransactionID, Index: pOutput.Index, OwnerAddress: pOutput.OwnerAddress, Amount: amount.Amount(pOutput.Amount),
+				TransactionID: vr.ValidatedTx.ID,             // Output's TX ID is the current TX ID
+				Index:         i,                             // Index of the output
+				OwnerAddress:  pOutput.OwnerAddress,          // Direct assignment: string -> string
+				Amount:        amount.Amount(pOutput.Amount), // Convert: int64 -> amount.Amount
+				IsSpent:       false,                         // New outputs are not spent
+				// ID field is often contextual, assign if needed, otherwise omit
 			}
+			// --- ** END FIXES for Outputs ** ---
 		}
 
 		vr.Err = nil // Indicate success
@@ -987,60 +1001,54 @@ func (h *Handler) handleSubmitSignedTransaction(params []interface{}) (interface
 			log.Printf("[Submit] Validation failed for TxID %s: %v", txId, validationRes.Err)
 			return nil, validationRes.Err
 		}
-	case <-time.After(5 * time.Second): // Adjust timeout
+	case <-time.After(5 * time.Second):
 		log.Printf("[Submit] Validation timeout occurred for TxID %s", txId)
 		return nil, fmt.Errorf("validation timeout")
 	}
 
 	// --- Validation Successful ---
 	log.Printf("[Submit] Validation completed successfully for TxID %s.", txId)
-	validatedTx := validationRes.ValidatedTx // This IS the transaction to process
-	finalSignatureBytes := validationRes.SignatureBytes
+	validatedTx := validationRes.ValidatedTx // This is the *types.Transaction
 
-	// --- Convert to final Thrylos transaction type ---
-	thrylosTx := convertToThrylosTransaction(validatedTx)
-	if thrylosTx == nil {
-		log.Printf("ERROR: [Submit] Failed to convert validated transaction (ID: %s) to final Thrylos type.", validatedTx.ID)
-		return nil, fmt.Errorf("internal error: failed to convert validated transaction")
-	}
+	// --- *** CHANGE: Use Message Bus to Add Transaction to Pool *** ---
+	log.Printf("[Submit] Sending transaction %s to Message Bus for addition to TxPool.", validatedTx.ID)
 
-	// --- Attach the VERIFIED Signature ---
-	thrylosTx.Signature = finalSignatureBytes
+	// Create a response channel to hear back from the pool handler
+	responseCh := make(chan types.Response, 1) // Buffered channel
 
-	log.Printf("DEBUG: [handleSubmitSignedTransaction] Sending VALIDATED tx %s to bus. Sender: %q, Inputs: %d, Outputs: %d", thrylosTx.Id, thrylosTx.Sender, len(thrylosTx.Inputs), len(thrylosTx.Outputs))
-
-	// --- Process Transaction via Message Bus ---
-	processTxCh := make(chan types.Response)
+	// Publish the message
 	h.messageBus.Publish(types.Message{
-		Type:       types.ProcessTransaction,
-		Data:       thrylosTx,
-		ResponseCh: processTxCh,
+		Type:       types.AddTransactionToPool,
+		Data:       validatedTx, // Send the validated types.Transaction
+		ResponseCh: responseCh,
 	})
 
-	// --- Wait for processing response ---
-	var processTxResponse types.Response
+	// Wait for the response from the component handling AddTransactionToPool
 	select {
-	case processTxResponse = <-processTxCh:
-		if processTxResponse.Error != nil {
-			log.Printf("[Submit] Transaction processing failed for %s via message bus: %v", thrylosTx.GetId(), processTxResponse.Error)
-			return nil, fmt.Errorf("failed to process transaction: %v", processTxResponse.Error)
+	case resp := <-responseCh:
+		if resp.Error != nil {
+			log.Printf("ERROR: [Submit] Failed adding transaction %s to pool via message bus: %v", validatedTx.ID, resp.Error)
+			// Return a user-friendly error
+			return nil, fmt.Errorf("failed to submit transaction: %v", resp.Error)
 		}
-		log.Printf("[Submit] Transaction %s processed successfully by message bus.", thrylosTx.GetId())
-	case <-time.After(10 * time.Second): // Adjust timeout
-		log.Printf("[Submit] Transaction processing timeout for %s", thrylosTx.GetId())
-		return nil, fmt.Errorf("transaction processing timeout")
+		// Success case from the message bus handler
+		log.Printf("[Submit] Transaction %s successfully added to pool via message bus.", validatedTx.ID)
+	case <-time.After(5 * time.Second): // Add a timeout
+		log.Printf("ERROR: [Submit] Timeout waiting for TxPool add confirmation for transaction %s", validatedTx.ID)
+		return nil, fmt.Errorf("timeout submitting transaction")
 	}
+	// --- *** END CHANGE *** ---
 
-	// --- Return Success ---
-	log.Printf("[Submit] Successfully submitted transaction %s", thrylosTx.Id)
+	// --- Return Success (Transaction Accepted by Pool Handler) ---
+	log.Printf("[Submit] Successfully submitted transaction %s to pool.", validatedTx.ID)
 	return struct {
 		Message string `json:"message"`
 		Status  string `json:"status"`
 		TxID    string `json:"txId"`
 	}{
-		Message: fmt.Sprintf("Transaction %s submitted successfully", thrylosTx.Id),
-		Status:  "submitted",
-		TxID:    thrylosTx.Id,
+		Message: fmt.Sprintf("Transaction %s submitted to pool successfully", validatedTx.ID),
+		Status:  "pending", // Indicate it's pending in the pool
+		TxID:    validatedTx.ID,
 	}, nil
 }
 

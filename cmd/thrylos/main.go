@@ -450,6 +450,7 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 	blockCh := make(chan types.Message, 100)
 	txCh := make(chan types.Message, 100)
 	infoCh := make(chan types.Message, 100)
+	addTxCh := make(chan types.Message, 100) // <<< NEW Channel for AddTransactionToPool
 
 	// Subscribe to messages
 	messageBus.Subscribe(types.GetBalance, balanceCh)
@@ -457,6 +458,7 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 	messageBus.Subscribe(types.ProcessTransaction, txCh)
 	messageBus.Subscribe(types.ProcessBlock, blockCh)
 	messageBus.Subscribe(types.GetBlockchainInfo, infoCh)
+	messageBus.Subscribe(types.AddTransactionToPool, addTxCh) // <<< NEW Subscription
 
 	// Add to your server initialization code
 	go func() {
@@ -572,6 +574,69 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 			}
 		}
 	}()
+
+	// --- ** NEW: Handler for AddTransactionToPool messages ** ---
+	log.Println("INFO: Starting AddTransactionToPool handler goroutine...") // Log startup
+	go func() {
+		log.Println("INFO: [AddTxPool Handler] Goroutine started, entering select loop...") // Log entry
+		for {
+			select {
+			case msg, ok := <-addTxCh: // Read from the NEW channel
+				if !ok {
+					log.Println("ERROR: [AddTxPool Handler] addTxCh channel was closed!")
+					return // Exit if channel closed
+				}
+				log.Printf("DEBUG: [AddTxPool Handler] Message received on addTxCh (Type: %s)", msg.Type) // Log receipt
+
+				if msg.Type == types.AddTransactionToPool {
+					tx, ok := msg.Data.(*types.Transaction) // Expecting *types.Transaction
+					if !ok {
+						log.Printf("ERROR: [AddTxPool Handler] Invalid data type for AddTransactionToPool, expected *types.Transaction")
+						if msg.ResponseCh != nil {
+							msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid tx data type for pool add")}
+						}
+						continue // Skip this message
+					}
+					if tx == nil {
+						log.Printf("ERROR: [AddTxPool Handler] Received nil transaction for AddTransactionToPool")
+						if msg.ResponseCh != nil {
+							msg.ResponseCh <- types.Response{Error: fmt.Errorf("received nil transaction")}
+						}
+						continue
+					}
+
+					// Call the actual AddTransactionToPool method on the blockchain instance
+					// Use the 'blockchain' instance available in this scope (captured by closure)
+					log.Printf("DEBUG: [AddTxPool Handler] Calling blockchain.AddTransactionToPool for TxID: %s", tx.ID)
+					err := blockchain.AddTransactionToPool(tx)
+
+					// Send the response back to the caller (handleSubmitSignedTransaction)
+					if msg.ResponseCh != nil {
+						if err != nil {
+							log.Printf("ERROR: [AddTxPool Handler] Failed to add tx %s to pool: %v", tx.ID, err)
+							msg.ResponseCh <- types.Response{Error: err}
+						} else {
+							log.Printf("INFO: [AddTxPool Handler] Successfully added tx %s to pool.", tx.ID)
+							// Send back success, Data can be nil or the TxID
+							msg.ResponseCh <- types.Response{Data: tx.ID, Error: nil}
+						}
+					} else {
+						log.Printf("WARN: [AddTxPool Handler] No response channel provided for AddTransactionToPool message (TxID: %s)", tx.ID)
+					}
+				} else {
+					log.Printf("WARN: [AddTxPool Handler] Received unexpected message type on addTxCh: %s", msg.Type)
+					// Optionally send an error back if there's a response channel
+					if msg.ResponseCh != nil {
+						msg.ResponseCh <- types.Response{Error: fmt.Errorf("handler received unexpected message type: %s", msg.Type)}
+					}
+				}
+			case <-ctx.Done():
+				log.Println("INFO: [AddTxPool Handler] Context cancelled, stopping message processing.")
+				return // Exit goroutine
+			}
+		}
+	}()
+	// --- ** END NEW Handler ** ---
 
 	// Handle transaction-related messages
 	go func() {
