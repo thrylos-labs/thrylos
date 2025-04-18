@@ -186,32 +186,45 @@ func (s *store) GetUTXOsForUser(address string) ([]types.UTXO, error) {
 }
 
 func (s *store) GetUTXO(addr address.Address) ([]*types.UTXO, error) {
-	userUTXOs := []*types.UTXO{}
+	var userUTXOs []*types.UTXO
 	db := s.db.GetDB()
+	prefix := []byte(UTXOPrefix) // Iterate all UTXOs
+	addrStr := addr.String()
+
 	err := db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		prefix := []byte(UTXOPrefix + addr.String() + "-") //FIXME: this key is not how we store UTXOs in the database. We need to fix this.
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
 				var utxo types.UTXO
-				if err := cbor.Unmarshal(val, &utxo); err != nil {
-					return err
+				// Standardize on CBOR
+				if err := utxo.Unmarshal(val); err != nil {
+					// Log problematic key
+					log.Printf("WARN: Failed to unmarshal UTXO data for key %s: %v", string(item.Key()), err)
+					return nil // Skip this UTXO, continue iteration
 				}
-				if !utxo.IsSpent {
+				// Check owner and if spent
+				if utxo.OwnerAddress == addrStr && !utxo.IsSpent {
 					userUTXOs = append(userUTXOs, &utxo)
 				}
 				return nil
 			})
 			if err != nil {
-				return err
+				// This error would be from the item.Value() lambda itself, likely critical
+				return fmt.Errorf("error processing UTXO item %s: %w", string(item.Key()), err)
 			}
 		}
 		return nil
 	})
-	return userUTXOs, err
+
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving UTXOs for address %s: %w", addrStr, err)
+	}
+	return userUTXOs, nil
 }
 
 // UpdateUTXOs updates the UTXOs in the database, marking the inputs as spent and adding new outputs.
@@ -276,182 +289,213 @@ func (s *store) updateUTXOsInTxn(txn *badger.Txn, inputs []types.UTXO, outputs [
 	return nil
 }
 
-func (s *store) AddNewUTXO(txContext types.TransactionContext, utxo types.UTXO) error {
-	// Ensure TransactionID is set
+func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO) error {
 	if utxo.TransactionID == "" {
 		return fmt.Errorf("cannot add UTXO without TransactionID")
 	}
-
-	// Get the badger transaction from the context
-	badgerTxn := txContext.GetBadgerTxn()
+	badgerTxn := ctx.GetBadgerTxn()
 	if badgerTxn == nil {
 		return fmt.Errorf("invalid transaction context: nil badger transaction")
 	}
 
-	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
-	val, err := json.Marshal(utxo)
+	// Use standard key format
+	keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxo.Key()) // utxo.Key() gives txid-index
+	keyBytes := []byte(keyString)
+
+	// Use CBOR Marshal
+	val, err := utxo.Marshal()
 	if err != nil {
-		return fmt.Errorf("failed to marshal UTXO: %v", err)
+		return fmt.Errorf("failed to marshal UTXO for key %s: %w", keyString, err)
 	}
 
-	err = badgerTxn.Set([]byte(key), val)
+	log.Printf("DEBUG: [AddNewUTXO TX] Setting UTXO key: %s", keyString)
+	err = badgerTxn.Set(keyBytes, val)
 	if err != nil {
-		return fmt.Errorf("failed to save UTXO: %v", err)
+		return fmt.Errorf("failed to save UTXO with key %s: %w", keyString, err)
 	}
 
-	// Mark this key as modified in the transaction context
-	txContext.SetModified(key)
-
-	// Update the UTXOs in the transaction context
-	utxos := txContext.GetUTXOs()
-	utxos[key] = append(utxos[key], utxo)
-	txContext.SetUTXOs(utxos)
-
+	ctx.SetModified(keyString) // Track modified key
+	// Updating context's UTXO map might be complex/redundant if context is short-lived
+	// log.Printf("DEBUG: AddNewUTXO - Successfully added UTXO %s to transaction context", keyString)
 	return nil
 }
 
-func (s *store) MarkUTXOAsSpent(txContext types.TransactionContext, utxo types.UTXO) error {
-	// Ensure we have all required fields
-	if utxo.OwnerAddress == "" {
-		return fmt.Errorf("owner address is required")
-	}
+func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO) error {
 	if utxo.TransactionID == "" {
 		return fmt.Errorf("transaction ID is required")
 	}
 
-	// Construct the key using the transaction ID from the input
-	key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
-	log.Printf("Marking UTXO as spent - Key: %s, TransactionID: %s, Amount: %d, Owner: %s",
-		key, utxo.TransactionID, utxo.Amount, utxo.OwnerAddress)
-
-	// Use the GetBadgerTxn method to access the underlying badger transaction
-	badgerTxn := txContext.GetBadgerTxn()
+	badgerTxn := ctx.GetBadgerTxn()
 	if badgerTxn == nil {
 		return fmt.Errorf("invalid transaction context: nil badger transaction")
 	}
 
-	// Get the existing UTXO
-	item, err := badgerTxn.Get([]byte(key))
+	// Use standard key format from the UTXO object passed in
+	keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxo.Key())
+	keyBytes := []byte(keyString)
+	log.Printf("DEBUG: [MarkUTXOAsSpent TX] Marking UTXO key: %s", keyString)
+
+	item, err := badgerTxn.Get(keyBytes)
+	if err != nil {
+		return fmt.Errorf("failed to get UTXO %s: %w", keyString, err) // Error includes KeyNotFound
+	}
+
+	var existingUTXO types.UTXO
+
+	err = item.Value(func(val []byte) error {
+		// Use CBOR Unmarshal
+		return existingUTXO.Unmarshal(val)
+	})
+	if err != nil {
+		return fmt.Errorf("error unmarshaling existing UTXO %s: %w", keyString, err)
+	}
+
+	if existingUTXO.IsSpent {
+		return fmt.Errorf("UTXO %s is already spent", keyString)
+	}
+
+	existingUTXO.IsSpent = true
+
+	// Use CBOR Marshal
+	updatedValue, err := existingUTXO.Marshal()
+	if err != nil {
+		return fmt.Errorf("error marshaling updated UTXO %s: %w", keyString, err)
+	}
+
+	err = badgerTxn.Set(keyBytes, updatedValue)
+	if err != nil {
+		return fmt.Errorf("error saving updated UTXO %s: %w", keyString, err)
+	}
+
+	ctx.SetModified(keyString)
+	log.Printf("DEBUG: [MarkUTXOAsSpent TX] Successfully marked UTXO %s as spent.", keyString)
+	return nil
+}
+
+func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string) (amount int64, err error) {
+	badgerTxn := ctx.GetBadgerTxn()
+	if badgerTxn == nil {
+		return 0, fmt.Errorf("invalid transaction context")
+	}
+
+	// Assume utxoKey is in the format "txid-index" as per utxo.Key()
+	keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxoKey) // Add prefix
+	keyBytes := []byte(keyString)
+	log.Printf("DEBUG: [SpendUTXO TX] Spending UTXO key: %s", keyString)
+
+	item, err := badgerTxn.Get(keyBytes)
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
-			return fmt.Errorf("UTXO not found: %s", key)
+			return 0, fmt.Errorf("UTXO not found: %s", keyString)
 		}
-		return fmt.Errorf("error retrieving UTXO: %v", err)
+		return 0, fmt.Errorf("error retrieving UTXO %s: %w", keyString, err)
 	}
 
 	var existingUTXO types.UTXO
 	err = item.Value(func(val []byte) error {
-		return json.Unmarshal(val, &existingUTXO)
+		// Use CBOR Unmarshal
+		return existingUTXO.Unmarshal(val)
 	})
 	if err != nil {
-		return fmt.Errorf("error unmarshaling UTXO: %v", err)
+		return 0, fmt.Errorf("error unmarshaling UTXO %s: %w", keyString, err)
 	}
 
-	// Verify this UTXO isn't already spent
 	if existingUTXO.IsSpent {
-		return fmt.Errorf("UTXO is already spent: %s", key)
+		return 0, fmt.Errorf("UTXO %s is already spent", keyString)
 	}
 
-	// Mark as spent
 	existingUTXO.IsSpent = true
-
-	// Save back
-	updatedValue, err := json.Marshal(existingUTXO)
+	updatedValue, err := existingUTXO.Marshal() // Use CBOR Marshal
 	if err != nil {
-		return fmt.Errorf("error marshaling updated UTXO: %v", err)
+		return 0, fmt.Errorf("error marshaling updated UTXO %s: %w", keyString, err)
 	}
 
-	err = badgerTxn.Set([]byte(key), updatedValue)
-	if err != nil {
-		return fmt.Errorf("error saving updated UTXO: %v", err)
+	if err = badgerTxn.Set(keyBytes, updatedValue); err != nil {
+		return 0, fmt.Errorf("error saving updated UTXO %s: %w", keyString, err)
 	}
 
-	// Mark this key as modified in the transaction context
-	txContext.SetModified(key)
-
-	log.Printf("Successfully marked UTXO as spent - Key: %s", key)
-	return nil
+	ctx.SetModified(keyString)
+	log.Printf("DEBUG: [SpendUTXO TX] Marked UTXO %s as spent.", keyString)
+	return int64(existingUTXO.Amount), nil // Return amount
 }
 
+// Uses standardized key prefix and CBOR.
 func (s *store) GetUTXOsForAddress(address string) ([]types.UTXO, error) {
 	var utxos []types.UTXO
 	db := s.db.GetDB()
 	err := db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(UTXOPrefix) // Iterate all UTXOs
+		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		prefix := []byte(fmt.Sprintf("utxo-%s-", address))
-		log.Printf("Searching for UTXOs with prefix: %s", string(prefix))
-
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		log.Printf("DEBUG: [GetUTXOsForAddress] Searching UTXOs for address: %s", address)
+		for it.Seek(opts.Prefix); it.ValidForPrefix(opts.Prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
 				var utxo types.UTXO
-				if err := json.Unmarshal(val, &utxo); err != nil {
-					return err
+				// Use CBOR Unmarshal
+				if err := utxo.Unmarshal(val); err != nil {
+					log.Printf("WARN: Failed to unmarshal UTXO data for key %s: %v", string(item.Key()), err)
+					return nil // Skip this UTXO
 				}
-				log.Printf("Found UTXO: %+v", utxo)
-				if !utxo.IsSpent {
+				// Check owner and if spent
+				if utxo.OwnerAddress == address && !utxo.IsSpent {
 					utxos = append(utxos, utxo)
-					log.Printf("Added unspent UTXO: %+v", utxo)
-				} else {
-					log.Printf("Skipped spent UTXO: %+v", utxo)
 				}
 				return nil
 			})
 			if err != nil {
-				return err
+				return fmt.Errorf("error processing UTXO item %s: %w", string(item.Key()), err)
 			}
 		}
 		return nil
 	})
 
-	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
-	return utxos, err
+	if err != nil {
+		log.Printf("ERROR: Failed to fetch UTXOs from database for %s: %v", address, err)
+		return nil, err
+	}
+	log.Printf("DEBUG: [GetUTXOsForAddress] Retrieved %d UTXOs for address %s", len(utxos), address)
+	return utxos, nil
 }
 
+// AddUTXO adds a UTXO using an auto-incrementing index for the address.
+// Likely used for genesis/initial funding, not standard transactions.
+// WARNING: This method is NOT context-aware and runs in its own transaction.
 func (s *store) AddUTXO(utxo types.UTXO) error {
 	db := s.db.GetDB()
-
 	return db.Update(func(txn *badger.Txn) error {
-		// Ensure we have a TransactionID
+		// Ensure we have a TransactionID (use genesis format if needed)
 		if utxo.TransactionID == "" {
 			utxo.TransactionID = fmt.Sprintf("genesis-%s", utxo.OwnerAddress)
+			log.Printf("WARN: Assigning default TransactionID to UTXO for %s: %s", utxo.OwnerAddress, utxo.TransactionID)
 		}
 
-		// Retrieve the current index for the address
-		idxKey := fmt.Sprintf("index-%s", utxo.OwnerAddress)
-		item, err := txn.Get([]byte(idxKey))
-		if err != nil && err != badger.ErrKeyNotFound {
-			return err
-		}
-		var index int64 = 0
-		if err != badger.ErrKeyNotFound {
-			err = item.Value(func(val []byte) error {
-				index = int64(binary.BigEndian.Uint64(val))
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+		// Retrieve the current index for the address (optional, maybe index isn't needed here?)
+		// If using txid-index key, this index counter is redundant. Let's skip it.
+		// idxKey := []byte(fmt.Sprintf("%s%s", IndexPrefix, utxo.OwnerAddress))
+		// ... (get and increment index logic removed) ...
+		// Use index 0 or a fixed index if this is only for genesis-like UTXOs
+		if utxo.Index == 0 && strings.HasPrefix(utxo.TransactionID, "genesis-") {
+			log.Printf("DEBUG: Using index %d for genesis-like UTXO %s", utxo.Index, utxo.TransactionID)
+		} else if utxo.Index == 0 {
+			// Assign a default index if needed, maybe -1 to signify non-tx UTXO?
+			// utxo.Index = -1 // Or handle appropriately
+			log.Printf("WARN: AddUTXO called with Index 0 for non-genesis Tx %s", utxo.TransactionID)
 		}
 
-		// Increment the index for the next UTXO
-		index++
-		utxo.Index = int(index)
-		indexBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(indexBytes, uint64(index))
-		if err := txn.Set([]byte(idxKey), indexBytes); err != nil {
-			return err
-		}
+		// Create UTXO key using the standard format txid-index
+		keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxo.Key()) // utxo.Key() gives txid-index
+		keyBytes := []byte(keyString)
 
-		// Create UTXO with the new index using the same format as AddNewUTXO
-		key := fmt.Sprintf("utxo-%s-%s-%d", utxo.OwnerAddress, utxo.TransactionID, utxo.Index)
-		val, err := json.Marshal(utxo)
+		// Use CBOR Marshal
+		val, err := utxo.Marshal()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to marshal UTXO for key %s: %w", keyString, err)
 		}
-		return txn.Set([]byte(key), val)
+		log.Printf("DEBUG: [AddUTXO] Storing UTXO with key: %s", keyString)
+		return txn.Set(keyBytes, val)
 	})
 }
 
@@ -513,35 +557,43 @@ func (s *store) GetUTXOs(address string) (map[string][]types.UTXO, error) {
 	return utxos, err
 }
 
+// GetAllUTXOs retrieves all unspent UTXOs from the database, grouped by owner address.
 func (s *store) GetAllUTXOs() (map[string][]types.UTXO, error) {
 	db := s.db.GetDB()
-
 	allUTXOs := make(map[string][]types.UTXO)
+
 	err := db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(UTXOPrefix)
+		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		prefix := []byte("utxo-")
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		for it.Seek(opts.Prefix); it.ValidForPrefix(opts.Prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
 				var utxo types.UTXO
-				if err := json.Unmarshal(val, &utxo); err != nil {
-					return err
+				// Use CBOR Unmarshal
+				if err := utxo.Unmarshal(val); err != nil {
+					log.Printf("WARN: Failed to unmarshal UTXO data for key %s: %v", string(item.Key()), err)
+					return nil // Skip invalid data
 				}
 				if !utxo.IsSpent {
 					allUTXOs[utxo.OwnerAddress] = append(allUTXOs[utxo.OwnerAddress], utxo)
 				}
 				return nil
 			})
+			// Handle error from item.Value lambda if it occurs
 			if err != nil {
-				return err
+				return fmt.Errorf("error processing UTXO item %s: %w", string(item.Key()), err)
 			}
 		}
 		return nil
 	})
 
-	return allUTXOs, err
+	if err != nil {
+		return nil, fmt.Errorf("error retrieving all UTXOs: %w", err)
+	}
+	return allUTXOs, nil
 }
 
 func (s *store) GetUTXOsByAddress(address string) (map[string][]types.UTXO, error) {
@@ -700,42 +752,56 @@ func (s *store) storeTransactionInTxn(txn *badger.Txn, encryptedData, signature 
 	return nil
 }
 
-func (s *store) GetTransaction(id string) (*types.Transaction, error) {
-	var tx types.Transaction
-	key := []byte(TransactionPrefix + id)
-	data, err := s.db.Get(key)
-	if err != nil {
-		log.Printf("Failed to retrieve transaction: %v", err)
-		return nil, fmt.Errorf("error retrieving transaction: %v", err)
-	}
-	err = tx.Unmarshal(data)
-	if err != nil {
-		log.Printf("Failed to unmarshal transaction: %v", err)
-		return nil, err
-	}
-	return &tx, nil
-}
-
 func (s *store) SaveTransaction(tx *types.Transaction) error {
 	db := s.db.GetDB()
-	txn := db.NewTransaction(true)
-	defer txn.Discard()
+	keyString := fmt.Sprintf("%s%s", TransactionPrefix, tx.ID)
+	keyBytes := []byte(keyString)
 
+	// Use CBOR Marshal
 	txData, err := tx.Marshal()
 	if err != nil {
-		log.Printf("Failed to marshal transaction: %v", err)
-		return fmt.Errorf("error marshaling transaction: %v", err)
+		log.Printf("ERROR: Failed to marshal transaction %s: %v", tx.ID, err)
+		return fmt.Errorf("error marshaling transaction %s: %w", tx.ID, err)
 	}
 
-	key := []byte(TransactionPrefix + tx.ID)
-	if err := txn.Set(key, txData); err != nil {
-		return fmt.Errorf("error storing transaction in BadgerDB: %v", err)
-	}
+	err = db.Update(func(txn *badger.Txn) error {
+		log.Printf("DEBUG: [SaveTransaction] Storing transaction key: %s", keyString)
+		return txn.Set(keyBytes, txData)
+	})
 
-	if err := txn.Commit(); err != nil {
-		return fmt.Errorf("transaction commit failed: %v", err)
+	if err != nil {
+		log.Printf("ERROR: Failed to save transaction %s: %v", tx.ID, err)
+		return fmt.Errorf("error storing transaction %s in BadgerDB: %w", tx.ID, err)
 	}
+	log.Printf("DEBUG: [SaveTransaction] Successfully saved transaction %s", tx.ID)
 	return nil
+}
+
+func (s *store) GetTransaction(id string) (*types.Transaction, error) {
+	var tx types.Transaction
+	keyString := fmt.Sprintf("%s%s", TransactionPrefix, id)
+	keyBytes := []byte(keyString)
+
+	db := s.db.GetDB()
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(keyBytes)
+		if err != nil {
+			return err // Includes KeyNotFound
+		}
+		return item.Value(func(val []byte) error {
+			// Use CBOR Unmarshal
+			return tx.Unmarshal(val)
+		})
+	})
+
+	if err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, fmt.Errorf("transaction %s not found", id)
+		}
+		log.Printf("ERROR: Failed to retrieve/unmarshal transaction %s: %v", id, err)
+		return nil, fmt.Errorf("error retrieving transaction %s: %w", id, err)
+	}
+	return &tx, nil
 }
 
 func (s *store) ProcessTransaction(tx *types.Transaction) error {
@@ -763,23 +829,42 @@ func (s *store) addTransactionInTxn(txn *badger.Txn, tx *types.Transaction) erro
 
 func (s *store) BeginTransaction() (types.TransactionContext, error) {
 	db := s.db.GetDB()
-	txn := db.NewTransaction(true)
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	txn := db.NewTransaction(true) // Start read-write transaction
 	if txn == nil {
 		return nil, fmt.Errorf("failed to create badger transaction")
 	}
-
+	log.Printf("DEBUG: Began new DB transaction.")
 	return shared.NewTransactionContext(txn), nil
 }
 
-func (s *store) RollbackTransaction(txn types.TransactionContext) error {
-	return txn.Rollback()
+func (s *store) RollbackTransaction(ctx types.TransactionContext) error {
+	if ctx == nil {
+		log.Printf("WARN: Attempted to rollback nil transaction context.")
+		return nil // Or return an error?
+	}
+	log.Printf("DEBUG: Rolling back DB transaction.")
+	// Rollback itself doesn't return error in badger/v3 Txn.Discard()
+	ctx.Rollback() // Discard() is called internally by shared.TransactionContext Rollback
+	return nil
 }
 
 func (s *store) CommitTransaction(ctx types.TransactionContext) error {
 	if ctx == nil {
-		return fmt.Errorf("nil transaction context")
+		return fmt.Errorf("cannot commit nil transaction context")
 	}
-	return ctx.Commit()
+	log.Printf("DEBUG: Committing DB transaction.")
+	err := ctx.Commit()
+	if err != nil {
+		log.Printf("ERROR: Failed to commit DB transaction: %v", err)
+		// Attempt rollback as a safety measure? Depends on badger behavior on commit failure.
+		// _ = ctx.Rollback()
+	} else {
+		log.Printf("DEBUG: DB transaction committed successfully.")
+	}
+	return err
 }
 
 func (s *store) SetTransaction(txn types.TransactionContext, key []byte, value []byte) error {
@@ -845,26 +930,24 @@ func (s *store) VerifyTransactionSignature(tx *types.Transaction, pubKey *crypto
 	return nil
 }
 
-func (s *store) TransactionExists(txContext types.TransactionContext, txID string) (bool, error) {
-	if txContext == nil {
-		return false, fmt.Errorf("invalid transaction context: nil context")
-	}
-
-	// Get the badger transaction from the context
-	badgerTxn := txContext.GetBadgerTxn()
+func (s *store) TransactionExists(ctx types.TransactionContext, txID string) (bool, error) {
+	badgerTxn := ctx.GetBadgerTxn()
 	if badgerTxn == nil {
 		return false, fmt.Errorf("invalid transaction context: nil badger transaction")
 	}
 
-	key := []byte("transaction-" + txID)
-	_, err := badgerTxn.Get(key)
+	keyString := fmt.Sprintf("%s%s", TransactionPrefix, txID)
+	keyBytes := []byte(keyString)
+
+	_, err := badgerTxn.Get(keyBytes)
 	if err == badger.ErrKeyNotFound {
-		return false, nil
+		return false, nil // Not found is not an error here
 	}
 	if err != nil {
-		return false, fmt.Errorf("error checking transaction existence: %v", err)
+		log.Printf("ERROR: Error checking transaction existence for %s: %v", txID, err)
+		return false, fmt.Errorf("error checking transaction existence for %s: %w", txID, err)
 	}
-	return true, nil
+	return true, nil // Found
 }
 
 // BLOCK
@@ -957,132 +1040,142 @@ func (s *store) GetLastBlockIndex() (int, error) {
 }
 
 func (s *store) GetLastBlock() (*types.Block, error) {
-	var blockData []byte
-	var lastIndex int = -1
-	db := s.db.GetDB()
-	err := db.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Reverse = true
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		for it.Rewind(); it.Valid(); it.Next() {
-			item := it.Item()
-			key := item.Key()
-			if strings.HasPrefix(string(key), BlockPrefix) {
-				blockNumberStr := strings.TrimPrefix(string(key), BlockPrefix)
-				var parseErr error
-				lastIndex, parseErr = strconv.Atoi(blockNumberStr)
-				if parseErr != nil {
-					log.Printf("Failed to parse block number: %v", parseErr)
-					return fmt.Errorf("error parsing block number: %v", parseErr)
-				}
-				blockData, parseErr = item.ValueCopy(nil)
-				if parseErr != nil {
-					log.Printf("Failed to retrieve block data: %v", parseErr)
-					return fmt.Errorf("error retrieving block data: %v", parseErr)
-				}
-				return nil
-			}
-		}
-		return fmt.Errorf("no blocks found in the database")
-	})
-
+	lastIndex, err := s.GetLastBlockNumber()
 	if err != nil {
-		log.Printf("Failed to retrieve last block: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to get last block number: %w", err)
 	}
-
-	if lastIndex == -1 {
-		log.Printf("No blocks found in the database")
-		return nil, fmt.Errorf("no blocks found in the database")
+	if lastIndex < 0 {
+		return nil, fmt.Errorf("no blocks found in database") // Or return nil, nil
 	}
-
-	var b types.Block
-	err = b.Unmarshal(blockData)
-	if err != nil {
-		log.Printf("Failed to unmarshal block: %v", err)
-		return nil, fmt.Errorf("error unmarshaling block: %v", err)
-	}
-
-	return &b, nil
+	return s.GetBlock(uint32(lastIndex))
 }
 
 func (s *store) GetLastBlockNumber() (int, error) {
-	var lastIndex int = -1 // Default to -1 to indicate no blocks if none found
+	var lastIndex int = -1 // Default if no blocks found
 	db := s.db.GetDB()
 	err := db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
-		opts.Reverse = true // Iterate in reverse order to get the latest block first
+		opts.Prefix = []byte(BlockPrefix)
+		opts.Reverse = true // Iterate backwards
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		if it.Rewind(); it.Valid() {
+		// Seek to the logical end of the prefix range in reverse
+		// Since keys are blk-0, blk-1, etc., seeking to blk-\xff\xff... should work?
+		// Simpler: just Rewind in reverse and take the first valid key.
+		it.Rewind()
+
+		if it.ValidForPrefix(opts.Prefix) {
 			item := it.Item()
 			key := item.Key()
-			if strings.HasPrefix(string(key), BlockPrefix) {
-				blockNumberStr := strings.TrimPrefix(string(key), BlockPrefix)
-				var parseErr error
-				lastIndex, parseErr = strconv.Atoi(blockNumberStr)
-				if parseErr != nil {
-					log.Printf("Error parsing block number from key %s: %v", key, parseErr)
-					return parseErr
-				}
-				return nil // Stop after the first (latest) block
+			blockNumberStr := strings.TrimPrefix(string(key), BlockPrefix)
+			var parseErr error
+			lastIndex, parseErr = strconv.Atoi(blockNumberStr)
+			if parseErr != nil {
+				// Log the problematic key
+				log.Printf("ERROR: Failed to parse block number from key '%s': %v", string(key), parseErr)
+				// Continue searching? Or return error? Let's return error.
+				return fmt.Errorf("failed to parse block number from key %s: %w", string(key), parseErr)
 			}
+			return nil // Found the latest, stop iteration
 		}
-		return fmt.Errorf("no blocks found in the database")
+		// If loop finishes without finding a key with the prefix
+		return badger.ErrKeyNotFound // Treat as not found
 	})
 
-	if err != nil {
-		log.Printf("Failed to retrieve the last block index: %v", err)
-		return -1, err // Return -1 when no block is found
+	if err != nil && err != badger.ErrKeyNotFound {
+		log.Printf("ERROR: Failed to retrieve the last block index: %v", err)
+		return -1, err // Return error
+	}
+	// If ErrKeyNotFound, lastIndex remains -1, return -1 and nil error
+	if err == badger.ErrKeyNotFound {
+		log.Printf("DEBUG: No blocks found matching prefix %s", BlockPrefix)
+		return -1, nil
 	}
 
 	return lastIndex, nil
-
 }
 
 func (s *store) GetBlock(blockNumber uint32) (*types.Block, error) {
-	key := fmt.Sprintf("%s%d", BlockPrefix, blockNumber)
-	log.Printf("Retrieving block %d from the database", blockNumber)
-	var blockData []byte
-
-	blockData, err := s.db.Get([]byte(key))
-	if err != nil {
-		log.Printf("Failed to retrieve block %d: %v", blockNumber, err)
-		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
-	}
-	log.Printf("Block %d retrieved successfully", blockNumber)
-
 	var block types.Block
-	err = block.Unmarshal(blockData)
+	keyString := fmt.Sprintf("%s%d", BlockPrefix, blockNumber)
+	keyBytes := []byte(keyString)
+
+	db := s.db.GetDB()
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(keyBytes)
+		if err != nil {
+			return err // Includes KeyNotFound
+		}
+		return item.Value(func(val []byte) error {
+			// Use block's Unmarshal method (assuming it uses CBOR)
+			return block.Unmarshal(val)
+		})
+	})
+
 	if err != nil {
-		log.Printf("Failed to unmarshal block %d: %v", blockNumber, err)
-		return nil, fmt.Errorf("failed to unmarshal block data: %v", err)
+		if err == badger.ErrKeyNotFound {
+			return nil, fmt.Errorf("block %d not found", blockNumber)
+		}
+		log.Printf("ERROR: Failed to retrieve/unmarshal block %d: %v", blockNumber, err)
+		return nil, fmt.Errorf("error retrieving block %d: %w", blockNumber, err)
 	}
 	return &block, nil
 }
 
 func (s *store) SaveBlock(b *types.Block) error {
-	key := fmt.Sprintf("%s%d", BlockPrefix, b.Index)
-	log.Printf("Inserting block %d into database", b.Index)
+	// Ensure the interface still includes this non-context signature
+	keyString := fmt.Sprintf("%s%d", BlockPrefix, b.Index)
+	keyBytes := []byte(keyString)
+	log.Printf("DEBUG: [SaveBlock] Saving block %d at key %s", b.Index, keyString)
 
+	// Use block's Marshal method (assuming it uses CBOR)
 	blockData, err := b.Marshal()
 	if err != nil {
-		log.Printf("Failed to marshal block %d: %v", b.Index, err)
-		return fmt.Errorf("error marshaling block %d: %v", b.Index, err)
+		log.Printf("ERROR: Failed to marshal block %d: %v", b.Index, err)
+		return fmt.Errorf("error marshaling block %d: %w", b.Index, err)
 	}
-	db := s.db.GetDB()
+	if len(blockData) == 0 {
+		return fmt.Errorf("marshaled block data is empty for block %d", b.Index)
+	}
+
+	db := s.db.GetDB() // Get underlying DB
 	err = db.Update(func(txn *badger.Txn) error {
-		log.Printf("Storing data at key: %s", key)
-		return txn.Set([]byte(key), blockData)
+		log.Printf("DEBUG: [SaveBlock] Storing data via db.Update at key: %s", keyString)
+		return txn.Set(keyBytes, blockData)
 	})
+
 	if err != nil {
-		log.Printf("Error inserting block %d: %v", b.Index, err)
-		return fmt.Errorf("error inserting block into BadgerDB: %v", err)
+		log.Printf("ERROR: Error inserting block %d via SaveBlock: %v", b.Index, err)
+		return fmt.Errorf("error inserting block %d into BadgerDB: %w", b.Index, err)
 	}
-	log.Printf("Block %d inserted successfully", b.Index)
+	log.Printf("DEBUG: Block %d inserted successfully via SaveBlock.", b.Index)
+	return nil
+}
+
+func (s *store) SaveBlockWithContext(ctx types.TransactionContext, b *types.Block) error {
+	badgerTxn := ctx.GetBadgerTxn()
+	if badgerTxn == nil {
+		return fmt.Errorf("invalid transaction context")
+	}
+
+	keyString := fmt.Sprintf("%s%d", BlockPrefix, b.Index)
+	keyBytes := []byte(keyString)
+
+	// Use block's Marshal method (assuming it uses CBOR)
+	blockData, err := b.Marshal()
+	if err != nil {
+		return fmt.Errorf("error marshaling block %d: %w", b.Index, err)
+	}
+	if len(blockData) == 0 {
+		return fmt.Errorf("marshaled block data is empty for block %d", b.Index)
+	}
+
+	log.Printf("DEBUG: [SaveBlockWithContext TX] Storing block %d at key %s", b.Index, keyString)
+	if err := badgerTxn.Set(keyBytes, blockData); err != nil {
+		return fmt.Errorf("failed to set block %d in transaction: %w", b.Index, err)
+	}
+	ctx.SetModified(keyString) // Optional: track modified keys
 	return nil
 }
 
@@ -1129,99 +1222,229 @@ func (s *store) RetrieveBlock(blockNumber int) ([]byte, error) {
 
 var publicKeyCache = sync.Map{}
 
+// GetPublicKey retrieves a public key using standard prefix.
 func (s *store) GetPublicKey(addr address.Address) (crypto.PublicKey, error) {
-	key := []byte(PublicKeyPrefix + addr.String())
-	log.Printf("DEBUG: [GetPublicKey] Attempting to get key: %s", string(key))
+	db := s.db.GetDB()
+	addrStr := addr.String()
+	keyString := fmt.Sprintf("%s%s", PublicKeyPrefix, addrStr)
+	keyBytes := []byte(keyString)
+	log.Printf("DEBUG: [GetPublicKey] Attempting to get key: %s", keyString)
 
 	var pubKeyBytes []byte
-	db := s.db.GetDB() // Get the underlying BadgerDB instance
-
-	// Use a read-only transaction (View) for safety
 	err := db.View(func(txn *badger.Txn) error {
-		log.Printf("DEBUG: [GetPublicKey] Inside DB View for key: %s", string(key))
-		item, errGet := txn.Get(key)
+		item, errGet := txn.Get(keyBytes)
 		if errGet != nil {
-			// Log the specific error from Badger
-			log.Printf("DEBUG: [GetPublicKey] txn.Get failed for key %s: %v", string(key), errGet)
-			return errGet // Propagate error (like badger.ErrKeyNotFound)
+			return errGet
 		}
-
-		// Copy the value out - essential when using View
-		pubKeyBytes, errGet = item.ValueCopy(nil)
-		if errGet != nil {
-			log.Printf("DEBUG: [GetPublicKey] item.ValueCopy failed for key %s: %v", string(key), errGet)
-		}
+		pubKeyBytes, errGet = item.ValueCopy(nil) // Copy value out of transaction
 		return errGet
 	})
 
-	// Handle errors from the View operation
 	if err != nil {
-		log.Printf("ERROR: [GetPublicKey] Failed DB view/get operation for key %s: %v", string(key), err)
 		if err == badger.ErrKeyNotFound {
-			// Return a more specific "not found" error
-			return nil, fmt.Errorf("public key not found for address %s", addr.String())
+			return nil, fmt.Errorf("public key not found for address %s", addrStr)
 		}
-		// Return other DB errors
-		return nil, fmt.Errorf("error retrieving public key data for %s: %w", addr.String(), err)
+		log.Printf("ERROR: [GetPublicKey] Failed DB view/get for %s: %v", addrStr, err)
+		return nil, fmt.Errorf("error retrieving public key data for %s: %w", addrStr, err)
 	}
-
-	// Check if retrieved data is empty
 	if len(pubKeyBytes) == 0 {
-		log.Printf("ERROR: [GetPublicKey] Retrieved empty public key data for address %s", addr.String())
-		return nil, fmt.Errorf("retrieved empty public key data for address %s", addr.String())
+		log.Printf("ERROR: [GetPublicKey] Retrieved empty data for %s", addrStr)
+		return nil, fmt.Errorf("retrieved empty public key data for address %s", addrStr)
 	}
-	log.Printf("DEBUG: [GetPublicKey] Retrieved %d bytes for key %s", len(pubKeyBytes), string(key))
+	log.Printf("DEBUG: [GetPublicKey] Retrieved %d bytes for key %s", len(pubKeyBytes), keyString)
 
-	// --- *** CORRECTED UNMARSHALING *** ---
-	// Use a factory function from your crypto package to unmarshal bytes
-	// into the correct concrete type implementing crypto.PublicKey.
-	// Replace 'crypto.NewPublicKeyFromBytes' with your actual function name.
+	// Use factory function to unmarshal into concrete type
 	pubKey, errUnmarshal := crypto.NewPublicKeyFromBytes(pubKeyBytes)
 	if errUnmarshal != nil {
-		log.Printf("ERROR: [GetPublicKey] Failed to unmarshal PublicKey from bytes for address %s: %v", addr.String(), errUnmarshal)
-		return nil, fmt.Errorf("error unmarshaling public key for %s: %w", addr.String(), errUnmarshal)
+		log.Printf("ERROR: [GetPublicKey] Failed unmarshal for %s: %v", addrStr, errUnmarshal)
+		return nil, fmt.Errorf("error unmarshaling public key for %s: %w", addrStr, errUnmarshal)
 	}
-	// --- *** END CORRECTION *** ---
 
-	log.Printf("DEBUG: [GetPublicKey] Successfully retrieved and unmarshaled key for address %s", addr.String())
-	return pubKey, nil // Return the interface value containing the concrete key
+	log.Printf("DEBUG: [GetPublicKey] Successfully retrieved key for %s", addrStr)
+	return pubKey, nil
 }
 
 // StoreValidatorPublicKey stores a validator's ML-DSA44 public key
 func (s *store) SavePublicKey(pubKey crypto.PublicKey) error {
 	db := s.db.GetDB()
-
 	addr, err := pubKey.Address()
 	if err != nil {
-		log.Printf("Failed to get address from public key: %v", err)
-		return fmt.Errorf("error getting address from public key: %v", err)
+		return fmt.Errorf("error getting address from public key: %w", err)
 	}
+	addrStr := addr.String()
 
-	// Use MarshalBinary if that's the standard, otherwise Marshal() as written
-	pubKeyData, err := pubKey.Marshal() // Or pubKey.MarshalBinary()
+	// Use MarshalBinary for potentially more standard/compact representation if available
+	// Otherwise, use Marshal() if that's the intended method.
+	var pubKeyData []byte
+	if marshaller, ok := pubKey.(interface{ MarshalBinary() ([]byte, error) }); ok {
+		pubKeyData, err = marshaller.MarshalBinary()
+	} else {
+		pubKeyData, err = pubKey.Marshal() // Fallback to Marshal
+	}
 	if err != nil {
-		log.Printf("Failed to marshal public key: %v", err)
-		return fmt.Errorf("error marshaling public key: %v", err)
+		return fmt.Errorf("error marshaling public key for %s: %w", addrStr, err)
 	}
 	if len(pubKeyData) == 0 {
-		return fmt.Errorf("marshaled public key data is empty")
+		return fmt.Errorf("marshaled public key data is empty for %s", addrStr)
 	}
 
-	// Store the bytes directly
-	return db.Update(func(txn *badger.Txn) error {
-		key := []byte(PublicKeyPrefix + addr.String())
-		log.Printf("Storing public key %s, key: %s", addr.String(), string(key)) // Log key as string
-		err := txn.Set(key, pubKeyData)
-		if err != nil {
-			log.Printf("Failed to store public key for address %s: %v", addr.String(), err)
-			return fmt.Errorf("failed to store public key: %v", err)
-		}
-		log.Printf("Stored public key for address: %s", addr.String())
-		return nil
+	keyString := fmt.Sprintf("%s%s", PublicKeyPrefix, addrStr)
+	keyBytes := []byte(keyString)
+
+	err = db.Update(func(txn *badger.Txn) error {
+		log.Printf("DEBUG: [SavePublicKey] Storing public key for %s, key: %s", addrStr, keyString)
+		return txn.Set(keyBytes, pubKeyData)
 	})
+	if err != nil {
+		log.Printf("ERROR: [SavePublicKey] Failed for %s: %v", addrStr, err)
+	} else {
+		log.Printf("DEBUG: [SavePublicKey] Success for %s", addrStr)
+	}
+	return err
+}
+
+func (s *store) UpdateTransactionStatus(txID string, status string, blockHash []byte) error {
+	// Needs a key schema, e.g., "txstatus-<txid>"
+	// Needs serialization for status/blockHash
+	// Uses db.Update()
+	log.Printf("WARN: UpdateTransactionStatus DB persistence not fully implemented.")
+	// Example Structure:
+	db := s.db.GetDB()
+	key := []byte(fmt.Sprintf("txstatus-%s", txID))
+	// Simple value: status string + hex block hash
+	valueStr := status
+	if blockHash != nil {
+		valueStr += ":" + fmt.Sprintf("%x", blockHash)
+	}
+	return db.Update(func(txn *badger.Txn) error {
+		return txn.Set(key, []byte(valueStr))
+	})
+	// return nil // Placeholder
 }
 
 // BALANCE
+func (s *store) AddToBalance(ctx types.TransactionContext, address string, amount int64) error {
+	// ... (initial checks) ...
+
+	keyString := fmt.Sprintf("%s%s", BalancePrefix, address)
+	keyBytes := []byte(keyString)
+	var currentBalance int64 = 0 // Initialize to 0
+	badgerTxn := ctx.GetBadgerTxn()
+
+	// Attempt to retrieve the existing balance item
+	item, err := badgerTxn.Get(keyBytes)
+
+	// Handle potential errors during Get
+	if err != nil && err != badger.ErrKeyNotFound {
+		// If there's an error other than "not found", return it
+		return fmt.Errorf("failed to get current balance for %s: %w", address, err)
+	}
+
+	// *** If err is nil, the key WAS found ***
+	if err == nil { // Key exists, read the value
+		log.Printf("DEBUG: [AddToBalance TX] Key %s FOUND. Reading value...", keyString) // ADD THIS
+		err = item.Value(func(val []byte) error {
+			log.Printf("DEBUG: [AddToBalance TX] Value bytes for %s: %x (length %d)", keyString, val, len(val)) // ADD THIS
+			if len(val) == 8 {
+				currentBalance = int64(binary.BigEndian.Uint64(val))
+				log.Printf("DEBUG: [AddToBalance TX] Successfully decoded balance for %s: %d", keyString, currentBalance) // ADD THIS
+				return nil
+			}
+			// Handle potentially malformed data - log and treat as 0 for recovery?
+			if len(val) == 0 {
+				log.Printf("WARN: Balance data for %s is empty. Treating as 0.", address)
+				currentBalance = 0
+				return nil
+			}
+			// Log warning for unexpected length
+			log.Printf("WARN: Balance data for %s has unexpected length %d. Treating as 0.", address, len(val))
+			currentBalance = 0 // Treat malformed data as 0 balance
+			// Return nil to avoid halting the process, or return an error if strictness is required:
+			// return fmt.Errorf("invalid balance data length for %s: %d bytes", address, len(val))
+			return nil
+
+		})
+		// Check for errors during item.Value() execution
+		if err != nil {
+			return fmt.Errorf("failed to read current balance value for %s: %w", address, err)
+		}
+	}
+	// *** If err was badger.ErrKeyNotFound, currentBalance remains 0 ***
+	log.Printf("DEBUG: [AddToBalance TX] Current balance for %s before change: %d", address, currentBalance)
+
+	// Calculate the new balance
+	newBalance := currentBalance + amount
+	if newBalance < 0 {
+		return fmt.Errorf("insufficient balance for %s: current=%d, attempted change=%d, resulting in %d", address, currentBalance, amount, newBalance)
+	}
+
+	// Encode and set the new balance
+	balanceBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(balanceBytes, uint64(newBalance))
+
+	log.Printf("DEBUG: [AddToBalance TX] Updating balance for %s: %d -> %d (Change: %d)", address, currentBalance, newBalance, amount)
+	if err := badgerTxn.Set(keyBytes, balanceBytes); err != nil {
+		return fmt.Errorf("failed to set new balance for %s in transaction: %w", address, err)
+	}
+	// ... (SetModified, return nil) ...
+	ctx.SetModified(keyString)
+	return nil
+}
+
+func (s *store) SaveStakeholderBalance(address string, balance int64) error {
+	db := s.db.GetDB()
+	keyString := fmt.Sprintf("%s%s", BalancePrefix, address)
+	keyBytes := []byte(keyString)
+	log.Printf("DEBUG: [SaveStakeholderBalance] Saving balance for %s: %d", address, balance)
+
+	balanceBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(balanceBytes, uint64(balance))
+
+	err := db.Update(func(txn *badger.Txn) error {
+		return txn.Set(keyBytes, balanceBytes)
+	})
+
+	if err != nil {
+		log.Printf("ERROR: [SaveStakeholderBalance] Failed for %s: %v", address, err)
+	} else {
+		log.Printf("DEBUG: [SaveStakeholderBalance] Success for %s", address)
+	}
+	return err
+}
+
+func (s *store) GetStakeholderBalance(address string) (int64, error) {
+	db := s.db.GetDB()
+	keyString := fmt.Sprintf("%s%s", BalancePrefix, address)
+	keyBytes := []byte(keyString)
+	var balance int64 = 0
+
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(keyBytes)
+		if err == badger.ErrKeyNotFound {
+			return nil // Not found is not an error, balance is 0
+		}
+		if err != nil {
+			return err // Other DB error
+		}
+		return item.Value(func(val []byte) error {
+			if len(val) == 8 {
+				balance = int64(binary.BigEndian.Uint64(val))
+				return nil
+			}
+			if len(val) == 0 {
+				balance = 0 // Treat empty as 0
+				return nil
+			}
+			return fmt.Errorf("invalid balance data length: %d", len(val))
+		})
+	})
+	if err != nil {
+		log.Printf("ERROR: [GetStakeholderBalance] Failed for %s: %v", address, err)
+		return 0, err
+	}
+	log.Printf("DEBUG: [GetStakeholderBalance] Retrieved balance for %s: %d", address, balance)
+	return balance, nil
+}
 
 // GetBalance calculates the total balance for a given address based on its UTXOs.
 // This function is useful for determining the spendable balance of a blockchain account.

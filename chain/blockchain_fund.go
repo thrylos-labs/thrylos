@@ -6,23 +6,33 @@ import (
 	"time" // Keep time import - will be needed for UTXO ID later
 
 	// Ensure necessary imports are present
-	"github.com/thrylos-labs/thrylos"           // For protobuf UTXO if needed by helpers
-	"github.com/thrylos-labs/thrylos/types"  // Assuming types path for UTXO, Message etc.
+	"github.com/thrylos-labs/thrylos"                // For protobuf UTXO if needed by helpers
 	"github.com/thrylos-labs/thrylos/crypto/address" // For address.Address type
-
+	"github.com/thrylos-labs/thrylos/types"          // Assuming types path for UTXO, Message etc.
 )
 
 // Conversion function will be needed when UTXO logic is added below
 func convertTypesUTXOToProtoUTXO(typeUtxo types.UTXO) *thrylos.UTXO {
-	return &thrylos.UTXO{
-		TransactionId: typeUtxo.TransactionID,
+	// Create default proto UTXO
+	protoUTXO := &thrylos.UTXO{
+		// Map fields:
+		TransactionId: typeUtxo.TransactionID, // Assuming TransactionID exists
 		Index:         int32(typeUtxo.Index),
 		OwnerAddress:  typeUtxo.OwnerAddress,
-		Amount:        int64(typeUtxo.Amount),
-		IsSpent:       typeUtxo.IsSpent,
+		Amount:        int64(typeUtxo.Amount), // Ensure amount.Amount converts safely to int64
+		IsSpent:       typeUtxo.IsSpent,       // Assuming IsSpent exists
+		// Map other fields if necessary
 	}
-}
 
+	// Check for nil or empty required fields after mapping if necessary
+	if protoUTXO.TransactionId == "" || protoUTXO.OwnerAddress == "" {
+		log.Printf("WARN: Conversion resulted in proto UTXO with missing TxID or OwnerAddress: %+v", protoUTXO)
+		// Decide how to handle this - return nil or the potentially invalid proto?
+		// Returning nil might be safer if TxID/Owner are absolutely required downstream.
+		// return nil
+	}
+	return protoUTXO
+}
 
 func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	mapAddress := fmt.Sprintf("%p", &bc.Blockchain.Stakeholders)
@@ -38,15 +48,15 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 
 	// --- FIX for AddressString undefined ---
 	var genesisAddr *address.Address // Variable for the address object
-	var genesisAddrStr string      // Variable for the address string
-	var err error                  // Variable for error checking
+	var genesisAddrStr string        // Variable for the address string
+	var err error                    // Variable for error checking
 
 	genesisPubKey := bc.Blockchain.GenesisAccount.PublicKey() // Get PublicKey interface value
-	if genesisPubKey == nil { // It's good practice to check if the key could be nil
-		 finalErr := fmt.Errorf("genesis account public key is nil")
-		 log.Printf("ERROR: %v", finalErr)
-		 msg.ResponseCh <- types.Response{Error: finalErr}
-		 return
+	if genesisPubKey == nil {                                 // It's good practice to check if the key could be nil
+		finalErr := fmt.Errorf("genesis account public key is nil")
+		log.Printf("ERROR: %v", finalErr)
+		msg.ResponseCh <- types.Response{Error: finalErr}
+		return
 	}
 
 	genesisAddr, err = genesisPubKey.Address() // Step 1: Call Address() method
@@ -66,9 +76,8 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	genesisAddrStr = genesisAddr.String() // Step 2: Call String() on the address object
 	// --- END FIX ---
 
-
 	// --- Use Database Transaction for Atomicity ---
-    // NOTE: Adding DB transaction logic here as it's essential for the *next* step (UTXO creation)
+	// NOTE: Adding DB transaction logic here as it's essential for the *next* step (UTXO creation)
 	var dbTxContext types.TransactionContext
 	dbTxContext, err = bc.Blockchain.Database.BeginTransaction()
 	if err != nil {
@@ -84,24 +93,24 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 		}
 	}()
 
-
 	// --- Lock In-Memory State (Single Scope for consistency) ---
 	bc.Blockchain.Mu.Lock()
 	defer bc.Blockchain.Mu.Unlock()
 
-
 	// --- Check Genesis Balance & Update In-Memory Stakeholders ---
 	log.Printf("All addresses in stakeholders map before funding:")
-	for addr, bal := range bc.Blockchain.Stakeholders { log.Printf("  %s: %d", addr, bal) }
+	for addr, bal := range bc.Blockchain.Stakeholders {
+		log.Printf("  %s: %d", addr, bal)
+	}
 
 	genesisBalance, genesisExists := bc.Blockchain.Stakeholders[genesisAddrStr] // Use corrected genesisAddrStr
-    if !genesisExists {
-        finalErr = fmt.Errorf("genesis address %s not found in stakeholders map", genesisAddrStr)
-        log.Printf("ERROR: %v", finalErr)
-        // Unlock happens via defer, just send response and return
-        msg.ResponseCh <- types.Response{Error: finalErr}
-        return
-    }
+	if !genesisExists {
+		finalErr = fmt.Errorf("genesis address %s not found in stakeholders map", genesisAddrStr)
+		log.Printf("ERROR: %v", finalErr)
+		// Unlock happens via defer, just send response and return
+		msg.ResponseCh <- types.Response{Error: finalErr}
+		return
+	}
 	log.Printf("Genesis address: %s, Balance: %d", genesisAddrStr, genesisBalance)
 
 	amountValue := int64(req.Amount)
@@ -109,7 +118,7 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	if genesisBalance < amountValue {
 		finalErr = fmt.Errorf("insufficient genesis funds: %d needed, %d available", amountValue, genesisBalance)
 		log.Printf("ERROR: %v", finalErr)
-        msg.ResponseCh <- types.Response{Error: finalErr}
+		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
 
@@ -119,7 +128,6 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	bc.Blockchain.Stakeholders[req.Address] = recipientBalance + amountValue
 	log.Printf("Credited %d tokens (in-memory) to address %s, new balance: %d",
 		amountValue, req.Address, bc.Blockchain.Stakeholders[req.Address])
-
 
 	// --- Create Funding UTXO --- <<< ADDED LOGIC >>>
 	fundingTxID := fmt.Sprintf("funding-%s-%d", req.Address, time.Now().UnixNano())
@@ -132,12 +140,10 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	}
 	fundingUtxoKey := fundingUtxo.Key() // Or fmt.Sprintf("%s-%d", fundingTxID, 0)
 
-
 	// --- Add Funding UTXO to In-Memory Map --- <<< ADDED LOGIC >>>
 	protoUtxo := convertTypesUTXOToProtoUTXO(fundingUtxo) // Convert to map value type (*thrylos.UTXO)
 	bc.Blockchain.UTXOs[fundingUtxoKey] = append(bc.Blockchain.UTXOs[fundingUtxoKey], protoUtxo)
 	log.Printf("DEBUG: Added funding UTXO %s to in-memory map", fundingUtxoKey)
-
 
 	// --- Persist State Changes to Database (within DB Transaction) ---
 	log.Printf("DEBUG: Persisting balance/UTXO updates to DB...")
@@ -147,7 +153,7 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	if err != nil {
 		finalErr = fmt.Errorf("failed to update genesis balance in DB: %v", err)
 		log.Printf("ERROR: %v", finalErr)
-        msg.ResponseCh <- types.Response{Error: finalErr}
+		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
 	log.Printf("SUCCESS: Updated genesis balance for %s in DB", genesisAddrStr)
@@ -157,7 +163,7 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	if err != nil {
 		finalErr = fmt.Errorf("failed to update recipient %s balance in DB: %v", req.Address, err)
 		log.Printf("ERROR: %v", finalErr)
-        msg.ResponseCh <- types.Response{Error: finalErr}
+		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
 	log.Printf("SUCCESS: Updated recipient balance for %s in DB", req.Address)
@@ -167,11 +173,10 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	if err != nil {
 		finalErr = fmt.Errorf("failed to persist funding UTXO %s to DB: %v", fundingUtxoKey, err)
 		log.Printf("ERROR: %v", finalErr)
-        msg.ResponseCh <- types.Response{Error: finalErr}
+		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
 	log.Printf("SUCCESS: Persisted funding UTXO %s to DB", fundingUtxoKey)
-
 
 	// --- Commit DB Transaction ---
 	// If we got here, all DB ops conceptually succeeded. Commit now.
@@ -180,11 +185,10 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 		finalErr = fmt.Errorf("failed to commit funding DB transaction for %s: %v", req.Address, commitErr)
 		log.Printf("ERROR: %v", finalErr)
 		// Rollback is handled by defer using finalErr
-        msg.ResponseCh <- types.Response{Error: finalErr}
+		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
 	dbTxContext = nil // Prevent rollback by defer if commit was successful
-
 
 	// --- Success ---
 	log.Printf("Successfully funded address %s and created UTXO %s", req.Address, fundingUtxoKey)

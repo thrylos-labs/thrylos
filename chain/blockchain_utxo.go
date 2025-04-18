@@ -81,17 +81,28 @@ func (bc *BlockchainImpl) GetUTXOsForUser(address string) ([]types.UTXO, error) 
 
 // // Always deals with nanoTHRYLOS as int64
 func (bc *BlockchainImpl) GetBalance(address string) (amount.Amount, error) {
-	balance := amount.Amount(0) // Or however Amount type is initialized
-	utxos, err := bc.Blockchain.Database.GetUTXOsForAddress(address)
-	if err != nil {
-		return amount.Amount(0), err
-	}
+	bc.Blockchain.Mu.RLock() // Lock for reading the UTXOs map
+	defer bc.Blockchain.Mu.RUnlock()
 
-	for _, utxo := range utxos {
-		if !utxo.IsSpent {
-			balance = balance + utxo.Amount // Or use appropriate method like Add()
+	log.Printf("DEBUG: [GetBalance] Calculating balance for %s from in-memory UTXO map (%d entries)", address, len(bc.Blockchain.UTXOs))
+	balance := amount.Amount(0)
+
+	// Iterate through the in-memory UTXO map (map[string][]*thrylos.UTXO)
+	// This requires checking the OwnerAddress field of the stored *thrylos.UTXO objects
+	for key, utxoSlice := range bc.Blockchain.UTXOs {
+		// The key itself might not contain the address if using "txid-index" format.
+		// We need to check the UTXOs within the slice.
+		for _, protoUtxo := range utxoSlice {
+			if protoUtxo != nil && protoUtxo.OwnerAddress == address {
+				// Found an unspent UTXO belonging to the address
+				// Note: We assume UTXOs in this map are unspent. `updateStateForBlock` removes spent ones.
+				balance += amount.Amount(protoUtxo.Amount) // Add amount
+				log.Printf("DEBUG: [GetBalance] Added UTXO %s (Amount: %d)", key, protoUtxo.Amount)
+			}
 		}
 	}
+
+	log.Printf("DEBUG: [GetBalance] Calculated balance for %s: %d", address, balance)
 	return balance, nil
 }
 

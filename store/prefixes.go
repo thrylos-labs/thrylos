@@ -4,7 +4,8 @@ package store
 const (
 	AddressPrefix     = "ad-"
 	TransactionPrefix = "tx-"
-	UTXOPrefix        = "ux-" // Unspent Transaction Output
+	UTXOPrefix        = "ux-"
+	BalancePrefix     = "bal-"
 	BlockPrefix       = "bl-"
 	PublicKeyPrefix   = "pu-"
 	PrivateKeyPrifx   = "pk-"

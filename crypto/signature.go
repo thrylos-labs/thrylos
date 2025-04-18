@@ -14,6 +14,8 @@ type signature struct {
 	sig []byte
 }
 
+const MLDSASignatureSize = mldsa44.SignatureSize
+
 var _ Signature = (*signature)(nil) // Interface assertion
 
 // NewSignature constructor matches provided code, returns interface

@@ -1,6 +1,8 @@
 package types
 
 import (
+	"strings"
+
 	badger "github.com/dgraph-io/badger/v3" // Change this import to use v3
 	"github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto"
@@ -46,4 +48,14 @@ func (tx *Transaction) Marshal() ([]byte, error) {
 // Unmarshal deserializes the transaction from CBOR format
 func (tx *Transaction) Unmarshal(data []byte) error {
 	return cbor.Unmarshal(data, tx)
+}
+
+func (tx *Transaction) IsGenesis() bool {
+	// Use the actual prefix from NewBlockchain
+	return strings.HasPrefix(tx.ID, "genesis_tx_")
+}
+
+func (tx *Transaction) IsFunding() bool {
+	// Example implementation: check if ID matches funding pattern
+	return strings.HasPrefix(tx.ID, "funding-")
 }

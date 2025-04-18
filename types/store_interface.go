@@ -39,10 +39,14 @@ type Store interface {
 	GetLastBlock() (*Block, error)
 	GetLastBlockNumber() (int, error)
 	GetBlock(blockNumber uint32) (*Block, error)
-	SaveBlock(blk *Block) error
 	GetLastBlockData() ([]byte, error)
 	GetLastBlockIndex() (int, error)
 	StoreBlock(blockData []byte, blockNumber int) error
+
+	SaveBlock(blk *Block) error                                                 // For Genesis
+	SaveBlockWithContext(ctx TransactionContext, blk *Block) error              // For AddBlockToChain
+	AddToBalance(ctx TransactionContext, address string, amount int64) error    // New method
+	SpendUTXO(ctx TransactionContext, utxoKey string) (amount int64, err error) // New method
 
 	//Validator
 	// GetValidator(addr address.Address) (*Validator, error)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -68,7 +69,7 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	}
 	log.Printf("Attempting to add Block %d to chain...", block.Index)
 
-	// 1. Verify Signature and Hash
+	// 1. Verify Signature and Hash (Does not require lock yet)
 	log.Printf("Verifying signed block %d...", block.Index)
 	if err := bc.VerifySignedBlock(block); err != nil {
 		log.Printf("ERROR: Block %d failed signature/hash verification: %v", block.Index, err)
@@ -76,11 +77,11 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	}
 	log.Printf("Block %d signature/hash verified successfully.", block.Index)
 
-	// --- Acquire Lock ---
+	// --- Acquire Lock (Needed for validation against in-memory state & final update) ---
 	bc.Blockchain.Mu.Lock()
 	defer bc.Blockchain.Mu.Unlock()
 
-	// 2. Basic Validation (Index, PrevHash)
+	// 2. Basic Validation (Index, PrevHash) against current in-memory chain
 	if len(bc.Blockchain.Blocks) > 0 {
 		prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
 		if block.Index != prevBlock.Index+1 {
@@ -90,43 +91,399 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 			log.Printf("PrevHash mismatch! Expected: %s, Got: %s", prevBlock.Hash.String(), block.PrevHash.String())
 			return fmt.Errorf("invalid PrevHash: expected %s, got %s", prevBlock.Hash.String(), block.PrevHash.String())
 		}
-	} else if block.Index != 0 { // Should not happen if genesis exists
-		return fmt.Errorf("invalid block index for non-genesis: expected > 0, got %d", block.Index)
+	} else if block.Index != 0 { // Chain is empty, only genesis (index 0) allowed
+		return fmt.Errorf("invalid block index for non-genesis on empty chain: expected 0, got %d", block.Index)
 	}
 
-	// 3. Append to in-memory list
+	// --- *** ATOMIC DATABASE PERSISTENCE *** ---
+	// Start a database transaction
+	dbTxContext, err := bc.Blockchain.Database.BeginTransaction()
+	if err != nil {
+		log.Printf("ERROR: Failed to begin DB transaction for block %d: %v", block.Index, err)
+		return fmt.Errorf("failed start DB tx for block %d: %w", block.Index, err)
+	}
+
+	// Use a named error variable to signal rollback needed in defer
+	var finalErr error
+	defer func() {
+		if finalErr != nil && dbTxContext != nil {
+			log.Printf("WARN: Rolling back DB transaction for block %d due to error: %v", block.Index, finalErr)
+			_ = bc.Blockchain.Database.RollbackTransaction(dbTxContext)
+		}
+	}()
+
+	// 3. Persist State Changes (UTXOs, Balances) to DB FIRST
+	//    Uses the helper function below, which calls context-aware store methods
+	finalErr = bc.persistStateChangesToDB(dbTxContext, block)
+	if finalErr != nil {
+		log.Printf("ERROR: Failed to persist state changes to DB for block %d: %v", block.Index, finalErr)
+		return finalErr // Defer handles rollback
+	}
+	log.Printf("DEBUG: Successfully persisted state changes to DB for Block %d (within transaction).", block.Index)
+
+	// 4. Persist Block Data/Metadata to DB
+	//    Requires context-aware SaveBlock in store (added in updated store.go)
+	finalErr = bc.Blockchain.Database.SaveBlockWithContext(dbTxContext, block) // Use new method name
+	if finalErr != nil {
+		log.Printf("ERROR: Failed to save block %d data to DB: %v", block.Index, finalErr)
+		return finalErr // Defer handles rollback
+	}
+	log.Printf("DEBUG: Successfully saved block %d data to DB (within transaction).", block.Index)
+
+	// 5. Commit DB Transaction
+	commitErr := bc.Blockchain.Database.CommitTransaction(dbTxContext)
+	if commitErr != nil {
+		finalErr = fmt.Errorf("failed to commit DB transaction for block %d: %w", block.Index, commitErr)
+		log.Printf("CRITICAL ERROR: %v. DB state may be inconsistent.", finalErr)
+		dbTxContext = nil // Prevent defer attempting rollback after failed commit
+		return finalErr
+	}
+	dbTxContext = nil // Prevent rollback by defer if commit was successful
+	log.Printf("DEBUG: Successfully committed DB transaction for Block %d.", block.Index)
+
+	// --- *** END ATOMIC DATABASE PERSISTENCE *** ---
+
+	// --- *** UPDATE IN-MEMORY STATE (Only after successful DB commit) *** ---
+
+	// 6. Append block to in-memory list
+	// Ensure thread-safety if other goroutines read Blocks concurrently without lock
 	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, block)
-	log.Printf("INFO: [Block Creator] Appended block %d to in-memory chain (Hash: %s)", block.Index, block.Hash.String())
+	log.Printf("INFO: Appended block %d to in-memory chain (Hash: %s)", block.Index, block.Hash.String())
 
-	// 4. Save to Database
-	// if err := bc.Blockchain.Database.SaveBlock(block); err != nil {
-	// 	log.Printf("ERROR: Failed to save block %d to database: %v. CRITICAL: Rolling back in-memory append.", block.Index, err)
-	// 	bc.Blockchain.Blocks = bc.Blockchain.Blocks[:len(bc.Blockchain.Blocks)-1] // Rollback in-memory
-	// 	return fmt.Errorf("failed to save block %d to DB: %w", block.Index, err)
-	// }
-	// log.Printf("INFO: [Block Creator] Successfully saved block %d to database.", block.Index)
+	// 7. Update in-memory UTXOs and Balances
+	//    Uses the revised updateStateForBlock function below
+	if err := bc.updateStateForBlock(block); err != nil {
+		// CRITICAL INTERNAL ERROR: DB committed, but in-memory update failed!
+		log.Printf("CRITICAL ERROR: In-memory state update failed for committed block %d: %v. State inconsistent!", block.Index, err)
+		return fmt.Errorf("CRITICAL: in-memory state update failed post-commit for block %d: %w", block.Index, err)
+	}
+	log.Printf("DEBUG: Successfully updated in-memory state (Stakeholders, UTXOs) for Block %d.", block.Index)
 
-	// 5. Update other state
+	// 8. Update timestamp
 	bc.Blockchain.LastTimestamp = block.Timestamp
-	// Note: State changes (UTXO spent, Balances) should ideally happen during transaction *processing*
-	// by the ModernProcessor's workers, not here. If they must happen here, add that logic.
-	// bc.updateBalancesForBlock(block) // Example if needed here
 
-	// 6. Trigger Notifications
+	// --- *** END UPDATE IN-MEMORY STATE *** ---
+
+	// --- Trigger Notifications & Status Updates (After successful commit & memory update) ---
+	// 9. Trigger Notifications
 	if bc.Blockchain.OnNewBlock != nil {
 		go bc.Blockchain.OnNewBlock(block)
 	}
 
-	// 7. Update transaction statuses in DB
-	go func(txs []*types.Transaction, blockHash []byte) {
+	// 10. Update transaction statuses in DB (Can run concurrently AFTER commit)
+	//     Requires UpdateTransactionStatus method in store
+	go func(txs []*types.Transaction, blockHash hash.Hash) {
+		blockHashBytes := blockHash.Bytes()
 		for _, tx := range txs {
-			if err := bc.UpdateTransactionStatus(tx.ID, "included", blockHash); err != nil {
-				log.Printf("WARN: [Block Creator] Failed to update status for tx %s after block inclusion: %v", tx.ID, err)
+			txID := tx.ID // Capture loop variable
+			// Use context-unaware UpdateTransactionStatus for now, as it might
+			// not need to be part of the main block commit transaction.
+			// If it needs atomicity, it should be moved before the commit.
+			if err := bc.UpdateTransactionStatus(txID, "included", blockHashBytes); err != nil {
+				log.Printf("WARN: [Block Adder] Failed to update status for tx %s after block inclusion: %v", txID, err)
+			} else {
+				log.Printf("DEBUG: [Block Adder] Updated status for tx %s to 'included' in block %s...", txID, blockHash.String()[:10])
 			}
 		}
-	}(block.Transactions, block.Hash.Bytes())
+	}(block.Transactions, block.Hash)
 
+	// --- Final Success ---
 	log.Printf("INFO: Successfully added and persisted Block %d.", block.Index)
+	return nil
+}
+
+func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionContext, block *types.Block) error {
+	log.Printf("DEBUG: [DB Persist] Persisting state changes for Block %d", block.Index)
+	for _, tx := range block.Transactions {
+		// Determine Sender Address
+		senderAddress := ""
+		if tx.SenderPublicKey != nil {
+			addr, err := tx.SenderPublicKey.Address()
+			if err == nil {
+				senderAddress = addr.String()
+			} else {
+				log.Printf("WARN: [DB Persist] Failed to get sender address for Tx %s: %v", tx.ID, err)
+			}
+		} else if !tx.IsGenesis() && !tx.IsFunding() { // Use methods from types.Transaction
+			log.Printf("WARN: [DB Persist] Tx %s is missing SenderPublicKey (and is not Genesis/Funding).", tx.ID)
+		}
+
+		// Initialize sums for this transaction
+		var totalInputAmount int64 = 0
+		var totalOutputAmount int64 = 0
+
+		// --- 1. Persist Input spending & Calculate totalInputAmount ---
+		for _, input := range tx.Inputs { // input is types.UTXO
+			utxoKey := input.Key() // Assuming types.UTXO has Key() method
+
+			// Verify input UTXO exists and is not spent before attempting to spend
+			// This might require a GetUTXO function in your store that uses dbTxContext
+			// existingUtxo, errGet := bc.Blockchain.Database.GetUTXO(dbTxContext, utxoKey)
+			// if errGet != nil {
+			//     log.Printf("ERROR: [DB Persist] Failed to get input UTXO %s for validation in DB tx %s: %v", utxoKey, tx.ID, errGet)
+			//     return fmt.Errorf("failed to validate input UTXO %s in DB for tx %s: %w", utxoKey, tx.ID, errGet)
+			// }
+			// if existingUtxo.IsSpent {
+			//     log.Printf("ERROR: [DB Persist] Input UTXO %s already spent in DB for tx %s.", utxoKey, tx.ID)
+			//     return fmt.Errorf("double spend detected in DB for UTXO %s in tx %s", utxoKey, tx.ID)
+			// }
+
+			// Now spend it
+			amount, err := bc.Blockchain.Database.SpendUTXO(dbTxContext, utxoKey) // Requires store implementation
+			if err != nil {
+				log.Printf("ERROR: [DB Persist] Failed to spend input UTXO %s in DB for tx %s: %v", utxoKey, tx.ID, err)
+				return fmt.Errorf("failed to spend input UTXO %s in DB for tx %s: %w", utxoKey, tx.ID, err)
+			}
+			totalInputAmount += amount
+			log.Printf("DEBUG: [DB Persist] Spent UTXO %s (Amount: %d) for Tx %s", utxoKey, amount, tx.ID)
+		}
+
+		// --- 2. Persist Output creation, calculate totalOutputAmount & update recipient balances ---
+		for i, output := range tx.Outputs { // output is types.UTXO value; 'i' is used
+			err := bc.Blockchain.Database.AddNewUTXO(dbTxContext, output) // Requires store implementation
+			if err != nil {
+				log.Printf("ERROR: [DB Persist] Failed to add output UTXO %s to DB for tx %s: %v", output.Key(), tx.ID, err)
+				return fmt.Errorf("failed to add output UTXO %s to DB for tx %s: %w", output.Key(), tx.ID, err)
+			}
+			log.Printf("DEBUG: [DB Persist] Added Output UTXO %s for Tx %s", output.Key(), tx.ID)
+
+			outputAmount := int64(output.Amount) // Assuming output.Amount is amount.Amount (int64 alias)
+			totalOutputAmount += outputAmount
+
+			// Apply balance change using AddToBalance which handles existing/new keys
+			err = bc.Blockchain.Database.AddToBalance(dbTxContext, output.OwnerAddress, outputAmount) // Requires store implementation
+			if err != nil {
+				log.Printf("ERROR: [DB Persist] Failed to update recipient %s balance in DB for tx %s output %d: %v", output.OwnerAddress, tx.ID, i, err)
+				return fmt.Errorf("failed to update recipient %s balance in DB for tx %s output %d: %w", output.OwnerAddress, tx.ID, i, err)
+			}
+			// Log message from AddToBalance should confirm the update
+			log.Printf("DEBUG: [DB Persist] Balance update initiated for %s (+%d) (Tx %s Output %d)", output.OwnerAddress, outputAmount, tx.ID, i)
+		}
+
+		// --- *** BEGIN MODIFIED SECTION 3: UPDATE SENDER BALANCE IN DB (Net Debit) *** ---
+		if senderAddress != "" {
+			// Calculate the fee (still useful for logging/validation)
+			fee := totalInputAmount - totalOutputAmount
+			if fee < 0 {
+				// This should ideally be caught by earlier validation, but check again
+				log.Printf("CRITICAL ERROR: [DB Persist] Negative fee calculated for Tx %s! Input: %d, Output: %d", tx.ID, totalInputAmount, totalOutputAmount)
+				return fmt.Errorf("transaction %s results in negative fee during DB persistence", tx.ID)
+			}
+			// Log the fee calculation
+			log.Printf("DEBUG: [DB Persist] Calculated fee for Tx %s: %d (Input: %d, Output: %d)", tx.ID, fee, totalInputAmount, totalOutputAmount)
+
+			// Calculate change amount sent back to sender
+			var changeAmount int64 = 0
+			for _, output := range tx.Outputs {
+				if output.OwnerAddress == senderAddress {
+					changeAmount += int64(output.Amount) // Sum up all outputs returning to sender
+				}
+			}
+			log.Printf("DEBUG: [DB Persist] Calculated change amount for sender %s: %d", senderAddress, changeAmount)
+
+			// Calculate the NET amount to debit from the sender
+			// netDebit = totalInputAmount - changeAmount
+			// This equals amountSentToOthers + fee
+			netDebit := totalInputAmount - changeAmount
+			log.Printf("DEBUG: [DB Persist] Calculated Net Debit for sender %s: %d (Input: %d, Change: %d)", senderAddress, netDebit, totalInputAmount, changeAmount)
+
+			// Ensure netDebit is not negative (shouldn't happen if fee >= 0)
+			if netDebit < 0 {
+				log.Printf("CRITICAL ERROR: [DB Persist] Calculated negative net debit (%d) for Tx %s!", netDebit, tx.ID)
+				return fmt.Errorf("internal error: negative net debit calculated for tx %s", tx.ID)
+			}
+
+			// *** Apply Net Debit using AddToBalance with negative amount ***
+			// Check if netDebit is zero - no balance change needed if sender only received change back exactly equal to input
+			if netDebit > 0 {
+				err := bc.Blockchain.Database.AddToBalance(dbTxContext, senderAddress, -netDebit) // Apply NEGATIVE netDebit
+				if err != nil {
+					// Check specifically for insufficient balance error
+					// Note: This check might need adjustment based on the exact error message from your AddToBalance
+					if strings.Contains(err.Error(), "insufficient balance") {
+						// This indicates a potential double-spend or validation failure earlier
+						log.Printf("ERROR: [DB Persist] Insufficient balance reported by DB for sender %s during Tx %s NET debit attempt (Debit: %d). Validation failed?", senderAddress, tx.ID, netDebit)
+					} else {
+						log.Printf("ERROR: [DB Persist] Failed to apply net debit for sender %s in DB for tx %s: %v", senderAddress, tx.ID, err)
+					}
+					// Propagate the error to trigger rollback
+					return fmt.Errorf("failed to apply net debit for sender %s balance in DB for tx %s: %w", senderAddress, tx.ID, err)
+				}
+				// Log successful application of net debit
+				log.Printf("DEBUG: [DB Persist] Balance update initiated for sender %s (-%d) (Tx %s Net Debit)", senderAddress, netDebit, tx.ID)
+			} else {
+				log.Printf("DEBUG: [DB Persist] Skipping zero net debit for sender %s (Tx %s)", senderAddress, tx.ID)
+			}
+			// *** End Net Debit Application ***
+
+		} else if !tx.IsGenesis() && !tx.IsFunding() {
+			// If sender address couldn't be determined (e.g., nil PK) and it's not G/F, log it.
+			// Balance changes only occurred for outputs in this case.
+			log.Printf("WARN: [DB Persist] Skipping sender debit for Tx %s as sender address is unknown.", tx.ID)
+		}
+		// --- *** END MODIFIED SECTION 3 *** ---
+
+	} // End loop through transactions
+
+	log.Printf("DEBUG: [DB Persist] Finished persisting state changes for Block %d", block.Index)
+	return nil
+}
+
+func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
+	if block == nil {
+		return errors.New("cannot update state for nil block")
+	}
+	log.Printf("DEBUG: [State Update] Starting state update for Block %d", block.Index)
+
+	if bc.Blockchain.UTXOs == nil {
+		return fmt.Errorf("UTXO map is nil during state update for block %d", block.Index)
+	}
+	if bc.Blockchain.Stakeholders == nil {
+		return fmt.Errorf("stakeholders map is nil during state update for block %d", block.Index)
+	}
+
+	for _, tx := range block.Transactions {
+		log.Printf("DEBUG: [State Update] Processing Tx %s in Block %d", tx.ID, block.Index)
+
+		var totalInputAmount int64 = 0
+		var totalOutputAmount int64 = 0
+		senderAddress := "" // String representation of sender address
+
+		// Determine sender address string if public key exists
+		if tx.SenderPublicKey != nil {
+			addr, err := tx.SenderPublicKey.Address() // Assuming this returns address.Address type
+			if err != nil {
+				log.Printf("WARN: [State Update] Failed get sender addr for Tx %s: %v. Sender balance update might be skipped.", tx.ID, err)
+			} else {
+				senderAddress = addr.String() // Store the string representation
+			}
+		} else if !tx.IsGenesis() && !tx.IsFunding() { // Use methods from types.Transaction
+			log.Printf("WARN: [State Update] Tx %s has nil SenderPublicKey and is not Genesis/Funding.", tx.ID)
+			// senderAddress remains ""
+		}
+
+		// 1. Process Inputs (Remove spent UTXOs from map, Calculate Input Total from map state)
+		// (Keep Section 1 exactly as it was in the previous correct version)
+		for _, input := range tx.Inputs {
+			utxoKey := input.Key()
+			mapKey := utxoKey
+
+			log.Printf("DEBUG: [State Update] Processing Input UTXO Map Key: %s for Tx %s", mapKey, tx.ID)
+
+			utxoSlice, sliceExists := bc.Blockchain.UTXOs[mapKey]
+			if !sliceExists || len(utxoSlice) == 0 {
+				log.Printf("ERROR: [State Update] Input UTXO key %s not found in in-memory map for Tx %s.", mapKey, tx.ID)
+				return fmt.Errorf("input UTXO %s not found in cache for tx %s during state update", mapKey, tx.ID)
+			}
+			if utxoSlice[0].IsSpent {
+				log.Printf("ERROR: [State Update] Input UTXO key %s is already marked as spent in-memory map for Tx %s.", mapKey, tx.ID)
+				return fmt.Errorf("double spend detected in-memory for UTXO %s in tx %s", mapKey, tx.ID)
+			}
+			if len(utxoSlice) > 1 {
+				log.Printf("ERROR: [State Update] Ambiguous state for input key %s (slice len %d) for Tx %s.", mapKey, len(utxoSlice), tx.ID)
+				return fmt.Errorf("ambiguous state for input UTXO %s (slice length %d) for tx %s", mapKey, len(utxoSlice), tx.ID)
+			}
+			spentProtoUTXO := utxoSlice[0]
+			totalInputAmount += spentProtoUTXO.Amount
+			delete(bc.Blockchain.UTXOs, mapKey)
+			log.Printf("DEBUG: [State Update] Removed/Marked spent UTXO key %s (Amount: %d).", mapKey, spentProtoUTXO.Amount)
+		}
+
+		// --- *** BEGIN REVERTED/REFINED SECTION 2 *** ---
+		// 2. Process Outputs (Add to UTXO map, Unconditionally credit recipient balances)
+		// NOTE: This will temporarily inflate the sender's balance if change exists,
+		// but Section 3 will correct it IF senderAddress is known.
+		for i, output := range tx.Outputs { // output is types.UTXO value
+			newUtxoKey := output.Key()
+			mapKey := newUtxoKey
+
+			protoUtxo := convertTypesUTXOToProtoUTXO(output) // Use helper function
+			if protoUtxo == nil {
+				log.Printf("ERROR: [State Update] Failed convert output %d for Tx %s to proto UTXO.", i, tx.ID)
+				continue
+			}
+
+			// Add the new UTXO to the map
+			bc.Blockchain.UTXOs[mapKey] = append(bc.Blockchain.UTXOs[mapKey], protoUtxo)
+			log.Printf("DEBUG: [State Update] Appended new proto UTXO key %s (Owner: %s, Amount: %d) to map slice.", mapKey, protoUtxo.OwnerAddress, protoUtxo.Amount)
+
+			// --- ** REVERTED LOGIC ** ---
+			// Unconditionally update the balance for the output owner address.
+			recipientAddr := output.OwnerAddress // This is a string
+			currentBalance, _ := bc.Blockchain.Stakeholders[recipientAddr]
+			outputAmount := int64(output.Amount)
+			bc.Blockchain.Stakeholders[recipientAddr] = currentBalance + outputAmount
+			// Log this update, indicating it might be temporary for the sender
+			logString := "DEBUG: [State Update] Updated Stakeholders balance for output %d owner %s: %d -> %d (+%d)"
+			if recipientAddr == senderAddress {
+				logString += " (Change Output - Balance will be corrected in Section 3)"
+			}
+			log.Printf(logString, i, recipientAddr, currentBalance, bc.Blockchain.Stakeholders[recipientAddr], outputAmount)
+			// --- ** END REVERTED LOGIC ** ---
+
+			// Still add all output amounts to totalOutputAmount for fee calculation
+			totalOutputAmount += int64(output.Amount)
+		}
+		// --- *** END REVERTED/REFINED SECTION 2 *** ---
+
+		// --- *** SECTION 3: UPDATE SENDER BALANCE *** ---
+		// This section remains unchanged and correctly calculates the final sender balance
+		// if the senderAddress could be determined.
+		if senderAddress != "" {
+			fee := totalInputAmount - totalOutputAmount
+			if fee < 0 {
+				log.Printf("ERROR: [State Update] Negative fee calculated for Tx %s (Input: %d, Output: %d)! Halting block processing.", tx.ID, totalInputAmount, totalOutputAmount)
+				return fmt.Errorf("negative fee calculated for tx %s in block %d", tx.ID, block.Index)
+			}
+			if fee != 0 {
+				log.Printf("DEBUG: [State Update] Calculated fee for Tx %s: %d (Input: %d, Output: %d)", tx.ID, fee, totalInputAmount, totalOutputAmount)
+			}
+
+			senderBalanceBeforeTx, senderExists := bc.Blockchain.Stakeholders[senderAddress]
+			// Note: senderBalanceBeforeTx here INCLUDES the change amount added back in section 2
+
+			if !senderExists {
+				// This check might be less reliable now if sender didn't exist before but received change in sec 2
+				// It's better to rely on input validation ensuring sender has funds initially.
+				log.Printf("ERROR: [State Update] Sender %s not found in Stakeholders map for Tx %s final balance update check (should exist if inputs were valid).", senderAddress, tx.ID)
+				// Continue cautiously, the calculation might still work if change was added
+				// return fmt.Errorf("sender %s not found for tx %s in block %d", senderAddress, tx.ID, block.Index)
+			}
+
+			// Calculate change amount explicitly (needed for the final balance calculation)
+			changeAmount := int64(0)
+			for _, output := range tx.Outputs {
+				if output.OwnerAddress == senderAddress {
+					changeAmount += int64(output.Amount)
+				}
+			}
+
+			// Calculate final balance: Start with initial balance recorded *before* section 2 ran its course for this TX
+			// To get the true initial balance, we subtract the change that section 2 just added:
+			trueInitialSenderBalance := senderBalanceBeforeTx - changeAmount
+
+			// Calculate final balance based on the true initial balance:
+			finalSenderBalance := trueInitialSenderBalance - totalInputAmount + changeAmount
+
+			if finalSenderBalance < 0 {
+				log.Printf("ERROR: [State Update] Calculated negative final balance (%d) for sender %s for Tx %s. TrueInitial: %d, InputTotal: %d, Change: %d.", finalSenderBalance, senderAddress, tx.ID, trueInitialSenderBalance, totalInputAmount, changeAmount)
+				return fmt.Errorf("calculated negative final balance for sender %s in tx %s", senderAddress, tx.ID)
+			}
+
+			// Update the sender's balance in the map directly to the calculated final balance
+			bc.Blockchain.Stakeholders[senderAddress] = finalSenderBalance
+			// Log the transition from the balance *after* section 2 ran to the final correct balance
+			log.Printf("DEBUG: [State Update] Corrected Stakeholders balance for SENDER %s: %d (Post-Sec2) -> %d (Final) (Inputs: %d, Change: %d, Fee: %d)", senderAddress, senderBalanceBeforeTx, finalSenderBalance, totalInputAmount, changeAmount, fee)
+
+		} else {
+			// Log if sender update is skipped due to unknown sender
+			log.Printf("DEBUG: [State Update] Skipping Section 3 sender balance correction for Tx %s because sender address is unknown (SenderPublicKey was nil).", tx.ID)
+		}
+		// --- *** END SECTION 3 *** ---
+
+	} // End loop through transactions
+
+	log.Printf("DEBUG: [State Update] Finished state update for Block %d.", block.Index)
 	return nil
 }
 
@@ -146,7 +503,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	database.Blockchain = storeInstance
 	log.Println("BlockchainDB created")
 
-	genesis := NewGenesisBlock()
+	genesis := NewGenesisBlock() // Assuming this returns a *types.Block
 	log.Println("Genesis block created")
 	publicKeyMap := make(map[string]*crypto.PublicKey)
 	totalSupplyNano := int64(120000000 * 1e9) // 120M THRYLOS in nanoTHRYLOS
@@ -156,45 +513,71 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	privKey, err := crypto.NewPrivateKey()
 	if err != nil {
 		log.Printf("error generating private key for genesis account: %v", err)
+		// Clean up database connection before returning on error
+		storeInstance.Close()
 		return nil, nil, err
 	}
 	var pubKey crypto.PublicKey = privKey.PublicKey() // Declare as variable
-	addr, _ := pubKey.Address()
+	addr, err := pubKey.Address()
+	// Handle potential error from Address() method
+	if err != nil {
+		log.Printf("error getting address from genesis public key: %v", err)
+		storeInstance.Close()
+		return nil, nil, err
+	}
 	stakeholdersMap[addr.String()] = totalSupplyNano
 	log.Printf("Genesis account address: %s", addr.String())
 
 	log.Printf("DEBUG: Attempting to save Public Key for address %s", addr.String())
 	err = storeInstance.SavePublicKey(pubKey) // Use the storeInstance variable
 	if err != nil {
-		// This is critical for startup, likely fatal if it fails
 		log.Printf("CRITICAL ERROR: Failed to save genesis public key to database: %v", err)
-		storeInstance.Close() // Clean up DB connection
+		storeInstance.Close()
 		return nil, nil, fmt.Errorf("failed to save genesis public key: %w", err)
 	}
 	log.Printf("DEBUG: Successfully called SavePublicKey for address %s (Error: %v)", addr.String(), err)
 
+	// --- FIX for Genesis Transaction ---
+	// Create a dummy signature byte slice of the correct size
+	// Replace crypto.MLDSASignatureSize with the actual constant or value (e.g., 2420)
+	dummySignatureBytes := make([]byte, crypto.MLDSASignatureSize) // Use constant for ML-DSA-44 signature size
+
 	genesisTx := &thrylos.Transaction{
 		Id:        "genesis_tx_" + addr.String(),
 		Timestamp: time.Now().Unix(),
+		Sender:    "", // Explicitly empty sender for genesis
 		Outputs: []*thrylos.UTXO{{
 			OwnerAddress: addr.String(),
 			Amount:       totalSupplyNano,
 		}},
-		Signature:       []byte("genesis_signature"),
-		SenderPublicKey: nil,
+		Signature:       dummySignatureBytes, // Use correctly sized dummy signature
+		SenderPublicKey: nil,                 // Correctly nil for genesis
+		// Ensure other fields like Gasfee, Inputs are zero/nil/empty
+		Inputs: nil,
+		Gasfee: 0,
 	}
+	// --- END FIX ---
 
 	utxoMap := make(map[string][]*thrylos.UTXO)
 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-	genesis.Transactions = []*types.Transaction{utils.ConvertToSharedTransaction(genesisTx)}
+	// Convert the Protobuf genesis transaction to the internal types.Transaction
+	sharedGenesisTx := utils.ConvertToSharedTransaction(genesisTx)
+	if sharedGenesisTx == nil {
+		// Handle the error from conversion - maybe log and return, or panic?
+		log.Println("CRITICAL ERROR: Failed to convert genesis protobuf transaction.")
+		storeInstance.Close()
+		return nil, nil, fmt.Errorf("failed to convert genesis transaction")
+	}
+	// Assign the converted transaction to the genesis block
+	genesis.Transactions = []*types.Transaction{sharedGenesisTx}
 
 	stateNetwork := network.NewDefaultNetwork()
 	messageBus := types.GetGlobalMessageBus()
 	temp := &BlockchainImpl{
 		Blockchain: &types.Blockchain{
-			Blocks:              []*types.Block{genesis},
+			Blocks:              []*types.Block{genesis}, // Start with the genesis block containing the converted tx
 			Genesis:             genesis,
 			Stakeholders:        stakeholdersMap,
 			Database:            storeInstance,
@@ -202,7 +585,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			UTXOs:               utxoMap,
 			Forks:               make([]*types.Fork, 0),
 			GenesisAccount:      privKey,
-			PendingTransactions: make([]*thrylos.Transaction, 0),
+			PendingTransactions: make([]*thrylos.Transaction, 0), // Should likely be []*types.Transaction
 			ActiveValidators:    make([]string, 0),
 			StateNetwork:        stateNetwork,
 			TestMode:            config.TestMode,
@@ -214,60 +597,50 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		Blockchain: temp,
 		Mu:         sync.RWMutex{},
 	}
+	// Ensure NewTxPool returns types.TxPool interface
 	temp.txPool = NewTxPool(database, temp)
 
-	// --- *** ADD Dependency Initializations HERE *** ---
-
-	// 1. Initialize BalanceUpdateQueue
-	// Assuming a simple constructor exists
+	// --- Dependency Initializations ---
+	// (Keep existing dependency initializations as they were)
 	log.Println("Initializing BalanceUpdateQueue...")
-	balanceQueue := balance.NewBalanceUpdateQueue() // Adjust if constructor takes args
+	balanceQueue := balance.NewBalanceUpdateQueue()
 	if balanceQueue == nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("failed to initialize BalanceUpdateQueue")
 	}
 	log.Println("BalanceUpdateQueue initialized successfully.")
 
-	// 2. Initialize StakingService
-	// Assuming NewStakingService needs the store and blockchain state
 	log.Println("Initializing StakingService...")
-	// --- CORRECTED LINE ---
-	// Pass only the required *types.Blockchain argument
 	stakingSvc := staking.NewStakingService(temp.Blockchain)
-	// --- END CORRECTION ---
-	if stakingSvc == nil { // Or check for error if constructor could return one
+	if stakingSvc == nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("failed to initialize StakingService")
 	}
 	log.Println("StakingService initialized successfully.")
 
-	// 3. Initialize TransactionProcessorImpl (now with correct arguments)
 	log.Println("Initializing TransactionProcessorImpl...")
-	// Ensure arguments are in the order specified by the 'want' part of the error message
 	txProcessor := processor.NewTransactionProcessorImpl(
-		temp.TransactionPropagator, // *types.TransactionPropagator
-		balanceQueue,               // *balance.BalanceUpdateQueue
-		temp.Blockchain,            // *types.Blockchain
-		storeInstance,              // types.Store
-		stakingSvc,                 // *staking.StakingService
+		temp.TransactionPropagator,
+		balanceQueue,
+		temp.Blockchain,
+		storeInstance,
+		stakingSvc,
 	)
-	if txProcessor == nil { // Or check for error if constructor returns one
+	if txProcessor == nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("failed to initialize TransactionProcessorImpl")
 	}
 	log.Println("TransactionProcessorImpl initialized successfully.")
 
-	// 4. Initialize DAGManager
 	log.Println("Initializing DAGManager...")
-	dagMan := processor.NewDAGManager() // Takes no arguments as per previous error
+	dagMan := processor.NewDAGManager()
 	if dagMan == nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("failed to initialize DAGManager")
 	}
-	temp.dagManager = dagMan // Assign to the field in BlockchainImpl
+	temp.dagManager = dagMan
 	log.Println("DAGManager initialized successfully.")
 
-	// 5. Initialize ModernProcessor (now with correct dependencies)
 	log.Println("Initializing ModernProcessor...")
 	temp.modernProcessor = processor.NewModernProcessor(txProcessor, temp.txPool, temp.dagManager)
 	if temp.modernProcessor == nil {
@@ -275,10 +648,10 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		return nil, nil, fmt.Errorf("failed to initialize modern processor")
 	}
 	log.Println("ModernProcessor initialized successfully.")
+	// --- End Dependency Initializations ---
 
-	// --- *** END Dependency Initializations *** ---
-
-	// Subscribe to FundNewAddress using BlockchainImpl's MessageBus
+	// --- Message Bus Subscriptions ---
+	// (Keep existing subscriptions)
 	ch := make(chan types.Message, 100)
 	temp.MessageBus.Subscribe(types.FundNewAddress, ch)
 	go func() {
@@ -291,7 +664,6 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		}
 	}()
 
-	// In your NewBlockchain function, add this after the other subscriptions:
 	balanceCh := make(chan types.Message, 100)
 	temp.MessageBus.Subscribe(types.GetStakeholderBalance, balanceCh)
 	go func() {
@@ -303,62 +675,67 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			}
 		}
 	}()
+	// --- End Message Bus Subscriptions ---
 
-	publicKeyMap[addr.String()] = &pubKey
+	publicKeyMap[addr.String()] = &pubKey // Store pointer to interface
 	log.Println("Genesis account public key added to publicKeyMap")
 
+	// Save the *constructed* genesis block (which now contains the converted tx)
+	log.Printf("Inserting block %d into database", genesis.Index)
+	// Use SaveBlock method from the Store interface via Database.Blockchain
 	if err := database.Blockchain.SaveBlock(genesis); err != nil {
-		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
+		log.Printf("CRITICAL ERROR: Failed to save genesis block to the database: %v", err)
+		// temp.Close() might be better here if it handles storeInstance closing
+		storeInstance.Close()
+		return nil, nil, fmt.Errorf("failed to save genesis block: %w", err)
 	}
+	log.Printf("Block %d inserted successfully", genesis.Index)
 
 	log.Printf("Genesis account %s initialized with total supply: %d nanoTHRYLOS", addr.String(), totalSupplyNano)
 
-	if err := database.Blockchain.SaveBlock(genesis); err != nil {
-		return nil, nil, fmt.Errorf("failed to add genesis block to the database: %v", err)
-	}
-
-	log.Printf("Genesis account %s initialized with total supply: %d nanoTHRYLOS", addr.String(), totalSupplyNano)
-	// Shutdown handler
+	// --- Background Goroutines (Shutdown Handler, Block Creator) ---
+	// (Keep existing goroutines)
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 		<-c
 		log.Println("Stopping blockchain...")
+		// Consider calling temp.Close() here for graceful shutdown
 	}()
 
 	if !config.DisableBackground {
 		go func() {
 			log.Println("Starting block creation process")
-			if temp.modernProcessor == nil { // Keep this check
+			if temp.modernProcessor == nil {
 				log.Println("ERROR: Block creation loop cannot start, ModernProcessor is nil.")
 				return
 			}
-			// --- FIX 1: Initialize Ticker ---
-			ticker := time.NewTicker(10 * time.Second) // Or your desired interval
+			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
-			// --- END FIX 1 ---
 
 			for range ticker.C {
-				txs, err := temp.txPool.GetAllTransactions() // Outer err
+				// Need lock? RLock might be okay if txPool is thread-safe
+				// temp.Blockchain.Mu.RLock() // Example if lock needed
+				txs, err := temp.txPool.GetAllTransactions()
+				// temp.Blockchain.Mu.RUnlock() // Example
+
 				if err != nil {
 					log.Printf("ERROR: [Block Creator] Error getting transactions from pool: %v", err)
-					continue // Outer err used and handled
+					continue
 				}
 
-				log.Printf("INFO: [Block Creator] Retrieved %d transactions from the pool.", len(txs))
+				// log.Printf("INFO: [Block Creator] Retrieved %d transactions from the pool.", len(txs)) // Reduce noise maybe
 
 				if len(txs) > 0 {
 					log.Printf("INFO: [Block Creator] Processing %d transactions from pool", len(txs))
-					var processedSuccessfully []*types.Transaction // Collect successful ones
+					var processedSuccessfully []*types.Transaction
 
 					for _, tx := range txs {
 						log.Printf("DEBUG: [Block Creator] Processing TxID: %s from pool", tx.ID)
-						// --- FIX 2: Rename Inner Error Variable ---
-						processErr := temp.ProcessIncomingTransaction(tx) // Use processErr
-						// --- END FIX 2 ---
+						processErr := temp.ProcessIncomingTransaction(tx)
 						log.Printf("DEBUG: [Block Creator] Result of ProcessIncomingTransaction for %s: %v", tx.ID, processErr)
 
-						if processErr != nil { // Use processErr
+						if processErr != nil {
 							log.Printf("DEBUG: [Block Creator] Entering IF block for ERROR on %s", tx.ID)
 							log.Printf("ERROR: [Block Creator] Error processing transaction %s: %v. Skipping removal.", tx.ID, processErr)
 						} else {
@@ -367,50 +744,51 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 							processedSuccessfully = append(processedSuccessfully, tx)
 
 							log.Printf("DEBUG: [Block Creator] Attempting to remove %s from pool...", tx.ID)
+							// Need lock? WLock might be needed if txPool requires it
+							// temp.Blockchain.Mu.Lock() // Example
 							if errRem := temp.txPool.RemoveTransaction(tx); errRem != nil {
 								log.Printf("ERROR: [Block Creator] Failed to remove processed transaction %s from pool: %v", tx.ID, errRem)
+								// If removal failed, should we still include it in the block?
+								// Removing from processedSuccessfully seems reasonable if removal is required before block inclusion.
 								if len(processedSuccessfully) > 0 {
 									processedSuccessfully = processedSuccessfully[:len(processedSuccessfully)-1]
 								}
 							} else {
 								log.Printf("INFO: [Block Creator] Removed processed transaction %s from pool.", tx.ID)
 							}
+							// temp.Blockchain.Mu.Unlock() // Example
 						}
 						log.Printf("DEBUG: [Block Creator] Finished IF/ELSE block for %s", tx.ID)
-					} // end for each tx
+					}
 
 					// --- BLOCK CREATION LOGIC ---
 					if len(processedSuccessfully) > 0 {
 						log.Printf("INFO: [Block Creator] Ready to create block with %d transactions.", len(processedSuccessfully))
 
-						// 1. Get Validator (Simplified: Use Genesis Account)
-						// --- FIX 3: Handle Address() Error ---
+						// 1. Get Validator
 						var currentValidatorID string
 						if temp.Blockchain.GenesisAccount != nil && temp.Blockchain.GenesisAccount.PublicKey() != nil {
 							genesisAddr, errAddr := temp.Blockchain.GenesisAccount.PublicKey().Address()
 							if errAddr != nil {
 								log.Printf("ERROR: [Block Creator] Failed to get address from GenesisAccount: %v. Skipping block creation.", errAddr)
-								continue // Skip this cycle
+								continue
 							}
 							currentValidatorID = genesisAddr.String()
 						} else {
 							log.Printf("ERROR: [Block Creator] GenesisAccount or its PublicKey is nil. Skipping block creation.")
-							continue // Skip this cycle
+							continue
 						}
-						// --- END FIX 3 ---
 						log.Printf("INFO: [Block Creator] Using validator: %s", currentValidatorID)
 
 						// 2. Convert Transactions to Protobuf
-						// --- FIX 4: Ensure utils is imported and function exists ---
-						// Make sure utils is imported: import "github.com/thrylos-labs/thrylos/utils" (or your path)
-						protoTxs, errConv := utils.ConvertMultipleToProto(processedSuccessfully) // Assumes implementation in utils
+						// This assumes processedSuccessfully contains *types.Transaction
+						protoTxs, errConv := utils.ConvertMultipleToProto(processedSuccessfully)
 						if errConv != nil {
 							log.Printf("ERROR: [Block Creator] Failed to convert transactions for block creation: %v. Skipping block.", errConv)
 							continue
 						}
-						// --- END FIX 4 ---
 
-						// 3. Create Unsigned Block
+						// 3. Create Unsigned Block (Takes proto txs)
 						log.Printf("DEBUG: [Block Creator] Calling CreateUnsignedBlock...")
 						unsignedBlock, errCreate := temp.CreateUnsignedBlock(protoTxs, currentValidatorID)
 						if errCreate != nil {
@@ -430,22 +808,24 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 
 						// 5. Add Signed Block to Chain
 						log.Printf("DEBUG: [Block Creator] Adding signed block %d to chain...", signedBlock.Index)
-						errAdd := temp.AddBlockToChain(signedBlock) // Use the function created previously
+						// This function handles DB persistence and in-memory updates
+						errAdd := temp.AddBlockToChain(signedBlock)
 						if errAdd != nil {
 							log.Printf("ERROR: [Block Creator] Failed to add signed block %d to chain: %v", signedBlock.Index, errAdd)
+							// TODO: What happens if adding fails? Should txs be put back in pool?
+							// This depends on where AddBlockToChain failed. If DB commit failed, state is rolled back.
+							// If in-memory update failed after DB commit, state is inconsistent (CRITICAL).
 							continue
 						}
-						// Success logged within AddBlockToChain
 
 					} else {
-						log.Println("INFO: [Block Creator] No transactions processed successfully in this batch.")
+						// log.Println("INFO: [Block Creator] No transactions processed successfully in this batch.") // Reduce noise maybe
 					}
-					// --- END BLOCK CREATION LOGIC ---
 
 				} else {
-					log.Printf("INFO: [Block Creator] Retrieved 0 transactions from the pool.")
+					// log.Printf("INFO: [Block Creator] Retrieved 0 transactions from the pool.") // Reduce noise maybe
 				}
-			} // end for range ticker.C
+			}
 		}()
 	} else {
 		log.Println("Background processes disabled for testing")
@@ -634,7 +1014,10 @@ func (bc *BlockchainImpl) GetBlock(blockNumber int) (*types.Block, error) {
 	return &block, nil
 }
 
-// TO DO FIND WHERE VerifyTransaction IS AND SimulateValidatorSigning
+// NOTE: This is NOT currently used by the main block creator loop in NewBlockchain,
+// which uses AddBlockToChain after processing transactions separately via ModernProcessor.
+// This function may need refactoring for handling network blocks correctly.
+
 // func (bc *BlockchainImpl) AddBlock(transactions []*thrylos.Transaction, validator string, prevHash []byte, optionalTimestamp ...int64) (bool, error) {
 // 	bc.Blockchain.Mu.Lock()
 // 	defer bc.Blockchain.Mu.Unlock()
