@@ -19,6 +19,7 @@ import (
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/balance"
+	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
 	"github.com/thrylos-labs/thrylos/consensus/staking"
 	"github.com/thrylos-labs/thrylos/crypto"
@@ -36,6 +37,7 @@ type BlockchainImpl struct {
 	txPool                types.TxPool
 	dagManager            *processor.DAGManager
 	MessageBus            types.MessageBusInterface
+	AppConfig             *config.Config // <-- ADDED Config field HERE
 }
 
 // Now you can simplify the Close method to use the interface methods
@@ -194,7 +196,19 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 
 func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionContext, block *types.Block) error {
 	log.Printf("DEBUG: [DB Persist] Persisting state changes for Block %d", block.Index)
+	// Access config directly from the BlockchainImpl struct
+	appConfig := bc.AppConfig
+
 	for _, tx := range block.Transactions {
+		// Use appConfig.MinGasFee for validation
+		if !tx.IsGenesis() && !tx.IsFunding() {
+			if tx.GasFee < appConfig.MinGasFee { // <-- Use bc.AppConfig.MinGasFee
+				err := fmt.Errorf("transaction fee %d is below minimum required %d for tx %s", tx.GasFee, appConfig.MinGasFee, tx.ID)
+				log.Printf("ERROR: [DB Persist] %v", err)
+				return err
+			}
+		}
+
 		// Determine Sender Address
 		senderAddress := ""
 		if tx.SenderPublicKey != nil {
@@ -317,11 +331,13 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 			// *** End Net Debit Application ***
 
 		} else if !tx.IsGenesis() && !tx.IsFunding() {
-			// If sender address couldn't be determined (e.g., nil PK) and it's not G/F, log it.
-			// Balance changes only occurred for outputs in this case.
-			log.Printf("WARN: [DB Persist] Skipping sender debit for Tx %s as sender address is unknown.", tx.ID)
+			if totalInputAmount < totalOutputAmount+int64(tx.GasFee) { // Check against tx.GasFee
+				err := fmt.Errorf("insufficient input value (%d) to cover outputs (%d) + stated fee (%d) for tx %s", totalInputAmount, totalOutputAmount, tx.GasFee, tx.ID)
+				log.Printf("ERROR: [DB Persist] %v", err)
+				return err
+			}
 		}
-		// --- *** END MODIFIED SECTION 3 *** ---
+		// --- End Input Coverage Validation ---
 
 	} // End loop through transactions
 
@@ -487,14 +503,17 @@ func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
 	return nil
 }
 
-func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store, error) {
-	// Initialize the database
-	database, err := store.NewDatabase(config.DataDir)
+func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config) (*BlockchainImpl, types.Store, error) {
+	if setupConfig == nil || appConfig == nil {
+		log.Panic("FATAL: NewBlockchain called with nil config")
+	}
+	// Use setupConfig for store initialization, TestMode, etc.
+	database, err := store.NewDatabase(setupConfig.DataDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize the blockchain database: %v", err)
 	}
 
-	storeInstance, err := store.NewStore(database, config.AESKey)
+	storeInstance, err := store.NewStore(database, setupConfig.AESKey)
 	if err != nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("failed to create store: %v", err)
@@ -503,23 +522,21 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	database.Blockchain = storeInstance
 	log.Println("BlockchainDB created")
 
-	genesis := NewGenesisBlock() // Assuming this returns a *types.Block
+	genesis := NewGenesisBlock()
 	log.Println("Genesis block created")
 	publicKeyMap := make(map[string]*crypto.PublicKey)
-	totalSupplyNano := int64(120000000 * 1e9) // 120M THRYLOS in nanoTHRYLOS
+	totalSupplyNano := int64(120000000 * 1e9)
 	log.Printf("Initializing genesis account with total supply: %.2f THR", float64(totalSupplyNano)/1e9)
 
 	stakeholdersMap := make(map[string]int64)
 	privKey, err := crypto.NewPrivateKey()
 	if err != nil {
 		log.Printf("error generating private key for genesis account: %v", err)
-		// Clean up database connection before returning on error
 		storeInstance.Close()
 		return nil, nil, err
 	}
-	var pubKey crypto.PublicKey = privKey.PublicKey() // Declare as variable
+	var pubKey crypto.PublicKey = privKey.PublicKey()
 	addr, err := pubKey.Address()
-	// Handle potential error from Address() method
 	if err != nil {
 		log.Printf("error getting address from genesis public key: %v", err)
 		storeInstance.Close()
@@ -529,7 +546,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	log.Printf("Genesis account address: %s", addr.String())
 
 	log.Printf("DEBUG: Attempting to save Public Key for address %s", addr.String())
-	err = storeInstance.SavePublicKey(pubKey) // Use the storeInstance variable
+	err = storeInstance.SavePublicKey(pubKey)
 	if err != nil {
 		log.Printf("CRITICAL ERROR: Failed to save genesis public key to database: %v", err)
 		storeInstance.Close()
@@ -537,47 +554,38 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 	}
 	log.Printf("DEBUG: Successfully called SavePublicKey for address %s (Error: %v)", addr.String(), err)
 
-	// --- FIX for Genesis Transaction ---
-	// Create a dummy signature byte slice of the correct size
-	// Replace crypto.MLDSASignatureSize with the actual constant or value (e.g., 2420)
-	dummySignatureBytes := make([]byte, crypto.MLDSASignatureSize) // Use constant for ML-DSA-44 signature size
+	dummySignatureBytes := make([]byte, crypto.MLDSASignatureSize)
 
 	genesisTx := &thrylos.Transaction{
 		Id:        "genesis_tx_" + addr.String(),
 		Timestamp: time.Now().Unix(),
-		Sender:    "", // Explicitly empty sender for genesis
+		Sender:    "",
 		Outputs: []*thrylos.UTXO{{
 			OwnerAddress: addr.String(),
 			Amount:       totalSupplyNano,
 		}},
-		Signature:       dummySignatureBytes, // Use correctly sized dummy signature
-		SenderPublicKey: nil,                 // Correctly nil for genesis
-		// Ensure other fields like Gasfee, Inputs are zero/nil/empty
-		Inputs: nil,
-		Gasfee: 0,
+		Signature:       dummySignatureBytes,
+		SenderPublicKey: nil,
+		Inputs:          nil,
+		Gasfee:          0,
 	}
-	// --- END FIX ---
-
 	utxoMap := make(map[string][]*thrylos.UTXO)
 	utxoKey := fmt.Sprintf("%s:%d", genesisTx.Id, 0)
 	utxoMap[utxoKey] = []*thrylos.UTXO{genesisTx.Outputs[0]}
 
-	// Convert the Protobuf genesis transaction to the internal types.Transaction
 	sharedGenesisTx := utils.ConvertToSharedTransaction(genesisTx)
 	if sharedGenesisTx == nil {
-		// Handle the error from conversion - maybe log and return, or panic?
 		log.Println("CRITICAL ERROR: Failed to convert genesis protobuf transaction.")
 		storeInstance.Close()
 		return nil, nil, fmt.Errorf("failed to convert genesis transaction")
 	}
-	// Assign the converted transaction to the genesis block
 	genesis.Transactions = []*types.Transaction{sharedGenesisTx}
 
 	stateNetwork := network.NewDefaultNetwork()
 	messageBus := types.GetGlobalMessageBus()
 	temp := &BlockchainImpl{
 		Blockchain: &types.Blockchain{
-			Blocks:              []*types.Block{genesis}, // Start with the genesis block containing the converted tx
+			Blocks:              []*types.Block{genesis},
 			Genesis:             genesis,
 			Stakeholders:        stakeholdersMap,
 			Database:            storeInstance,
@@ -585,23 +593,21 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			UTXOs:               utxoMap,
 			Forks:               make([]*types.Fork, 0),
 			GenesisAccount:      privKey,
-			PendingTransactions: make([]*thrylos.Transaction, 0), // Should likely be []*types.Transaction
+			PendingTransactions: make([]*thrylos.Transaction, 0),
 			ActiveValidators:    make([]string, 0),
 			StateNetwork:        stateNetwork,
-			TestMode:            config.TestMode,
+			TestMode:            setupConfig.TestMode,
 		},
 		MessageBus: messageBus,
+		AppConfig:  appConfig, // Store the main app config
 	}
 
 	temp.TransactionPropagator = &types.TransactionPropagator{
 		Blockchain: temp,
 		Mu:         sync.RWMutex{},
 	}
-	// Ensure NewTxPool returns types.TxPool interface
 	temp.txPool = NewTxPool(database, temp)
 
-	// --- Dependency Initializations ---
-	// (Keep existing dependency initializations as they were)
 	log.Println("Initializing BalanceUpdateQueue...")
 	balanceQueue := balance.NewBalanceUpdateQueue()
 	if balanceQueue == nil {
@@ -648,10 +654,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		return nil, nil, fmt.Errorf("failed to initialize modern processor")
 	}
 	log.Println("ModernProcessor initialized successfully.")
-	// --- End Dependency Initializations ---
 
-	// --- Message Bus Subscriptions ---
-	// (Keep existing subscriptions)
 	ch := make(chan types.Message, 100)
 	temp.MessageBus.Subscribe(types.FundNewAddress, ch)
 	go func() {
@@ -675,17 +678,12 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 			}
 		}
 	}()
-	// --- End Message Bus Subscriptions ---
 
-	publicKeyMap[addr.String()] = &pubKey // Store pointer to interface
+	publicKeyMap[addr.String()] = &pubKey
 	log.Println("Genesis account public key added to publicKeyMap")
-
-	// Save the *constructed* genesis block (which now contains the converted tx)
 	log.Printf("Inserting block %d into database", genesis.Index)
-	// Use SaveBlock method from the Store interface via Database.Blockchain
 	if err := database.Blockchain.SaveBlock(genesis); err != nil {
 		log.Printf("CRITICAL ERROR: Failed to save genesis block to the database: %v", err)
-		// temp.Close() might be better here if it handles storeInstance closing
 		storeInstance.Close()
 		return nil, nil, fmt.Errorf("failed to save genesis block: %w", err)
 	}
@@ -693,8 +691,6 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 
 	log.Printf("Genesis account %s initialized with total supply: %d nanoTHRYLOS", addr.String(), totalSupplyNano)
 
-	// --- Background Goroutines (Shutdown Handler, Block Creator) ---
-	// (Keep existing goroutines)
 	go func() {
 		c := make(chan os.Signal, 1)
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -703,7 +699,7 @@ func NewBlockchain(config *types.BlockchainConfig) (*BlockchainImpl, types.Store
 		// Consider calling temp.Close() here for graceful shutdown
 	}()
 
-	if !config.DisableBackground {
+	if !setupConfig.DisableBackground {
 		go func() {
 			log.Println("Starting block creation process")
 			if temp.modernProcessor == nil {

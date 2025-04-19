@@ -15,3 +15,8 @@ RewardDistributionTimeInterval = 86400
 
 # Delegation Related
 DelegationRewardPercent = 0.5
+
+# --- ADDED Gas Fee Entries ---
+min_gas_fee = 10000       # nanoTHR (0.001 THR)
+max_gas_fee = 1000000    # nanoTHR (0.1 THR)
+default_gas_fee = 50000 # nanoTHR (0.005 THR)

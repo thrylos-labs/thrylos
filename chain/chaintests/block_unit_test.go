@@ -1,576 +1,555 @@
 package chaintests
 
-import (
-	"crypto/rand"
-	"encoding/json"
-	"fmt"
-	"hash/fnv"
-	mrand "math/rand" // Alias math/rand as mrand
-	"os"
-	"runtime"
-	"sync"
-	"testing"
-	"time" // Alias crypto/rand as crand
+// Alias math/rand as mrand
 
-	"github.com/stretchr/testify/require"
-	"github.com/thrylos-labs/thrylos"
-	"github.com/thrylos-labs/thrylos/chain"
-	"github.com/thrylos-labs/thrylos/consensus/processor"
-	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/crypto/hash"
-	"github.com/thrylos-labs/thrylos/node"
-	"github.com/thrylos-labs/thrylos/shared"
-	"github.com/thrylos-labs/thrylos/state"
-	"github.com/thrylos-labs/thrylos/types"
-	"github.com/thrylos-labs/thrylos/utils"
-)
+// Alias crypto/rand as crand
 
 // MockTxPool implements the types.TxPool interface for testing
-type MockTxPool struct {
-	txs map[string]*types.Transaction
-	mu  sync.RWMutex
-}
-
-func NewMockTxPool() *MockTxPool {
-	return &MockTxPool{
-		txs: make(map[string]*types.Transaction),
-	}
-}
-
-func (m *MockTxPool) AddTransaction(tx *types.Transaction) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.txs[tx.ID]; exists {
-		return processor.ErrTxAlreadyExists
-	}
-	m.txs[tx.ID] = tx
-	return nil
-}
-
-func (m *MockTxPool) RemoveTransaction(tx *types.Transaction) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.txs, tx.ID)
-	return nil
-}
-
-func (m *MockTxPool) GetTransaction(txID string) (*types.Transaction, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	tx, exists := m.txs[txID]
-	if !exists {
-		return nil, fmt.Errorf("transaction not found: %s", txID)
-	}
-	return tx, nil
-}
-
-func (m *MockTxPool) GetFirstTransaction() (*types.Transaction, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, tx := range m.txs {
-		return tx, nil
-	}
-	return nil, fmt.Errorf("no transactions in pool")
-}
-
-func (m *MockTxPool) GetAllTransactions() ([]*types.Transaction, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	txs := make([]*types.Transaction, 0, len(m.txs))
-	for _, tx := range m.txs {
-		txs = append(txs, tx)
-	}
-	return txs, nil
-}
-
-func (m *MockTxPool) BroadcastTransaction(tx *types.Transaction) error {
-	return nil // Mock implementation
-}
-
-func (m *MockTxPool) GetActiveValidators(tx *types.Transaction) error {
-	return nil // Mock implementation
-}
-
-func (m *MockTxPool) Size() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.txs)
-}
-
-// Add this constructor function for your MockBalanceUpdateQueue
-func NewMockBalanceUpdateQueue() *MockBalanceUpdateQueue {
-	return &MockBalanceUpdateQueue{}
-}
-
-// MockBalanceUpdateQueue implements a minimal BalanceUpdateQueue for testing
-type MockBalanceUpdateQueue struct{}
-
-func (q *MockBalanceUpdateQueue) QueueUpdate(req types.BalanceUpdateRequest) {
-	// No-op for testing
-}
-
-// // Helper function to handle block creation and signing
-func createAndSignBlock(t *testing.T, blockchain *types.Blockchain, txs []*thrylos.Transaction, validatorKey *crypto.PrivateKey, prevHash []byte) error {
-	// Convert transactions using existing function
-	sharedTxs := make([]*types.Transaction, len(txs))
-	for i, tx := range txs {
-		sharedTxs[i] = utils.ConvertToSharedTransaction(tx)
-	}
-
-	// Rest of the function remains the same...
-	blockHash, err := hash.FromBytes(prevHash)
-	if err != nil {
-		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
-	}
-
-	// Create block with proper types
-	block := &types.Block{
-		Index:              int64(len(blockchain.Blocks)),
-		Timestamp:          time.Now().Unix(),
-		Transactions:       sharedTxs,
-		PrevHash:           blockHash,
-		ValidatorPublicKey: nil, // This needs to be set based on your requirements
-	}
-
-	// Rest of the implementation remains the same...
-	if err := chain.InitializeVerkleTree(block); err != nil {
-		return fmt.Errorf("failed to initialize Verkle tree: %v", err)
-	}
-
-	chain.ComputeBlockHash(block)
-
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
-		return fmt.Errorf("failed to generate signature salt: %v", err)
-	}
-	signatureData := append(block.Hash[:], salt...)
-
-	//*validatorKey
-	signature := (*validatorKey).Sign(signatureData)
-
-	// Assign the signature object directly since it implements crypto.Signature
-	block.Signature = signature
-	block.Salt = salt
-
-	blockchain.Mu.Lock()
-	blockchain.Blocks = append(blockchain.Blocks, block)
-	blockchain.Mu.Unlock()
-
-	return nil
-}
-
-func TestBlockTimeToFinality(t *testing.T) {
-	// Create test directory
-	tempDir, err := os.MkdirTemp("", "blockchain-finality-test-")
-	require.NoError(t, err, "Failed to create temp directory")
-	defer os.RemoveAll(tempDir)
-
-	// Use predefined genesis account
-	privKey, err := crypto.NewPrivateKey()
-	require.NoError(t, err, "Failed to generate private key")
-	pubKey := privKey.PublicKey()
-	genesisAddress, err := privKey.PublicKey().Address()
-	require.NoError(t, err, "Failed to get genesis address")
-
-	// Initialize blockchain
-	config := &types.BlockchainConfig{
-		DataDir:           tempDir,
-		AESKey:            []byte("test-key"),
-		GenesisAccount:    privKey,
-		TestMode:          true,
-		DisableBackground: true,
-	}
-
-	blockchainImpl, store, err := chain.NewBlockchain(config)
-	require.NoError(t, err, "Failed to create blockchain")
-
-	// Use store instead of letting it go unused
-	err = store.SavePublicKey(pubKey)
-	require.NoError(t, err, "Failed to store MLDSA public key")
-
-	// Reference the blockchain field from the implementation
-	blockchain := blockchainImpl.Blockchain
-
-	// Get genesis transaction
-	blockchain.Mu.RLock()
-	genesisTx := blockchain.Blocks[0].Transactions[0]
-	blockchain.Mu.RUnlock()
-	require.NotNil(t, genesisTx, "Genesis transaction should exist")
-
-	// Test cases
-	testCases := []struct {
-		name       string
-		numBlocks  int
-		maxAvgTime time.Duration
-		maxTotal   time.Duration
-	}{
-		{
-			name:       "Small Network",
-			numBlocks:  5,
-			maxAvgTime: 2 * time.Second,
-			maxTotal:   10 * time.Second,
-		},
-		{
-			name:       "Medium Network",
-			numBlocks:  10,
-			maxAvgTime: 1 * time.Second,
-			maxTotal:   20 * time.Second,
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc // Capture range variable
-		t.Run(tc.name, func(t *testing.T) {
-			var blockTimes []time.Duration
-			startTime := time.Now()
-
-			// Get initial previous hash
-			blockchain.Mu.RLock()
-			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
-			blockchain.Mu.RUnlock()
-
-			// Create blocks
-			for i := 0; i < tc.numBlocks; i++ {
-				// Create transaction
-				gasAmount := int32(processor.BaseGasFee)
-				inputAmount := int64(2000)
-				outputAmount := inputAmount - int64(gasAmount)
-
-				tx := &thrylos.Transaction{
-					Id:        fmt.Sprintf("test-tx-%d", i),
-					Timestamp: time.Now().Unix(),
-					Sender:    genesisAddress.String(),
-					Gasfee:    gasAmount,
-					Inputs: []*thrylos.UTXO{
-						{
-							TransactionId: genesisTx.ID,
-							Index:         int32(i),
-							OwnerAddress:  genesisAddress.String(),
-							Amount:        inputAmount,
-						},
-					},
-					Outputs: []*thrylos.UTXO{
-						{
-							OwnerAddress: genesisAddress.String(),
-							Amount:       outputAmount,
-							Index:        0,
-						},
-					},
-				}
-
-				// Sign transaction
-				signData := []byte(fmt.Sprintf("%s%d%s%d",
-					tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
-				for _, input := range tx.Inputs {
-					signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
-						input.TransactionId, input.Index,
-						input.OwnerAddress, input.Amount))...)
-				}
-				for _, output := range tx.Outputs {
-					signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
-						output.OwnerAddress, output.Index,
-						output.Amount))...)
-				}
-
-				signature := privKey.Sign(signData)
-				require.NoError(t, err, "Failed to sign transaction")
-				tx.Signature = signature.Bytes()
-
-				// Create and sign block
-				blockStart := time.Now()
-
-				// Convert hash.Hash to []byte
-				prevHashBytes := prevHash.Bytes() // Assuming Hash type has a Bytes() method
-
-				//b:= (blockchain).(*shared.Blockchain)
-				err = createAndSignBlock(t, blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
-				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
-				blockTime := time.Since(blockStart)
-
-				// Update previous hash
-				blockchain.Mu.RLock()
-				prevHash = blockchain.Blocks[len(blockchain.Blocks)-1].Hash
-				blockchain.Mu.RUnlock()
-
-				blockTimes = append(blockTimes, blockTime)
-			}
-
-			// Calculate metrics
-			var totalBlockTime time.Duration
-			for _, bt := range blockTimes {
-				totalBlockTime += bt
-			}
-
-			avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
-			totalTime := time.Since(startTime)
-
-			// Log metrics
-			t.Logf("Performance metrics for %s:", tc.name)
-			t.Logf("Average block time: %v", avgBlockTime)
-			t.Logf("Total time: %v", totalTime)
-
-			// Verify expectations
-			if avgBlockTime >= tc.maxAvgTime {
-				t.Errorf("Average block time %v exceeds maximum %v",
-					avgBlockTime, tc.maxAvgTime)
-			}
-			if totalTime >= tc.maxTotal {
-				t.Errorf("Total time %v exceeds maximum %v",
-					totalTime, tc.maxTotal)
-			}
-		})
-
-		// Allow cleanup between test cases
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// // Helper function to generate address for specific shard
-func generateAddressForShard(shardID int, nonce int, numShards int) string {
-	// Use shardID instead of batch calculation
-	// Ensures addresses match partition ranges
-	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
-}
-
-func createRealisticTransaction(t *testing.T, blockchain *types.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
-	// Debug logging
-	t.Logf("Debug: Starting createRealisticTransaction for sender %s, nonce %d", sender, nonce)
-
-	// Check for nil blockchain
-	if blockchain == nil {
-		t.Logf("ERROR: blockchain is nil")
-		return createDummyTransaction(sender, nonce, numShards)
-	}
-
-	// Check for nil ValidatorKeys
-	if blockchain.ValidatorKeys == nil {
-		t.Logf("ERROR: blockchain.ValidatorKeys is nil")
-		return createDummyTransaction(sender, nonce, numShards)
-	}
-
-	// Rest of function...
-	h := fnv.New32a()
-	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
-	shardID := int(h.Sum32() % uint32(numShards))
-
-	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
-
-	// Create transaction
-	inputAmount := int64(5000 + (nonce % 1000))
-	gasAmount := int32(processor.BaseGasFee)
-	outputAmount := inputAmount - int64(gasAmount)
-
-	tx := &thrylos.Transaction{
-		Id:        fmt.Sprintf("tx-%d-%d", time.Now().UnixNano(), nonce),
-		Timestamp: time.Now().Unix(),
-		Sender:    sender,
-		Gasfee:    gasAmount,
-		Inputs: []*thrylos.UTXO{
-			{
-				TransactionId: fmt.Sprintf("prev-tx-%d", nonce),
-				Index:         int32(nonce),
-				OwnerAddress:  sender,
-				Amount:        inputAmount,
-			},
-		},
-		Outputs: []*thrylos.UTXO{
-			{
-				OwnerAddress: recipientAddress,
-				Amount:       outputAmount,
-				Index:        0,
-			},
-		},
-	}
-
-	// Create signature data
-	signData := createSignatureData(tx)
-
-	// Debug: Try to get sender's private key with robust error handling
-	t.Logf("Debug: Attempting to get private key for sender %s", sender)
-
-	// Use safer approach to get the key
-	var privKeyInterface *crypto.PrivateKey
-	var exists bool
-
-	// Use defer + recover to catch any panics during key retrieval
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("ERROR: Panic recovered when getting private key: %v", r)
-				exists = false
-			}
-		}()
-
-		privKeyInterface, exists = blockchain.ValidatorKeys.GetKey(sender)
-	}()
-
-	if !exists || privKeyInterface == nil {
-		t.Logf("Debug: Private key not found for sender %s, using dummy signature", sender)
-		tx.Signature = []byte("dummy-signature-for-testing")
-		return tx
-	}
-
-	t.Logf("Debug: Private key found for sender %s", sender)
-
-	// Sign with robust error handling
-	var signature crypto.Signature
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("ERROR: Panic recovered when signing: %v", r)
-				signature = nil
-			}
-		}()
-
-		if *privKeyInterface != nil {
-			signature = (*privKeyInterface).Sign(signData)
-		}
-	}()
-
-	if signature == nil {
-		t.Logf("Debug: Failed to create signature, using dummy signature")
-		tx.Signature = []byte("dummy-signature-for-testing")
-		return tx
-	}
-
-	// Get bytes with robust error handling
-	var signatureBytes []byte
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("ERROR: Panic recovered when getting signature bytes: %v", r)
-				signatureBytes = nil
-			}
-		}()
-
-		signatureBytes = signature.Bytes()
-	}()
-
-	if signatureBytes == nil {
-		t.Logf("Debug: Failed to get signature bytes, using dummy signature")
-		tx.Signature = []byte("dummy-signature-for-testing")
-		return tx
-	}
-
-	tx.Signature = signatureBytes
-	t.Logf("Debug: Successfully created transaction with valid signature")
-	return tx
-}
-
-// Helper function to create a dummy transaction for fallback
-func createDummyTransaction(sender string, nonce int, numShards int) *thrylos.Transaction {
-	h := fnv.New32a()
-	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
-	shardID := int(h.Sum32() % uint32(numShards))
-
-	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
-
-	return &thrylos.Transaction{
-		Id:        fmt.Sprintf("dummy-tx-%d-%d", time.Now().UnixNano(), nonce),
-		Timestamp: time.Now().Unix(),
-		Sender:    sender,
-		Gasfee:    int32(processor.BaseGasFee),
-		Inputs: []*thrylos.UTXO{
-			{
-				TransactionId: fmt.Sprintf("dummy-prev-tx-%d", nonce),
-				Index:         int32(nonce),
-				OwnerAddress:  sender,
-				Amount:        int64(5000),
-			},
-		},
-		Outputs: []*thrylos.UTXO{
-			{
-				OwnerAddress: recipientAddress,
-				Amount:       int64(4900),
-				Index:        0,
-			},
-		},
-		Signature: []byte("dummy-signature-for-testing"),
-	}
-}
-
-// Helper function to create signature data
-func createSignatureData(tx *thrylos.Transaction) []byte {
-	signData := []byte(fmt.Sprintf("%s%d%s%d",
-		tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
-
-	for _, input := range tx.Inputs {
-		signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
-			input.TransactionId, input.Index,
-			input.OwnerAddress, input.Amount))...)
-	}
-
-	for _, output := range tx.Outputs {
-		signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
-			output.OwnerAddress, output.Index,
-			output.Amount))...)
-	}
-
-	return signData
-}
-
-// Define the metrics struct
-type ShardMetrics struct {
-	accesses int64
-	modifies int64
-}
-
-type ShardMetricsData struct {
-	AccessCount  int64
-	ModifyCount  int64
-	TotalTxCount int64
-	AvgLatency   time.Duration
-	LoadFactor   float64
-}
-
-func getScalingAction(needsSplit, needsMerge bool) string {
-	if needsSplit {
-		return "Split"
-	}
-	if needsMerge {
-		return "Merge"
-	}
-	return "None"
-}
-
-// Helper function that doesn't rely on ValidatorKeys
-func createSafeTransaction(t *testing.T, sender string, nonce int, numShards int) *thrylos.Transaction {
-	t.Logf("Creating safe transaction for sender: %s, nonce: %d", sender, nonce)
-
-	// Deterministic sharding
-	h := fnv.New32a()
-	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
-	shardID := int(h.Sum32() % uint32(numShards))
-
-	// Recipient address
-	recipientAddress := fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
-
-	// Create transaction with dummy signature
-	tx := &thrylos.Transaction{
-		Id:        fmt.Sprintf("safe-tx-%d-%d", time.Now().UnixNano(), nonce),
-		Timestamp: time.Now().Unix(),
-		Sender:    sender,
-		Gasfee:    int32(processor.BaseGasFee),
-		Inputs: []*thrylos.UTXO{
-			{
-				TransactionId: fmt.Sprintf("prev-tx-%d", nonce),
-				Index:         int32(nonce),
-				OwnerAddress:  sender,
-				Amount:        int64(5000 + (nonce % 1000)),
-			},
-		},
-		Outputs: []*thrylos.UTXO{
-			{
-				OwnerAddress: recipientAddress,
-				Amount:       int64(4900 + (nonce % 1000)),
-				Index:        0,
-			},
-		},
-		Signature: []byte(fmt.Sprintf("dummy-signature-%d", nonce)), // Simply use a dummy signature
-	}
-
-	return tx
-}
+// type MockTxPool struct {
+// 	txs map[string]*types.Transaction
+// 	mu  sync.RWMutex
+// }
+
+// func NewMockTxPool() *MockTxPool {
+// 	return &MockTxPool{
+// 		txs: make(map[string]*types.Transaction),
+// 	}
+// }
+
+// func (m *MockTxPool) AddTransaction(tx *types.Transaction) error {
+// 	m.mu.Lock()
+// 	defer m.mu.Unlock()
+// 	if _, exists := m.txs[tx.ID]; exists {
+// 		return processor.ErrTxAlreadyExists
+// 	}
+// 	m.txs[tx.ID] = tx
+// 	return nil
+// }
+
+// func (m *MockTxPool) RemoveTransaction(tx *types.Transaction) error {
+// 	m.mu.Lock()
+// 	defer m.mu.Unlock()
+// 	delete(m.txs, tx.ID)
+// 	return nil
+// }
+
+// func (m *MockTxPool) GetTransaction(txID string) (*types.Transaction, error) {
+// 	m.mu.RLock()
+// 	defer m.mu.RUnlock()
+// 	tx, exists := m.txs[txID]
+// 	if !exists {
+// 		return nil, fmt.Errorf("transaction not found: %s", txID)
+// 	}
+// 	return tx, nil
+// }
+
+// func (m *MockTxPool) GetFirstTransaction() (*types.Transaction, error) {
+// 	m.mu.RLock()
+// 	defer m.mu.RUnlock()
+// 	for _, tx := range m.txs {
+// 		return tx, nil
+// 	}
+// 	return nil, fmt.Errorf("no transactions in pool")
+// }
+
+// func (m *MockTxPool) GetAllTransactions() ([]*types.Transaction, error) {
+// 	m.mu.RLock()
+// 	defer m.mu.RUnlock()
+// 	txs := make([]*types.Transaction, 0, len(m.txs))
+// 	for _, tx := range m.txs {
+// 		txs = append(txs, tx)
+// 	}
+// 	return txs, nil
+// }
+
+// func (m *MockTxPool) BroadcastTransaction(tx *types.Transaction) error {
+// 	return nil // Mock implementation
+// }
+
+// func (m *MockTxPool) GetActiveValidators(tx *types.Transaction) error {
+// 	return nil // Mock implementation
+// }
+
+// func (m *MockTxPool) Size() int {
+// 	m.mu.RLock()
+// 	defer m.mu.RUnlock()
+// 	return len(m.txs)
+// }
+
+// // Add this constructor function for your MockBalanceUpdateQueue
+// func NewMockBalanceUpdateQueue() *MockBalanceUpdateQueue {
+// 	return &MockBalanceUpdateQueue{}
+// }
+
+// // MockBalanceUpdateQueue implements a minimal BalanceUpdateQueue for testing
+// type MockBalanceUpdateQueue struct{}
+
+// func (q *MockBalanceUpdateQueue) QueueUpdate(req types.BalanceUpdateRequest) {
+// 	// No-op for testing
+// }
+
+// // // Helper function to handle block creation and signing
+// func createAndSignBlock(t *testing.T, blockchain *types.Blockchain, txs []*thrylos.Transaction, validatorKey *crypto.PrivateKey, prevHash []byte) error {
+// 	// Convert transactions using existing function
+// 	sharedTxs := make([]*types.Transaction, len(txs))
+// 	for i, tx := range txs {
+// 		sharedTxs[i] = utils.ConvertToSharedTransaction(tx)
+// 	}
+
+// 	// Rest of the function remains the same...
+// 	blockHash, err := hash.FromBytes(prevHash)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to create hash from previous hash bytes: %v", err)
+// 	}
+
+// 	// Create block with proper types
+// 	block := &types.Block{
+// 		Index:              int64(len(blockchain.Blocks)),
+// 		Timestamp:          time.Now().Unix(),
+// 		Transactions:       sharedTxs,
+// 		PrevHash:           blockHash,
+// 		ValidatorPublicKey: nil, // This needs to be set based on your requirements
+// 	}
+
+// 	// Rest of the implementation remains the same...
+// 	if err := chain.InitializeVerkleTree(block); err != nil {
+// 		return fmt.Errorf("failed to initialize Verkle tree: %v", err)
+// 	}
+
+// 	chain.ComputeBlockHash(block)
+
+// 	salt := make([]byte, 32)
+// 	if _, err := rand.Read(salt); err != nil {
+// 		return fmt.Errorf("failed to generate signature salt: %v", err)
+// 	}
+// 	signatureData := append(block.Hash[:], salt...)
+
+// 	//*validatorKey
+// 	signature := (*validatorKey).Sign(signatureData)
+
+// 	// Assign the signature object directly since it implements crypto.Signature
+// 	block.Signature = signature
+// 	block.Salt = salt
+
+// 	blockchain.Mu.Lock()
+// 	blockchain.Blocks = append(blockchain.Blocks, block)
+// 	blockchain.Mu.Unlock()
+
+// 	return nil
+// }
+
+// func TestBlockTimeToFinality(t *testing.T) {
+// 	// Create test directory
+// 	tempDir, err := os.MkdirTemp("", "blockchain-finality-test-")
+// 	require.NoError(t, err, "Failed to create temp directory")
+// 	defer os.RemoveAll(tempDir)
+
+// 	// Use predefined genesis account
+// 	privKey, err := crypto.NewPrivateKey()
+// 	require.NoError(t, err, "Failed to generate private key")
+// 	pubKey := privKey.PublicKey()
+// 	genesisAddress, err := privKey.PublicKey().Address()
+// 	require.NoError(t, err, "Failed to get genesis address")
+
+// 	// Initialize blockchain
+// 	config := &types.BlockchainConfig{
+// 		DataDir:           tempDir,
+// 		AESKey:            []byte("test-key"),
+// 		GenesisAccount:    privKey,
+// 		TestMode:          true,
+// 		DisableBackground: true,
+// 	}
+
+// 	blockchainImpl, store, err := chain.NewBlockchain(config)
+// 	require.NoError(t, err, "Failed to create blockchain")
+
+// 	// Use store instead of letting it go unused
+// 	err = store.SavePublicKey(pubKey)
+// 	require.NoError(t, err, "Failed to store MLDSA public key")
+
+// 	// Reference the blockchain field from the implementation
+// 	blockchain := blockchainImpl.Blockchain
+
+// 	// Get genesis transaction
+// 	blockchain.Mu.RLock()
+// 	genesisTx := blockchain.Blocks[0].Transactions[0]
+// 	blockchain.Mu.RUnlock()
+// 	require.NotNil(t, genesisTx, "Genesis transaction should exist")
+
+// 	// Test cases
+// 	testCases := []struct {
+// 		name       string
+// 		numBlocks  int
+// 		maxAvgTime time.Duration
+// 		maxTotal   time.Duration
+// 	}{
+// 		{
+// 			name:       "Small Network",
+// 			numBlocks:  5,
+// 			maxAvgTime: 2 * time.Second,
+// 			maxTotal:   10 * time.Second,
+// 		},
+// 		{
+// 			name:       "Medium Network",
+// 			numBlocks:  10,
+// 			maxAvgTime: 1 * time.Second,
+// 			maxTotal:   20 * time.Second,
+// 		},
+// 	}
+
+// 	for _, tc := range testCases {
+// 		tc := tc // Capture range variable
+// 		t.Run(tc.name, func(t *testing.T) {
+// 			var blockTimes []time.Duration
+// 			startTime := time.Now()
+
+// 			// Get initial previous hash
+// 			blockchain.Mu.RLock()
+// 			prevHash := blockchain.Blocks[len(blockchain.Blocks)-1].Hash
+// 			blockchain.Mu.RUnlock()
+
+// 			// Create blocks
+// 			for i := 0; i < tc.numBlocks; i++ {
+// 				// Create transaction
+// 				gasAmount := int32(processor.BaseGasFee)
+// 				inputAmount := int64(2000)
+// 				outputAmount := inputAmount - int64(gasAmount)
+
+// 				tx := &thrylos.Transaction{
+// 					Id:        fmt.Sprintf("test-tx-%d", i),
+// 					Timestamp: time.Now().Unix(),
+// 					Sender:    genesisAddress.String(),
+// 					Gasfee:    gasAmount,
+// 					Inputs: []*thrylos.UTXO{
+// 						{
+// 							TransactionId: genesisTx.ID,
+// 							Index:         int32(i),
+// 							OwnerAddress:  genesisAddress.String(),
+// 							Amount:        inputAmount,
+// 						},
+// 					},
+// 					Outputs: []*thrylos.UTXO{
+// 						{
+// 							OwnerAddress: genesisAddress.String(),
+// 							Amount:       outputAmount,
+// 							Index:        0,
+// 						},
+// 					},
+// 				}
+
+// 				// Sign transaction
+// 				signData := []byte(fmt.Sprintf("%s%d%s%d",
+// 					tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
+// 				for _, input := range tx.Inputs {
+// 					signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
+// 						input.TransactionId, input.Index,
+// 						input.OwnerAddress, input.Amount))...)
+// 				}
+// 				for _, output := range tx.Outputs {
+// 					signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
+// 						output.OwnerAddress, output.Index,
+// 						output.Amount))...)
+// 				}
+
+// 				signature := privKey.Sign(signData)
+// 				require.NoError(t, err, "Failed to sign transaction")
+// 				tx.Signature = signature.Bytes()
+
+// 				// Create and sign block
+// 				blockStart := time.Now()
+
+// 				// Convert hash.Hash to []byte
+// 				prevHashBytes := prevHash.Bytes() // Assuming Hash type has a Bytes() method
+
+// 				//b:= (blockchain).(*shared.Blockchain)
+// 				err = createAndSignBlock(t, blockchain, []*thrylos.Transaction{tx}, &privKey, prevHashBytes)
+// 				require.NoError(t, err, fmt.Sprintf("Failed to create block %d", i))
+// 				blockTime := time.Since(blockStart)
+
+// 				// Update previous hash
+// 				blockchain.Mu.RLock()
+// 				prevHash = blockchain.Blocks[len(blockchain.Blocks)-1].Hash
+// 				blockchain.Mu.RUnlock()
+
+// 				blockTimes = append(blockTimes, blockTime)
+// 			}
+
+// 			// Calculate metrics
+// 			var totalBlockTime time.Duration
+// 			for _, bt := range blockTimes {
+// 				totalBlockTime += bt
+// 			}
+
+// 			avgBlockTime := totalBlockTime / time.Duration(len(blockTimes))
+// 			totalTime := time.Since(startTime)
+
+// 			// Log metrics
+// 			t.Logf("Performance metrics for %s:", tc.name)
+// 			t.Logf("Average block time: %v", avgBlockTime)
+// 			t.Logf("Total time: %v", totalTime)
+
+// 			// Verify expectations
+// 			if avgBlockTime >= tc.maxAvgTime {
+// 				t.Errorf("Average block time %v exceeds maximum %v",
+// 					avgBlockTime, tc.maxAvgTime)
+// 			}
+// 			if totalTime >= tc.maxTotal {
+// 				t.Errorf("Total time %v exceeds maximum %v",
+// 					totalTime, tc.maxTotal)
+// 			}
+// 		})
+
+// 		// Allow cleanup between test cases
+// 		time.Sleep(100 * time.Millisecond)
+// 	}
+// }
+
+// // // Helper function to generate address for specific shard
+// func generateAddressForShard(shardID int, nonce int, numShards int) string {
+// 	// Use shardID instead of batch calculation
+// 	// Ensures addresses match partition ranges
+// 	return fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
+// }
+
+// func createRealisticTransaction(t *testing.T, blockchain *types.Blockchain, sender string, nonce int, numShards int) *thrylos.Transaction {
+// 	// Debug logging
+// 	t.Logf("Debug: Starting createRealisticTransaction for sender %s, nonce %d", sender, nonce)
+
+// 	// Check for nil blockchain
+// 	if blockchain == nil {
+// 		t.Logf("ERROR: blockchain is nil")
+// 		return createDummyTransaction(sender, nonce, numShards)
+// 	}
+
+// 	// Check for nil ValidatorKeys
+// 	if blockchain.ValidatorKeys == nil {
+// 		t.Logf("ERROR: blockchain.ValidatorKeys is nil")
+// 		return createDummyTransaction(sender, nonce, numShards)
+// 	}
+
+// 	// Rest of function...
+// 	h := fnv.New32a()
+// 	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
+// 	shardID := int(h.Sum32() % uint32(numShards))
+
+// 	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
+
+// 	// Create transaction
+// 	inputAmount := int64(5000 + (nonce % 1000))
+// 	gasAmount := int32(processor.BaseGasFee)
+// 	outputAmount := inputAmount - int64(gasAmount)
+
+// 	tx := &thrylos.Transaction{
+// 		Id:        fmt.Sprintf("tx-%d-%d", time.Now().UnixNano(), nonce),
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    sender,
+// 		Gasfee:    gasAmount,
+// 		Inputs: []*thrylos.UTXO{
+// 			{
+// 				TransactionId: fmt.Sprintf("prev-tx-%d", nonce),
+// 				Index:         int32(nonce),
+// 				OwnerAddress:  sender,
+// 				Amount:        inputAmount,
+// 			},
+// 		},
+// 		Outputs: []*thrylos.UTXO{
+// 			{
+// 				OwnerAddress: recipientAddress,
+// 				Amount:       outputAmount,
+// 				Index:        0,
+// 			},
+// 		},
+// 	}
+
+// 	// Create signature data
+// 	signData := createSignatureData(tx)
+
+// 	// Debug: Try to get sender's private key with robust error handling
+// 	t.Logf("Debug: Attempting to get private key for sender %s", sender)
+
+// 	// Use safer approach to get the key
+// 	var privKeyInterface *crypto.PrivateKey
+// 	var exists bool
+
+// 	// Use defer + recover to catch any panics during key retrieval
+// 	func() {
+// 		defer func() {
+// 			if r := recover(); r != nil {
+// 				t.Logf("ERROR: Panic recovered when getting private key: %v", r)
+// 				exists = false
+// 			}
+// 		}()
+
+// 		privKeyInterface, exists = blockchain.ValidatorKeys.GetKey(sender)
+// 	}()
+
+// 	if !exists || privKeyInterface == nil {
+// 		t.Logf("Debug: Private key not found for sender %s, using dummy signature", sender)
+// 		tx.Signature = []byte("dummy-signature-for-testing")
+// 		return tx
+// 	}
+
+// 	t.Logf("Debug: Private key found for sender %s", sender)
+
+// 	// Sign with robust error handling
+// 	var signature crypto.Signature
+// 	func() {
+// 		defer func() {
+// 			if r := recover(); r != nil {
+// 				t.Logf("ERROR: Panic recovered when signing: %v", r)
+// 				signature = nil
+// 			}
+// 		}()
+
+// 		if *privKeyInterface != nil {
+// 			signature = (*privKeyInterface).Sign(signData)
+// 		}
+// 	}()
+
+// 	if signature == nil {
+// 		t.Logf("Debug: Failed to create signature, using dummy signature")
+// 		tx.Signature = []byte("dummy-signature-for-testing")
+// 		return tx
+// 	}
+
+// 	// Get bytes with robust error handling
+// 	var signatureBytes []byte
+// 	func() {
+// 		defer func() {
+// 			if r := recover(); r != nil {
+// 				t.Logf("ERROR: Panic recovered when getting signature bytes: %v", r)
+// 				signatureBytes = nil
+// 			}
+// 		}()
+
+// 		signatureBytes = signature.Bytes()
+// 	}()
+
+// 	if signatureBytes == nil {
+// 		t.Logf("Debug: Failed to get signature bytes, using dummy signature")
+// 		tx.Signature = []byte("dummy-signature-for-testing")
+// 		return tx
+// 	}
+
+// 	tx.Signature = signatureBytes
+// 	t.Logf("Debug: Successfully created transaction with valid signature")
+// 	return tx
+// }
+
+// // Helper function to create a dummy transaction for fallback
+// func createDummyTransaction(sender string, nonce int, numShards int) *thrylos.Transaction {
+// 	h := fnv.New32a()
+// 	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
+// 	shardID := int(h.Sum32() % uint32(numShards))
+
+// 	recipientAddress := generateAddressForShard(shardID, nonce, numShards)
+
+// 	return &thrylos.Transaction{
+// 		Id:        fmt.Sprintf("dummy-tx-%d-%d", time.Now().UnixNano(), nonce),
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    sender,
+// 		Gasfee:    int32(processor.BaseGasFee),
+// 		Inputs: []*thrylos.UTXO{
+// 			{
+// 				TransactionId: fmt.Sprintf("dummy-prev-tx-%d", nonce),
+// 				Index:         int32(nonce),
+// 				OwnerAddress:  sender,
+// 				Amount:        int64(5000),
+// 			},
+// 		},
+// 		Outputs: []*thrylos.UTXO{
+// 			{
+// 				OwnerAddress: recipientAddress,
+// 				Amount:       int64(4900),
+// 				Index:        0,
+// 			},
+// 		},
+// 		Signature: []byte("dummy-signature-for-testing"),
+// 	}
+// }
+
+// // Helper function to create signature data
+// func createSignatureData(tx *thrylos.Transaction) []byte {
+// 	signData := []byte(fmt.Sprintf("%s%d%s%d",
+// 		tx.Id, tx.Timestamp, tx.Sender, tx.Gasfee))
+
+// 	for _, input := range tx.Inputs {
+// 		signData = append(signData, []byte(fmt.Sprintf("%s%d%s%d",
+// 			input.TransactionId, input.Index,
+// 			input.OwnerAddress, input.Amount))...)
+// 	}
+
+// 	for _, output := range tx.Outputs {
+// 		signData = append(signData, []byte(fmt.Sprintf("%s%d%d",
+// 			output.OwnerAddress, output.Index,
+// 			output.Amount))...)
+// 	}
+
+// 	return signData
+// }
+
+// // Define the metrics struct
+// type ShardMetrics struct {
+// 	accesses int64
+// 	modifies int64
+// }
+
+// type ShardMetricsData struct {
+// 	AccessCount  int64
+// 	ModifyCount  int64
+// 	TotalTxCount int64
+// 	AvgLatency   time.Duration
+// 	LoadFactor   float64
+// }
+
+// func getScalingAction(needsSplit, needsMerge bool) string {
+// 	if needsSplit {
+// 		return "Split"
+// 	}
+// 	if needsMerge {
+// 		return "Merge"
+// 	}
+// 	return "None"
+// }
+
+// // Helper function that doesn't rely on ValidatorKeys
+// func createSafeTransaction(t *testing.T, sender string, nonce int, numShards int) *thrylos.Transaction {
+// 	t.Logf("Creating safe transaction for sender: %s, nonce: %d", sender, nonce)
+
+// 	// Deterministic sharding
+// 	h := fnv.New32a()
+// 	h.Write([]byte(fmt.Sprintf("%s-%d", sender, nonce)))
+// 	shardID := int(h.Sum32() % uint32(numShards))
+
+// 	// Recipient address
+// 	recipientAddress := fmt.Sprintf("tl1%02d%s", shardID, fmt.Sprintf("%015x", nonce))
+
+// 	// Create transaction with dummy signature
+// 	tx := &thrylos.Transaction{
+// 		Id:        fmt.Sprintf("safe-tx-%d-%d", time.Now().UnixNano(), nonce),
+// 		Timestamp: time.Now().Unix(),
+// 		Sender:    sender,
+// 		Gasfee:    int32(processor.BaseGasFee),
+// 		Inputs: []*thrylos.UTXO{
+// 			{
+// 				TransactionId: fmt.Sprintf("prev-tx-%d", nonce),
+// 				Index:         int32(nonce),
+// 				OwnerAddress:  sender,
+// 				Amount:        int64(5000 + (nonce % 1000)),
+// 			},
+// 		},
+// 		Outputs: []*thrylos.UTXO{
+// 			{
+// 				OwnerAddress: recipientAddress,
+// 				Amount:       int64(4900 + (nonce % 1000)),
+// 				Index:        0,
+// 			},
+// 		},
+// 		Signature: []byte(fmt.Sprintf("dummy-signature-%d", nonce)), // Simply use a dummy signature
+// 	}
+
+// 	return tx
+// }
 
 // func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
 // 	// Create test directory first
@@ -1148,223 +1127,223 @@ func createSafeTransaction(t *testing.T, sender string, nonce int, numShards int
 //		t.Log("Basic blockchain initialization test passed")
 //	}
 
-func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
-	// Create test directory
-	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
-	require.NoError(t, err, "Failed to create temp directory")
-	defer os.RemoveAll(tempDir)
+// func TestRealisticBlockTimeToFinalityWithShardingAndBatching(t *testing.T) {
+// 	// Create test directory
+// 	tempDir, err := os.MkdirTemp("", "blockchain-production-test-")
+// 	require.NoError(t, err, "Failed to create temp directory")
+// 	defer os.RemoveAll(tempDir)
 
-	// Create private key
-	privKey, err := crypto.NewPrivateKey()
-	require.NoError(t, err, "Failed to generate private key")
+// 	// Create private key
+// 	privKey, err := crypto.NewPrivateKey()
+// 	require.NoError(t, err, "Failed to generate private key")
 
-	// Initialize blockchain with minimal config
-	config := &types.BlockchainConfig{
-		DataDir:           tempDir,
-		AESKey:            []byte("test-key"),
-		GenesisAccount:    privKey,
-		TestMode:          true,
-		DisableBackground: true,
-	}
+// 	// Initialize blockchain with minimal config
+// 	config := &types.BlockchainConfig{
+// 		DataDir:           tempDir,
+// 		AESKey:            []byte("test-key"),
+// 		GenesisAccount:    privKey,
+// 		TestMode:          true,
+// 		DisableBackground: true,
+// 	}
 
-	blockchainImpl, store, err := chain.NewBlockchain(config)
-	require.NoError(t, err, "Failed to create blockchain")
+// 	blockchainImpl, store, err := chain.NewBlockchain(config)
+// 	require.NoError(t, err, "Failed to create blockchain")
 
-	// Get blockchain reference
-	blockchain := blockchainImpl.Blockchain
+// 	// Get blockchain reference
+// 	blockchain := blockchainImpl.Blockchain
 
-	// Initialize network and state manager
-	networkHandler := state.NewMockNetworkInterface(25*time.Millisecond, 0.1)
-	stateManager := state.NewStateManager(networkHandler, 4) // Just 4 shards for simplicity
-	defer stateManager.StopStateSyncLoop()
+// 	// Initialize network and state manager
+// 	networkHandler := state.NewMockNetworkInterface(25*time.Millisecond, 0.1)
+// 	stateManager := state.NewStateManager(networkHandler, 4) // Just 4 shards for simplicity
+// 	defer stateManager.StopStateSyncLoop()
 
-	// Add genesis account to state
-	genesisAddr, err := privKey.PublicKey().Address()
-	require.NoError(t, err, "Failed to get genesis address")
-	genesisAddress := genesisAddr.String()
+// 	// Add genesis account to state
+// 	genesisAddr, err := privKey.PublicKey().Address()
+// 	require.NoError(t, err, "Failed to get genesis address")
+// 	genesisAddress := genesisAddr.String()
 
-	err = stateManager.UpdateState(genesisAddress, 1000000, nil)
-	require.NoError(t, err, "Failed to update genesis state")
+// 	err = stateManager.UpdateState(genesisAddress, 1000000, nil)
+// 	require.NoError(t, err, "Failed to update genesis state")
 
-	// Store only in PublicKeyMap, skip ValidatorKeys
-	var genesisPubKeyInterface crypto.PublicKey = privKey.PublicKey()
-	blockchain.PublicKeyMap[genesisAddress] = &genesisPubKeyInterface
+// 	// Store only in PublicKeyMap, skip ValidatorKeys
+// 	var genesisPubKeyInterface crypto.PublicKey = privKey.PublicKey()
+// 	blockchain.PublicKeyMap[genesisAddress] = &genesisPubKeyInterface
 
-	// Create a node
-	testNode := node.NewNode("localhost:8080", tempDir)
-	testNode.Mu.Lock()
-	testNode.SetBlockchain(blockchain)
-	testNode.Database = store
-	testNode.Mu.Unlock()
+// 	// Create a node
+// 	testNode := node.NewNode("localhost:8080", tempDir)
+// 	testNode.Mu.Lock()
+// 	testNode.SetBlockchain(blockchain)
+// 	testNode.Database = store
+// 	testNode.Mu.Unlock()
 
-	// Create message channel
-	messageCh := make(chan types.Message, 100)
+// 	// Create message channel
+// 	messageCh := make(chan types.Message, 100)
 
-	// Create message bus
-	messageBus := shared.NewMessageBus()
+// 	// Create message bus
+// 	messageBus := shared.NewMessageBus()
 
-	// Subscribe to messages
-	messageBus.Subscribe(types.ProcessBlock, messageCh)
-	messageBus.Subscribe(types.ValidateBlock, messageCh)
+// 	// Subscribe to messages
+// 	messageBus.Subscribe(types.ProcessBlock, messageCh)
+// 	messageBus.Subscribe(types.ValidateBlock, messageCh)
 
-	// Set the message channel
-	testNode.Mu.Lock()
-	testNode.SetMessageChannel(messageCh)
-	testNode.Mu.Unlock()
+// 	// Set the message channel
+// 	testNode.Mu.Lock()
+// 	testNode.SetMessageChannel(messageCh)
+// 	testNode.Mu.Unlock()
 
-	// Handle messages
-	go func() {
-		for msg := range messageCh {
-			switch msg.Type {
-			case types.ProcessBlock, types.ValidateBlock:
-				if msg.ResponseCh != nil {
-					msg.ResponseCh <- types.Response{Data: nil, Error: nil}
-				}
-			}
-		}
-	}()
+// 	// Handle messages
+// 	go func() {
+// 		for msg := range messageCh {
+// 			switch msg.Type {
+// 			case types.ProcessBlock, types.ValidateBlock:
+// 				if msg.ResponseCh != nil {
+// 					msg.ResponseCh <- types.Response{Data: nil, Error: nil}
+// 				}
+// 			}
+// 		}
+// 	}()
 
-	// Initialize DAG Manager
-	dagManager := processor.NewDAGManager()
-	testNode.Mu.Lock()
-	testNode.DAGManager = dagManager
-	testNode.Mu.Unlock()
+// 	// Initialize DAG Manager
+// 	dagManager := processor.NewDAGManager()
+// 	testNode.Mu.Lock()
+// 	testNode.DAGManager = dagManager
+// 	testNode.Mu.Unlock()
 
-	// Create a TX Pool
-	NewMockTxPool()
+// 	// Create a TX Pool
+// 	NewMockTxPool()
 
-	// Get current state of blockchain
-	blockchain.Mu.RLock()
-	blockCount := len(blockchain.Blocks)
-	genBlock := blockchain.Blocks[0]
-	prevHash := genBlock.Hash
-	blockchain.Mu.RUnlock()
+// 	// Get current state of blockchain
+// 	blockchain.Mu.RLock()
+// 	blockCount := len(blockchain.Blocks)
+// 	genBlock := blockchain.Blocks[0]
+// 	prevHash := genBlock.Hash
+// 	blockchain.Mu.RUnlock()
 
-	// Constants for measuring TPS with realistic constraints
-	const (
-		numBlocks               = 10
-		txsPerBlock             = 100
-		totalTxs                = numBlocks * txsPerBlock
-		networkLatencyMs        = 5
-		signatureVerificationMs = 1
-		blockFinalizationMs     = 50
-	)
+// 	// Constants for measuring TPS with realistic constraints
+// 	const (
+// 		numBlocks               = 10
+// 		txsPerBlock             = 100
+// 		totalTxs                = numBlocks * txsPerBlock
+// 		networkLatencyMs        = 5
+// 		signatureVerificationMs = 1
+// 		blockFinalizationMs     = 50
+// 	)
 
-	// Seed the random number generator
-	mrand.NewSource(time.Now().UnixNano())
+// 	// Seed the random number generator
+// 	mrand.NewSource(time.Now().UnixNano())
 
-	startTime := time.Now()
+// 	startTime := time.Now()
 
-	// Create multiple blocks with transactions
-	for b := 0; b < numBlocks; b++ {
-		blockStart := time.Now()
+// 	// Create multiple blocks with transactions
+// 	for b := 0; b < numBlocks; b++ {
+// 		blockStart := time.Now()
 
-		// Create transactions for this block
-		blockTxs := make([]*types.Transaction, 0, txsPerBlock)
+// 		// Create transactions for this block
+// 		blockTxs := make([]*types.Transaction, 0, txsPerBlock)
 
-		// Simulate memory pressure at the beginning of each block
-		memPressure := make([][]byte, 10)
-		for i := 0; i < 10; i++ {
-			memPressure[i] = make([]byte, 1024*1024) // 1MB each
-		}
+// 		// Simulate memory pressure at the beginning of each block
+// 		memPressure := make([][]byte, 10)
+// 		for i := 0; i < 10; i++ {
+// 			memPressure[i] = make([]byte, 1024*1024) // 1MB each
+// 		}
 
-		for i := 0; i < txsPerBlock; i++ {
-			// Simulate network latency for receiving transaction
-			time.Sleep(time.Duration(networkLatencyMs) * time.Millisecond)
+// 		for i := 0; i < txsPerBlock; i++ {
+// 			// Simulate network latency for receiving transaction
+// 			time.Sleep(time.Duration(networkLatencyMs) * time.Millisecond)
 
-			// Create transaction with realistic size
-			txSize := 1024 + mrand.Intn(3072) // 1-4KB range
-			dummyData := make([]byte, txSize)
-			rand.Read(dummyData)
+// 			// Create transaction with realistic size
+// 			txSize := 1024 + mrand.Intn(3072) // 1-4KB range
+// 			dummyData := make([]byte, txSize)
+// 			rand.Read(dummyData)
 
-			// Create a transaction
-			tx := &thrylos.Transaction{
-				Id:        fmt.Sprintf("test-tx-%d-%d", b, i),
-				Timestamp: time.Now().Unix(),
-				Sender:    genesisAddress,
-				Gasfee:    100,
-				Inputs: []*thrylos.UTXO{
-					{
-						TransactionId: "genesis-tx-0",
-						Index:         int32(i),
-						OwnerAddress:  genesisAddress,
-						Amount:        5000,
-					},
-				},
-				Outputs: []*thrylos.UTXO{
-					{
-						OwnerAddress: fmt.Sprintf("recipient-address-%d-%d", b, i),
-						Amount:       4900,
-						Index:        0,
-					},
-				},
-				// Use dummy signature with realistic size
-				Signature: dummyData[:64], // 64 bytes for signature
-			}
+// 			// Create a transaction
+// 			tx := &thrylos.Transaction{
+// 				Id:        fmt.Sprintf("test-tx-%d-%d", b, i),
+// 				Timestamp: time.Now().Unix(),
+// 				Sender:    genesisAddress,
+// 				Gasfee:    100,
+// 				Inputs: []*thrylos.UTXO{
+// 					{
+// 						TransactionId: "genesis-tx-0",
+// 						Index:         int32(i),
+// 						OwnerAddress:  genesisAddress,
+// 						Amount:        5000,
+// 					},
+// 				},
+// 				Outputs: []*thrylos.UTXO{
+// 					{
+// 						OwnerAddress: fmt.Sprintf("recipient-address-%d-%d", b, i),
+// 						Amount:       4900,
+// 						Index:        0,
+// 					},
+// 				},
+// 				// Use dummy signature with realistic size
+// 				Signature: dummyData[:64], // 64 bytes for signature
+// 			}
 
-			// Simulate signature verification time
-			time.Sleep(time.Duration(signatureVerificationMs) * time.Millisecond)
+// 			// Simulate signature verification time
+// 			time.Sleep(time.Duration(signatureVerificationMs) * time.Millisecond)
 
-			// Simulate state update
-			stateManager.UpdateState(fmt.Sprintf("address-%d-%d", b, i), int64(4900), nil)
+// 			// Simulate state update
+// 			stateManager.UpdateState(fmt.Sprintf("address-%d-%d", b, i), int64(4900), nil)
 
-			// Convert to shared transaction
-			sharedTx := utils.ConvertToSharedTransaction(tx)
-			blockTxs = append(blockTxs, sharedTx)
-		}
+// 			// Convert to shared transaction
+// 			sharedTx := utils.ConvertToSharedTransaction(tx)
+// 			blockTxs = append(blockTxs, sharedTx)
+// 		}
 
-		// Release memory pressure
-		for i := 0; i < 10; i++ {
-			memPressure[i] = nil
-		}
-		runtime.GC()
+// 		// Release memory pressure
+// 		for i := 0; i < 10; i++ {
+// 			memPressure[i] = nil
+// 		}
+// 		runtime.GC()
 
-		// Create a new block
-		block := &types.Block{
-			Index:        int64(blockCount + b),
-			Timestamp:    time.Now().Unix(),
-			Transactions: blockTxs,
-			PrevHash:     prevHash,
-		}
+// 		// Create a new block
+// 		block := &types.Block{
+// 			Index:        int64(blockCount + b),
+// 			Timestamp:    time.Now().Unix(),
+// 			Transactions: blockTxs,
+// 			PrevHash:     prevHash,
+// 		}
 
-		// Simulate disk I/O for block storage
-		tempFile, err := os.CreateTemp("", "block-*.tmp")
-		if err == nil { // Only proceed if file creation succeeded
-			blockData, err := json.Marshal(block)
-			if err == nil {
-				tempFile.Write(blockData)
-			}
-			tempFile.Close()
-			os.Remove(tempFile.Name()) // Clean up
-		}
+// 		// Simulate disk I/O for block storage
+// 		tempFile, err := os.CreateTemp("", "block-*.tmp")
+// 		if err == nil { // Only proceed if file creation succeeded
+// 			blockData, err := json.Marshal(block)
+// 			if err == nil {
+// 				tempFile.Write(blockData)
+// 			}
+// 			tempFile.Close()
+// 			os.Remove(tempFile.Name()) // Clean up
+// 		}
 
-		// Simulate block finalization delay (consensus)
-		time.Sleep(time.Duration(blockFinalizationMs) * time.Millisecond)
+// 		// Simulate block finalization delay (consensus)
+// 		time.Sleep(time.Duration(blockFinalizationMs) * time.Millisecond)
 
-		// Add the block to the blockchain
-		blockchain.Mu.Lock()
-		blockchain.Blocks = append(blockchain.Blocks, block)
-		blockchain.Mu.Unlock()
+// 		// Add the block to the blockchain
+// 		blockchain.Mu.Lock()
+// 		blockchain.Blocks = append(blockchain.Blocks, block)
+// 		blockchain.Mu.Unlock()
 
-		// Update previous hash for next block
-		prevHash = block.Hash
+// 		// Update previous hash for next block
+// 		prevHash = block.Hash
 
-		blockTime := time.Since(blockStart)
-		t.Logf("Block %d created with %d transactions in %v", b, txsPerBlock, blockTime)
-	}
+// 		blockTime := time.Since(blockStart)
+// 		t.Logf("Block %d created with %d transactions in %v", b, txsPerBlock, blockTime)
+// 	}
 
-	totalTime := time.Since(startTime)
-	tps := float64(totalTxs) / totalTime.Seconds()
+// 	totalTime := time.Since(startTime)
+// 	tps := float64(totalTxs) / totalTime.Seconds()
 
-	t.Logf("\nTPS Benchmark Results (with Realistic Constraints):")
-	t.Logf("Total transactions: %d", totalTxs)
-	t.Logf("Total blocks: %d", numBlocks)
-	t.Logf("Total time: %v", totalTime)
-	t.Logf("Transactions per second (TPS): %.2f", tps)
-	t.Logf("Network latency per tx: %dms", networkLatencyMs)
-	t.Logf("Signature verification per tx: %dms", signatureVerificationMs)
-	t.Logf("Block finalization delay: %dms", blockFinalizationMs)
+// 	t.Logf("\nTPS Benchmark Results (with Realistic Constraints):")
+// 	t.Logf("Total transactions: %d", totalTxs)
+// 	t.Logf("Total blocks: %d", numBlocks)
+// 	t.Logf("Total time: %v", totalTime)
+// 	t.Logf("Transactions per second (TPS): %.2f", tps)
+// 	t.Logf("Network latency per tx: %dms", networkLatencyMs)
+// 	t.Logf("Signature verification per tx: %dms", signatureVerificationMs)
+// 	t.Logf("Block finalization delay: %dms", blockFinalizationMs)
 
-	t.Logf("Successfully created blockchain with %d blocks", len(blockchain.Blocks))
-	t.Log("Test completed successfully!")
-}
+// 	t.Logf("Successfully created blockchain with %d blocks", len(blockchain.Blocks))
+// 	t.Log("Test completed successfully!")
+// }

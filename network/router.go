@@ -1,6 +1,9 @@
 package network
 
 import (
+	"log"
+
+	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -11,13 +14,20 @@ type Router struct {
 	peerManager *PeerManager // Peer manager reference
 }
 
-func NewRouter(messageBus types.MessageBusInterface) *Router {
+func NewRouter(messageBus types.MessageBusInterface, cfg *config.Config) *Router { // <-- ADD cfg argument
+	// Add a check for nil config for robustness
+	if cfg == nil {
+		log.Panic("FATAL: NewRouter called with nil config")
+	}
+
 	router := &Router{
 		messageBus: messageBus,
 	}
 
-	// Initialize handlers with the message bus only
-	router.rpc = NewHandler(messageBus)
+	// --- MODIFIED Handler Initialization ---
+	// Pass both messageBus and cfg to NewHandler
+	router.rpc = NewHandler(messageBus, cfg) // <-- PASS cfg
+	// Assuming NewWebSocketManager doesn't need config, otherwise update it too
 	router.ws = NewWebSocketManager(messageBus)
 
 	return router

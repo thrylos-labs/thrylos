@@ -24,6 +24,7 @@ import (
 // Handler struct now contains a messageBus instead of a direct node reference
 type Handler struct {
 	messageBus types.MessageBusInterface
+	appConfig  *config.Config
 }
 
 // --- START: Canonical Serialization Logic ---
@@ -151,8 +152,21 @@ func SerializeTransactionForSigning(tx *types.Transaction) ([]byte, error) {
 }
 
 // NewHandler creates a new Handler with the message bus
-func NewHandler(messageBus types.MessageBusInterface) *Handler {
-	return &Handler{messageBus: messageBus}
+func NewHandler(messageBus types.MessageBusInterface, cfg *config.Config) *Handler { // <-- ACCEPT Config object
+	if cfg == nil {
+		// Decide how to handle nil config: panic, load default, or return error?
+		// Panicking is often okay for unrecoverable startup issues.
+		log.Panic("FATAL: Network Handler created with nil config")
+	}
+	// Validate essential config values if needed
+	if cfg.MinGasFee <= 0 { // Example validation
+		log.Panic("FATAL: Config MinGasFee must be positive")
+	}
+
+	return &Handler{
+		messageBus: messageBus,
+		appConfig:  cfg, // <-- STORE Config object
+	}
 }
 
 func sendJSONRPCError(w http.ResponseWriter, jsonrpcErr *JSONRPCError, id interface{}) {
@@ -651,15 +665,31 @@ func (h *Handler) handlePrepareTransaction(params []interface{}) (interface{}, e
 	log.Printf("INFO: [Prepare] Sender address successfully verified against public key.")
 
 	// --- Determine Gas Fee ---
-	// Ensure config constants are exported (uppercase) and package is imported
-	gasFee := int(config.DefaultGasFee)
+	// Access config via the handler's field 'h.appConfig'
+	gasFee := h.appConfig.DefaultGasFee // Start with default from loaded config
+
 	if hasSuggestedFee {
-		gasFee = int(suggestedGasFeeFloat)
-		if gasFee < config.MinGasFee {
-			log.Printf("WARN: Suggested gas fee %d below minimum %d, using minimum.", gasFee, config.MinGasFee)
-			gasFee = config.MinGasFee
+		suggestedFeeInt := int(suggestedGasFeeFloat)
+		// Validate suggested fee is within configured bounds
+		if suggestedFeeInt >= h.appConfig.MinGasFee && suggestedFeeInt <= h.appConfig.MaxGasFee {
+			gasFee = suggestedFeeInt
+		} else if suggestedFeeInt < h.appConfig.MinGasFee {
+			log.Printf("WARN: Suggested gas fee %d below minimum %d, using minimum.", suggestedFeeInt, h.appConfig.MinGasFee)
+			gasFee = h.appConfig.MinGasFee // Use Min from config as floor
+		} else { // suggestedFeeInt > h.appConfig.MaxGasFee
+			log.Printf("WARN: Suggested gas fee %d exceeds maximum %d, capping.", suggestedFeeInt, h.appConfig.MaxGasFee)
+			gasFee = h.appConfig.MaxGasFee // Cap at Max from config
 		}
 	}
+	// Ensure the final fee (even the default) isn't below min or above max
+	// (This double checks, primarily useful if DefaultGasFee is somehow outside bounds)
+	if gasFee < h.appConfig.MinGasFee {
+		gasFee = h.appConfig.MinGasFee
+	}
+	if gasFee > h.appConfig.MaxGasFee {
+		gasFee = h.appConfig.MaxGasFee
+	}
+	// --- End Determine Gas Fee ---
 
 	amountNeeded := amountToSendNano + int64(gasFee)
 

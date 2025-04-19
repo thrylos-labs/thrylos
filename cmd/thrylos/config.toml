@@ -1,0 +1,15 @@
+data_dir = ""
+aes_key = ""
+test_mode = false
+disable_background = false
+nano_per_thrylos = 10000000.0
+initial_total_supply = 120000000.0
+annual_stake_reward = 48000000000000.0
+daily_stake_reward = 131506849315.0685
+minimum_stake_amount = 400000000.0
+min_stake_percentage = 0.1
+reward_distribution_time_interval = 86400
+delegation_reward_percent = 0.5
+min_gas_fee = 10000
+max_gas_fee = 1000000
+default_gas_fee = 50000

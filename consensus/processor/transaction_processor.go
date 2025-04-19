@@ -28,12 +28,6 @@ type TransactionProcessorImpl struct {
 	stakingService     *staking.StakingService // Add reference to staking service
 }
 
-// Gas fee constants
-const (
-	BaseGasFee = 1000  // Base fee in microTHRYLOS (0.001 THRYLOS)
-	MaxGasFee  = 10000 // Maximum gas fee in microTHRYLOS (0.01 THRYLOS)
-)
-
 // Staking transaction types
 const (
 	TxTypeStake   = "stake"
@@ -233,21 +227,6 @@ func (tp *TransactionProcessorImpl) CollectInputsForTransaction(amount int64, se
 
 	change = collectedAmount - amount
 	return collectedInputs, change, nil
-}
-
-// Gas calculation
-func CalculateGas(dataSize int, balance int64) int {
-	gasFee := BaseGasFee
-	additionalFee := (dataSize / 1000) * 100
-	gasFee += additionalFee
-
-	if gasFee > MaxGasFee {
-		gasFee = MaxGasFee
-	}
-	if gasFee > MaxGasFee {
-		gasFee = MaxGasFee
-	}
-	return gasFee
 }
 
 // Transaction validation

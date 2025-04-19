@@ -20,6 +20,7 @@ import (
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
+	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/types"
 
@@ -229,13 +230,27 @@ func main() {
 
 	// Initialize the blockchain and database with the AES key
 	// Set TestMode to false for testnet deployment
-	blockchain, _, err := chain.NewBlockchain(&types.BlockchainConfig{
+	blockchainSetupConfig := &types.BlockchainConfig{
 		DataDir:           absPath,
 		AESKey:            aesKey,
 		GenesisAccount:    privKey,
 		TestMode:          false, // For testnet, we should set this to false
 		DisableBackground: false,
-	})
+		// Note: StateManager isn't initialized here yet, NewBlockchain might handle it internally or it might need setup
+	}
+
+	// Load the application config
+	cfg, err := config.LoadOrCreateConfig("config.toml")
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Now call NewBlockchain with BOTH config arguments
+	blockchain, _, err := chain.NewBlockchain(blockchainSetupConfig, cfg) // <-- PASS cfg HERE
+	if err != nil {
+		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
+	}
+
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
@@ -266,7 +281,7 @@ func main() {
 	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID)
 
 	// Initialize router with message bus
-	router := network.NewRouter(messageBus)
+	router := network.NewRouter(messageBus, cfg)
 
 	// Create and initialize the peer manager
 	peerManager := network.NewPeerManager(messageBus, 50, 20) // 50 inbound, 20 outbound max connections
