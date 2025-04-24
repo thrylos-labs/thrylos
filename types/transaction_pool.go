@@ -13,6 +13,7 @@ type TxPool interface {
 	AddTransaction(tx *Transaction) error
 	RemoveTransaction(tx *Transaction) error
 	GetTransaction(txID string) (*Transaction, error)
+	RemoveTransactions(txs []*Transaction) error
 	GetFirstTransaction() (*Transaction, error)
 	GetAllTransactions() ([]*Transaction, error)
 	BroadcastTransaction(tx *Transaction) error
