@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/balance"
 	"github.com/thrylos-labs/thrylos/config"
@@ -66,24 +68,75 @@ func (bc *BlockchainImpl) Close() error {
 
 // AddBlockToChain handles validation, state updates, and persistence for a new signed block.
 func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
+	// --- Initial Checks ---
 	if block == nil {
 		return errors.New("cannot add nil block")
 	}
-	log.Printf("Attempting to add Block %d to chain...", block.Index)
-
-	// 1. Verify Signature and Hash (Does not require lock yet)
-	log.Printf("Verifying signed block %d...", block.Index)
-	if err := bc.VerifySignedBlock(block); err != nil {
-		log.Printf("ERROR: Block %d failed signature/hash verification: %v", block.Index, err)
-		return fmt.Errorf("signed block verification failed: %w", err)
+	if block.Validator == "" {
+		log.Printf("ERROR: [AddBlock] Block %d is missing validator information.", block.Index)
+		return errors.New("block verification failed: missing validator")
 	}
-	log.Printf("Block %d signature/hash verified successfully.", block.Index)
+	if block.Signature == nil || len(block.Signature.Bytes()) == 0 {
+		log.Printf("ERROR: [AddBlock] Block %d (Validator: %s) signature is missing or empty.", block.Index, block.Validator)
+		return errors.New("block verification failed: missing or empty block signature")
+	}
+	log.Printf("Attempting to add Block %d (Validator: %s) to chain...", block.Index, block.Validator)
 
-	// --- Acquire Lock (Needed for validation against in-memory state & final update) ---
+	// --- 1. Verify Signature and Hash (No Lock Needed Yet) ---
+	log.Printf("Verifying signature for block %d from validator %s...", block.Index, block.Validator)
+
+	// A) Retrieve the public key
+	validatorPubKey, err := bc.GetValidatorPublicKey(block.Validator)
+	if err != nil {
+		log.Printf("ERROR: [AddBlock] Block %d verification failed - Could not get public key for validator %s: %v", block.Index, block.Validator, err)
+		return fmt.Errorf("block verification failed: cannot get validator public key: %w", err)
+	}
+
+	// B) Recompute the block hash locally
+	hashBytesToVerify, err := SerializeForSigning(block)
+	if err != nil {
+		log.Printf("ERROR: [AddBlock] Block %d verification failed - Could not serialize block for hash recomputation: %v", block.Index, err)
+		return fmt.Errorf("block verification failed: serialization error: %w", err)
+	}
+	if len(hashBytesToVerify) == 0 {
+		log.Printf("ERROR: [AddBlock] Block %d verification failed - Serialization for hash recomputation resulted in empty bytes.", block.Index)
+		return fmt.Errorf("block verification failed: empty serialization result")
+	}
+	recomputedHash := hash.NewHash(hashBytesToVerify)
+	if recomputedHash.Equal(hash.NullHash()) {
+		log.Printf("ERROR: [AddBlock] Block %d verification failed - Hash recomputation resulted in zero hash.", block.Index)
+		return fmt.Errorf("block verification failed: zero hash recomputation")
+	}
+	// *** ADDED LOGGING ***
+	log.Printf("DEBUG: [AddBlock] RECOMPUTED HASH BYTES FOR VERIFY: %x", recomputedHash.Bytes())
+	// *** END LOGGING ***
+
+	// C) Verify the signature against the recomputed hash
+	signatureBytes := block.Signature.Bytes()
+	// *** ADDED LOGGING ***
+	log.Printf("DEBUG: [AddBlock] SIGNATURE BYTES FOR VERIFY: %x", signatureBytes)
+	// *** END LOGGING ***
+
+	isValid := mldsa44.Verify(validatorPubKey, recomputedHash.Bytes(), signatureBytes, nil)
+	if !isValid {
+		log.Printf("ERROR: [AddBlock] Block %d verification failed - Invalid signature from validator %s.", block.Index, block.Validator)
+		// Optional: Log public key bytes used
+		// pkBytes, _ := validatorPubKey.MarshalBinary()
+		// log.Printf("DEBUG: [AddBlock] Validator PubKey Used: %x", pkBytes)
+		return fmt.Errorf("block verification failed: invalid signature")
+	}
+	log.Printf("Block %d signature verified successfully against recomputed hash.", block.Index)
+	// --- End Signature Verification ---
+
+	// --- Acquire Lock ---
 	bc.Blockchain.Mu.Lock()
 	defer bc.Blockchain.Mu.Unlock()
 
-	// 2. Basic Validation (Index, PrevHash) against current in-memory chain
+	// 2. Basic Validation (Index, PrevHash)
+	if block.Hash.Equal(hash.NullHash()) {
+		log.Printf("ERROR: [AddBlock] Block %d has missing or zero Hash field.", block.Index)
+		return errors.New("block has zero hash field for chain linkage validation")
+	}
 	if len(bc.Blockchain.Blocks) > 0 {
 		prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
 		if block.Index != prevBlock.Index+1 {
@@ -93,19 +146,16 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 			log.Printf("PrevHash mismatch! Expected: %s, Got: %s", prevBlock.Hash.String(), block.PrevHash.String())
 			return fmt.Errorf("invalid PrevHash: expected %s, got %s", prevBlock.Hash.String(), block.PrevHash.String())
 		}
-	} else if block.Index != 0 { // Chain is empty, only genesis (index 0) allowed
+	} else if block.Index != 0 {
 		return fmt.Errorf("invalid block index for non-genesis on empty chain: expected 0, got %d", block.Index)
 	}
 
-	// --- *** ATOMIC DATABASE PERSISTENCE *** ---
-	// Start a database transaction
+	// --- ATOMIC DATABASE PERSISTENCE ---
 	dbTxContext, err := bc.Blockchain.Database.BeginTransaction()
 	if err != nil {
 		log.Printf("ERROR: Failed to begin DB transaction for block %d: %v", block.Index, err)
 		return fmt.Errorf("failed start DB tx for block %d: %w", block.Index, err)
 	}
-
-	// Use a named error variable to signal rollback needed in defer
 	var finalErr error
 	defer func() {
 		if finalErr != nil && dbTxContext != nil {
@@ -114,21 +164,19 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 		}
 	}()
 
-	// 3. Persist State Changes (UTXOs, Balances) to DB FIRST
-	//    Uses the helper function below, which calls context-aware store methods
+	// 3. Persist State Changes
 	finalErr = bc.persistStateChangesToDB(dbTxContext, block)
 	if finalErr != nil {
 		log.Printf("ERROR: Failed to persist state changes to DB for block %d: %v", block.Index, finalErr)
-		return finalErr // Defer handles rollback
+		return finalErr
 	}
 	log.Printf("DEBUG: Successfully persisted state changes to DB for Block %d (within transaction).", block.Index)
 
-	// 4. Persist Block Data/Metadata to DB
-	//    Requires context-aware SaveBlock in store (added in updated store.go)
-	finalErr = bc.Blockchain.Database.SaveBlockWithContext(dbTxContext, block) // Use new method name
+	// 4. Persist Block Data
+	finalErr = bc.Blockchain.Database.SaveBlockWithContext(dbTxContext, block)
 	if finalErr != nil {
 		log.Printf("ERROR: Failed to save block %d data to DB: %v", block.Index, finalErr)
-		return finalErr // Defer handles rollback
+		return finalErr
 	}
 	log.Printf("DEBUG: Successfully saved block %d data to DB (within transaction).", block.Index)
 
@@ -137,25 +185,20 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	if commitErr != nil {
 		finalErr = fmt.Errorf("failed to commit DB transaction for block %d: %w", block.Index, commitErr)
 		log.Printf("CRITICAL ERROR: %v. DB state may be inconsistent.", finalErr)
-		dbTxContext = nil // Prevent defer attempting rollback after failed commit
+		dbTxContext = nil
 		return finalErr
 	}
-	dbTxContext = nil // Prevent rollback by defer if commit was successful
+	dbTxContext = nil
 	log.Printf("DEBUG: Successfully committed DB transaction for Block %d.", block.Index)
+	// --- END ATOMIC DATABASE PERSISTENCE ---
 
-	// --- *** END ATOMIC DATABASE PERSISTENCE *** ---
-
-	// --- *** UPDATE IN-MEMORY STATE (Only after successful DB commit) *** ---
-
-	// 6. Append block to in-memory list
-	// Ensure thread-safety if other goroutines read Blocks concurrently without lock
+	// --- UPDATE IN-MEMORY STATE ---
+	// 6. Append block
 	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, block)
 	log.Printf("INFO: Appended block %d to in-memory chain (Hash: %s)", block.Index, block.Hash.String())
 
-	// 7. Update in-memory UTXOs and Balances
-	//    Uses the revised updateStateForBlock function below
+	// 7. Update UTXOs and Balances
 	if err := bc.updateStateForBlock(block); err != nil {
-		// CRITICAL INTERNAL ERROR: DB committed, but in-memory update failed!
 		log.Printf("CRITICAL ERROR: In-memory state update failed for committed block %d: %v. State inconsistent!", block.Index, err)
 		return fmt.Errorf("CRITICAL: in-memory state update failed post-commit for block %d: %w", block.Index, err)
 	}
@@ -163,34 +206,26 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 
 	// 8. Update timestamp
 	bc.Blockchain.LastTimestamp = block.Timestamp
+	// --- END UPDATE IN-MEMORY STATE ---
 
-	// --- *** END UPDATE IN-MEMORY STATE *** ---
-
-	// --- Trigger Notifications & Status Updates (After successful commit & memory update) ---
-	// 9. Trigger Notifications
+	// --- Trigger Notifications & Status Updates ---
 	if bc.Blockchain.OnNewBlock != nil {
 		go bc.Blockchain.OnNewBlock(block)
 	}
-
-	// 10. Update transaction statuses in DB (Can run concurrently AFTER commit)
-	//     Requires UpdateTransactionStatus method in store
-	go func(txs []*types.Transaction, blockHash hash.Hash) {
-		blockHashBytes := blockHash.Bytes()
-		for _, tx := range txs {
-			txID := tx.ID // Capture loop variable
-			// Use context-unaware UpdateTransactionStatus for now, as it might
-			// not need to be part of the main block commit transaction.
-			// If it needs atomicity, it should be moved before the commit.
+	go func(b *types.Block) {
+		blockHashBytes := b.Hash.Bytes()
+		for _, tx := range b.Transactions {
+			txID := tx.ID
 			if err := bc.UpdateTransactionStatus(txID, "included", blockHashBytes); err != nil {
 				log.Printf("WARN: [Block Adder] Failed to update status for tx %s after block inclusion: %v", txID, err)
 			} else {
-				log.Printf("DEBUG: [Block Adder] Updated status for tx %s to 'included' in block %s...", txID, blockHash.String()[:10])
+				log.Printf("DEBUG: [Block Adder] Updated status for tx %s to 'included' in block %s...", txID, b.Hash.String()[:10])
 			}
 		}
-	}(block.Transactions, block.Hash)
+	}(block)
 
 	// --- Final Success ---
-	log.Printf("INFO: Successfully added and persisted Block %d.", block.Index)
+	log.Printf("INFO: Successfully added and persisted Block %d proposed by %s.", block.Index, block.Validator)
 	return nil
 }
 
@@ -585,18 +620,20 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 	messageBus := types.GetGlobalMessageBus()
 	temp := &BlockchainImpl{
 		Blockchain: &types.Blockchain{
-			Blocks:              []*types.Block{genesis},
-			Genesis:             genesis,
-			Stakeholders:        stakeholdersMap,
-			Database:            storeInstance,
-			PublicKeyMap:        publicKeyMap,
-			UTXOs:               utxoMap,
-			Forks:               make([]*types.Fork, 0),
-			GenesisAccount:      privKey,
-			PendingTransactions: make([]*thrylos.Transaction, 0),
-			ActiveValidators:    make([]string, 0),
-			StateNetwork:        stateNetwork,
-			TestMode:            setupConfig.TestMode,
+			Blocks:               []*types.Block{genesis},
+			Genesis:              genesis,
+			Stakeholders:         stakeholdersMap,
+			Database:             storeInstance,
+			PublicKeyMap:         publicKeyMap,
+			UTXOs:                utxoMap,
+			Forks:                make([]*types.Fork, 0),
+			GenesisAccount:       privKey,
+			PendingTransactions:  make([]*thrylos.Transaction, 0),
+			ActiveValidators:     make([]string, 0),
+			StateNetwork:         stateNetwork,
+			TestMode:             setupConfig.TestMode,
+			ValidatorKeys:        store.NewValidatorKeyStore(database, addr.Bytes()), // Initialize the field
+			MinStakeForValidator: big.NewInt(40),
 		},
 		MessageBus: messageBus,
 		AppConfig:  appConfig, // Store the main app config
@@ -758,61 +795,87 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 					}
 
 					// --- BLOCK CREATION LOGIC ---
-					if len(processedSuccessfully) > 0 {
+					if len(processedSuccessfully) > 0 { // Use the successfully processed shared transactions
 						log.Printf("INFO: [Block Creator] Ready to create block with %d transactions.", len(processedSuccessfully))
 
-						// 1. Get Validator
-						var currentValidatorID string
-						if temp.Blockchain.GenesisAccount != nil && temp.Blockchain.GenesisAccount.PublicKey() != nil {
-							genesisAddr, errAddr := temp.Blockchain.GenesisAccount.PublicKey().Address()
-							if errAddr != nil {
-								log.Printf("ERROR: [Block Creator] Failed to get address from GenesisAccount: %v. Skipping block creation.", errAddr)
-								continue
-							}
-							currentValidatorID = genesisAddr.String()
-						} else {
-							log.Printf("ERROR: [Block Creator] GenesisAccount or its PublicKey is nil. Skipping block creation.")
-							continue
+						// --- 1. Select Validator (Using function added in previous step) ---
+						selectedValidatorID, errSelect := temp.SelectNextValidator() // Use the round-robin function
+						if errSelect != nil {
+							log.Printf("ERROR: [Block Creator] Failed to select validator: %v. Skipping block creation.", errSelect)
+							continue // Skip this iteration
 						}
-						log.Printf("INFO: [Block Creator] Using validator: %s", currentValidatorID)
+						log.Printf("INFO: [Block Creator] Selected validator for new block: %s", selectedValidatorID)
+						// --- End Select Validator ---
 
-						// 2. Convert Transactions to Protobuf
-						// This assumes processedSuccessfully contains *types.Transaction
+						// 2. Convert Transactions back to Protobuf for block creation
+						// (Ensure this conversion handles your transaction types correctly)
 						protoTxs, errConv := utils.ConvertMultipleToProto(processedSuccessfully)
 						if errConv != nil {
-							log.Printf("ERROR: [Block Creator] Failed to convert transactions for block creation: %v. Skipping block.", errConv)
+							log.Printf("ERROR: [Block Creator] Failed to convert transactions to proto for block: %v. Skipping block.", errConv)
 							continue
 						}
 
-						// 3. Create Unsigned Block (Takes proto txs)
-						log.Printf("DEBUG: [Block Creator] Calling CreateUnsignedBlock...")
-						unsignedBlock, errCreate := temp.CreateUnsignedBlock(protoTxs, currentValidatorID)
+						// 3. Create Unsigned Block
+						log.Printf("DEBUG: [Block Creator] Calling CreateUnsignedBlock with validator %s...", selectedValidatorID)
+						// CreateUnsignedBlock MUST set the block.Validator field
+						unsignedBlock, errCreate := temp.CreateUnsignedBlock(protoTxs, selectedValidatorID)
 						if errCreate != nil {
-							log.Printf("ERROR: [Block Creator] Failed to create unsigned block: %v. Skipping block.", errCreate)
+							log.Printf("ERROR: [Block Creator] Failed to create unsigned block: %v. Skipping block creation.", errCreate)
 							continue
 						}
-						log.Printf("DEBUG: [Block Creator] Created unsigned block Index: %d, Hash: %s", unsignedBlock.Index, unsignedBlock.Hash.String())
+						// Ensure Validator field is set before proceeding
+						if unsignedBlock.Validator == "" {
+							log.Printf("ERROR: [Block Creator] CreateUnsignedBlock did not set validator field. Skipping.")
+							continue
+						}
+						log.Printf("DEBUG: [Block Creator] Created unsigned block Index: %d, Validator: %s", unsignedBlock.Index, unsignedBlock.Validator)
 
-						// 4. Sign Block
-						log.Printf("DEBUG: [Block Creator] Signing block %d...", unsignedBlock.Index)
-						signedBlock, errSign := temp.SimulateValidatorSigning(unsignedBlock)
-						if errSign != nil {
-							log.Printf("ERROR: [Block Creator] Failed to sign block %d: %v", unsignedBlock.Index, errSign)
+						// --- 4. Sign Block with Actual Private Key ---
+						log.Printf("DEBUG: [Block Creator] Signing block %d using key for validator %s...", unsignedBlock.Index, unsignedBlock.Validator)
+
+						// Retrieve the actual private key for the selected validator
+						// GetValidatorPrivateKey implicitly checks if the validator is active
+						validatorPrivKey, retrievedAddr, errKey := temp.GetValidatorPrivateKey(unsignedBlock.Validator)
+						if errKey != nil {
+							// Error includes "not active" or "failed to retrieve"
+							// GetValidatorPrivateKey also handles Genesis fallback internally if needed.
+							log.Printf("ERROR: [Block Creator] Failed to get private key for validator %s: %v. Skipping block signing.", unsignedBlock.Validator, errKey)
+							continue // Skip block creation if key is unavailable
+						}
+						log.Printf("DEBUG: [Block Creator] Retrieved private key for address %s (matches block validator: %v)", retrievedAddr, retrievedAddr == unsignedBlock.Validator)
+
+						// Ensure block hash is computed before signing
+						log.Printf("DEBUG: [Block Creator] Computing block hash for signing block %d...", unsignedBlock.Index)
+						errHash := ComputeBlockHash(unsignedBlock) // Check the returned error
+						if errHash != nil {
+							log.Printf("ERROR: [Block Creator] Failed to compute block hash for signing block %d: %v", unsignedBlock.Index, errHash)
+							continue // Skip block if hash computation failed
+						}
+						// If errHash is nil, ComputeBlockHash succeeded and set unsignedBlock.Hash
+						log.Printf("DEBUG: [Block Creator] Computed block hash for signing: %s", unsignedBlock.Hash.String())
+
+						// Sign the block hash using the retrieved private key
+						signature := validatorPrivKey.Sign(unsignedBlock.Hash.Bytes()) // Sign the hash bytes
+						unsignedBlock.Signature = signature                            // Assign the crypto.Signature directly
+
+						if unsignedBlock.Signature == nil || len(unsignedBlock.Signature.Bytes()) == 0 {
+							log.Printf("ERROR: [Block Creator] Failed to generate signature for block %d", unsignedBlock.Index)
 							continue
 						}
-						log.Printf("DEBUG: [Block Creator] Signed block %d.", signedBlock.Index)
+
+						log.Printf("DEBUG: [Block Creator] Block %d signed successfully by %s.", unsignedBlock.Index, unsignedBlock.Validator)
+						// --- End Sign Block ---
 
 						// 5. Add Signed Block to Chain
-						log.Printf("DEBUG: [Block Creator] Adding signed block %d to chain...", signedBlock.Index)
-						// This function handles DB persistence and in-memory updates
-						errAdd := temp.AddBlockToChain(signedBlock)
+						// The AddBlockToChain function needs the verification logic from Step 3 below.
+						log.Printf("DEBUG: [Block Creator] Adding signed block %d to chain...", unsignedBlock.Index)
+						errAdd := temp.AddBlockToChain(unsignedBlock)
 						if errAdd != nil {
-							log.Printf("ERROR: [Block Creator] Failed to add signed block %d to chain: %v", signedBlock.Index, errAdd)
-							// TODO: What happens if adding fails? Should txs be put back in pool?
-							// This depends on where AddBlockToChain failed. If DB commit failed, state is rolled back.
-							// If in-memory update failed after DB commit, state is inconsistent (CRITICAL).
+							log.Printf("ERROR: [Block Creator] Failed to add signed block %d to chain: %v", unsignedBlock.Index, errAdd)
+							// Consider error handling: e.g., should transactions be put back?
 							continue
 						}
+						// Success log is now inside AddBlockToChain
 
 					} else {
 						// log.Println("INFO: [Block Creator] No transactions processed successfully in this batch.") // Reduce noise maybe

@@ -58,6 +58,8 @@ type Blockchain struct {
 
 	ActiveValidators []string
 
+	NextValidatorIndex int
+
 	MinStakeForValidator *big.Int
 
 	OnNewBlock func(*Block) // Callback function for when a new block is added

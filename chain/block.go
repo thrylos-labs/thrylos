@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -109,11 +110,26 @@ func InitializeVerkleTree(b *types.Block) error {
 	return nil
 }
 
-func ComputeBlockHash(b *types.Block) {
-	blockByte, err := SerializeForSigning(b) // Pass the block parameter
-	if err != nil {
-		log.Printf("Failed to create serialise block: %v", err)
-		return
+func ComputeBlockHash(b *types.Block) error { // Return an error
+	if b == nil {
+		return errors.New("cannot compute hash for nil block")
 	}
+	blockByte, err := SerializeForSigning(b)
+	if err != nil {
+		log.Printf("Failed to serialize block %d for hashing: %v", b.Index, err)
+		// Don't set b.Hash if serialization fails
+		return fmt.Errorf("failed to serialize block for hash: %w", err)
+	}
+	// Also check if the serialization somehow returned empty bytes
+	if len(blockByte) == 0 {
+		log.Printf("ERROR: Serialized block %d resulted in zero bytes for hashing.", b.Index)
+		return errors.New("serialized block for hashing is empty")
+	}
+
 	b.Hash = hash.NewHash(blockByte)
+	// Optional: Check if the hash computation itself resulted in a zero hash, if possible/necessary
+	// if b.Hash.IsZero() { // Assumes an IsZero() method exists on hash.Hash
+	//    return errors.New("computed hash is zero value")
+	// }
+	return nil // Indicate success
 }

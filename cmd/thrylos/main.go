@@ -74,8 +74,8 @@ func loadEnv() (map[string]string, error) {
 		"HTTP_NODE_ADDRESS",
 		"GRPC_NODE_ADDRESS",
 		"AES_KEY_ENV_VAR",
-		"GENESIS_ACCOUNT",
 		"DATA_DIR",
+		"GENESIS_PRIVATE_KEY_CBOR_B64",
 	}
 
 	missingVars := []string{}
@@ -204,11 +204,24 @@ func main() {
 		log.Fatalf("Error decoding AES key: %v", err)
 	}
 
-	// Genesis account
-	genesisAccount := envFile["GENESIS_ACCOUNT"]
-	if genesisAccount == "" {
-		log.Fatal("Genesis account is not set in environment variables. Please configure a genesis account before starting.")
+	// --- Load Persistent Genesis Private Key ---
+	base64CborPrivKey := envFile["GENESIS_PRIVATE_KEY_CBOR_B64"] // Use the new variable name
+	if base64CborPrivKey == "" {
+		log.Fatal("GENESIS_PRIVATE_KEY_CBOR_B64 is not set in environment variables.")
 	}
+
+	// 1. Base64 Decode the string
+	cborPrivKeyBytes, err := base64.StdEncoding.DecodeString(base64CborPrivKey)
+	if err != nil {
+		log.Fatalf("Failed to base64 decode GENESIS_PRIVATE_KEY_CBOR_B64: %v", err)
+	}
+
+	// 2. Deserialize using NewPrivateKeyFromBytes (expects CBOR)
+	genesisPrivKey, err := crypto.NewPrivateKeyFromBytes(cborPrivKeyBytes)
+	if err != nil {
+		log.Fatalf("Failed to deserialize genesis private key: %v", err)
+	}
+	log.Println("Successfully loaded persistent Genesis private key.")
 
 	// Get the absolute path of the node data directory
 	absPath, err := filepath.Abs(dataDir)
@@ -222,19 +235,13 @@ func main() {
 	log.Printf("Attempting to remove lock file: %s", lockFile)
 	_ = os.Remove(lockFile) // Ignore errors if file doesn't exist or can't be removed
 
-	// Create a private key for genesis account
-	privKey, err := crypto.NewPrivateKey()
-	if err != nil {
-		log.Fatalf("Error generating private key: %v", err)
-	}
-
 	// Initialize the blockchain and database with the AES key
 	// Set TestMode to false for testnet deployment
 	blockchainSetupConfig := &types.BlockchainConfig{
 		DataDir:           absPath,
 		AESKey:            aesKey,
-		GenesisAccount:    privKey,
-		TestMode:          false, // For testnet, we should set this to false
+		GenesisAccount:    genesisPrivKey, // <-- Use the LOADED persistent key
+		TestMode:          false,          // For testnet, we should set this to false
 		DisableBackground: false,
 		// Note: StateManager isn't initialized here yet, NewBlockchain might handle it internally or it might need setup
 	}

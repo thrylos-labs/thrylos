@@ -67,134 +67,109 @@ func (b *BlockchainImpl) ProcessIncomingTransaction(tx *types.Transaction) error
 
 // // // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *BlockchainImpl) ProcessPendingTransactions(validator string) (*types.Block, error) {
-	// First, verify validator status before acquiring locks
+	// Optional: Verify validator status early if desired
 	// if !bc.IsActiveValidator(validator) {
-	// 	return nil, fmt.Errorf("invalid validator: %s", validator)
+	//  return nil, fmt.Errorf("provided validator %s is not active", validator)
 	// }
 
 	// Take a snapshot of pending transactions under lock
 	bc.Blockchain.Mu.Lock()
+	// Check if the pool is empty *after* acquiring the lock
 	if len(bc.Blockchain.PendingTransactions) == 0 {
 		bc.Blockchain.Mu.Unlock()
+		log.Println("INFO: [ProcessPending] No pending transactions to process.")
 		return nil, nil // Nothing to process
 	}
+	// Create a copy to work with outside the lock
 	pendingTransactions := make([]*thrylos.Transaction, len(bc.Blockchain.PendingTransactions))
 	copy(pendingTransactions, bc.Blockchain.PendingTransactions)
-	bc.Blockchain.Mu.Unlock()
+	// Clear the main pending list immediately after copying
+	bc.Blockchain.PendingTransactions = make([]*thrylos.Transaction, 0)
+	bc.Blockchain.Mu.Unlock() // Release lock after copying/clearing
 
-	// Start database transaction
-	txContext, err := bc.Blockchain.Database.BeginTransaction()
+	log.Printf("INFO: [ProcessPending] Attempting to process %d pending transactions.", len(pendingTransactions))
+
+	// --- REMOVED DB Transaction Context and processTransactionInBlock loop ---
+	// Validation and state changes (marking UTXOs spent, creating new ones, updating balances)
+	// are now handled entirely and atomically within AddBlockToChain.
+
+	// Optional: Perform preliminary validation here if desired (e.g., signature checks, basic structure)
+	// This could filter out obviously invalid transactions before block creation attempt.
+	// For simplicity, we assume AddBlockToChain handles all final validation.
+	transactionsForBlock := pendingTransactions // Use all copied transactions for now
+
+	// If no transactions are available after potential filtering, exit
+	if len(transactionsForBlock) == 0 {
+		log.Println("INFO: [ProcessPending] No valid transactions available to form a block.")
+		// Need to decide if original pendingTransactions should be requeued if filtering occurred.
+		return nil, nil
+	}
+
+	log.Printf("INFO: [ProcessPending] Preparing to create block with %d transactions.", len(transactionsForBlock))
+
+	// --- Block Creation and Signing ---
+	// Create unsigned block with the selected transactions
+	// The validator passed to this function is used here. Ensure it's a valid, active one.
+	unsignedBlock, err := bc.CreateUnsignedBlock(transactionsForBlock, validator)
 	if err != nil {
-		return nil, fmt.Errorf("database transaction error: %v", err)
+		// TODO: Requeue transactionsForBlock?
+		return nil, fmt.Errorf("block creation failed: %w", err)
 	}
-	defer bc.Blockchain.Database.RollbackTransaction(txContext)
-
-	// Process transactions in batches
-	successfulTransactions := make([]*thrylos.Transaction, 0, len(pendingTransactions))
-	for _, tx := range pendingTransactions {
-		// Convert to pointer if processTransactionInBlock expects a pointer
-		// or change processTransactionInBlock to accept an interface
-		if err := bc.processTransactionInBlock(&txContext, tx); err != nil {
-			log.Printf("Transaction %s failed: %v", tx.Id, err) // Changed ID to Id
-			continue
-		}
-		successfulTransactions = append(successfulTransactions, tx)
+	// Ensure validator was set
+	if unsignedBlock.Validator == "" {
+		// TODO: Requeue transactionsForBlock?
+		return nil, errors.New("CreateUnsignedBlock did not set validator field")
 	}
 
-	// Create and sign block
-	unsignedBlock, err := bc.CreateUnsignedBlock(successfulTransactions, validator)
-	if err != nil {
-		return nil, fmt.Errorf("block creation failed: %v", err)
+	// Retrieve the private key for the designated validator
+	validatorPrivKey, _, errKey := bc.GetValidatorPrivateKey(unsignedBlock.Validator)
+	if errKey != nil {
+		// TODO: Requeue transactionsForBlock?
+		return nil, fmt.Errorf("failed to get private key for validator %s: %w", unsignedBlock.Validator, errKey)
 	}
 
-	signedBlock, err := bc.SimulateValidatorSigning(unsignedBlock)
-	if err != nil {
-		return nil, fmt.Errorf("block signing failed: %v", err)
+	// Compute the block hash
+	errHash := ComputeBlockHash(unsignedBlock)
+	if errHash != nil {
+		// TODO: Requeue transactionsForBlock?
+		return nil, fmt.Errorf("failed to compute block hash: %w", errHash)
 	}
 
-	// Commit database changes
-	if err := bc.Blockchain.Database.CommitTransaction(txContext); err != nil {
-		return nil, fmt.Errorf("commit failed: %v", err)
+	// Sign the block hash
+	signature := validatorPrivKey.Sign(unsignedBlock.Hash.Bytes())
+	unsignedBlock.Signature = signature
+
+	// Basic check on signature
+	if unsignedBlock.Signature == nil || len(unsignedBlock.Signature.Bytes()) == 0 {
+		// TODO: Requeue transactionsForBlock?
+		return nil, errors.New("failed to generate signature for block")
 	}
 
-	// Only after successful commit do we update blockchain state
-	bc.Blockchain.Mu.Lock()
-	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, signedBlock)
-	// Remove processed transactions from pending pool
-	bc.Blockchain.PendingTransactions = bc.Blockchain.PendingTransactions[len(successfulTransactions):]
-	bc.Blockchain.Mu.Unlock()
+	log.Printf("DEBUG: [ProcessPending] Block %d signed by %s.", unsignedBlock.Index, unsignedBlock.Validator)
+	signedBlock := unsignedBlock // Rename for clarity
+	// --- End Block Creation and Signing ---
 
-	// Async notifications
-	go func() {
-		for _, tx := range signedBlock.Transactions {
-			// Convert the hash string to []byte
-			blockHashBytes := []byte(signedBlock.Hash.String())
+	// --- REMOVED Commit DB Transaction for Transaction Effects ---
 
-			bc.UpdateTransactionStatus(tx.ID, "included", blockHashBytes)
-
-			// Convert to thrylos.Transaction before calling the callback
-			thrylosTx := convertToThrylosTransaction(tx)
-
-			if bc.Blockchain.OnTransactionProcessed != nil {
-				bc.Blockchain.OnTransactionProcessed(thrylosTx)
-			}
-
-			// Now we can use the same converted transaction for notifying balance updates
-			bc.notifyBalanceUpdates(thrylosTx)
-		}
-	}()
-
-	return signedBlock, nil
-}
-
-// // First, ensure when creating transaction inputs we set the original transaction ID
-func (bc *BlockchainImpl) processTransactionInBlock(txContext *types.TransactionContext, tx *thrylos.Transaction) error {
-	// Mark input UTXOs as spent
-	for _, input := range tx.Inputs {
-		// Validate input fields
-		if input.TransactionId == "" {
-			return fmt.Errorf("input UTXO has no transaction_id field set")
-		}
-
-		utxo := types.UTXO{
-			TransactionID: input.TransactionId, // This must be the genesis or previous transaction ID
-			Index:         int(input.Index),
-			OwnerAddress:  input.OwnerAddress,
-			Amount:        amount.Amount(input.Amount), // Convert int64 to amount.Amount
-			IsSpent:       false,
-		}
-
-		// Debug logging
-		log.Printf("Processing input UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
-			utxo.TransactionID, utxo.Index, utxo.OwnerAddress, utxo.Amount)
-
-		// Dereference txContext since the function expects an interface, not a pointer to an interface
-		if err := bc.Blockchain.Database.MarkUTXOAsSpent(*txContext, utxo); err != nil {
-			return fmt.Errorf("failed to mark UTXO as spent: %v", err)
-		}
+	// --- Add the Signed Block to the Chain ---
+	// AddBlockToChain now handles all validation, DB transactions, state updates, and persistence atomically.
+	errAdd := bc.AddBlockToChain(signedBlock)
+	if errAdd != nil {
+		// If AddBlockToChain fails, the state remains consistent as it handles its own rollback.
+		log.Printf("ERROR: [ProcessPending] Failed to add signed block %d to chain: %v", signedBlock.Index, errAdd)
+		// TODO: Requeue transactionsForBlock?
+		return nil, fmt.Errorf("failed to add block %d to chain: %w", signedBlock.Index, errAdd)
 	}
+	// --- End Add Block ---
 
-	// Create new UTXOs for outputs with the current transaction ID
-	for i, output := range tx.Outputs {
-		newUTXO := types.UTXO{
-			TransactionID: tx.Id, // Use current transaction's ID for new UTXOs
-			Index:         i,
-			OwnerAddress:  output.OwnerAddress,
-			Amount:        amount.Amount(output.Amount), // Convert int64 to amount.Amount
-			IsSpent:       false,
-		}
+	// --- REMOVED Handling of Failed Transactions (as preliminary processing was removed) ---
+	// If preliminary validation was added above, failed transactions would need requeueing here.
 
-		// Debug logging
-		log.Printf("Creating new UTXO: TransactionID=%s, Index=%d, Owner=%s, Amount=%d",
-			newUTXO.TransactionID, newUTXO.Index, newUTXO.OwnerAddress, newUTXO.Amount)
+	// --- REMOVED Redundant Async notifications ---
+	// AddBlockToChain should handle necessary notifications.
 
-		// Dereference txContext since the function expects an interface, not a pointer to an interface
-		if err := bc.Blockchain.Database.AddNewUTXO(*txContext, newUTXO); err != nil {
-			return fmt.Errorf("failed to create new UTXO: %v", err)
-		}
-	}
-
-	return nil
+	log.Printf("INFO: [ProcessPending] Successfully processed pending transactions and initiated adding Block %d.", signedBlock.Index)
+	return signedBlock, nil // Return the successfully added block
 }
 
 // // // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.

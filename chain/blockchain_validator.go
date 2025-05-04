@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,7 +16,6 @@ import (
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/shared"
-	"github.com/thrylos-labs/thrylos/types"
 )
 
 // FIXME: Does this need to started here?
@@ -335,60 +333,90 @@ func (bc *BlockchainImpl) UpdateActiveValidators(count int) {
 func (bc *BlockchainImpl) GetValidatorPrivateKey(validatorAddress string) (crypto.PrivateKey, string, error) {
 	log.Printf("Attempting to retrieve private key for validator: %s", validatorAddress)
 
-	// Check if the validator is active
-	if !bc.IsActiveValidator(validatorAddress) {
-		log.Printf("Validator %s is not in the active validator list", validatorAddress)
-		return nil, "", fmt.Errorf("validator is not active: %s", validatorAddress)
+	// --- Determine Genesis Address ---
+	var genesisAddrStr string
+	if bc.Blockchain.GenesisAccount != nil && bc.Blockchain.GenesisAccount.PublicKey() != nil {
+		addr, err := bc.Blockchain.GenesisAccount.PublicKey().Address()
+		if err != nil {
+			log.Printf("CRITICAL ERROR: Cannot get Genesis address in GetValidatorPrivateKey: %v", err)
+			// Proceed cautiously, but Genesis fallback won't work if this fails.
+		} else {
+			genesisAddrStr = addr.String()
+		}
+	} else {
+		log.Println("WARN: GenesisAccount or its public key is nil in GetValidatorPrivateKey.")
 	}
+	// --- End Determine Genesis Address ---
 
-	// Retrieve the private key from the ValidatorKeys store
-	privateKey, exists := bc.Blockchain.ValidatorKeys.GetKey(validatorAddress)
-	if !exists {
-		log.Printf("Failed to retrieve private key for validator %s", validatorAddress)
-		return nil, "", fmt.Errorf("failed to retrieve private key for validator %s", validatorAddress)
+	// --- Check if Active Validator (Only if NOT Genesis) ---
+	// If the requested address is the Genesis address, skip the active check.
+	if validatorAddress != genesisAddrStr {
+		if !bc.IsActiveValidator(validatorAddress) {
+			log.Printf("Validator %s is not in the active validator list", validatorAddress)
+			// Return error here, as non-genesis validators MUST be active.
+			return nil, "", fmt.Errorf("validator is not active: %s", validatorAddress)
+		}
+		log.Printf("DEBUG: Validator %s is active.", validatorAddress)
+	} else {
+		log.Printf("DEBUG: Requested validator %s is the Genesis address, skipping active check.", validatorAddress)
 	}
+	// --- End Check if Active Validator ---
 
-	// Dereference the pointer to the interface since GetKey returns *crypto.PrivateKey
-	cryptoPrivKey := *privateKey
+	// --- Retrieve Key from Keystore ---
+	// Attempt to retrieve the private key from the ValidatorKeys store first.
+	if bc.Blockchain.ValidatorKeys != nil { // Check if Keystore itself is initialized
+		privateKeyPtr, exists := bc.Blockchain.ValidatorKeys.GetKey(validatorAddress)
+		// --- MODIFIED CHECK: Ensure pointer is not nil AFTER checking exists ---
+		if exists && privateKeyPtr != nil {
+			log.Printf("DEBUG: Found non-nil private key pointer for %s in ValidatorKeys store.", validatorAddress)
+			cryptoPrivKey := *privateKeyPtr // Dereference the pointer safely now
 
-	// Get the public key
-	pubKey := cryptoPrivKey.PublicKey()
+			// Verify the key corresponds to the address (optional but good practice)
+			pubKey := cryptoPrivKey.PublicKey()
+			if pubKey == nil {
+				// Handle case where retrieved key's public key is nil
+				log.Printf("ERROR: Retrieved private key for %s has a nil public key.", validatorAddress)
+				return nil, "", fmt.Errorf("retrieved key for %s has nil public key", validatorAddress)
+			}
+			addr, err := pubKey.Address()
+			if err != nil {
+				log.Printf("ERROR: Failed to get address from retrieved private key for %s: %v", validatorAddress, err)
+				return nil, "", fmt.Errorf("error deriving address from retrieved key for %s: %w", validatorAddress, err)
+			}
+			retrievedAddress := addr.String()
+			if retrievedAddress != validatorAddress {
+				log.Printf("CRITICAL ERROR: Keystore inconsistency! Key retrieved for %s belongs to %s.", validatorAddress, retrievedAddress)
+				return nil, "", fmt.Errorf("keystore key mismatch for address %s", validatorAddress)
+			}
 
-	// Convert the public key to a bech32 address
-	addr, err := pubKey.Address()
-	if err != nil {
-		log.Printf("Failed to get address from public key for validator %s: %v", validatorAddress, err)
-		return nil, "", fmt.Errorf("failed to get address from public key: %v", err)
+			return cryptoPrivKey, retrievedAddress, nil // Return key from keystore
+		} else if exists && privateKeyPtr == nil {
+			// Log if GetKey returned exists=true but ptr=nil (indicates keystore issue)
+			log.Printf("WARN: ValidatorKeys.GetKey returned exists=true but a nil pointer for %s. Keystore may be inconsistent.", validatorAddress)
+		} else {
+			log.Printf("DEBUG: Key for %s not found in ValidatorKeys store (exists=%v).", validatorAddress, exists)
+		}
+		// --- END MODIFIED CHECK ---
+	} else {
+		log.Println("WARN: ValidatorKeys store (bc.Blockchain.ValidatorKeys) is nil.")
 	}
+	// --- End Retrieve Key from Keystore ---
 
-	bech32Address := addr.String()
-
-	return cryptoPrivKey, bech32Address, nil
-}
-
-// // RewardValidator rewards the validator with new tokens
-func (bc *BlockchainImpl) RewardValidator(validator string, reward int64) error {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
-
-	// Get public key from genesis account
-	genesisPublicKey := bc.Blockchain.GenesisAccount.PublicKey()
-
-	// Get address from public key
-	genesisAddr, err := genesisPublicKey.Address()
-	if err != nil {
-		return fmt.Errorf("failed to get genesis address: %v", err)
+	// --- Fallback to Genesis Account (Only if requested address IS Genesis) ---
+	if validatorAddress == genesisAddrStr && bc.Blockchain.GenesisAccount != nil {
+		log.Printf("DEBUG: Key for %s not found in keystore or keystore issue, falling back to GenesisAccount.", validatorAddress)
+		// Use the GenesisAccount directly
+		genesisPrivKey := bc.Blockchain.GenesisAccount
+		// We already derived genesisAddrStr above, use it.
+		return genesisPrivKey, genesisAddrStr, nil
 	}
+	// --- End Fallback to Genesis Account ---
 
-	// Convert address to string representation
-	genesisAddrStr := genesisAddr.String()
-
-	// Deduct reward from Genesis account
-	bc.Blockchain.Stakeholders[genesisAddrStr] -= reward
-	// Add reward to validator
-	bc.Blockchain.Stakeholders[validator] += reward
-
-	return nil
+	// --- Key Not Found ---
+	// If we reach here, the key wasn't in the keystore, and it wasn't the Genesis fallback case.
+	log.Printf("ERROR: Failed to retrieve private key for validator %s. Not in keystore and not Genesis fallback.", validatorAddress)
+	return nil, "", fmt.Errorf("failed to retrieve private key for validator %s", validatorAddress)
+	// --- End Key Not Found ---
 }
 
 // // GetMinStakeForValidator returns the current minimum stake required for a validator
@@ -497,109 +525,141 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKey() (string, error) {
 	return address, nil
 }
 
-func (bc *BlockchainImpl) SimulateValidatorSigning(unsignedBlock *types.Block) (*types.Block, error) {
-	if unsignedBlock == nil {
-		return nil, errors.New("cannot sign nil block")
-	}
-	validatorAddress := unsignedBlock.Validator // Get validator ID string from block struct
-	log.Printf("Simulating block signing for validator: %s", validatorAddress)
+// func (bc *BlockchainImpl) SimulateValidatorSigning(unsignedBlock *types.Block) (*types.Block, error) {
+// 	if unsignedBlock == nil {
+// 		return nil, errors.New("cannot sign nil block")
+// 	}
+// 	validatorAddress := unsignedBlock.Validator // Get validator ID string from block struct
+// 	log.Printf("Simulating block signing for validator: %s", validatorAddress)
 
-	// --- Get Private Key ---
-	privateKey, retrievedAddress, err := bc.GetValidatorPrivateKey(validatorAddress)
-	if err != nil {
-		log.Printf("Failed to get validator private key via GetValidatorPrivateKey for %s: %v", validatorAddress, err)
-		// Fallback for testing: Check if it's the genesis address
-		log.Printf("Attempting fallback to GenesisAccount...")
-		if bc.Blockchain.GenesisAccount == nil {
-			return nil, fmt.Errorf("genesis account key is nil, cannot fallback")
-		}
-		genesisPubKey := bc.Blockchain.GenesisAccount.PublicKey()
-		if genesisPubKey == nil {
-			return nil, fmt.Errorf("genesis public key is nil, cannot fallback")
-		}
-		// --- FIX for multiple-value error ---
-		genesisAddr, errAddr := genesisPubKey.Address() // Capture both return values
-		if errAddr != nil {
-			// Handle error getting genesis address - critical failure
-			log.Printf("CRITICAL ERROR: Failed to get address from GenesisAccount public key: %v", errAddr)
-			return nil, fmt.Errorf("failed to derive address from genesis key: %w", errAddr)
-		}
-		genesisAddrStr := genesisAddr.String() // Convert address part to string AFTER checking error
-		// --- END FIX ---
+// 	// --- Get Private Key ---
+// 	privateKey, retrievedAddress, err := bc.GetValidatorPrivateKey(validatorAddress)
+// 	if err != nil {
+// 		log.Printf("Failed to get validator private key via GetValidatorPrivateKey for %s: %v", validatorAddress, err)
+// 		// Fallback for testing: Check if it's the genesis address
+// 		log.Printf("Attempting fallback to GenesisAccount...")
+// 		if bc.Blockchain.GenesisAccount == nil {
+// 			return nil, fmt.Errorf("genesis account key is nil, cannot fallback")
+// 		}
+// 		genesisPubKey := bc.Blockchain.GenesisAccount.PublicKey()
+// 		if genesisPubKey == nil {
+// 			return nil, fmt.Errorf("genesis public key is nil, cannot fallback")
+// 		}
+// 		// --- FIX for multiple-value error ---
+// 		genesisAddr, errAddr := genesisPubKey.Address() // Capture both return values
+// 		if errAddr != nil {
+// 			// Handle error getting genesis address - critical failure
+// 			log.Printf("CRITICAL ERROR: Failed to get address from GenesisAccount public key: %v", errAddr)
+// 			return nil, fmt.Errorf("failed to derive address from genesis key: %w", errAddr)
+// 		}
+// 		genesisAddrStr := genesisAddr.String() // Convert address part to string AFTER checking error
+// 		// --- END FIX ---
 
-		if validatorAddress == genesisAddrStr {
-			log.Printf("Using GenesisAccount private key as fallback for signing.")
-			privateKey = bc.Blockchain.GenesisAccount
-			retrievedAddress = genesisAddrStr // Ensure retrievedAddress is set correctly
-			// err is already set from the failed GetValidatorPrivateKey attempt, clear it if fallback succeeds
-			err = nil
-		} else {
-			// If it wasn't the genesis address, return the original error
-			return nil, fmt.Errorf("failed to get private key for non-genesis validator %s: %w", validatorAddress, err)
-		}
-	}
+// 		if validatorAddress == genesisAddrStr {
+// 			log.Printf("Using GenesisAccount private key as fallback for signing.")
+// 			privateKey = bc.Blockchain.GenesisAccount
+// 			retrievedAddress = genesisAddrStr // Ensure retrievedAddress is set correctly
+// 			// err is already set from the failed GetValidatorPrivateKey attempt, clear it if fallback succeeds
+// 			err = nil
+// 		} else {
+// 			// If it wasn't the genesis address, return the original error
+// 			return nil, fmt.Errorf("failed to get private key for non-genesis validator %s: %w", validatorAddress, err)
+// 		}
+// 	}
 
-	// Double check if we successfully got a key
-	if privateKey == nil {
-		return nil, fmt.Errorf("could not obtain private key for signing validator %s", validatorAddress)
-	}
-	// Optional: Check if retrievedAddress matches validatorAddress if GetValidatorPrivateKey succeeded
-	if err == nil && retrievedAddress != validatorAddress {
-		log.Printf("Warning: Retrieved private key address (%s) does not match block validator address (%s)", retrievedAddress, validatorAddress)
-		// Consider if this should be a hard error
-	}
+// 	// Double check if we successfully got a key
+// 	if privateKey == nil {
+// 		return nil, fmt.Errorf("could not obtain private key for signing validator %s", validatorAddress)
+// 	}
+// 	// Optional: Check if retrievedAddress matches validatorAddress if GetValidatorPrivateKey succeeded
+// 	if err == nil && retrievedAddress != validatorAddress {
+// 		log.Printf("Warning: Retrieved private key address (%s) does not match block validator address (%s)", retrievedAddress, validatorAddress)
+// 		// Consider if this should be a hard error
+// 	}
 
-	// Ensure the block has its hash computed BEFORE signing
-	ComputeBlockHash(unsignedBlock)
-	log.Printf("Signing block hash: %x", unsignedBlock.Hash.Bytes())
+// 	// Ensure the block has its hash computed BEFORE signing
+// 	ComputeBlockHash(unsignedBlock)
+// 	log.Printf("Signing block hash: %x", unsignedBlock.Hash.Bytes())
 
-	// --- FIX for unused variable ---
-	// Remove the unnecessary call to SerializeForSigning here,
-	// as we are signing the hash bytes directly to match VerifySignedBlock.
-	/*
-	   blockBytesForSigning, err := SerializeForSigning(unsignedBlock)
-	   if err != nil {
-	       return nil, fmt.Errorf("failed to serialize block for signing: %v", err)
-	   }
-	*/
-	// --- END FIX ---
+// 	// --- FIX for unused variable ---
+// 	// Remove the unnecessary call to SerializeForSigning here,
+// 	// as we are signing the hash bytes directly to match VerifySignedBlock.
+// 	/*
+// 	   blockBytesForSigning, err := SerializeForSigning(unsignedBlock)
+// 	   if err != nil {
+// 	       return nil, fmt.Errorf("failed to serialize block for signing: %v", err)
+// 	   }
+// 	*/
+// 	// --- END FIX ---
 
-	// Sign the block hash using the private key
-	signature := privateKey.Sign(unsignedBlock.Hash.Bytes()) // Sign the Hash bytes
+// 	// Sign the block hash using the private key
+// 	signature := privateKey.Sign(unsignedBlock.Hash.Bytes()) // Sign the Hash bytes
 
-	// Store the signature directly since it's already a crypto.Signature
-	unsignedBlock.Signature = signature
+// 	// Store the signature directly since it's already a crypto.Signature
+// 	unsignedBlock.Signature = signature
 
-	log.Printf("Block signed successfully by validator: %s", unsignedBlock.Validator)
-	log.Printf("Signature: %x", signature.Bytes())
+// 	log.Printf("Block signed successfully by validator: %s", unsignedBlock.Validator)
+// 	log.Printf("Signature: %x", signature.Bytes())
 
-	// --- Logging/Verification part (seems okay, keeping as is) ---
-	publicKey := privateKey.PublicKey()
-	publicKeyBytes, err := publicKey.Marshal()
-	if err != nil {
-		log.Printf("Warning: failed to marshal public key for logging: %v", err)
-	} else {
-		log.Printf("Public key derived from private key used for signing: %x", publicKeyBytes)
-	}
-	validatorAddrPtrCheck, errAddrCheck := publicKey.Address()
-	if errAddrCheck == nil {
-		storedPublicKey, errDb := bc.Blockchain.Database.GetPublicKey(*validatorAddrPtrCheck)
-		if errDb == nil {
-			storedPublicKeyBytes, _ := storedPublicKey.Marshal()
-			if !bytes.Equal(publicKeyBytes, storedPublicKeyBytes) {
-				log.Printf("WARNING: Derived public key does not match stored public key for validator %s", validatorAddress)
-			} else {
-				log.Printf("DEBUG: Derived public key matches stored public key for validator %s", validatorAddress)
-			}
-		}
-	}
-	// --- End Logging/Verification part ---
+// 	// --- Logging/Verification part (seems okay, keeping as is) ---
+// 	publicKey := privateKey.PublicKey()
+// 	publicKeyBytes, err := publicKey.Marshal()
+// 	if err != nil {
+// 		log.Printf("Warning: failed to marshal public key for logging: %v", err)
+// 	} else {
+// 		log.Printf("Public key derived from private key used for signing: %x", publicKeyBytes)
+// 	}
+// 	validatorAddrPtrCheck, errAddrCheck := publicKey.Address()
+// 	if errAddrCheck == nil {
+// 		storedPublicKey, errDb := bc.Blockchain.Database.GetPublicKey(*validatorAddrPtrCheck)
+// 		if errDb == nil {
+// 			storedPublicKeyBytes, _ := storedPublicKey.Marshal()
+// 			if !bytes.Equal(publicKeyBytes, storedPublicKeyBytes) {
+// 				log.Printf("WARNING: Derived public key does not match stored public key for validator %s", validatorAddress)
+// 			} else {
+// 				log.Printf("DEBUG: Derived public key matches stored public key for validator %s", validatorAddress)
+// 			}
+// 		}
+// 	}
+// 	// --- End Logging/Verification part ---
 
-	return unsignedBlock, nil // Return the now-signed block
-}
+// 	return unsignedBlock, nil // Return the now-signed block
+// }
 
 func (bc *BlockchainImpl) GetActiveValidators() []string {
 	bc.Blockchain.Mu.RLock()
 	defer bc.Blockchain.Mu.RUnlock()
 	return bc.Blockchain.ActiveValidators
+}
+
+func (bc *BlockchainImpl) SelectNextValidator() (string, error) {
+	bc.Blockchain.Mu.Lock() // Lock needed to read ActiveValidators and read/write NextValidatorIndex safely
+	defer bc.Blockchain.Mu.Unlock()
+
+	if len(bc.Blockchain.ActiveValidators) == 0 {
+		// Fallback to Genesis if no active validators and Genesis key exists
+		if bc.Blockchain.GenesisAccount != nil && bc.Blockchain.GenesisAccount.PublicKey() != nil {
+			addr, err := bc.Blockchain.GenesisAccount.PublicKey().Address()
+			if err != nil {
+				log.Printf("ERROR: Cannot get Genesis address for fallback validator selection: %v", err)
+				return "", errors.New("no active validators and failed to get genesis address")
+			}
+			log.Printf("WARN: No active validators defined, falling back to Genesis Account: %s", addr.String())
+			return addr.String(), nil // Return Genesis address
+		}
+		log.Printf("ERROR: No active validators available for selection and GenesisAccount is not configured.")
+		return "", errors.New("no active validators available for selection")
+	}
+
+	// Ensure index wraps around correctly
+	// Use modulo operator for cleaner wrap-around
+	currentIndex := bc.Blockchain.NextValidatorIndex % len(bc.Blockchain.ActiveValidators)
+
+	selectedValidator := bc.Blockchain.ActiveValidators[currentIndex]
+	log.Printf("Selected validator index %d: %s", currentIndex, selectedValidator)
+
+	// Increment index for the next call, wrapping around using modulo
+	bc.Blockchain.NextValidatorIndex = (currentIndex + 1) // No need for explicit modulo here if we calculate currentIndex each time
+
+	return selectedValidator, nil
 }
