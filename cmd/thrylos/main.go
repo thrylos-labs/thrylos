@@ -413,6 +413,20 @@ func main() {
 		fmt.Println("Blockchain integrity check passed.")
 	}
 
+	log.Println("Attempting to generate 4 additional validators...")
+	for i := 0; i < 4; i++ {
+		log.Printf("Generating validator %d...", i+1)
+		newAddr, err := blockchain.GenerateAndStoreValidatorKey()
+		if err != nil {
+			// !!! Log the error !!!
+			log.Printf("ERROR: Failed to generate validator %d: %v", i+1, err)
+			// Decide if you want to continue or stop on error
+		} else {
+			log.Printf("Successfully generated validator %d: %s", i+1, newAddr)
+		}
+	}
+	log.Println("Finished attempting validator generation.")
+
 	// Get the singleton message bus
 	messageBus := types.GetGlobalMessageBus()
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"sync"
@@ -63,21 +64,133 @@ type ValidatorKeyStoreImpl struct {
 // NewValidatorKeyStore creates and initializes a new ValidatorKeyStore
 // In store/validator_store.go
 func NewValidatorKeyStore(db *Database, encryptionKey []byte) types.ValidatorKeyStore {
-	return &ValidatorKeyStoreImpl{
+	vks := &ValidatorKeyStoreImpl{
 		keys:          make(map[string]*crypto.PrivateKey),
 		mu:            sync.RWMutex{},
 		db:            db,
 		encryptionKey: encryptionKey,
 	}
+	// Load existing keys after creating the store
+	if err := vks.LoadKeysFromDB(); err != nil {
+		log.Printf("WARNING: Failed to load validator keys from DB: %v", err)
+		// Decide if this should be fatal or just a warning
+	}
+	return vks
+}
+func (vks *ValidatorKeyStoreImpl) LoadKeysFromDB() error {
+	vks.mu.Lock() // Lock should cover access to vks.keys map
+	defer vks.mu.Unlock()
+
+	// --- Declare prefix HERE, before it's used ---
+	prefix := []byte("validator_privkey:")
+	// ---
+
+	log.Printf("DEBUG: Starting LoadKeysFromDB scan with prefix '%s'", string(prefix)) // Now prefix is defined
+	loadedCount := 0
+
+	// It's generally safer to unlock reads/writes to the vks.keys map
+	// before starting potentially long DB operations if possible,
+	// but loading needs to populate the map, so the lock must cover the loop.
+
+	err := vks.db.GetDB().View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix // Use the defined prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		// Reset the keys map before loading to ensure clean state
+		// Note: This assumes LoadKeysFromDB is ONLY called during initialization
+		// before any other StoreKey operations might happen concurrently.
+		// If LoadKeysFromDB could be called later, clearing the map needs careful thought.
+		vks.keys = make(map[string]*crypto.PrivateKey) // Start with a fresh map
+
+		for it.Rewind(); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			dbKey := item.Key()
+			// It's safer to copy the key bytes immediately as they might be reused by the iterator
+			dbKeyCopy := bytes.Clone(dbKey)
+			addrBytes := bytes.TrimPrefix(dbKeyCopy, prefix)
+			address := string(addrBytes)
+			log.Printf("DEBUG: LoadKeys: Found potential key in DB: %s (Address: %s)", string(dbKeyCopy), address)
+
+			// Copy the value immediately as well
+			val, err := item.ValueCopy(nil) // Use ValueCopy to get a safe copy
+			if err != nil {
+				log.Printf("ERROR: LoadKeys: Failed reading DB value for key %s: %v", string(dbKeyCopy), err)
+				continue // Skip this item if value reading fails
+			}
+
+			log.Printf("DEBUG: LoadKeys: Reading value for %s (Length: %d)", address, len(val))
+			keyBytes := val // Use the copied value
+
+			// --- Optional Decryption ---
+			// decryptedBytes, errDecrypt := decrypt(keyBytes, vks.encryptionKey)
+			// if errDecrypt != nil {
+			//     log.Printf("ERROR: LoadKeys: Failed decrypt for %s: %v", address, errDecrypt)
+			//     continue // Skip this item if decryption fails
+			// }
+			// finalKeyBytes := decryptedBytes
+			// --- End Optional Decryption ---
+			finalKeyBytes := keyBytes // Use raw bytes if not encrypting
+
+			// Unmarshal bytes into a new key object
+			privKey, errUnmarshal := crypto.NewPrivateKeyFromBytes(finalKeyBytes) // Use finalKeyBytes
+			if errUnmarshal != nil {
+				log.Printf("ERROR: LoadKeys: Failed to unmarshal key for address %s: %v", address, errUnmarshal)
+				continue // Skip this key if unmarshal fails
+			}
+
+			// If unmarshal succeeded:
+			keyInterface := crypto.PrivateKey(privKey)
+			vks.keys[address] = &keyInterface // Store pointer to the newly created interface value
+			loadedCount++
+			log.Printf("DEBUG: LoadKeys: Successfully loaded and mapped key for %s", address)
+		}
+		return nil // Return nil from the View function if iteration completed
+	})
+
+	if err != nil {
+		// This error is from the db.View() call itself or the iterator setup/loop
+		return fmt.Errorf("failed to iterate over validator keys in DB: %w", err)
+	}
+
+	log.Printf("Finished loading %d validator keys from DB.", loadedCount)
+	return nil
 }
 
 // StoreKey stores a private key for a validator
 func (vks *ValidatorKeyStoreImpl) StoreKey(address string, key *crypto.PrivateKey) error {
+	if key == nil || *key == nil {
+		return fmt.Errorf("attempted to store nil key for address %s", address)
+	}
 	vks.mu.Lock()
 	defer vks.mu.Unlock()
-	vks.keys[address] = key
-	// Persist to database
-	return vks.db.Set([]byte("validator:"+address), []byte{})
+
+	// Marshal the key to bytes (Assuming your crypto.PrivateKey interface has Marshal)
+	keyBytes, err := (*key).Marshal() // Dereference pointer, call Marshal
+	if err != nil {
+		return fmt.Errorf("failed to marshal private key for %s: %w", address, err)
+	}
+
+	// --- Optional Encryption ---
+	// encryptedBytes, err := encrypt(keyBytes, vks.encryptionKey)
+	// if err != nil { return fmt.Errorf("failed to encrypt key for %s: %w", address, err)}
+	// finalBytesToStore := encryptedBytes
+	// --- End Optional Encryption ---
+	finalBytesToStore := keyBytes // Use raw bytes if not encrypting
+
+	dbKey := []byte("validator_privkey:" + address) // Use a distinct prefix
+
+	// Inside StoreKey, after saving to DB:
+	if err := vks.db.Set(dbKey, finalBytesToStore); err != nil {
+		return fmt.Errorf("failed to save private key to DB for %s: %w", address, err)
+	}
+	// Add this:
+	log.Printf("DEBUG: Successfully saved key bytes to DB for %s", address)
+
+	// The in-memory map vks.keys will only be populated by LoadKeysFromDB when the node starts (or if you add a manual reload function).
+	log.Printf("Stored private key for %s in memory map and DB marker", address) // Adjust log
+	return nil
 }
 
 // GetKey retrieves a private key for a validator
