@@ -119,28 +119,44 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	// *** END LOGGING ***
 
 	// C) Verify the signature against the recomputed hash
-	signatureBytes := block.Signature.Bytes()
-	// *** ADDED LOGGING ***
-	log.Printf("DEBUG: [AddBlock] SIGNATURE BYTES FOR VERIFY: %x", signatureBytes)
-	// *** END LOGGING ***
+	signatureBytes := block.Signature.Bytes() // Signature bytes are ready
 
+	var retrievedRawBytes []byte // Declare variable to hold pub key bytes
 	if validatorPubKey != nil {
-		// Get raw bytes directly from the mldsa44 object used in Verify
-		retrievedRawBytes := validatorPubKey.Bytes()
-		// *** ADD THIS LOG ***
-		log.Printf("DEBUG: [AddBlockVerify] RAW Public Key Bytes used for Verify: %x", retrievedRawBytes)
+		// Get raw bytes directly from the mldsa44 object that will be used in Verify
+		retrievedRawBytes = validatorPubKey.Bytes() // Assign bytes here
+		log.Printf("DEBUG: [AddBlockVerify] RAW Public Key Bytes obtained for Verify [Len: %d]: %x", len(retrievedRawBytes), retrievedRawBytes)
 	} else {
+		// This case should ideally be caught earlier by GetValidatorPublicKey returning an error,
+		// but double-checking is safe.
 		log.Printf("ERROR: [AddBlockVerify] validatorPubKey is nil before Verify call")
-		// You should probably return an error here if validatorPubKey is nil
 		return fmt.Errorf("block verification failed: validatorPubKey is nil")
 	}
-	// The existing Verify call
-	isValid := mldsa44.Verify(validatorPubKey, recomputedHash.Bytes(), signatureBytes, nil)
+	// Ensure retrievedRawBytes were actually obtained if validatorPubKey was not nil
+	if retrievedRawBytes == nil {
+		log.Printf("ERROR: [AddBlockVerify] Retrieved raw public key bytes are nil even though validatorPubKey was not nil")
+		return fmt.Errorf("block verification failed: failed to get raw public key bytes")
+	}
+
+	// --- DETAILED LOGGING BEFORE mldsa44.Verify ---
+	log.Printf("DEBUG: [AddBlockVerify] === Preparing to call mldsa44.Verify ===")
+	// Use the CORRECT variable 'retrievedRawBytes' and the method call 'recomputedHash.Bytes()'
+	log.Printf("DEBUG: [AddBlockVerify] Public Key Bytes (len %d): %x", len(retrievedRawBytes), retrievedRawBytes)
+	log.Printf("DEBUG: [AddBlockVerify] Hash/Message Bytes (len %d): %x", len(recomputedHash.Bytes()), recomputedHash.Bytes())
+	log.Printf("DEBUG: [AddBlockVerify] Signature Bytes (len %d): %x", len(signatureBytes), signatureBytes)
+	log.Printf("DEBUG: [AddBlockVerify] === Calling mldsa44.Verify with nil context... ===")
+	// --- END DETAILED LOGGING ---
+
+	// CORRECTED Verify call with nil context and CORRECT variables/method calls
+	// Pass the actual mldsa44 public key object, the hash bytes, nil context, and signature bytes
+	isValid := mldsa44.Verify(validatorPubKey, recomputedHash.Bytes(), nil, signatureBytes)
+
 	if !isValid {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Invalid signature from validator %s.", block.Index, block.Validator)
-		// Optional: Log public key bytes used
-		// pkBytes, _ := validatorPubKey.MarshalBinary()
-		// log.Printf("DEBUG: [AddBlock] Validator PubKey Used: %x", pkBytes)
+		// Log the actual inputs again on failure for clarity
+		log.Printf("DEBUG: [AddBlock Verify Failed] PubKey: %x", retrievedRawBytes)
+		log.Printf("DEBUG: [AddBlock Verify Failed] Hash: %x", recomputedHash.Bytes())
+		log.Printf("DEBUG: [AddBlock Verify Failed] Sig: %x", signatureBytes)
 		return fmt.Errorf("block verification failed: invalid signature")
 	}
 	log.Printf("Block %d signature verified successfully against recomputed hash.", block.Index)

@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -237,51 +238,76 @@ func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa
 	}
 
 	// Use address.FromString to get the address object directly.
-	// This is cleaner than decoding again.
 	addrPtr, err := address.FromString(validatorAddress)
 	if err != nil {
-		// This ideally shouldn't happen if address.Validate passed, indicates internal inconsistency
 		log.Printf("ERROR: Failed to get address object from validated string '%s': %v", validatorAddress, err)
 		return nil, fmt.Errorf("internal error converting validated address string: %v", err)
 	}
-	addr := *addrPtr // Dereference pointer if GetPublicKey expects the value type address.Address
+	addr := *addrPtr
 
-	// Get the public key using the store's method, passing the address object
-	// Assuming bc.Blockchain.Database.GetPublicKey expects address.Address type
-	pubKey, err := bc.Blockchain.Database.GetPublicKey(addr)
+	// Get the public key using the store's method
+	// This returns your *wrapper* type (crypto.PublicKey)
+	pubKeyWrapper, err := bc.Blockchain.Database.GetPublicKey(addr) // Assuming this returns crypto.PublicKey
 	if err != nil {
-		// Log the specific address object used for lookup might be helpful
 		log.Printf("DEBUG: Failed GetPublicKey lookup for address object: %+v", addr)
 		return nil, fmt.Errorf("failed to get public key for validator %s from DB: %v", validatorAddress, err)
 	}
 
-	// Ensure pubKey is not nil (depends on how GetPublicKey indicates "not found" vs other errors)
-	if pubKey == nil { // You might need a more specific check depending on crypto.PublicKey type
-		return nil, fmt.Errorf("public key not found in DB for validator %s", validatorAddress)
+	if pubKeyWrapper == nil { // Check the wrapper object
+		return nil, fmt.Errorf("public key wrapper not found in DB for validator %s", validatorAddress)
 	}
 
-	// Convert crypto.PublicKey to bytes (assuming it has a Marshal method)
-	pubKeyBytes, err := pubKey.Marshal() // Use the retrieved crypto.PublicKey
+	// Marshal the *wrapper* public key to bytes
+	// This uses YOUR Marshal method on the crypto.PublicKey wrapper
+	pubKeyBytes, err := pubKeyWrapper.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal public key for validator %s: %v", validatorAddress, err)
+		return nil, fmt.Errorf("failed to marshal public key wrapper for validator %s: %v", validatorAddress, err)
 	}
 	if len(pubKeyBytes) == 0 {
-		return nil, fmt.Errorf("marshaled public key is empty for validator %s", validatorAddress)
+		return nil, fmt.Errorf("marshaled public key wrapper bytes are empty for validator %s", validatorAddress)
 	}
 
-	log.Printf("DEBUG: [GetValidatorPublicKey] Bytes from pubKey.Marshal() for %s: %x", validatorAddress, pubKeyBytes) // Log bytes BEFORE unmarshal attempt
+	// Log the bytes produced by your wrapper's Marshal() method
+	log.Printf("DEBUG: [GetValidatorPublicKey] Bytes from pubKeyWrapper.Marshal() for %s [Len: %d]: %x", validatorAddress, len(pubKeyBytes), pubKeyBytes)
 
-	// Create and unmarshal into MLDSA44 public key
-	mldsa44PubKey := new(mldsa44.PublicKey)
+	// Create and unmarshal into the specific *MLDSA44* public key type
+	// This uses the UnmarshalBinary method from the mldsa44 library
+	mldsa44PubKey := new(mldsa44.PublicKey) // Use the correct type
 	err = mldsa44PubKey.UnmarshalBinary(pubKeyBytes)
 	if err != nil {
-		// Log the bytes that failed to unmarshal for debugging
-		log.Printf("ERROR: Failed to unmarshal MLDSA44 key for %s. Bytes (hex): %x", validatorAddress, pubKeyBytes)
-		return nil, fmt.Errorf("failed to convert DB key to MLDSA44 public key for validator %s: %v", validatorAddress, err)
+		log.Printf("ERROR: Failed to unmarshal into MLDSA44 key for %s. Bytes used (hex): %x", validatorAddress, pubKeyBytes)
+		return nil, fmt.Errorf("failed to convert DB key bytes to MLDSA44 public key for validator %s: %v", validatorAddress, err)
 	}
 
 	log.Printf("DEBUG: [GetValidatorPublicKey] Successfully unmarshalled MLDSA44 key for %s", validatorAddress)
 
+	// --- ROUND TRIP VERIFICATION ---
+	log.Printf("DEBUG: [GetValidatorPublicKey] Performing round-trip check for %s...", validatorAddress)
+	// Marshal the *mldsa44PubKey* object back into bytes using its *own* method (e.g., Bytes() or MarshalBinary())
+	// Assuming the mldsa44.PublicKey type has a Bytes() method for its canonical representation:
+	remarshaledBytes := mldsa44PubKey.Bytes()
+	// If it has MarshalBinary instead:
+	// remarshaledBytes, err := mldsa44PubKey.MarshalBinary()
+	// if err != nil {
+	//     log.Printf("ERROR: [GetValidatorPublicKey] Failed to re-marshal mldsa44PubKey for round-trip check: %v", err)
+	//     // Decide if this should be a fatal error for the function
+	//     // return nil, fmt.Errorf("failed round-trip check (re-marshal error): %v", err)
+	// }
+
+	log.Printf("DEBUG: [GetValidatorPublicKey] Original marshaled wrapper bytes [Len: %d]: %x", len(pubKeyBytes), pubKeyBytes)
+	log.Printf("DEBUG: [GetValidatorPublicKey] Re-marshaled mldsa44 bytes [Len: %d]: %x", len(remarshaledBytes), remarshaledBytes)
+
+	// Compare the original bytes (from wrapper Marshal) with the re-marshaled bytes (from mldsa44 object)
+	if bytes.Equal(pubKeyBytes, remarshaledBytes) {
+		log.Printf("INFO: [GetValidatorPublicKey] Round-trip successful! Bytes match for %s.", validatorAddress)
+	} else {
+		log.Printf("ERROR: [GetValidatorPublicKey] Round-trip FAILED! Byte mismatch for %s.", validatorAddress)
+		// Depending on requirements, you might want to return an error here
+		// return nil, fmt.Errorf("public key round-trip verification failed for %s", validatorAddress)
+	}
+	// --- END ROUND TRIP VERIFICATION ---
+
+	// Return the unmarshalled mldsa44 public key object
 	return mldsa44PubKey, nil
 }
 

@@ -70,17 +70,28 @@ func Verify(b *types.Block) error {
 }
 
 func SerializeForSigning(b *types.Block) ([]byte, error) {
-	// Create a copy to avoid modifying the original
+	if b == nil {
+		return nil, errors.New("cannot serialize nil block for signing")
+	}
+	// Create a copy to avoid modifying the original block
 	blockCopy := *b
-	blockCopy.Hash = hash.NullHash()
-	blockCopy.Signature = nil
-	blockCopy.Salt = nil
+	// Explicitly nil out fields that should not be part of the hash/signature content
+	blockCopy.Hash = hash.NullHash() // Zero out the hash field
+	blockCopy.Signature = nil        // Remove the signature
+	blockCopy.Salt = nil             // Remove the salt
 
-	// Marshal the block to bytes
+	// Marshal the modified block copy to bytes
+	// Assumes blockCopy.Marshal() handles the serialization (e.g., to CBOR)
 	blockBytes, err := blockCopy.Marshal()
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal block for signing: %v", err)
+		return nil, fmt.Errorf("failed to marshal block copy for signing (Index %d): %w", b.Index, err)
 	}
+
+	// --- ADDED LOGGING ---
+	// Log the final byte slice that will be returned (and subsequently hashed)
+	log.Printf("DEBUG: [SerializeForSigning] Bytes Serialized for Hashing/Signing (Block %d): %s", b.Index, hex.EncodeToString(blockBytes))
+	// --- END ADDED LOGGING ---
+
 	return blockBytes, nil
 }
 
@@ -115,7 +126,9 @@ func ComputeBlockHash(b *types.Block) error { // Return an error
 	if b == nil {
 		return errors.New("cannot compute hash for nil block")
 	}
-	blockByte, err := SerializeForSigning(b) // Calls the existing SerializeForSigning
+
+	// Serialize the block specifically for hashing (excluding signature, existing hash, salt)
+	blockByte, err := SerializeForSigning(b) // Calls the function below
 	if err != nil {
 		log.Printf("ERROR: [ComputeBlockHash] Failed to serialize block %d for hashing: %v", b.Index, err)
 		return fmt.Errorf("failed to serialize block for hash: %w", err)
@@ -125,18 +138,19 @@ func ComputeBlockHash(b *types.Block) error { // Return an error
 		return errors.New("serialized block for hashing is empty")
 	}
 
-	// Log the bytes being hashed for debugging consistency
+	// --- Logging the bytes JUST BEFORE hashing ---
+	// This log was already present and is crucial for comparison.
 	log.Printf("DEBUG: [ComputeBlockHash] Bytes for Hashing (Block %d): %s", b.Index, hex.EncodeToString(blockByte))
+	// --- End Logging ---
 
-	b.Hash = hash.NewHash(blockByte) // Compute the hash
+	// Compute the hash using the serialized bytes
+	b.Hash = hash.NewHash(blockByte)
 
-	// Optional: Check if the hash computation itself resulted in a zero hash
-	// --- CORRECTED METHOD CALL ---
-	if b.Hash.Equal(hash.NullHash()) { // Use Equal instead of IsEqual
+	// Check if the hash computation resulted in a zero hash
+	if b.Hash.Equal(hash.NullHash()) {
 		log.Printf("ERROR: [ComputeBlockHash] Computed hash for block %d is zero hash.", b.Index)
 		return errors.New("computed hash is zero value")
 	}
-	// --- END CORRECTION ---
 
 	return nil // Indicate success
 }
