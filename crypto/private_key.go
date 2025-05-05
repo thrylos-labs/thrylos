@@ -1,4 +1,4 @@
-// privateKey.go (Revised to match interfaces.go)
+// privateKey.go (Revised for Exporting)
 package crypto
 
 import (
@@ -9,15 +9,17 @@ import (
 	"log" // For Fatalf as Sign doesn't return error
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
-	"github.com/fxamacker/cbor/v2"
 )
 
-// --- privateKey Struct ---
-type privateKey struct {
-	privKey *mldsa44.PrivateKey
+// --- Exported PrivateKey Implementation Struct ---
+// Renamed 'privateKey' to 'PrivateKeyImpl' (Uppercase P for export)
+type PrivateKeyImpl struct {
+	// Renamed 'privKey' to 'PrivKey' (Uppercase P for export)
+	PrivKey *mldsa44.PrivateKey
 }
 
-var _ PrivateKey = (*privateKey)(nil) // Interface assertion
+// Update interface assertion to use the new exported type name
+var _ PrivateKey = (*PrivateKeyImpl)(nil)
 
 // --- Functions ---
 
@@ -26,8 +28,9 @@ func NewPrivateKey() (PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate mldsa44 key: %w", err)
 	}
-	return &privateKey{
-		privKey: key,
+	// Return the exported type, assigning to the exported field
+	return &PrivateKeyImpl{
+		PrivKey: key,
 	}, nil
 }
 
@@ -35,126 +38,136 @@ func NewPrivateKeyFromMLDSA(key *mldsa44.PrivateKey) PrivateKey {
 	if key == nil {
 		return nil
 	}
-	return &privateKey{
-		privKey: key,
+	// Return the exported type, assigning to the exported field
+	return &PrivateKeyImpl{
+		PrivKey: key,
 	}
 }
 
 func NewPrivateKeyFromBytes(keyData []byte) (PrivateKey, error) {
-	priv := &privateKey{}
+	// Use the exported type name here
+	priv := &PrivateKeyImpl{}
 	err := priv.Unmarshal(keyData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal private key data: %w", err)
 	}
-	if priv.privKey == nil {
+	// Use the exported field name here
+	if priv.PrivKey == nil {
 		return nil, errors.New("unmarshaling resulted in a nil underlying key")
 	}
 	return priv, nil
 }
 
 // --- Methods ---
+// Update receiver type and internal field access for ALL methods
 
-func (p *privateKey) Bytes() []byte {
-	if p.privKey == nil {
+func (p *PrivateKeyImpl) Bytes() []byte { // Receiver updated
+	if p.PrivKey == nil { // Field updated
 		return nil
 	}
-	return p.privKey.Bytes() // Assume packed bytes
+	return p.PrivKey.Bytes() // Field updated
 }
 
-func (p *privateKey) String() string {
-	if p.privKey == nil {
+func (p *PrivateKeyImpl) String() string { // Receiver updated
+	if p.PrivKey == nil { // Field updated
 		return "PrivateKey(nil)"
 	}
-	// Don't expose private key material
 	return fmt.Sprintf("PrivateKey(len:%d)", len(p.Bytes()))
 }
 
-// Sign implements the interface which doesn't return error.
-// Use log.Fatalf or panic on internal failure.
-func (p *privateKey) Sign(data []byte) Signature {
-	if p.privKey == nil {
-		log.Fatalf("cannot sign with nil private key") // Fatalf as per interface contract (no error return)
-		return nil                                     // Unreachable, but satisfies compiler
+func (p *PrivateKeyImpl) Sign(data []byte) Signature { // Receiver updated
+	if p.PrivKey == nil { // Field updated
+		log.Fatalf("cannot sign with nil private key")
+		return nil
 	}
 	sigBytes := make([]byte, mldsa44.SignatureSize)
 	ctx := []byte(nil)
 	useRandomized := false
 
-	err := mldsa44.SignTo(p.privKey, data, ctx, useRandomized, sigBytes)
+	// Use the exported field
+	err := mldsa44.SignTo(p.PrivKey, data, ctx, useRandomized, sigBytes)
 	if err != nil {
-		// Interface doesn't allow returning error, so we must terminate.
 		log.Fatalf("mldsa44 signing failed: %v", err)
-		return nil // Unreachable
+		return nil
 	}
 
-	// Use the constructor that returns the interface type directly
-	// This constructor now returns nil on size mismatch, which SignTo shouldn't cause.
 	sig := NewSignature(sigBytes)
 	if sig == nil {
-		// This indicates an internal logic error (SignatureSize mismatch)
 		log.Fatalf("internal error: NewSignature failed for correctly sized bytes")
-		return nil // Unreachable
+		return nil
 	}
 	return sig
 }
 
-func (p *privateKey) PublicKey() PublicKey {
-	if p.privKey == nil {
+func (p *PrivateKeyImpl) PublicKey() PublicKey { // Receiver updated
+	if p.PrivKey == nil { // Field updated
 		return nil
 	}
-	pub := p.privKey.Public().(*mldsa44.PublicKey)
+	// Use the exported field
+	pub := p.PrivKey.Public().(*mldsa44.PublicKey)
+	// Assuming publicKey struct name is correct (it was already exported)
 	return &publicKey{pubKey: pub}
 }
 
-func (p *privateKey) Marshal() ([]byte, error) {
-	if p.privKey == nil {
+func (p *PrivateKeyImpl) Marshal() ([]byte, error) { // Receiver name may differ
+	if p.PrivKey == nil { // Field name may differ
 		return nil, errors.New("cannot marshal nil private key")
 	}
-	keyBytes := p.Bytes()
+	// Return raw bytes directly, like PublicKey.Marshal
+	keyBytes := p.Bytes() // Assumes p.Bytes() returns raw mldsa44 bytes
 	if keyBytes == nil {
 		return nil, errors.New("failed to get private key bytes for marshaling")
 	}
-	return cbor.Marshal(keyBytes)
+	log.Printf("DEBUG: [PrivateKeyImpl.Marshal] Returning %d raw bytes.", len(keyBytes))
+	return keyBytes, nil // <<< REMOVED CBOR Marshal
 }
 
-func (p *privateKey) Unmarshal(data []byte) error {
-	var keyBytes []byte
-	err := cbor.Unmarshal(data, &keyBytes)
-	if err != nil {
-		return fmt.Errorf("cbor unmarshal failed: %w", err)
-	}
+// Unmarshal populates the private key from its raw binary representation.
+func (p *PrivateKeyImpl) Unmarshal(data []byte) error { // Receiver name may differ
+	log.Printf("DEBUG: [PrivKey Unmarshal] Input RAW data len: %d", len(data)) // Updated log
+
+	// --- REMOVED CBOR Unmarshal Step ---
+	// var keyBytes []byte
+	// err := cbor.Unmarshal(data, &keyBytes)
+	// if err != nil { return ... }
+	// ---
+
+	// Use the input 'data' directly as the raw key bytes
+	keyBytes := data // <<< Use input data directly
+
 	if len(keyBytes) == 0 {
-		return errors.New("unmarshaled key data is empty")
+		return errors.New("input key data is empty")
 	}
+	// Check against the expected *raw* key size for mldsa44
 	if len(keyBytes) != mldsa44.PrivateKeySize {
-		return fmt.Errorf("invalid private key size after cbor unmarshal: got %d, want %d", len(keyBytes), mldsa44.PrivateKeySize)
+		err := fmt.Errorf("invalid private key size: got %d, want %d", len(keyBytes), mldsa44.PrivateKeySize)
+		log.Printf("ERROR: [PrivKey Unmarshal] %v", err)
+		return err
 	}
 
-	if p.privKey == nil {
-		p.privKey = new(mldsa44.PrivateKey)
+	// Use the exported field name (update if necessary)
+	if p.PrivKey == nil {
+		p.PrivKey = new(mldsa44.PrivateKey)
 	}
 
-	err = p.privKey.UnmarshalBinary(keyBytes)
+	log.Printf("DEBUG: [PrivKey Unmarshal] Calling mldsa44 UnmarshalBinary...")
+	// Unmarshal directly into the mldsa44 key object using the raw bytes
+	err := p.PrivKey.UnmarshalBinary(keyBytes) // <<< USE keyBytes directly
 	if err != nil {
+		log.Printf("ERROR: [PrivKey Unmarshal] mldsa44 UnmarshalBinary failed: %v", err)
 		return fmt.Errorf("mldsa44 private key unmarshal binary failed: %w", err)
 	}
+	log.Printf("DEBUG: [PrivKey Unmarshal] mldsa44 UnmarshalBinary succeeded.")
 	return nil
 }
 
-// Equal takes a pointer to a PrivateKey interface value.
-func (p *privateKey) Equal(other *PrivateKey) bool {
-	// 1. Check interface pointer
+func (p *PrivateKeyImpl) Equal(other *PrivateKey) bool { // Receiver updated
 	if other == nil {
 		return false
 	}
-	// 2. Dereference pointer
 	otherInt := *other
 	if otherInt == nil {
-		return p.privKey == nil
+		return p.PrivKey == nil // Field updated
 	}
-	// 3. Compare bytes via interface method
 	return bytes.Equal(p.Bytes(), otherInt.Bytes())
 }
-
-// Helper function (ensure defined once)
-// func min(a, b int) int { ... }

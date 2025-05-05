@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -114,22 +115,28 @@ func ComputeBlockHash(b *types.Block) error { // Return an error
 	if b == nil {
 		return errors.New("cannot compute hash for nil block")
 	}
-	blockByte, err := SerializeForSigning(b)
+	blockByte, err := SerializeForSigning(b) // Calls the existing SerializeForSigning
 	if err != nil {
-		log.Printf("Failed to serialize block %d for hashing: %v", b.Index, err)
-		// Don't set b.Hash if serialization fails
+		log.Printf("ERROR: [ComputeBlockHash] Failed to serialize block %d for hashing: %v", b.Index, err)
 		return fmt.Errorf("failed to serialize block for hash: %w", err)
 	}
-	// Also check if the serialization somehow returned empty bytes
 	if len(blockByte) == 0 {
-		log.Printf("ERROR: Serialized block %d resulted in zero bytes for hashing.", b.Index)
+		log.Printf("ERROR: [ComputeBlockHash] Serialized block %d resulted in zero bytes for hashing.", b.Index)
 		return errors.New("serialized block for hashing is empty")
 	}
 
-	b.Hash = hash.NewHash(blockByte)
-	// Optional: Check if the hash computation itself resulted in a zero hash, if possible/necessary
-	// if b.Hash.IsZero() { // Assumes an IsZero() method exists on hash.Hash
-	//    return errors.New("computed hash is zero value")
-	// }
+	// Log the bytes being hashed for debugging consistency
+	log.Printf("DEBUG: [ComputeBlockHash] Bytes for Hashing (Block %d): %s", b.Index, hex.EncodeToString(blockByte))
+
+	b.Hash = hash.NewHash(blockByte) // Compute the hash
+
+	// Optional: Check if the hash computation itself resulted in a zero hash
+	// --- CORRECTED METHOD CALL ---
+	if b.Hash.Equal(hash.NullHash()) { // Use Equal instead of IsEqual
+		log.Printf("ERROR: [ComputeBlockHash] Computed hash for block %d is zero hash.", b.Index)
+		return errors.New("computed hash is zero value")
+	}
+	// --- END CORRECTION ---
+
 	return nil // Indicate success
 }

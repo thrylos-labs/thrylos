@@ -68,9 +68,9 @@ func (b *BlockchainImpl) ProcessIncomingTransaction(tx *types.Transaction) error
 // // // ProcessPendingTransactions processes all pending transactions, attempting to form a new block.
 func (bc *BlockchainImpl) ProcessPendingTransactions(validator string) (*types.Block, error) {
 	// Optional: Verify validator status early if desired
-	// if !bc.IsActiveValidator(validator) {
-	//  return nil, fmt.Errorf("provided validator %s is not active", validator)
-	// }
+	if !bc.IsActiveValidator(validator) {
+		return nil, fmt.Errorf("provided validator %s is not active", validator)
+	}
 
 	// Take a snapshot of pending transactions under lock
 	bc.Blockchain.Mu.Lock()

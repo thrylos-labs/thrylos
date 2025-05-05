@@ -17,18 +17,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/config"
+	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/types"
-
-	// Add this line
-	"github.com/joho/godotenv"
-	"github.com/thrylos-labs/thrylos/crypto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	// Add this line
 )
 
 // BlockchainServer implements the gRPC service
@@ -222,6 +221,20 @@ func main() {
 		log.Fatalf("Failed to deserialize genesis private key: %v", err)
 	}
 	log.Println("Successfully loaded persistent Genesis private key.")
+
+	if genesisPrivKey != nil && genesisPrivKey.PublicKey() != nil {
+		pubKey := genesisPrivKey.PublicKey()
+		// Use the Bytes() method which should be returning raw bytes now
+		rawPubKeyBytes := pubKey.Bytes() // Get raw bytes from the crypto.PublicKey implementation
+		if rawPubKeyBytes != nil {
+			// *** ADD THIS LOG ***
+			log.Printf("DEBUG: [main] Loaded Genesis RAW Public Key Bytes: %x", rawPubKeyBytes)
+		} else {
+			log.Printf("ERROR: [main] Failed to get raw bytes from loaded Genesis public key")
+		}
+	} else {
+		log.Printf("ERROR: [main] Loaded Genesis private key or its public key is nil")
+	}
 
 	// Get the absolute path of the node data directory
 	absPath, err := filepath.Abs(dataDir)

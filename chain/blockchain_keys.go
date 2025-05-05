@@ -354,3 +354,127 @@ func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
 	log.Printf("Loaded public keys for %d validators", len(bc.Blockchain.PublicKeyMap))
 	return nil
 }
+
+func (bc *BlockchainImpl) GetValidatorPrivateKey(validatorAddress string) (crypto.PrivateKey, string, error) {
+	log.Printf("Attempting to retrieve private key for validator: %s", validatorAddress)
+
+	// --- 1. Determine Genesis Address ---
+	var genesisAddrStr string
+	if bc.Blockchain.GenesisAccount != nil && bc.Blockchain.GenesisAccount.PublicKey() != nil {
+		addr, err := bc.Blockchain.GenesisAccount.PublicKey().Address()
+		if err != nil {
+			// Log critical error but allow continuation; fallback might still be possible if address matches somehow,
+			// but it's unlikely and indicates a setup problem.
+			log.Printf("CRITICAL ERROR: Cannot get address from GenesisAccount public key in GetValidatorPrivateKey: %v", err)
+		} else {
+			genesisAddrStr = addr.String()
+			log.Printf("DEBUG: Determined Genesis Address: %s", genesisAddrStr)
+		}
+	} else {
+		// If GenesisAccount itself is nil, fallback is impossible.
+		log.Println("WARN: GenesisAccount or its public key is nil in GetValidatorPrivateKey. Genesis fallback disabled.")
+	}
+	// --- End Determine Genesis Address ---
+
+	// Determine if the requested address is the Genesis address
+	isGenesis := (genesisAddrStr != "" && validatorAddress == genesisAddrStr)
+
+	// --- 2. Check if Active Validator (Only if NOT Genesis) ---
+	if !isGenesis {
+		// Non-genesis validators MUST be in the active set to sign blocks.
+		// Ensure IsActiveValidator handles necessary locking.
+		isActive := bc.IsActiveValidator(validatorAddress)
+		if !isActive {
+			log.Printf("ERROR: Validator %s is not in the active validator list.", validatorAddress)
+			// Return a specific error indicating the validator is not active
+			return nil, "", fmt.Errorf("validator %s is not active", validatorAddress)
+		}
+		log.Printf("DEBUG: Validator %s confirmed active.", validatorAddress)
+	} else {
+		log.Printf("DEBUG: Requested validator %s is the Genesis address, skipping active check.", validatorAddress)
+	}
+	// --- End Check if Active Validator ---
+
+	// --- 3. Retrieve Key from Keystore ---
+	// Check if the ValidatorKeys store itself exists
+	if bc.Blockchain.ValidatorKeys == nil {
+		log.Println("ERROR: ValidatorKeys store (bc.Blockchain.ValidatorKeys) is nil.")
+		// If the store doesn't exist, only fallback to Genesis is possible
+		if isGenesis && bc.Blockchain.GenesisAccount != nil {
+			log.Printf("DEBUG: ValidatorKeys store nil, falling back to GenesisAccount for %s.", validatorAddress)
+			return bc.Blockchain.GenesisAccount, genesisAddrStr, nil
+		}
+		// Otherwise, we cannot retrieve the key
+		return nil, "", fmt.Errorf("ValidatorKeys store is not initialized, cannot retrieve key for %s", validatorAddress)
+	}
+
+	// Attempt to get the key *pointer* from the store
+	privateKeyPtr, exists := bc.Blockchain.ValidatorKeys.GetKey(validatorAddress)
+
+	keyFoundInStore := false
+	var cryptoPrivKey crypto.PrivateKey
+	var retrievedAddress string
+
+	if exists && privateKeyPtr != nil {
+		log.Printf("DEBUG: Found non-nil private key pointer for %s in ValidatorKeys store.", validatorAddress)
+		cryptoPrivKey = *privateKeyPtr // Dereference the pointer to get the actual key
+
+		// --- 4. Verify Retrieved Key Ownership ---
+		pubKey := cryptoPrivKey.PublicKey()
+		if pubKey == nil {
+			// This indicates a problem with the stored key object
+			log.Printf("ERROR: Retrieved private key for %s has a nil public key.", validatorAddress)
+			return nil, "", fmt.Errorf("retrieved key for %s has nil public key", validatorAddress)
+		}
+		// Derive address from the *retrieved* key's public key
+		addrFromKey, err := pubKey.Address()
+		if err != nil {
+			log.Printf("ERROR: Failed to derive address from retrieved private key for %s: %v", validatorAddress, err)
+			return nil, "", fmt.Errorf("error deriving address from retrieved key for %s: %w", validatorAddress, err)
+		}
+		retrievedAddress = addrFromKey.String()
+
+		// Compare derived address with the requested address
+		if retrievedAddress != validatorAddress {
+			// Critical error: the key store returned a key belonging to someone else!
+			log.Printf("CRITICAL ERROR: Keystore inconsistency! Key retrieved for %s actually belongs to %s.", validatorAddress, retrievedAddress)
+			return nil, "", fmt.Errorf("keystore key mismatch for address %s (found key for %s)", validatorAddress, retrievedAddress)
+		}
+
+		// Key found and verified!
+		keyFoundInStore = true
+		log.Printf("DEBUG: Successfully retrieved and verified key for %s from keystore.", validatorAddress)
+
+	} else if exists && privateKeyPtr == nil {
+		// Log if GetKey returned exists=true but ptr=nil (indicates potential keystore issue)
+		log.Printf("WARN: ValidatorKeys.GetKey returned exists=true but a nil pointer for %s. Keystore may be inconsistent.", validatorAddress)
+		// Treat as if key was not found, fall through to Genesis check
+	} else {
+		// Key does not exist in the keystore
+		log.Printf("DEBUG: Key for %s not found in ValidatorKeys store (exists=%v).", validatorAddress, exists)
+		// Fall through to Genesis fallback check
+	}
+	// --- End Retrieve Key from Keystore ---
+
+	// If found and verified in store, return it
+	if keyFoundInStore {
+		return cryptoPrivKey, retrievedAddress, nil
+	}
+
+	// --- 5. Fallback to Genesis Account ---
+	// This section is reached only if the key was NOT found/verified in the keystore
+	if isGenesis && bc.Blockchain.GenesisAccount != nil {
+		log.Printf("DEBUG: Key for %s not found/verified in keystore, falling back to GenesisAccount.", validatorAddress)
+		// Use the main GenesisAccount private key
+		genesisPrivKey := bc.Blockchain.GenesisAccount
+		// Return the genesis key and the previously determined genesis address string
+		return genesisPrivKey, genesisAddrStr, nil
+	}
+	// --- End Fallback to Genesis Account ---
+
+	// --- 6. Key Not Found ---
+	// If we reach here, the key wasn't in the keystore, and it wasn't the Genesis address eligible for fallback.
+	log.Printf("ERROR: Failed to retrieve private key for validator %s. Not in keystore and not Genesis fallback.", validatorAddress)
+	return nil, "", fmt.Errorf("private key not found or accessible for validator %s", validatorAddress)
+	// --- End Key Not Found ---
+}

@@ -1,15 +1,41 @@
-data_dir = ""
-aes_key = ""
-test_mode = false
-disable_background = false
-nano_per_thrylos = 10000000.0
-initial_total_supply = 120000000.0
-annual_stake_reward = 48000000000000.0
-daily_stake_reward = 131506849315.0685
-minimum_stake_amount = 400000000.0
+# config.toml
+
+# ---- Existing Sections ----
+# Data Directory, AES Key etc.
+# data_dir = "/path/to/thrylos_data"
+# aes_key = "your_secret_key_here_base64_or_hex"
+# test_mode = false
+# disable_background = false
+
+
+# Token Related
+nano_per_thrylos = 10000000
+initial_total_supply = 120000000
+
+
+# Staking Related
+annual_stake_reward = 48000000000000
+daily_stake_reward = 131506849 # Note: Integer division result, might want float calculation
+minimum_stake_amount = 400000000
 min_stake_percentage = 0.1
+
+
+# Time Related
 reward_distribution_time_interval = 86400
+
+
+# Delegation Related
 delegation_reward_percent = 0.5
+
+
+# Gas Fee Entries
 min_gas_fee = 10000
 max_gas_fee = 1000000
 default_gas_fee = 50000
+
+
+# ---- ADDED: Consensus Section ----
+[Consensus]
+validator_update_interval = 60  # Interval in seconds (e.g., 1 minute)
+max_active_validators = 5     # Max number of active validators
+block_interval = 10           # Target block interval in seconds

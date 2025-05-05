@@ -1,9 +1,6 @@
 // generate_key.go (Temporary tool)
 package main
 
-// You might also need the address logic if you want to print the address
-// "github.com/thrylos-labs/thrylos/crypto/address"
-
 // func main() {
 // 	fmt.Println("Generating new persistent Genesis key pair...")
 
@@ -13,20 +10,24 @@ package main
 // 		log.Fatalf("FATAL: Failed to generate private key: %v", err)
 // 	}
 
-// 	// 2. Marshal the private key (this performs CBOR encoding internally)
-// 	cborBytes, err := privKey.Marshal()
-// 	if err != nil {
-// 		log.Fatalf("FATAL: Failed to marshal private key to CBOR: %v", err)
+// 	// 2. Get the RAW private key bytes directly
+// 	// CORRECTED: Bytes() returns only one value ([]byte)
+// 	rawBytes := privKey.Bytes()
+// 	// Add a check in case Bytes() returns nil for some reason
+// 	if rawBytes == nil {
+// 		log.Fatalf("FATAL: Failed to get raw bytes from generated private key")
 // 	}
+// 	// REMOVED: Error check 'if err != nil {...}'
 
-// 	// 3. Base64 encode the CBOR bytes
-// 	privKeyBase64 := base64.StdEncoding.EncodeToString(cborBytes)
+// 	// 3. Base64 encode the RAW bytes
+// 	privKeyBase64 := base64.StdEncoding.EncodeToString(rawBytes)
 
 // 	// 4. (Optional) Get the corresponding address
 // 	var addrStr string = "Could not derive address"
 // 	if pubKey := privKey.PublicKey(); pubKey != nil {
+// 		// Assuming Address() returns (*address.Address, error)
 // 		addr, errAddr := pubKey.Address()
-// 		if errAddr == nil {
+// 		if errAddr == nil && addr != nil { // Check addr is not nil too
 // 			addrStr = addr.String()
 // 		} else {
 // 			addrStr = fmt.Sprintf("Error deriving address: %v", errAddr)
@@ -38,8 +39,9 @@ package main
 // 	fmt.Printf("Corresponding Address: %s\n", addrStr)
 // 	fmt.Println("\nKEEP THE PRIVATE KEY STRING SECRET AND SECURE!")
 // 	fmt.Println("Store it as an environment variable (e.g., in your .env file)")
-// 	fmt.Println("\nEnvironment Variable Name: GENESIS_PRIVATE_KEY_CBOR_B64")
-// 	fmt.Println("\nValue (Base64 encoded CBOR):")
+// 	// --- Suggest using a new environment variable name ---
+// 	fmt.Println("\nRecommended Environment Variable Name: GENESIS_PRIVATE_KEY_RAW_B64")
+// 	fmt.Println("\nValue (Base64 encoded RAW bytes):")
 // 	fmt.Printf("\n%s\n\n", privKeyBase64) // Print the key string clearly
 // 	fmt.Println("---------------------------")
 

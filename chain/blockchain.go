@@ -93,7 +93,7 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	}
 
 	// B) Recompute the block hash locally
-	hashBytesToVerify, err := SerializeForSigning(block)
+	hashBytesToVerify, err := SerializeForSigning(block) // Calls the existing SerializeForSigning
 	if err != nil {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Could not serialize block for hash recomputation: %v", block.Index, err)
 		return fmt.Errorf("block verification failed: serialization error: %w", err)
@@ -102,11 +102,18 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Serialization for hash recomputation resulted in empty bytes.", block.Index)
 		return fmt.Errorf("block verification failed: empty serialization result")
 	}
-	recomputedHash := hash.NewHash(hashBytesToVerify)
+
+	// --- ADDED LOGGING ---
+	log.Printf("DEBUG: [AddBlock] Bytes for Verification Hash (Block %d): %s", block.Index, hex.EncodeToString(hashBytesToVerify))
+	// --- END ADDED LOGGING ---
+
+	recomputedHash := hash.NewHash(hashBytesToVerify) // Compute the hash for verification
 	if recomputedHash.Equal(hash.NullHash()) {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Hash recomputation resulted in zero hash.", block.Index)
 		return fmt.Errorf("block verification failed: zero hash recomputation")
 	}
+	log.Printf("DEBUG: [AddBlock] RECOMPUTED HASH BYTES FOR VERIFY: %x", recomputedHash.Bytes()) // Existing log
+
 	// *** ADDED LOGGING ***
 	log.Printf("DEBUG: [AddBlock] RECOMPUTED HASH BYTES FOR VERIFY: %x", recomputedHash.Bytes())
 	// *** END LOGGING ***
@@ -117,6 +124,17 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	log.Printf("DEBUG: [AddBlock] SIGNATURE BYTES FOR VERIFY: %x", signatureBytes)
 	// *** END LOGGING ***
 
+	if validatorPubKey != nil {
+		// Get raw bytes directly from the mldsa44 object used in Verify
+		retrievedRawBytes := validatorPubKey.Bytes()
+		// *** ADD THIS LOG ***
+		log.Printf("DEBUG: [AddBlockVerify] RAW Public Key Bytes used for Verify: %x", retrievedRawBytes)
+	} else {
+		log.Printf("ERROR: [AddBlockVerify] validatorPubKey is nil before Verify call")
+		// You should probably return an error here if validatorPubKey is nil
+		return fmt.Errorf("block verification failed: validatorPubKey is nil")
+	}
+	// The existing Verify call
 	isValid := mldsa44.Verify(validatorPubKey, recomputedHash.Bytes(), signatureBytes, nil)
 	if !isValid {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Invalid signature from validator %s.", block.Index, block.Validator)
@@ -542,6 +560,9 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 	if setupConfig == nil || appConfig == nil {
 		log.Panic("FATAL: NewBlockchain called with nil config")
 	}
+	if setupConfig.GenesisAccount == nil { // <<< Add check for passed-in key
+		log.Panic("FATAL: NewBlockchain called but setupConfig.GenesisAccount is nil")
+	}
 	// Use setupConfig for store initialization, TestMode, etc.
 	database, err := store.NewDatabase(setupConfig.DataDir)
 	if err != nil {
@@ -564,30 +585,30 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 	log.Printf("Initializing genesis account with total supply: %.2f THR", float64(totalSupplyNano)/1e9)
 
 	stakeholdersMap := make(map[string]int64)
-	privKey, err := crypto.NewPrivateKey()
-	if err != nil {
-		log.Printf("error generating private key for genesis account: %v", err)
-		storeInstance.Close()
-		return nil, nil, err
-	}
-	var pubKey crypto.PublicKey = privKey.PublicKey()
-	addr, err := pubKey.Address()
-	if err != nil {
-		log.Printf("error getting address from genesis public key: %v", err)
-		storeInstance.Close()
-		return nil, nil, err
-	}
-	stakeholdersMap[addr.String()] = totalSupplyNano
-	log.Printf("Genesis account address: %s", addr.String())
+	privKey := setupConfig.GenesisAccount // <<< USE THE PASSED-IN KEY
 
-	log.Printf("DEBUG: Attempting to save Public Key for address %s", addr.String())
-	err = storeInstance.SavePublicKey(pubKey)
-	if err != nil {
-		log.Printf("CRITICAL ERROR: Failed to save genesis public key to database: %v", err)
-		storeInstance.Close()
-		return nil, nil, fmt.Errorf("failed to save genesis public key: %w", err)
+	var pubKey crypto.PublicKey = privKey.PublicKey() // Derive PubKey from the LOADED PrivKey
+	if pubKey == nil {                                /* handle error */
 	}
-	log.Printf("DEBUG: Successfully called SavePublicKey for address %s (Error: %v)", addr.String(), err)
+
+	addr, err := pubKey.Address()
+	if err != nil { /* handle error */
+	}
+
+	genesisAddressString := addr.String() // Store for reuse
+	stakeholdersMap[genesisAddressString] = totalSupplyNano
+	log.Printf("Genesis account address: %s", genesisAddressString)
+
+	// --- ADD THIS BLOCK BACK ---
+	log.Printf("DEBUG: Attempting to save Public Key for address %s", genesisAddressString)
+	err = storeInstance.SavePublicKey(pubKey) // Save the derived public key
+	if err != nil {
+		// Log non-fatal warning if key potentially exists from previous run
+		log.Printf("WARN: Could not save genesis public key (may already exist): %v", err)
+	} else {
+		log.Printf("DEBUG: Successfully saved/updated Public Key for genesis address %s", genesisAddressString)
+	}
+	// --- END BLOCK TO ADD BACK ---
 
 	dummySignatureBytes := make([]byte, crypto.MLDSASignatureSize)
 
@@ -618,6 +639,7 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 
 	stateNetwork := network.NewDefaultNetwork()
 	messageBus := types.GetGlobalMessageBus()
+
 	temp := &BlockchainImpl{
 		Blockchain: &types.Blockchain{
 			Blocks:               []*types.Block{genesis},
@@ -633,7 +655,7 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 			StateNetwork:         stateNetwork,
 			TestMode:             setupConfig.TestMode,
 			ValidatorKeys:        store.NewValidatorKeyStore(database, addr.Bytes()), // Initialize the field
-			MinStakeForValidator: big.NewInt(40),
+			MinStakeForValidator: big.NewInt(appConfig.MinimumStakeAmount()),         // Add parentheses to call the method
 		},
 		MessageBus: messageBus,
 		AppConfig:  appConfig, // Store the main app config
@@ -737,9 +759,30 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 	}()
 
 	if !setupConfig.DisableBackground {
+		log.Println("Starting background processes...") // Existing log
+
+		// --- ADDED: Start Periodic Validator Update ---
+		// Determine interval and count (using defaults or config)
+		validatorUpdateInterval := 1 * time.Minute          // Example: Update every minute
+		maxActiveValidators := 5                            // Example: Max 5 active validators
+		if appConfig != nil && appConfig.Consensus != nil { // Safely access nested config
+			if appConfig.Consensus.ValidatorUpdateInterval > 0 {
+				validatorUpdateInterval = time.Duration(appConfig.Consensus.ValidatorUpdateInterval) * time.Second
+			}
+			if appConfig.Consensus.MaxActiveValidators > 0 {
+				maxActiveValidators = appConfig.Consensus.MaxActiveValidators
+			}
+		}
+		log.Printf("Starting periodic validator update: Interval=%v, MaxValidators=%d", validatorUpdateInterval, maxActiveValidators)
+		// This line starts the goroutine that periodically calls UpdateActiveValidators
+		// Ensure StartPeriodicValidatorUpdate method exists on *BlockchainImpl
+		go temp.StartPeriodicValidatorUpdate(validatorUpdateInterval, maxActiveValidators)
+		// --- END ADDED SECTION ---
+
+		// Start Block Creation Loop (Existing Code - assumes it follows)
 		go func() {
-			log.Println("Starting block creation process")
-			if temp.modernProcessor == nil {
+			log.Println("Starting block creation process") // Existing log
+			if temp.modernProcessor == nil {               // Existing check
 				log.Println("ERROR: Block creation loop cannot start, ModernProcessor is nil.")
 				return
 			}
