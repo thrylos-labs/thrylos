@@ -82,18 +82,18 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	}
 	log.Printf("Attempting to add Block %d (Validator: %s) to chain...", block.Index, block.Validator)
 
-	// --- 1. Verify Signature and Hash (No Lock Needed Yet) ---
+	// --- 1. Verify Signature (No Lock Needed Yet) ---
+	// This implicitly verifies the block hash *including* the TransactionsRoot,
+	// assuming SerializeForSigning and block.Marshal are correct.
 	log.Printf("Verifying signature for block %d from validator %s...", block.Index, block.Validator)
 
-	// A) Retrieve the public key
 	validatorPubKey, err := bc.GetValidatorPublicKey(block.Validator)
 	if err != nil {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Could not get public key for validator %s: %v", block.Index, block.Validator, err)
 		return fmt.Errorf("block verification failed: cannot get validator public key: %w", err)
 	}
 
-	// B) Recompute the block hash locally
-	hashBytesToVerify, err := SerializeForSigning(block) // Calls the existing SerializeForSigning
+	hashBytesToVerify, err := SerializeForSigning(block) // Calls helper from block.go
 	if err != nil {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Could not serialize block for hash recomputation: %v", block.Index, err)
 		return fmt.Errorf("block verification failed: serialization error: %w", err)
@@ -103,58 +103,21 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 		return fmt.Errorf("block verification failed: empty serialization result")
 	}
 
-	// --- ADDED LOGGING ---
-	log.Printf("DEBUG: [AddBlock] Bytes for Verification Hash (Block %d): %s", block.Index, hex.EncodeToString(hashBytesToVerify))
-	// --- END ADDED LOGGING ---
-
-	recomputedHash := hash.NewHash(hashBytesToVerify) // Compute the hash for verification
+	recomputedHash := hash.NewHash(hashBytesToVerify)
 	if recomputedHash.Equal(hash.NullHash()) {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Hash recomputation resulted in zero hash.", block.Index)
 		return fmt.Errorf("block verification failed: zero hash recomputation")
 	}
-	log.Printf("DEBUG: [AddBlock] RECOMPUTED HASH BYTES FOR VERIFY: %x", recomputedHash.Bytes()) // Existing log
 
-	// *** ADDED LOGGING ***
-	log.Printf("DEBUG: [AddBlock] RECOMPUTED HASH BYTES FOR VERIFY: %x", recomputedHash.Bytes())
-	// *** END LOGGING ***
+	signatureBytes := block.Signature.Bytes()
+	retrievedRawBytes := validatorPubKey.Bytes() // Assuming GetValidatorPublicKey returns mldsa44.PublicKey
 
-	// C) Verify the signature against the recomputed hash
-	signatureBytes := block.Signature.Bytes() // Signature bytes are ready
-
-	var retrievedRawBytes []byte // Declare variable to hold pub key bytes
-	if validatorPubKey != nil {
-		// Get raw bytes directly from the mldsa44 object that will be used in Verify
-		retrievedRawBytes = validatorPubKey.Bytes() // Assign bytes here
-		log.Printf("DEBUG: [AddBlockVerify] RAW Public Key Bytes obtained for Verify [Len: %d]: %x", len(retrievedRawBytes), retrievedRawBytes)
-	} else {
-		// This case should ideally be caught earlier by GetValidatorPublicKey returning an error,
-		// but double-checking is safe.
-		log.Printf("ERROR: [AddBlockVerify] validatorPubKey is nil before Verify call")
-		return fmt.Errorf("block verification failed: validatorPubKey is nil")
-	}
-	// Ensure retrievedRawBytes were actually obtained if validatorPubKey was not nil
-	if retrievedRawBytes == nil {
-		log.Printf("ERROR: [AddBlockVerify] Retrieved raw public key bytes are nil even though validatorPubKey was not nil")
-		return fmt.Errorf("block verification failed: failed to get raw public key bytes")
-	}
-
-	// --- DETAILED LOGGING BEFORE mldsa44.Verify ---
-	log.Printf("DEBUG: [AddBlockVerify] === Preparing to call mldsa44.Verify ===")
-	// Use the CORRECT variable 'retrievedRawBytes' and the method call 'recomputedHash.Bytes()'
-	log.Printf("DEBUG: [AddBlockVerify] Public Key Bytes (len %d): %x", len(retrievedRawBytes), retrievedRawBytes)
-	log.Printf("DEBUG: [AddBlockVerify] Hash/Message Bytes (len %d): %x", len(recomputedHash.Bytes()), recomputedHash.Bytes())
-	log.Printf("DEBUG: [AddBlockVerify] Signature Bytes (len %d): %x", len(signatureBytes), signatureBytes)
-	log.Printf("DEBUG: [AddBlockVerify] === Calling mldsa44.Verify with nil context... ===")
-	// --- END DETAILED LOGGING ---
-
-	// CORRECTED Verify call with nil context and CORRECT variables/method calls
-	// Pass the actual mldsa44 public key object, the hash bytes, nil context, and signature bytes
+	// Verify the signature against the recomputed hash
 	isValid := mldsa44.Verify(validatorPubKey, recomputedHash.Bytes(), nil, signatureBytes)
-
 	if !isValid {
 		log.Printf("ERROR: [AddBlock] Block %d verification failed - Invalid signature from validator %s.", block.Index, block.Validator)
-		// Log the actual inputs again on failure for clarity
-		log.Printf("DEBUG: [AddBlock Verify Failed] PubKey: %x", retrievedRawBytes)
+		// Log details for debugging
+		log.Printf("DEBUG: [AddBlock Verify Failed] PubKey (mldsa44 bytes): %x", retrievedRawBytes)
 		log.Printf("DEBUG: [AddBlock Verify Failed] Hash: %x", recomputedHash.Bytes())
 		log.Printf("DEBUG: [AddBlock Verify Failed] Sig: %x", signatureBytes)
 		return fmt.Errorf("block verification failed: invalid signature")
@@ -162,27 +125,41 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	log.Printf("Block %d signature verified successfully against recomputed hash.", block.Index)
 	// --- End Signature Verification ---
 
-	// --- Acquire Lock ---
+	// --- MERKLE ROOT & FULL BLOCK VERIFICATION (ADDED) ---
+	// Call the updated Verify function from block.go which checks Merkle Root and recomputes hash
+	if err := Verify(block); err != nil {
+		log.Printf("ERROR: [AddBlock] Block %d failed full verification (Merkle/Hash): %v", block.Index, err)
+		// Note: Signature was valid, but content (e.g., Merkle root) might be inconsistent
+		// or the stored Hash field doesn't match recomputation.
+		return fmt.Errorf("block verification failed (Merkle/Hash): %w", err)
+	}
+	log.Printf("Block %d Merkle root and hash verified successfully.", block.Index)
+	// --- END MERKLE ROOT & FULL BLOCK VERIFICATION ---
+
+	// --- Acquire Lock for state update and chain modification ---
 	bc.Blockchain.Mu.Lock()
 	defer bc.Blockchain.Mu.Unlock()
 
-	// 2. Basic Validation (Index, PrevHash)
-	if block.Hash.Equal(hash.NullHash()) {
-		log.Printf("ERROR: [AddBlock] Block %d has missing or zero Hash field.", block.Index)
-		return errors.New("block has zero hash field for chain linkage validation")
-	}
-	if len(bc.Blockchain.Blocks) > 0 {
+	// --- 2. Final Validation Under Lock (Index, PrevHash against actual last block) ---
+	// Re-check length in case chain changed between lock acquisition and previous checks
+	if len(bc.Blockchain.Blocks) == 0 {
+		// This should only be possible if adding the genesis block, which usually follows a different path
+		if block.Index != 0 {
+			return fmt.Errorf("cannot add non-genesis block %d to empty chain", block.Index)
+		}
+		// Add genesis-specific checks if needed
+	} else {
+		// Check against the actual last block under lock
 		prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
 		if block.Index != prevBlock.Index+1 {
-			return fmt.Errorf("invalid block index: expected %d, got %d", prevBlock.Index+1, block.Index)
+			return fmt.Errorf("invalid block index under lock: expected %d, got %d", prevBlock.Index+1, block.Index)
 		}
 		if !block.PrevHash.Equal(prevBlock.Hash) {
-			log.Printf("PrevHash mismatch! Expected: %s, Got: %s", prevBlock.Hash.String(), block.PrevHash.String())
-			return fmt.Errorf("invalid PrevHash: expected %s, got %s", prevBlock.Hash.String(), block.PrevHash.String())
+			log.Printf("PrevHash mismatch under lock! Expected: %s, Got: %s", prevBlock.Hash.String(), block.PrevHash.String())
+			return fmt.Errorf("invalid PrevHash under lock: expected %s, got %s", prevBlock.Hash.String(), block.PrevHash.String())
 		}
-	} else if block.Index != 0 {
-		return fmt.Errorf("invalid block index for non-genesis on empty chain: expected 0, got %d", block.Index)
 	}
+	// --- End Final Validation ---
 
 	// --- ATOMIC DATABASE PERSISTENCE ---
 	dbTxContext, err := bc.Blockchain.Database.BeginTransaction()
@@ -202,7 +179,7 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	finalErr = bc.persistStateChangesToDB(dbTxContext, block)
 	if finalErr != nil {
 		log.Printf("ERROR: Failed to persist state changes to DB for block %d: %v", block.Index, finalErr)
-		return finalErr
+		return finalErr // Defer will rollback
 	}
 	log.Printf("DEBUG: Successfully persisted state changes to DB for Block %d (within transaction).", block.Index)
 
@@ -210,7 +187,7 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	finalErr = bc.Blockchain.Database.SaveBlockWithContext(dbTxContext, block)
 	if finalErr != nil {
 		log.Printf("ERROR: Failed to save block %d data to DB: %v", block.Index, finalErr)
-		return finalErr
+		return finalErr // Defer will rollback
 	}
 	log.Printf("DEBUG: Successfully saved block %d data to DB (within transaction).", block.Index)
 
@@ -219,21 +196,25 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	if commitErr != nil {
 		finalErr = fmt.Errorf("failed to commit DB transaction for block %d: %w", block.Index, commitErr)
 		log.Printf("CRITICAL ERROR: %v. DB state may be inconsistent.", finalErr)
+		// dbTxContext is effectively invalid now, defer might try rollback but likely fail
 		dbTxContext = nil
 		return finalErr
 	}
-	dbTxContext = nil
+	dbTxContext = nil // Prevent defer rollback on success
 	log.Printf("DEBUG: Successfully committed DB transaction for Block %d.", block.Index)
 	// --- END ATOMIC DATABASE PERSISTENCE ---
 
-	// --- UPDATE IN-MEMORY STATE ---
+	// --- UPDATE IN-MEMORY STATE (Only after successful commit) ---
 	// 6. Append block
 	bc.Blockchain.Blocks = append(bc.Blockchain.Blocks, block)
 	log.Printf("INFO: Appended block %d to in-memory chain (Hash: %s)", block.Index, block.Hash.String())
 
 	// 7. Update UTXOs and Balances
 	if err := bc.updateStateForBlock(block); err != nil {
+		// This is critical - the block is committed but in-memory state failed.
+		// Needs careful handling - maybe halt, or attempt recovery?
 		log.Printf("CRITICAL ERROR: In-memory state update failed for committed block %d: %v. State inconsistent!", block.Index, err)
+		// Depending on recovery strategy, might need to panic or enter a safe mode.
 		return fmt.Errorf("CRITICAL: in-memory state update failed post-commit for block %d: %w", block.Index, err)
 	}
 	log.Printf("DEBUG: Successfully updated in-memory state (Stakeholders, UTXOs) for Block %d.", block.Index)
@@ -246,17 +227,20 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 	if bc.Blockchain.OnNewBlock != nil {
 		go bc.Blockchain.OnNewBlock(block)
 	}
-	go func(b *types.Block) {
-		blockHashBytes := b.Hash.Bytes()
+	// Use the already computed block hash bytes if needed, or recompute if necessary
+	blockHashBytes := block.Hash.Bytes()
+	go func(b *types.Block, bhBytes []byte) { // Pass block hash bytes
 		for _, tx := range b.Transactions {
-			txID := tx.ID
-			if err := bc.UpdateTransactionStatus(txID, "included", blockHashBytes); err != nil {
+			txID := tx.ID // Assuming types.Transaction has ID field
+			// Call the corrected UpdateTransactionStatus
+			if err := bc.UpdateTransactionStatus(txID, "included", bhBytes); err != nil {
 				log.Printf("WARN: [Block Adder] Failed to update status for tx %s after block inclusion: %v", txID, err)
 			} else {
-				log.Printf("DEBUG: [Block Adder] Updated status for tx %s to 'included' in block %s...", txID, b.Hash.String()[:10])
+				// Status update function now logs success
+				// log.Printf("DEBUG: [Block Adder] Updated status for tx %s to 'included' in block %s...", txID, b.Hash.String()[:10])
 			}
 		}
-	}(block)
+	}(block, blockHashBytes) // Pass block and hash bytes to goroutine
 
 	// --- Final Success ---
 	log.Printf("INFO: Successfully added and persisted Block %d proposed by %s.", block.Index, block.Validator)

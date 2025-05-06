@@ -1,6 +1,7 @@
 package chain
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -156,33 +157,63 @@ func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
 // // CreateBlock generates a new block with the given transactions, validator, previous hash, and timestamp.
 // // This method encapsulates the logic for building a block to be added to the blockchain.
 func (bc *BlockchainImpl) CreateUnsignedBlock(transactions []*thrylos.Transaction, validator string) (*types.Block, error) {
-	// Get the previous block
+	// --- Acquire Lock (Read lock sufficient for getting prev block) ---
+	bc.Blockchain.Mu.RLock()
+	if len(bc.Blockchain.Blocks) == 0 {
+		bc.Blockchain.Mu.RUnlock()
+		return nil, errors.New("cannot create new block: blockchain is empty (no genesis block?)")
+	}
 	prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
-
-	// Convert index to int64 as required by Block struct
 	nextIndex := int64(len(bc.Blockchain.Blocks))
+	bc.Blockchain.Mu.RUnlock() // Release read lock
+	// --- End Lock ---
 
-	// Convert transactions using existing function
+	// Convert transactions from protobuf (thrylos.Transaction) to shared type (types.Transaction)
 	sharedTransactions := make([]*types.Transaction, len(transactions))
-	for i, tx := range transactions {
-		sharedTransactions[i] = utils.ConvertToSharedTransaction(tx)
-		if sharedTransactions[i] == nil {
-			return nil, fmt.Errorf("failed to convert transaction at index %d", i)
+	for i, txProto := range transactions {
+		// --- FIX: Correct assignment ---
+		// ConvertToSharedTransaction only returns *types.Transaction, not an error
+		sharedTx := utils.ConvertToSharedTransaction(txProto)
+		// --- END FIX ---
+
+		// Check if conversion resulted in nil (ConvertToSharedTransaction handles internal errors by returning nil)
+		if sharedTx == nil {
+			// Log the specific proto Tx ID if possible
+			protoTxID := "unknown"
+			if txProto != nil {
+				protoTxID = txProto.GetId()
+			}
+			return nil, fmt.Errorf("conversion returned nil for transaction at index %d (Proto ID: %s)", i, protoTxID)
 		}
+		sharedTransactions[i] = sharedTx
 	}
 
-	// Create new block
+	// Create the basic block structure
 	newBlock := &types.Block{
 		Index:        nextIndex,
 		Timestamp:    time.Now().Unix(),
-		Transactions: sharedTransactions,
+		Transactions: sharedTransactions, // Use the converted transactions
 		Validator:    validator,
-		PrevHash:     prevBlock.Hash,
-		Hash:         hash.NullHash(), // Initialize with null hash
+		PrevHash:     prevBlock.Hash,  // Hash from the actual previous block
+		Hash:         hash.NullHash(), // Initialize hash
+		// Signature will be added later
+		// TransactionsRoot will be calculated next
 	}
 
-	// Compute the hash using the existing function
-	ComputeBlockHash(newBlock)
+	// --- MERKLE TREE CALCULATION ---
+	merkleRoot, err := CalculateTransactionsMerkleRoot(newBlock.Transactions) // Use helper from block.go
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate Merkle root for new block %d: %w", nextIndex, err)
+	}
+	newBlock.TransactionsRoot = merkleRoot
+	log.Printf("DEBUG: [CreateUnsignedBlock] Calculated Merkle Root for block %d: %s", newBlock.Index, hex.EncodeToString(newBlock.TransactionsRoot))
+	// --- END MERKLE TREE CALCULATION ---
+
+	// Compute the block hash *after* TransactionsRoot is set
+	if err := ComputeBlockHash(newBlock); err != nil { // Use helper from block.go
+		return nil, fmt.Errorf("failed to compute block hash for unsigned block %d: %w", nextIndex, err)
+	}
+	log.Printf("DEBUG: [CreateUnsignedBlock] Computed Hash for unsigned block %d: %s", newBlock.Index, newBlock.Hash.String())
 
 	return newBlock, nil
 }
