@@ -181,11 +181,6 @@ func (bc *BlockchainImpl) CreateUnsignedBlock(transactions []*thrylos.Transactio
 		Hash:         hash.NullHash(), // Initialize with null hash
 	}
 
-	// Initialize Verkle tree
-	if err := InitializeVerkleTree(newBlock); err != nil {
-		return nil, fmt.Errorf("failed to initialize Verkle tree: %v", err)
-	}
-
 	// Compute the hash using the existing function
 	ComputeBlockHash(newBlock)
 

@@ -1,2 +1,0 @@
-Verkle Tree Creation: Initializes Verkle trees with transaction data, which are used for 
-cryptographic verification of transaction integrity within blocks.

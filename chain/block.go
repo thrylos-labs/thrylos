@@ -25,10 +25,6 @@ func NewBlock(index int64, prevHash hash.Hash, transactions []*types.Transaction
 		ValidatorPublicKey: validatorPublicKey,
 	}
 
-	if err := InitializeVerkleTree(block); err != nil {
-		return nil, fmt.Errorf("failed to initialize Verkle tree: %v", err)
-	}
-
 	ComputeBlockHash(block)
 	return block, nil
 }
@@ -93,33 +89,6 @@ func SerializeForSigning(b *types.Block) ([]byte, error) {
 	// --- END ADDED LOGGING ---
 
 	return blockBytes, nil
-}
-
-// InitializeVerkleTree initializes the Verkle Tree lazily and calculates its root.
-func InitializeVerkleTree(b *types.Block) error {
-	if len(b.Transactions) == 0 {
-		return nil
-	}
-	// Pre-allocate slice for better memory efficiency
-	txData := make([][]byte, 0, len(b.Transactions))
-
-	// Marshal transactions
-	for _, tx := range b.Transactions {
-		txByte, err := tx.Marshal()
-		if err != nil {
-			return fmt.Errorf("failed to serialize transaction: %v", err)
-		}
-		txData = append(txData, txByte)
-	}
-
-	tree, err := NewVerkleTree(txData)
-	if err != nil {
-		return fmt.Errorf("failed to create Verkle tree: %v", err)
-	}
-
-	commitment := tree.Commitment().BytesUncompressedTrusted()
-	b.VerkleRoot = commitment[:]
-	return nil
 }
 
 func ComputeBlockHash(b *types.Block) error { // Return an error
