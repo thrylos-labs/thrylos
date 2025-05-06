@@ -2,9 +2,6 @@ package chain
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -14,7 +11,6 @@ import (
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/shared"
-	"golang.org/x/crypto/scrypt"
 )
 
 const (
@@ -155,75 +151,6 @@ func (bc *BlockchainImpl) EnsureTestValidatorRegistered(address string, publicKe
 
 	log.Printf("Registered test validator: %s", address)
 	return nil
-}
-
-func deriveKey(password []byte, salt []byte) ([]byte, error) {
-	return scrypt.Key(password, salt, 32768, 8, 1, keyLen)
-}
-
-func encryptPrivateKey(privKey *mldsa44.PrivateKey) ([]byte, error) {
-	// Convert ML-DSA44 private key to bytes
-	privKeyBytes, err := privKey.MarshalBinary()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal private key: %v", err)
-	}
-
-	salt := make([]byte, saltSize)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, err
-	}
-
-	block, err := aes.NewCipher(salt)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, privKeyBytes, nil)
-	return append(append(salt, nonce...), ciphertext...), nil
-}
-
-func decryptPrivateKey(encryptedKey []byte) (*mldsa44.PrivateKey, error) {
-	if len(encryptedKey) < saltSize+nonceSize+1 {
-		return nil, ErrInvalidKeySize
-	}
-
-	salt := encryptedKey[:saltSize]
-	nonce := encryptedKey[saltSize : saltSize+nonceSize]
-	ciphertext := encryptedKey[saltSize+nonceSize:]
-
-	block, err := aes.NewCipher(salt)
-	if err != nil {
-		return nil, err
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert bytes back to ML-DSA44 private key
-	var privKey mldsa44.PrivateKey
-	err = privKey.UnmarshalBinary(plaintext)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal private key: %v", err)
-	}
-
-	return &privKey, nil
 }
 
 func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {

@@ -6,13 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync"
 
 	"github.com/dgraph-io/badger/v3"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
-	"github.com/thrylos-labs/thrylos/shared"
 	"github.com/thrylos-labs/thrylos/store"
 
 	thrylos "github.com/thrylos-labs/thrylos"
@@ -23,28 +21,6 @@ import (
 func (bc *BlockchainImpl) ProcessPendingTransactionsWithBatch(validator string, batch []*thrylos.Transaction) (*types.Block, error) {
 	// Similar to ProcessPendingTransactions but works with the provided batch
 	return bc.ProcessPendingTransactions(validator)
-}
-
-func (bc *BlockchainImpl) notifyBalanceUpdates(tx *thrylos.Transaction) {
-	if bc.Blockchain.OnBalanceUpdate == nil {
-		return
-	}
-
-	addresses := make(map[string]bool)
-	addresses[tx.Sender] = true
-	for _, output := range tx.Outputs {
-		addresses[output.OwnerAddress] = true
-	}
-
-	for address := range addresses {
-		balance, err := bc.GetBalance(address)
-		if err != nil {
-			log.Printf("Failed to get balance for %s: %v", address, err)
-			continue
-		}
-		// Convert amount.Amount to int64 for the callback
-		bc.Blockchain.OnBalanceUpdate(address, int64(balance))
-	}
 }
 
 func (bc *BlockchainImpl) AddTransactionToPool(tx *types.Transaction) error {
@@ -172,53 +148,6 @@ func (bc *BlockchainImpl) ProcessPendingTransactions(validator string) (*types.B
 
 	log.Printf("INFO: [ProcessPending] Successfully processed pending transactions and initiated adding Block %d.", signedBlock.Index)
 	return signedBlock, nil // Return the successfully added block
-}
-
-// // // validateTransactionsConcurrently runs transaction validations in parallel and collects errors.
-// // Validate transactions with available UTXOs
-func (bc *BlockchainImpl) validateTransactionsConcurrently(transactions []*thrylos.Transaction) []error {
-	var wg sync.WaitGroup
-	errChan := make(chan error, len(transactions))
-
-	// Convert UTXOs outside the goroutines to avoid concurrent map read/write issues
-	availableUTXOs := bc.convertUTXOsToRequiredFormat()
-
-	for _, tx := range transactions {
-		wg.Add(1)
-		go func(tx *thrylos.Transaction) {
-			defer wg.Done()
-
-			// Check if the transaction ID is empty
-			if tx.Id == "" {
-				errChan <- fmt.Errorf("transaction ID is empty")
-				return
-			}
-
-			// Convert each thrylos.Transaction to a shared.Transaction
-			sharedTx, err := bc.convertToSharedTransaction(tx)
-			if err != nil {
-				errChan <- fmt.Errorf("conversion error for transaction ID %s: %v", tx.Id, err)
-				return
-			}
-
-			// Validate the converted transaction using the shared transaction validation logic
-			// ValidateTransaction returns an error, not a boolean
-			if err := shared.ValidateTransaction(&sharedTx, availableUTXOs); err != nil {
-				errChan <- fmt.Errorf("validation failed for transaction ID %s: %v", sharedTx.ID, err)
-			}
-		}(tx)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	var errs []error
-	for err := range errChan {
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errs
 }
 
 // // Helper function to convert thrylos.Transaction to shared.Transaction
@@ -411,25 +340,6 @@ func verifyTransactionUniqueness(tx *types.Transaction, bc *BlockchainImpl) erro
 	return nil
 }
 
-// Update validateBlockTransactionSalts to use the new function
-func (bc *BlockchainImpl) validateBlockTransactionSalts(block *types.Block) error {
-	seenSalts := make(map[string]bool)
-
-	for _, tx := range block.Transactions {
-		saltStr := string(tx.Salt)
-		if seenSalts[saltStr] {
-			return fmt.Errorf("duplicate salt found in block transactions")
-		}
-		seenSalts[saltStr] = true
-
-		// Verify each transaction's salt
-		if err := verifyTransactionUniqueness(tx, bc); err != nil {
-			return fmt.Errorf("invalid transaction salt: %v", err)
-		}
-	}
-	return nil
-}
-
 // // // // Helper function to efficiently check salt uniqueness in all blocks
 func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 	bc.Blockchain.Mu.RLock()
@@ -457,64 +367,6 @@ func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
 
 	return false
 }
-
-// func SharedToThrylos(tx *types.Transaction) *thrylos.Transaction {
-// 	if tx == nil {
-// 		return nil
-// 	}
-
-// 	signatureBytes, _ := base64.StdEncoding.DecodeString(tx.Signature)
-
-// 	// Generate salt for new transaction if not present
-// 	salt := tx.Salt
-// 	if len(salt) == 0 {
-// 		var err error
-// 		salt, err = generateSalt()
-// 		if err != nil {
-// 			log.Printf("Failed to generate salt: %v", err)
-// 			return nil
-// 		}
-// 	}
-
-// 	return &thrylos.Transaction{
-// 		Id:            tx.ID,
-// 		Timestamp:     tx.Timestamp,
-// 		Inputs:        ConvertSharedInputs(tx.Inputs),
-// 		Outputs:       ConvertSharedOutputs(tx.Outputs),
-// 		Signature:     signatureBytes,
-// 		Salt:          salt,
-// 		PreviousTxIds: tx.PreviousTxIds,
-// 		Sender:        tx.Sender,
-// 		Status:        tx.Status,
-// 		Gasfee:        int32(tx.GasFee),
-// 	}
-// }
-
-// func ConvertSharedOutputs(outputs []types.UTXO) []*thrylos.UTXO {
-// 	result := make([]*thrylos.UTXO, len(outputs))
-// 	for i, output := range outputs {
-// 		result[i] = &thrylos.UTXO{
-// 			TransactionId: output.TransactionID,
-// 			Index:         int32(output.Index),
-// 			OwnerAddress:  output.OwnerAddress,
-// 			Amount:        output.Amount,
-// 			IsSpent:       output.IsSpent,
-// 		}
-// 	}
-// 	return result
-// }
-
-// func ConvertSharedInputs(inputs []types.UTXO) []*thrylos.UTXO {
-// 	return ConvertSharedOutputs(inputs) // Same conversion process
-// }
-
-// // Helper function to get delegation pool stats
-// func (bc *BlockchainImpl) GetPoolStats() map[string]interface{} {
-// 	bc.Mu.RLock()
-// 	defer bc.Mu.RUnlock()
-
-// 	return bc.StakingService.GetPoolStats()
-// }
 
 func (bc *BlockchainImpl) validatePoolTransaction(tx *thrylos.Transaction) error {
 	// Implement pool-specific transaction validation
@@ -699,34 +551,4 @@ func convertToThrylosTransaction(tx *types.Transaction) *thrylos.Transaction {
 	}
 
 	return thrylosTx
-}
-
-func (bc *BlockchainImpl) updateBalancesForBlock(block *types.Block) {
-	for _, tx := range block.Transactions {
-		// Update sender's balance
-		senderBalance, err := bc.GetBalance(tx.SenderAddress.String())
-		if err != nil {
-			log.Printf("Error getting sender balance for %s: %v", tx.SenderAddress.String(), err)
-			continue
-		}
-
-		// Convert amount.Amount to int64
-		bc.Blockchain.Stakeholders[tx.SenderAddress.String()] = int64(senderBalance)
-
-		// Update recipients' balances from outputs
-		for _, output := range tx.Outputs {
-			recipientBalance, err := bc.GetBalance(output.OwnerAddress)
-			if err != nil {
-				log.Printf("Error getting recipient balance for %s: %v", output.OwnerAddress, err)
-				continue
-			}
-			// Convert amount.Amount to int64
-			bc.Blockchain.Stakeholders[output.OwnerAddress] = int64(recipientBalance)
-		}
-	}
-
-	// Log the updated balances for debugging
-	for address, balance := range bc.Blockchain.Stakeholders {
-		log.Printf("Updated balance for %s: %d", address, balance)
-	}
 }

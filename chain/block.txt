@@ -1,7 +1,0 @@
-Block Creation and Management (block.go)
-
-Block Initialization: Blocks are initialized with various parameters such as index, timestamp, transaction list, and hashes.
-Verkle Tree: During block creation, a Verkle tree is initialized from transaction data, providing cryptographic proofs for transactions. The root of this tree is stored in the block to ensure transaction integrity.
-Serialization and Deserialization: Blocks can be serialized into byte arrays for storage or transmission and deserialized back into block structures for processing within the network.
-
-
