@@ -9,7 +9,6 @@ import (
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/balance"
-	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/consensus/processor"
 	"github.com/thrylos-labs/thrylos/consensus/selection"
 	"github.com/thrylos-labs/thrylos/consensus/staking"
@@ -59,7 +58,6 @@ type Node struct {
 	WebSocketConnections map[string]*network.WebSocketConnection
 	WebSocketMutex       sync.RWMutex
 	balanceUpdateQueue   *balance.BalanceUpdateQueue
-	blockProducer        *chain.ModernBlockProducer
 	StakingService       *staking.StakingService
 	Peers                map[string]*network.PeerConnection
 	PeerMu               sync.RWMutex
