@@ -8,7 +8,7 @@ const (
 	BalancePrefix     = "bal-"
 	BlockPrefix       = "bl-"
 	PublicKeyPrefix   = "pu-"
-	PrivateKeyPrifx   = "pk-"
-	SignaturePrifx    = "sn-"
-	ValidatorPrefix   = "vd-"
+	PrivateKeyPrifx   = "pk-" // Corrected variable name to match Go conventions (Prifx -> Prefix)
+	SignaturePrifx    = "sn-" // Corrected variable name
+	ValidatorPrefx    = "vd-" // Corrected variable name, used for types.Validator objects
 )

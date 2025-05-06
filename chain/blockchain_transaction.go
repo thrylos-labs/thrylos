@@ -2,16 +2,18 @@ package chain
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
 
+	"github.com/dgraph-io/badger/v3"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 	"github.com/thrylos-labs/thrylos/shared"
+	"github.com/thrylos-labs/thrylos/store"
 
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/types"
@@ -292,65 +294,100 @@ func (bc *BlockchainImpl) GetTransactionCount(address string) int {
 	return count
 }
 
-func (bc *BlockchainImpl) UpdateTransactionStatus(txID string, status string, blockHash []byte) error {
-	// Begin a new database transaction
-	txn, err := bc.Blockchain.Database.BeginTransaction()
-	if err != nil {
-		return fmt.Errorf("failed to begin database transaction: %v", err)
+func (bc *BlockchainImpl) UpdateTransactionStatus(txID string, status string, blockHash []byte) (err error) { // Named return 'err'
+	// Begin a new database transaction specifically for this status update
+	txnCtx, startErr := bc.Blockchain.Database.BeginTransaction()
+	if startErr != nil {
+		err = fmt.Errorf("failed to begin database transaction for status update %s: %w", txID, startErr)
+		return err
 	}
-	defer bc.Blockchain.Database.RollbackTransaction(txn)
 
-	// Retrieve the existing transaction
-	// Use GetBadgerTxn() to get the underlying Badger transaction
-	badgerTxn := txn.GetBadgerTxn()
-	txKey := []byte("transaction-" + txID)
+	// Defer a conditional rollback based on the named return error 'err'
+	defer func() {
+		if err != nil && txnCtx != nil {
+			log.Printf("Rolling back transaction status update for %s due to error: %v", txID, err)
+			_ = bc.Blockchain.Database.RollbackTransaction(txnCtx)
+		}
+	}() // Invoke the func literal
 
-	item, err := badgerTxn.Get(txKey)
-	if err != nil {
-		// If transaction doesn't exist, create a new one
-		tx := &thrylos.Transaction{
-			Id:        txID,
-			Status:    status,
-			BlockHash: blockHash,
-			// Set other required fields that you have available
-		}
-		txJSON, err := json.Marshal(tx)
-		if err != nil {
-			return fmt.Errorf("error marshaling new transaction: %v", err)
-		}
-		if err := bc.Blockchain.Database.SetTransaction(txn, txKey, txJSON); err != nil {
-			return fmt.Errorf("error storing new transaction: %v", err)
+	badgerTxn := txnCtx.GetBadgerTxn()
+	if badgerTxn == nil {
+		err = fmt.Errorf("failed to get underlying badger transaction from context for tx %s", txID)
+		return err
+	}
+
+	// Use the correct prefix from your constants
+	txKey := []byte(store.TransactionPrefix + txID)
+
+	// Use the correct Transaction type (e.g., types.Transaction, thrylos.Transaction)
+	var tx types.Transaction // Adjust type as needed
+
+	item, getErr := badgerTxn.Get(txKey)
+	if getErr != nil {
+		if getErr == badger.ErrKeyNotFound {
+			log.Printf("WARN: Transaction %s not found in DB for status update. Creating minimal entry.", txID)
+			// You might need to adapt this based on whether your Transaction type is a struct or pointer, and how it's initialized
+			tx = types.Transaction{ // Adjust initialization based on your actual struct/proto type
+				ID: txID,
+			}
+		} else {
+			err = fmt.Errorf("error retrieving transaction %s from DB: %w", txID, getErr)
+			return err
 		}
 	} else {
-		// Update existing transaction
-		var tx thrylos.Transaction
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &tx)
+		// Key found, unmarshal existing data
+		valErr := item.Value(func(val []byte) error {
+			// Use the correct unmarshal method for your Transaction type (e.g., JSON, Protobuf)
+			// Example assumes a method exists on the type:
+			unmarshalErr := tx.Unmarshal(val) // Replace with actual unmarshal logic
+			if unmarshalErr != nil {
+				log.Printf("ERROR: Failed to unmarshal existing transaction %s. Raw data: %x", txID, val)
+				return fmt.Errorf("unmarshaling error: %w", unmarshalErr)
+			}
+			return nil
 		})
-		if err != nil {
-			return fmt.Errorf("error unmarshaling transaction: %v", err)
-		}
-
-		// Update the transaction status
-		tx.Status = status
-		tx.BlockHash = blockHash
-
-		// Serialize and store the updated transaction
-		updatedTxJSON, err := json.Marshal(tx)
-		if err != nil {
-			return fmt.Errorf("error marshaling updated transaction: %v", err)
-		}
-		if err := bc.Blockchain.Database.SetTransaction(txn, txKey, updatedTxJSON); err != nil {
-			return fmt.Errorf("error updating transaction: %v", err)
+		if valErr != nil {
+			err = fmt.Errorf("error reading transaction value for %s: %w", txID, valErr)
+			return err
 		}
 	}
 
-	// Commit the transaction
-	if err := bc.Blockchain.Database.CommitTransaction(txn); err != nil {
-		return fmt.Errorf("error committing transaction update: %v", err)
+	// --- Update the status and block hash ---
+	tx.Status = status
+	// <<< FIX IS HERE: Convert byte slice to hex string >>>
+	tx.BlockHash = hex.EncodeToString(blockHash)
+	// tx.Timestamp = time.Now().UnixNano() // Optional: update timestamp?
+
+	// Marshal the updated transaction
+	// Use the correct marshal method for your Transaction type
+	updatedTxBytes, marshalErr := tx.Marshal() // Replace with actual marshal logic
+	if marshalErr != nil {
+		err = fmt.Errorf("error marshaling updated transaction %s: %w", txID, marshalErr)
+		return err
 	}
 
+	// Set the updated value in the transaction context
+	// Ensure SetTransaction exists and works with your context type
+	setErr := bc.Blockchain.Database.SetTransaction(txnCtx, txKey, updatedTxBytes)
+	if setErr != nil {
+		err = fmt.Errorf("error storing updated transaction %s: %w", txID, setErr)
+		return err
+	}
+
+	// --- Commit the transaction ---
+	commitErr := bc.Blockchain.Database.CommitTransaction(txnCtx)
+	if commitErr != nil {
+		err = fmt.Errorf("error committing transaction status update for %s: %w", txID, commitErr)
+		txnCtx = nil // Prevent defer rollback after commit failure
+		return err
+	}
+
+	// --- Commit successful ---
+	txnCtx = nil // Prevent defer rollback after successful commit
+	// Log the original byte slice hash for consistency with other logs if desired
 	log.Printf("Transaction %s status updated to %s in block %x", txID, status, blockHash)
+
+	// err is implicitly nil here
 	return nil
 }
 

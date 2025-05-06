@@ -201,17 +201,19 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 	// Wait for DAG response (with timeout)
 	select {
 	case response := <-responseCh:
-		// ... (handling of DAG response remains the same) ...
 		if response.Error != nil {
-			if !strings.Contains(response.Error.Error(), "already exists") {
-				log.Printf("Warning: DAG processing check returned an error for [%s]: %v", txID, response.Error)
-			} else {
+			// Handle "already exists" specifically if needed (e.g., return nil or a specific error)
+			if strings.Contains(response.Error.Error(), "already exists") {
 				log.Printf("Transaction [%s] already exists in DAG (according to DAG manager response)", txID)
+				return nil // Or return the specific error e.g., ErrTxAlreadyExists
 			}
+			// For other DAG errors (like "not enough tips"), log and RETURN the error
+			log.Printf("ERROR: DAG processing failed for [%s]: %v. Transaction will NOT be queued.", txID, response.Error)
+			return response.Error // <<< RETURN THE ERROR HERE
 		} else {
 			log.Printf("DEBUG: DAG processing successful for [%s]", txID)
 		}
-	case <-time.After(5 * time.Second): // Keep or adjust timeout as needed
+	case <-time.After(5 * time.Second):
 		log.Printf("ERROR: Timeout waiting for DAG processing response for [%s]", txID)
 		return fmt.Errorf("timeout waiting for DAG processing response")
 	}
@@ -250,9 +252,9 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 		mp.balanceCache.Delete(output.OwnerAddress)
 	}
 
-	// --- Queue for Internal Worker Processing --- (remains the same)
+	// --- Queue for Internal Worker Processing ---
 	log.Printf("Adding transaction [%s] to ModernProcessor worker queue", txID)
-	if err := mp.AddTransaction(tx); err != nil {
+	if err := mp.AddTransaction(tx); err != nil { // Queues the transaction
 		log.Printf("ERROR: Failed to queue transaction [%s] for worker: %v", txID, err)
 		return fmt.Errorf("modern processing queue failed: %v", err)
 	}

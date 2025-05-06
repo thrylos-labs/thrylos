@@ -158,77 +158,86 @@ func (bc *BlockchainImpl) StoreValidatorPrivateKey(address string, privKeyBytes 
 }
 
 // // For generating multiple Validator Keys if necessary
-func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int, addr string) ([]string, error) {
+func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, error) {
 	log.Printf("Starting to generate and store %d validator keys", count)
-	validatorAddresses := make([]string, 0, count)
+	generatedAddresses := make([]string, 0, count) // Changed name for clarity
+
+	bc.Blockchain.Mu.Lock() // Lock access to PublicKeyMap
+	defer bc.Blockchain.Mu.Unlock()
 
 	for i := 0; i < count; i++ {
 		log.Printf("Generating validator key %d of %d", i+1, count)
 
-		// Generate validator address (renamed from 'address' to 'validatorAddress')
-		validatorAddress, err := GenerateValidatorAddress()
-		if err != nil {
-			log.Printf("Failed to generate validator address: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to generate validator address: %v", err)
-		}
-
-		// Generate MLDSA key pair directly
+		// --- Step 1: Generate Key Pair ---
 		pubKey, privKey, err := mldsa44.GenerateKey(rand.Reader)
 		if err != nil {
 			log.Printf("Failed to generate MLDSA key pair: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to generate MLDSA key pair: %v", err)
+			return generatedAddresses, fmt.Errorf("failed to generate MLDSA key pair: %w", err)
 		}
 
-		// Convert MLDSA private key to crypto.PrivateKey
+		// --- Step 2: Wrap Keys in crypto interfaces ---
 		cryptoPrivKey := crypto.NewPrivateKeyFromMLDSA(privKey)
-
-		// Create an interface variable and store its pointer
-		var privKeyInterface crypto.PrivateKey = cryptoPrivKey
-		err = bc.Blockchain.ValidatorKeys.StoreKey(validatorAddress, &privKeyInterface)
-		if err != nil {
-			log.Printf("Failed to store validator private key: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to store validator private key: %v", err)
-		}
-
-		// Convert MLDSA public key to crypto.PublicKey and store it
 		cryptoPubKey := crypto.NewPublicKey(pubKey)
 
+		// --- Step 3: Derive Address from the generated Public Key ---
+		derivedAddr, err := cryptoPubKey.Address() // Returns address.Address type
+		if err != nil {
+			log.Printf("Failed to derive address from generated public key: %v", err)
+			return generatedAddresses, fmt.Errorf("failed to derive address from generated public key: %w", err)
+		}
+		// Get the canonical string representation (e.g., bech32)
+		derivedAddressString := derivedAddr.String()
+		log.Printf("DEBUG: Generated key pair, derived address: %s", derivedAddressString)
+
+		// --- Step 4: Store Private Key using derived address string ---
+		var privKeyInterface crypto.PrivateKey = cryptoPrivKey
+		err = bc.Blockchain.ValidatorKeys.StoreKey(derivedAddressString, &privKeyInterface)
+		if err != nil {
+			log.Printf("Failed to store validator private key for derived address %s: %v", derivedAddressString, err)
+			return generatedAddresses, fmt.Errorf("failed to store validator private key for %s: %w", derivedAddressString, err)
+		}
+		// StoreKey now logs success and cache update internally
+
+		// --- Step 5: Store Public Key ---
 		err = bc.Blockchain.Database.SavePublicKey(cryptoPubKey)
 		if err != nil {
-			log.Printf("Failed to store validator public key: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to store validator public key: %v", err)
+			log.Printf("Failed to store validator public key for derived address %s: %v", derivedAddressString, err)
+			return generatedAddresses, fmt.Errorf("failed to store validator public key for %s: %w", derivedAddressString, err)
 		}
+		log.Printf("DEBUG: Successfully stored public key in database for derived address %s", derivedAddressString)
 
-		// Convert string address to Address type using the package function
-		validatorAddr, err := address.FromString(addr) // Now 'address' refers to the package
-		if err != nil {
-			log.Printf("Failed to convert address string to Address type: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to convert address: %v", err)
-		}
-
-		// Verify the key was stored correctly by retrieving it
-		storedPubKey, err := bc.Blockchain.Database.GetPublicKey(*validatorAddr)
-		if err != nil {
-			log.Printf("Error retrieving validator public key immediately after storage: %v", err)
-			return validatorAddresses, fmt.Errorf("failed to verify stored validator key: %v", err)
-		}
-
-		// Verify the stored key matches the original using interface methods
-		if !cryptoPubKey.Equal(&storedPubKey) {
-			log.Printf("Stored public key does not match generated key for address %s", validatorAddress)
-			return validatorAddresses, fmt.Errorf("key verification failed for address %s", validatorAddress)
-		}
-
-		// Store the public key in the PublicKeyMap
+		// --- Step 6: Store Public Key in In-Memory Map (using derived address string) ---
 		var pubKeyInterface crypto.PublicKey = cryptoPubKey
-		bc.Blockchain.PublicKeyMap[validatorAddress] = &pubKeyInterface
+		bc.Blockchain.PublicKeyMap[derivedAddressString] = &pubKeyInterface
+		log.Printf("DEBUG: Stored public key in PublicKeyMap cache for derived address %s", derivedAddressString)
 
-		log.Printf("Successfully generated and stored validator key %d: %s", i+1, validatorAddress)
-		validatorAddresses = append(validatorAddresses, validatorAddress)
-	}
+		// --- Step 7: Verification (Optional but Recommended) ---
+		retrievedPrivKeyPtr, exists := bc.Blockchain.ValidatorKeys.GetKey(derivedAddressString)
+		if !exists || retrievedPrivKeyPtr == nil || *retrievedPrivKeyPtr == nil {
+			log.Printf("CRITICAL: Failed to retrieve private key %s from cache immediately after storing", derivedAddressString)
+			return generatedAddresses, fmt.Errorf("failed to verify private key storage in cache for %s", derivedAddressString)
+		}
 
-	log.Printf("Finished generating and storing %d validator keys", len(validatorAddresses))
-	return validatorAddresses, nil
+		retrievedAddr, addrErr := (*retrievedPrivKeyPtr).PublicKey().Address()
+		if addrErr != nil {
+			log.Printf("CRITICAL: Failed to derive address from retrieved private key %s: %v", derivedAddressString, addrErr)
+			return generatedAddresses, fmt.Errorf("failed to derive address from cached private key for %s: %w", derivedAddressString, addrErr)
+		}
+
+		// <<< FIX IS HERE: Compare using .String() method >>>
+		if derivedAddr.String() != retrievedAddr.String() { // Compare canonical string representations
+			log.Printf("CRITICAL: Address mismatch after retrieving key from cache! Expected %s, Got %s", derivedAddressString, retrievedAddr.String())
+			return generatedAddresses, fmt.Errorf("address mismatch in cached key for %s", derivedAddressString)
+		}
+		log.Printf("DEBUG: Verified private key for %s exists in ValidatorKeyStore cache and derives correct address.", derivedAddressString)
+
+		// --- Step 8: Record generated address ---
+		log.Printf("Successfully generated and stored validator key %d: %s", i+1, derivedAddressString)
+		generatedAddresses = append(generatedAddresses, derivedAddressString)
+	} // End loop
+
+	log.Printf("Finished generating and storing %d validator keys", len(generatedAddresses))
+	return generatedAddresses, nil
 }
 
 func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
