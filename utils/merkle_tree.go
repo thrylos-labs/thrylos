@@ -1,13 +1,13 @@
 package utils
 
 import (
-	"crypto/sha256"
 	"errors"
-	// Import fmt if needed for errors below
-	// If you add logging inside ComputeMerkleRoot
+	"fmt"
+	// "fmt" // Only needed if adding logging
+	"golang.org/x/crypto/blake2b" // Import blake2b
 )
 
-// ComputeMerkleRoot calculates the Merkle root for a list of byte slices (hashes or serialized data).
+// ComputeMerkleRoot calculates the Merkle root for a list of byte slices using BLAKE2b-256.
 // It handles cases with 0 or 1 data items and pads levels with odd numbers of nodes.
 func ComputeMerkleRoot(data [][]byte) ([]byte, error) {
 	if len(data) == 0 {
@@ -15,19 +15,24 @@ func ComputeMerkleRoot(data [][]byte) ([]byte, error) {
 		return nil, nil // Indicates no root for empty data set
 	}
 
+	// Initialize BLAKE2b hasher (can reuse one instance)
+	// Using New256 ensures a 32-byte output, matching your HashSize
+	hasher, err := blake2b.New256(nil)
+	if err != nil {
+		// Handle error during hasher creation (should not happen with nil key)
+		return nil, fmt.Errorf("failed to create blake2b hasher: %w", err)
+	}
+
 	// Start with the initial hashes of the data items
 	var level [][]byte
 	for _, item := range data {
 		if item == nil {
-			// Decide how to handle nil data - skip, error, or use a placeholder hash?
-			// Returning an error is safest.
 			return nil, errors.New("cannot compute Merkle root with nil data item")
 		}
-		// We assume 'item' is the data to be hashed (e.g., marshalled tx)
-		// If 'item' was already a hash, you would skip this hashing step.
-		hasher := sha256.New()
+		// Hash the item using BLAKE2b
+		hasher.Reset() // Reset hasher for new input
 		hasher.Write(item)
-		level = append(level, hasher.Sum(nil))
+		level = append(level, hasher.Sum(nil)) // Get the hash result
 	}
 
 	// Iteratively compute parent levels until only the root remains
@@ -46,8 +51,8 @@ func ComputeMerkleRoot(data [][]byte) ([]byte, error) {
 			// Concatenate the pair of hashes
 			combined := append(node1, node2...)
 
-			// Hash the combined pair to get the parent node hash
-			hasher := sha256.New()
+			// Hash the combined pair to get the parent node hash using BLAKE2b
+			hasher.Reset()
 			hasher.Write(combined)
 			nextLevel = append(nextLevel, hasher.Sum(nil))
 		}
