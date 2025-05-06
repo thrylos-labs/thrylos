@@ -38,23 +38,6 @@ message BalanceMessage {
   double balance_thrylos = 3; // Balance converted to THRYLOS
 }
 
-// Update your BalanceResponse to be more consistent
-
-service BlockchainService {
-  rpc SubmitTransaction(TransactionRequest) returns (TransactionResponse);
-  rpc GetBlock(GetBlockRequest) returns (BlockResponse);
-  rpc GetTransaction(GetTransactionRequest) returns (TransactionResponse);
-  rpc GetLastBlock(EmptyRequest) returns (BlockResponse);
-  rpc SubmitTransactionBatch(TransactionBatchRequest) returns (TransactionBatchResponse);
-  rpc GetBalance(GetBalanceRequest) returns (BalanceResponse);
-  rpc GetStats(GetStatsRequest) returns (StatsResponse);
-  rpc GetPendingTransactions(GetPendingTransactionsRequest) returns (PendingTransactionsResponse);
-  rpc GetBlockByHash(GetBlockByHashRequest) returns (BlockResponse);
-  rpc GetBlockByIndex(GetBlockByIndexRequest) returns (BlockResponse);
-  rpc SubscribeToBalanceUpdates(BalanceSubscriptionRequest) returns (stream BalanceMessage);
-  rpc StreamBalance(GetBalanceRequest) returns (stream BalanceResponse);
-}
-
 message BalanceSubscriptionRequest {
   string blockchain_address = 1;
 }
@@ -152,4 +135,4 @@ message Block {
 
 // to generate the file again run:
 // export PATH="$PATH:$(go env GOPATH)/bin"
-// protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative transactions.proto
+// protoc --go_out=. --go_opt=paths=source_relative transactions.proto

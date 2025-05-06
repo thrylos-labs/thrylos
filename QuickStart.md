@@ -4,7 +4,8 @@ Jump into action with these simple steps:
 
 1.  **Set Up**: Clone the repository to your local machine.
 2.  **Generate AES Key**: *(Add instructions here or link to how)*. This key is crucial for encrypting sensitive data. Keep it safe!
-3.  **Create a `.env` file**: Copy the example below into a file named `.env` in the project's root directory. **Modify the placeholder values.**
+3.  **Generate Genesis PrivateKey**: *(Add instructions here or link to how)*. This key is crucial for encrypting sensitive data. Keep it safe!
+4.  **Create a `.env` file**: Copy the example below into a file named `.env` in the project's root directory. **Modify the placeholder values.**
 
     ```dotenv
     # Environment: 'development' or 'production'
