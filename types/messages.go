@@ -57,6 +57,7 @@ const (
 	GetStakeholders            MessageType = "GET_STAKEHOLDERS"
 	IsActiveValidator          MessageType = "IS_ACTIVE_VALIDATOR"
 	ProcessPendingTransactions MessageType = "PROCESS_PENDING_TRANSACTIONS"
+	ConfirmBlock               MessageType = "CONFIRM_BLOCK"
 
 	// Block related
 	ProcessBlock      MessageType = "PROCESS_BLOCK"

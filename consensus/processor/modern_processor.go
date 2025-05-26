@@ -80,7 +80,7 @@ func NewModernProcessor(txProcessor *TransactionProcessorImpl, libp2pManager *ne
 		txProcessor:    txProcessor,
 		txPool:         txPool,
 		DAGManager:     dagManager,
-		libp2pManager:  libp2pManager, // <--- Libp2pManager stored here
+		libp2pManager:  libp2pManager,
 	}
 
 	// Initialize queues (assuming 12 shards)

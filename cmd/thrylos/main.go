@@ -22,6 +22,8 @@ import (
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/config"
+	"github.com/thrylos-labs/thrylos/consensus/staking"
+	"github.com/thrylos-labs/thrylos/consensus/validator"
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/network" // Your updated network package
 	"github.com/thrylos-labs/thrylos/node"
@@ -210,29 +212,44 @@ func main() {
 
 	// Instantiate the Node here, passing all necessary configuration
 	mainNode := node.NewNode(
-		httpAddress,      // nodeAddress (e.g., "http://localhost:8080")
-		blockchainConfig, // blockchainConfig (already loaded)
-		gasEstimateURL,   // gasEstimateURL (from envFile)
-		serverHost,       // serverHost (from envFile)
-		useSSL,           // useSSL (derived from httpAddress)
-		netManager,       // libp2pManager (the new network manager)
+		httpAddress,
+		blockchainConfig,
+		gasEstimateURL,
+		serverHost,
+		useSSL,
+		netManager,
+		messageBus,
 	)
 
-	// Now set the blockchain on the node
 	mainNode.SetBlockchain(blockchain.Blockchain)
-	// isDesignatedVoteCounter := false // Placeholder: You need to implement logic to determine this
-	// if blockchainConfig.GenesisAccount.PublicKey().Address().String() == mainNode.Address {
-	// 	// Example: If this node is the genesis node, maybe it's designated
-	// 	isDesignatedVoteCounter = true
-	// }
-	// // Or, if your consensus selects a leader, you'd check `mainNode.Address` against the current leader.
 
-	// mainNode.VoteCounter = validator.NewVoteCounter(
-	// 	mainNode,                // This node implements NodeInterface
-	// 	isDesignatedVoteCounter, // Determine this based on your consensus
-	// 	netManager,              // The Libp2pManager
-	// 	mainNode.Address,        // This node's own address
-	// )
+	// NEW: Initialize StakingService after blockchain is set on mainNode
+	// Because StakingService needs access to the blockchain.
+	stakingService := staking.NewStakingService(blockchain.Blockchain) // Pass your actual blockchain core
+	if stakingService == nil {
+		log.Fatalf("Failed to initialize StakingService")
+	}
+	mainNode.StakingService = stakingService // Assign to the node
+
+	// Now, initialize VoteCounter
+	isDesignatedVoteCounter := false
+	// Example logic to determine if this node is designated:
+	// Perhaps if its address is the first active validator, or a specific hardcoded address.
+	// This logic should be aligned with your consensus protocol.
+	// For now, let's use the first validator in the initial generated set as a simple example.
+	if len(blockchain.Blockchain.ActiveValidators) > 0 && blockchain.Blockchain.ActiveValidators[0] == mainNode.Address {
+		isDesignatedVoteCounter = true
+	} else {
+		// You might have a specific configuration for designated vote counter
+		// or a more complex election mechanism.
+	}
+
+	mainNode.VoteCounter = validator.NewVoteCounter(
+		mainNode,                // This node implements NodeInterface
+		isDesignatedVoteCounter, // Determined based on your consensus logic
+		netManager,              // The Libp2pManager
+		mainNode.Address,        // This node's own address
+	)
 	// Initialize router with message bus and the new network manager
 	router := network.NewRouter(messageBus, cfg, netManager)
 	mux := router.SetupRoutes()
@@ -416,6 +433,10 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 	messageBus.Subscribe(types.ProcessBlock, blockCh)
 	messageBus.Subscribe(types.GetBlockchainInfo, infoCh)
 	messageBus.Subscribe(types.AddTransactionToPool, addTxCh) // <<< NEW Subscription
+	messageBus.Subscribe(types.GetActiveValidators, infoCh)   // Assuming infoCh handles queries
+	messageBus.Subscribe(types.IsActiveValidator, infoCh)
+	messageBus.Subscribe(types.GetStakeholders, infoCh)
+	messageBus.Subscribe(types.ConfirmBlock, blockCh) // Block confirmation related
 
 	// Add to your server initialization code
 	go func() {

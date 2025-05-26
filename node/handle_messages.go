@@ -2,6 +2,8 @@ package node
 
 import "github.com/thrylos-labs/thrylos/types"
 
+// Used within balance.go
+
 // // // // handled throguh node messages to avoid import cycle errors
 func (node *Node) handleMessages() {
 	for msg := range node.messageCh {
