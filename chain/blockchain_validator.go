@@ -20,21 +20,27 @@ import (
 )
 
 // StartPeriodicValidatorUpdate periodically calls UpdateActiveValidators
-func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration, count int) {
-	log.Printf("Starting periodic validator update every %v, selecting top %d validators", interval, count)
+func (bc *BlockchainImpl) StartPeriodicValidatorUpdate(interval time.Duration, maxValidators int, initialDone chan<- struct{}) {
+	log.Printf("Starting periodic validator update every %v, selecting top %d validators", interval, maxValidators)
+
+	// Perform initial update immediately
+	bc.UpdateActiveValidators(maxValidators) // This should populate blockchain.Blockchain.ActiveValidators
+
+	// Signal that initial update is done, immediately after it completes
+	// Check if initialDone is not nil, just in case (though it should be here)
+	if initialDone != nil {
+		close(initialDone) // <--- CRITICAL: Close the channel to unblock the waiter
+		initialDone = nil  // Avoid closing again if this func gets called differently
+	}
+
+	// Set up ticker for subsequent updates
 	ticker := time.NewTicker(interval)
-	defer ticker.Stop() // Ensure ticker is stopped when goroutine exits
+	defer ticker.Stop()
 
-	// Perform an initial update immediately
-	log.Println("Performing initial active validator update...")
-	bc.UpdateActiveValidators(count)
-
-	// Then update periodically
 	for range ticker.C {
 		log.Println("Ticker triggered: Updating active validators...")
-		bc.UpdateActiveValidators(count)
+		bc.UpdateActiveValidators(maxValidators)
 	}
-	log.Println("Stopping periodic validator update.") // Should ideally not be reached unless chain stops
 }
 
 func (bc *BlockchainImpl) RegisterValidator(address string, pubKey string, bypassStakeCheck bool) error {

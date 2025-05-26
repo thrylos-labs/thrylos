@@ -568,14 +568,14 @@ func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
 	return nil
 }
 
-func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config, libp2pManager *network.Libp2pManager) (*BlockchainImpl, types.Store, error) { // <--- ADD libp2pManager argument
+func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config, libp2pManager *network.Libp2pManager) (*BlockchainImpl, types.Store, error) {
 	if setupConfig == nil || appConfig == nil {
 		log.Panic("FATAL: NewBlockchain called with nil config")
 	}
 	if setupConfig.GenesisAccount == nil {
 		log.Panic("FATAL: NewBlockchain called but setupConfig.GenesisAccount is nil")
 	}
-	if libp2pManager == nil { // Validate this crucial dependency
+	if libp2pManager == nil {
 		log.Panic("FATAL: NewBlockchain called with nil Libp2pManager")
 	}
 
@@ -650,7 +650,6 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 	}
 	genesis.Transactions = []*types.Transaction{sharedGenesisTx}
 
-	// REMOVE THIS: stateNetwork := network.NewDefaultNetwork() // No longer used for P2P
 	messageBus := types.GetGlobalMessageBus()
 
 	temp := &BlockchainImpl{
@@ -671,7 +670,7 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 		},
 		MessageBus:    messageBus,
 		AppConfig:     appConfig,
-		Libp2pManager: libp2pManager, // <--- NEW: Store the Libp2pManager here
+		Libp2pManager: libp2pManager,
 	}
 
 	temp.TransactionPropagator = &types.TransactionPropagator{
@@ -720,7 +719,7 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 	log.Println("DAGManager initialized successfully.")
 
 	log.Println("Initializing ModernProcessor...")
-	temp.modernProcessor = processor.NewModernProcessor(txProcessor, libp2pManager, temp.txPool, temp.dagManager) // <--- CORRECTED ORDER
+	temp.modernProcessor = processor.NewModernProcessor(txProcessor, libp2pManager, temp.txPool, temp.dagManager)
 	if temp.modernProcessor == nil {
 		database.Close()
 		return nil, nil, fmt.Errorf("failed to initialize modern processor")
@@ -768,17 +767,14 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 		<-c
 		log.Println("Stopping blockchain...")
-		// Consider calling temp.Close() here for graceful shutdown
 	}()
 
 	if !setupConfig.DisableBackground {
-		log.Println("Starting background processes...") // Existing log
+		log.Println("Starting background processes...")
 
-		// --- ADDED: Start Periodic Validator Update ---
-		// Determine interval and count (using defaults or config)
-		validatorUpdateInterval := 1 * time.Minute          // Example: Update every minute
-		maxActiveValidators := 5                            // Example: Max 5 active validators
-		if appConfig != nil && appConfig.Consensus != nil { // Safely access nested config
+		validatorUpdateInterval := 1 * time.Minute
+		maxActiveValidators := 5
+		if appConfig != nil && appConfig.Consensus != nil {
 			if appConfig.Consensus.ValidatorUpdateInterval > 0 {
 				validatorUpdateInterval = time.Duration(appConfig.Consensus.ValidatorUpdateInterval) * time.Second
 			}
@@ -786,26 +782,149 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 				maxActiveValidators = appConfig.Consensus.MaxActiveValidators
 			}
 		}
+
+		// Channel to signal initial validator update completion
+		initialValidatorUpdateDone := make(chan struct{}) // <--- NEW CHANNEL
+
 		log.Printf("Starting periodic validator update: Interval=%v, MaxValidators=%d", validatorUpdateInterval, maxActiveValidators)
-		// This line starts the goroutine that periodically calls UpdateActiveValidators
-		// Ensure StartPeriodicValidatorUpdate method exists on *BlockchainImpl
-		go temp.StartPeriodicValidatorUpdate(validatorUpdateInterval, maxActiveValidators)
+		// Pass the signal channel to the goroutine
+		go temp.StartPeriodicValidatorUpdate(validatorUpdateInterval, maxActiveValidators, initialValidatorUpdateDone) // <--- Pass channel
 		// --- END ADDED SECTION ---
 
-		// Start Block Creation Loop (Existing Code - assumes it follows)
-		go func(bci *BlockchainImpl) { // <--- Pass *BlockchainImpl as 'bci'
+		// WAIT FOR INITIAL VALIDATOR UPDATE TO COMPLETE
+		select {
+		case <-initialValidatorUpdateDone: // <--- Wait for signal
+			log.Println("INFO: Initial active validator set populated.")
+		case <-time.After(30 * time.Second): // Give more time for initial update (e.g., if many keys)
+			log.Println("WARN: Timeout waiting for initial active validator set to be populated.")
+		}
+		// --- END WAIT ---
+
+		// Start Block Creation Loop (Existing Code)
+		go func() {
+			log.Println("Starting block creation process")
+			if temp.modernProcessor == nil {
+				log.Println("ERROR: Block creation loop cannot start, ModernProcessor is nil.")
+				return
+			}
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				txs, err := temp.txPool.GetAllTransactions()
+				if err != nil {
+					log.Printf("ERROR: [Block Creator] Error getting transactions from pool: %v", err)
+					continue
+				}
+
+				if len(txs) > 0 {
+					log.Printf("INFO: [Block Creator] Processing %d transactions from pool", len(txs))
+					var processedSuccessfully []*types.Transaction
+
+					for _, tx := range txs {
+						log.Printf("DEBUG: [Block Creator] Processing TxID: %s from pool", tx.ID)
+						processErr := temp.ProcessIncomingTransaction(tx)
+						log.Printf("DEBUG: [Block Creator] Result of ProcessIncomingTransaction for %s: %v", tx.ID, processErr)
+
+						if processErr != nil {
+							log.Printf("DEBUG: [Block Creator] Entering IF block for ERROR on %s", tx.ID)
+							log.Printf("ERROR: [Block Creator] Error processing transaction %s: %v. Skipping removal.", tx.ID, processErr)
+						} else {
+							log.Printf("DEBUG: [Block Creator] Entering ELSE block for SUCCESS on %s", tx.ID)
+							log.Printf("INFO: [Block Creator] Successfully processed transaction %s by ModernProcessor.", tx.ID)
+							processedSuccessfully = append(processedSuccessfully, tx)
+
+							log.Printf("DEBUG: [Block Creator] Attempting to remove %s from pool...", tx.ID)
+							if errRem := temp.txPool.RemoveTransaction(tx); errRem != nil {
+								log.Printf("ERROR: [Block Creator] Failed to remove processed transaction %s from pool: %v", tx.ID, errRem)
+								if len(processedSuccessfully) > 0 {
+									processedSuccessfully = processedSuccessfully[:len(processedSuccessfully)-1]
+								}
+							} else {
+								log.Printf("INFO: [Block Creator] Removed processed transaction %s from pool.", tx.ID)
+							}
+						}
+						log.Printf("DEBUG: [Block Creator] Finished IF/ELSE block for %s", tx.ID)
+					}
+
+					if len(processedSuccessfully) > 0 {
+						log.Printf("INFO: [Block Creator] Ready to create block with %d transactions.", len(processedSuccessfully))
+
+						selectedValidatorID, errSelect := temp.SelectNextValidator()
+						if errSelect != nil {
+							log.Printf("ERROR: [Block Creator] Failed to select validator: %v. Skipping block creation.", errSelect)
+							continue
+						}
+						log.Printf("INFO: [Block Creator] Selected validator for new block: %s", selectedValidatorID)
+
+						protoTxs, errConv := utils.ConvertMultipleToProto(processedSuccessfully)
+						if errConv != nil {
+							log.Printf("ERROR: [Block Creator] Failed to convert transactions to proto for block: %v. Skipping block.", errConv)
+							continue
+						}
+
+						log.Printf("DEBUG: [Block Creator] Calling CreateUnsignedBlock with validator %s...", selectedValidatorID)
+						unsignedBlock, errCreate := temp.CreateUnsignedBlock(protoTxs, selectedValidatorID)
+						if errCreate != nil {
+							log.Printf("ERROR: [Block Creator] Failed to create unsigned block: %v. Skipping block creation.", errCreate)
+							continue
+						}
+						if unsignedBlock.Validator == "" {
+							log.Printf("ERROR: [Block Creator] CreateUnsignedBlock did not set validator field. Skipping.")
+							continue
+						}
+						log.Printf("DEBUG: [Block Creator] Created unsigned block Index: %d, Validator: %s", unsignedBlock.Index, unsignedBlock.Validator)
+
+						log.Printf("DEBUG: [Block Creator] Signing block %d using key for validator %s...", unsignedBlock.Index, unsignedBlock.Validator)
+
+						validatorPrivKey, retrievedAddr, errKey := temp.GetValidatorPrivateKey(unsignedBlock.Validator)
+						if errKey != nil {
+							log.Printf("ERROR: [Block Creator] Failed to get private key for validator %s: %v. Skipping block signing.", unsignedBlock.Validator, errKey)
+							continue
+						}
+						log.Printf("DEBUG: [Block Creator] Retrieved private key for address %s (matches block validator: %v)", retrievedAddr, retrievedAddr == unsignedBlock.Validator)
+
+						log.Printf("DEBUG: [Block Creator] Computing block hash for signing block %d...", unsignedBlock.Index)
+						errHash := ComputeBlockHash(unsignedBlock)
+						if errHash != nil {
+							log.Printf("ERROR: [Block Creator] Failed to compute block hash for signing block %d: %v", unsignedBlock.Index, errHash)
+							continue
+						}
+						log.Printf("DEBUG: [Block Creator] Computed block hash for signing: %s", unsignedBlock.Hash.String())
+
+						signature := validatorPrivKey.Sign(unsignedBlock.Hash.Bytes())
+						unsignedBlock.Signature = signature
+
+						if unsignedBlock.Signature == nil || len(unsignedBlock.Signature.Bytes()) == 0 {
+							log.Printf("ERROR: [Block Creator] Failed to generate signature for block %d", unsignedBlock.Index)
+							continue
+						}
+
+						log.Printf("DEBUG: [Block Creator] Block %d signed successfully by %s.", unsignedBlock.Index, unsignedBlock.Validator)
+
+						log.Printf("DEBUG: [Block Creator] Adding signed block %d to chain...", unsignedBlock.Index)
+						errAdd := temp.AddBlockToChain(unsignedBlock)
+						if errAdd != nil {
+							log.Printf("ERROR: [Block Creator] Failed to add signed block %d to chain: %v", unsignedBlock.Index, errAdd)
+							continue
+						}
+					}
+				}
+			}
+		}()
+
+		go func(bci *BlockchainImpl) {
 			syncTicker := time.NewTicker(5 * time.Minute)
 			defer syncTicker.Stop()
 			for range syncTicker.C {
-				// Now use 'bci' instead of 'bc'
-				if bci.Libp2pManager != nil { // <--- Use bci.Libp2pManager
+				if bci.Libp2pManager != nil {
 					log.Println("INFO: Initiating periodic blockchain sync...")
-					bci.Libp2pManager.SyncBlockchain() // <--- Use bci.Libp2pManager
+					bci.Libp2pManager.SyncBlockchain()
 				} else {
 					log.Println("WARN: Libp2pManager is nil, cannot perform periodic sync.")
 				}
 			}
-		}(temp) // <--- Pass 'temp' here when launching the goroutine
+		}(temp)
 	} else {
 		log.Println("Background processes disabled for testing")
 	}

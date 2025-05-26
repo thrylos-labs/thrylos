@@ -31,11 +31,11 @@ type VoteCounter struct {
 }
 
 // It now accepts the Libp2pManager and this node's address.
-func NewVoteCounter(node NodeInterface, isDesignated bool, libp2pManager *network.Libp2pManager, nodeAddress string) *VoteCounter { // <--- ADD libp2pManager, nodeAddress
-	if libp2pManager == nil { // Validate crucial dependency
+func NewVoteCounter(node NodeInterface, isDesignated bool, libp2pManager *network.Libp2pManager, nodeAddress string) *VoteCounter {
+	if libp2pManager == nil {
 		log.Panic("FATAL: NewVoteCounter called with nil Libp2pManager")
 	}
-	if nodeAddress == "" { // Validate this node's address
+	if nodeAddress == "" {
 		log.Panic("FATAL: NewVoteCounter called with empty nodeAddress")
 	}
 
@@ -43,15 +43,40 @@ func NewVoteCounter(node NodeInterface, isDesignated bool, libp2pManager *networ
 		votes:         make(map[string][]types.Vote),
 		node:          node,
 		isDesignated:  isDesignated,
-		libp2pManager: libp2pManager, // <--- Store it
-		nodeAddress:   nodeAddress,   // <--- Store it
+		requiredVotes: 0, // <--- Initialize to 0 or a sensible default
+		libp2pManager: libp2pManager,
+		nodeAddress:   nodeAddress,
 	}
 
-	if node != nil && len(node.GetActiveValidators()) > 0 {
-		counter.requiredVotes = (2*len(node.GetActiveValidators()) + 2) / 3
-	}
+	// REMOVE THIS BLOCK:
+	// if node != nil && len(node.GetActiveValidators()) > 0 {
+	//     counter.requiredVotes = (2*len(node.GetActiveValidators()) + 2) / 3
+	// }
 
 	return counter
+}
+
+// Add this method to validator/vote_counter.go
+func (vc *VoteCounter) UpdateRequiredVotes() {
+	vc.mu.Lock() // Or use a separate mutex for this
+	defer vc.mu.Unlock()
+
+	if vc.node == nil {
+		log.Printf("WARN: VoteCounter.UpdateRequiredVotes: NodeInterface is nil.")
+		return
+	}
+
+	activeValidators := vc.node.GetActiveValidators() // This will now query the message bus
+	if len(activeValidators) > 0 {
+		newRequiredVotes := (2*len(activeValidators) + 2) / 3
+		if newRequiredVotes != vc.requiredVotes {
+			vc.requiredVotes = newRequiredVotes
+			log.Printf("INFO: VoteCounter: Updated required votes to %d (from %d active validators).", vc.requiredVotes, len(activeValidators))
+		}
+	} else {
+		vc.requiredVotes = 0 // Or another appropriate default if no active validators
+		log.Printf("WARN: VoteCounter: No active validators found, required votes set to 0.")
+	}
 }
 
 // GetVoteCount returns the number of valid votes for a validator

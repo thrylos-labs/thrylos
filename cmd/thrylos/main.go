@@ -132,8 +132,6 @@ func main() {
 	}
 
 	messageBus := types.GetGlobalMessageBus()
-	// This function uses the messageBus, which is correctly initialized.
-	// We'll call connectBlockchainToMessageBus AFTER the blockchain is initialized.
 
 	var libp2pBootstrapPeers []multiaddr.Multiaddr
 	if peersStr != "" {
@@ -163,23 +161,31 @@ func main() {
 		}
 	}
 
-	// MOVE THIS BLOCK UP: netManager must be declared and initialized BEFORE NewBlockchain
 	netManager, err := network.NewLibp2pManager(messageBus, libp2pPort, libp2pBootstrapPeers)
 	if err != nil {
 		log.Fatalf("Failed to create libp2p network manager: %v", err)
 	}
 	defer netManager.Close()
 	netManager.StartLibp2pServices()
-	// END MOVE
 
-	// Now call NewBlockchain with the initialized netManager
-	blockchain, _, err := chain.NewBlockchain(blockchainConfig, cfg, netManager) // <--- Pass netManager here
+	// Channel to signal when message bus handlers are ready to receive queries
+	messageBusHandlersReady := make(chan struct{}) // <--- NEW CHANNEL
+
+	blockchain, _, err := chain.NewBlockchain(blockchainConfig, cfg, netManager)
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
 
-	// This function depends on `blockchain` being initialized
-	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID)
+	// Pass the new channel to connectBlockchainToMessageBus
+	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID, messageBusHandlersReady) // <--- PASS CHANNEL
+
+	// Wait for message bus handlers to be ready
+	select {
+	case <-messageBusHandlersReady: // <--- WAIT FOR SIGNAL
+		log.Println("INFO: Message bus handlers are ready.")
+	case <-time.After(15 * time.Second): // Add a generous timeout
+		log.Println("WARN: Timeout waiting for message bus handlers to become ready. Proceeding anyway.")
+	}
 
 	defer func() {
 		log.Println("Closing blockchain in defer function...")
@@ -223,34 +229,40 @@ func main() {
 
 	mainNode.SetBlockchain(blockchain.Blockchain)
 
-	// NEW: Initialize StakingService after blockchain is set on mainNode
-	// Because StakingService needs access to the blockchain.
-	stakingService := staking.NewStakingService(blockchain.Blockchain) // Pass your actual blockchain core
+	stakingService := staking.NewStakingService(blockchain.Blockchain)
 	if stakingService == nil {
 		log.Fatalf("Failed to initialize StakingService")
 	}
-	mainNode.StakingService = stakingService // Assign to the node
+	mainNode.StakingService = stakingService
 
-	// Now, initialize VoteCounter
 	isDesignatedVoteCounter := false
-	// Example logic to determine if this node is designated:
-	// Perhaps if its address is the first active validator, or a specific hardcoded address.
-	// This logic should be aligned with your consensus protocol.
-	// For now, let's use the first validator in the initial generated set as a simple example.
-	if len(blockchain.Blockchain.ActiveValidators) > 0 && blockchain.Blockchain.ActiveValidators[0] == mainNode.Address {
+	// Get the address and check for errors
+	genesisAddr, err := blockchainConfig.GenesisAccount.PublicKey().Address()
+	if err != nil {
+		log.Fatalf("Failed to get genesis account address: %v", err)
+		// Or handle the error more gracefully, but for a critical startup check, fatal is often acceptable.
+	}
+
+	// Now, use the genesisAddr variable to get its string representation
+	if genesisAddr.String() == mainNode.Address {
 		isDesignatedVoteCounter = true
-	} else {
-		// You might have a specific configuration for designated vote counter
-		// or a more complex election mechanism.
 	}
 
 	mainNode.VoteCounter = validator.NewVoteCounter(
-		mainNode,                // This node implements NodeInterface
-		isDesignatedVoteCounter, // Determined based on your consensus logic
-		netManager,              // The Libp2pManager
-		mainNode.Address,        // This node's own address
+		mainNode,
+		isDesignatedVoteCounter,
+		netManager,
+		mainNode.Address,
 	)
-	// Initialize router with message bus and the new network manager
+
+	// Call UpdateRequiredVotes without a sleep here.
+	// The previous wait for `messageBusHandlersReady` ensures the message bus is ready.
+	// The previous wait in `chain.NewBlockchain` ensures the initial validators are populated.
+	go func() {
+		mainNode.VoteCounter.UpdateRequiredVotes()
+		log.Println("INFO: Initial call to UpdateRequiredVotes completed (post-blockchain ready).")
+	}()
+
 	router := network.NewRouter(messageBus, cfg, netManager)
 	mux := router.SetupRoutes()
 
@@ -418,13 +430,13 @@ func loadCertificate(envFile map[string]string) tls.Certificate {
 }
 
 // Helper function to connect blockchain to the message bus with context support
-func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string) {
+func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string, handlersReady chan<- struct{}) { // <--- ADD handlersReady channel
 	// Create channels to receive messages
 	balanceCh := make(chan types.Message, 100)
 	blockCh := make(chan types.Message, 100)
 	txCh := make(chan types.Message, 100)
 	infoCh := make(chan types.Message, 100)
-	addTxCh := make(chan types.Message, 100) // <<< NEW Channel for AddTransactionToPool
+	addTxCh := make(chan types.Message, 100)
 
 	// Subscribe to messages
 	messageBus.Subscribe(types.GetBalance, balanceCh)
@@ -432,12 +444,11 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 	messageBus.Subscribe(types.ProcessTransaction, txCh)
 	messageBus.Subscribe(types.ProcessBlock, blockCh)
 	messageBus.Subscribe(types.GetBlockchainInfo, infoCh)
-	messageBus.Subscribe(types.AddTransactionToPool, addTxCh) // <<< NEW Subscription
-	messageBus.Subscribe(types.GetActiveValidators, infoCh)   // Assuming infoCh handles queries
+	messageBus.Subscribe(types.AddTransactionToPool, addTxCh)
+	messageBus.Subscribe(types.GetActiveValidators, infoCh)
 	messageBus.Subscribe(types.IsActiveValidator, infoCh)
 	messageBus.Subscribe(types.GetStakeholders, infoCh)
-	messageBus.Subscribe(types.ConfirmBlock, blockCh) // Block confirmation related
-
+	messageBus.Subscribe(types.ConfirmBlock, blockCh)
 	// Add to your server initialization code
 	go func() {
 		select {
@@ -900,6 +911,12 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 
 	// Handle blockchain info messages
 	go func() {
+		// Signal that this handler is ready AFTER its select loop is active
+		defer close(handlersReady) // <--- CRITICAL: Close the channel when this goroutine starts listening
+		// (Note: This assumes this goroutine is representative of all critical handlers being ready.
+		// For absolute robustness, you'd close `handlersReady` only after *all* critical goroutines have started their loops).
+		// For simplicity here, closing it after the infoCh handler starts is a good step.
+
 		for {
 			select {
 			case msg := <-infoCh:
@@ -909,11 +926,38 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					info := map[string]interface{}{
 						"height":    blockchain.GetBlockCount() - 1,
 						"lastBlock": lastBlock,
-						"nodeCount": 1, // Default for now
+						"nodeCount": 1,
 						"chainId":   chainID,
 						"isSyncing": false,
 					}
 					msg.ResponseCh <- types.Response{Data: info}
+				case types.GetActiveValidators: // <--- This is the handler that's timing out
+					blockchain.Blockchain.Mu.RLock()
+					activeValidators := blockchain.Blockchain.ActiveValidators
+					blockchain.Blockchain.Mu.RUnlock()
+					msg.ResponseCh <- types.Response{Data: activeValidators}
+				case types.IsActiveValidator:
+					addr, ok := msg.Data.(string)
+					isActive := false
+					if ok {
+						blockchain.Blockchain.Mu.RLock()
+						for _, v := range blockchain.Blockchain.ActiveValidators {
+							if v == addr {
+								isActive = true
+								break
+							}
+						}
+						blockchain.Blockchain.Mu.RUnlock()
+					}
+					msg.ResponseCh <- types.Response{Data: isActive}
+				case types.GetStakeholders:
+					blockchain.Blockchain.Mu.RLock()
+					stakeholdersCopy := make(map[string]int64)
+					for k, v := range blockchain.Blockchain.Stakeholders {
+						stakeholdersCopy[k] = v
+					}
+					blockchain.Blockchain.Mu.RUnlock()
+					msg.ResponseCh <- types.Response{Data: stakeholdersCopy}
 				}
 			case <-ctx.Done():
 				return
