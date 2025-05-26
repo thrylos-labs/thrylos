@@ -17,106 +17,78 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/multiformats/go-multiaddr" // Import multiaddr for libp2p addresses
 	"github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/crypto"
-	"github.com/thrylos-labs/thrylos/network"
+	"github.com/thrylos-labs/thrylos/network" // Your updated network package
+	"github.com/thrylos-labs/thrylos/node"
 	"github.com/thrylos-labs/thrylos/types"
-	// Add this line
 )
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Setup signal handling for graceful shutdown
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 
-	// Handle shutdown in a separate goroutine
 	go func() {
 		<-signalCh
 		log.Println("Stopping blockchain...")
-
-		// Give time for cleanup operations
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
-
-		// Signal all goroutines to stop
 		cancel()
-
-		// Wait for graceful shutdown or timeout
-		select {
-		case <-shutdownCtx.Done():
-			log.Println("Shutdown grace period elapsed, exiting")
-		}
-
-		// Force exit if needed
+		<-shutdownCtx.Done()
 		log.Println("Shutdown complete")
 		os.Exit(0)
 	}()
 
-	// Load environment variables
 	envFile, err := loadEnv()
 	if err != nil {
 		log.Fatalf("Error loading environment variables: %v", err)
 	}
 
-	// Environment variables
-	wsAddress := envFile["WS_ADDRESS"]
+	httpAddress := envFile["HTTP_NODE_ADDRESS"]
 	peersStr := envFile["PEERS"]
 	dataDir := envFile["DATA_DIR"]
-	testnet := envFile["TESTNET"] == "true" // Convert to boolean
-	chainID := "thrylos-testnet"            // Default chain ID for testnet
-	domainName := envFile["DOMAIN_NAME"]
+	testnet := envFile["TESTNET"] == "true"
+	chainID := "thrylos-testnet"
 	serverHost := envFile["SERVER_HOST"]
 
-	// Parse peer list
-	var seedPeers []string
-	if peersStr != "" {
-		seedPeers = strings.Split(peersStr, ",")
-		for i, peer := range seedPeers {
-			seedPeers[i] = strings.TrimSpace(peer)
-		}
-		log.Printf("Configured with %d initial seed peers", len(seedPeers))
-	} else {
-		log.Println("No initial peers configured")
+	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
+	if gasEstimateURL == "" {
+		log.Fatal("Gas estimate URL is not set in environment variables")
 	}
+
+	useSSL := strings.HasPrefix(httpAddress, "https://")
 
 	if dataDir == "" {
 		log.Fatal("DATA_DIR environment variable is not set")
 	}
-
 	if testnet {
 		fmt.Println("Running in Testnet Mode")
 	}
 
-	// Fetch the Base64-encoded AES key from the environment variable
 	base64Key := envFile["AES_KEY_ENV_VAR"]
 	if base64Key == "" {
 		log.Fatal("AES key is not set in environment variables")
 	}
-
 	aesKey, err := base64.StdEncoding.DecodeString(base64Key)
 	if err != nil {
 		log.Fatalf("Error decoding AES key: %v", err)
 	}
 
-	// --- Load Persistent Genesis Private Key ---
-	base64PrivKey := envFile["GENESIS_PRIVATE_KEY_RAW_B64"] // Use the new variable name
+	base64PrivKey := envFile["GENESIS_PRIVATE_KEY_RAW_B64"]
 	if base64PrivKey == "" {
 		log.Fatal("GENESIS_PRIVATE_KEY_RAW_B64 is not set in environment variables.")
 	}
-
-	// 1. Base64 Decode the string
 	PrivKeyBytes, err := base64.StdEncoding.DecodeString(base64PrivKey)
 	if err != nil {
 		log.Fatalf("Failed to base64 decode GENESIS_PRIVATE_KEY_CBOR_B64: %v", err)
 	}
-
-	// 2. Deserialize using NewPrivateKeyFromBytes (expects CBOR)
 	genesisPrivKey, err := crypto.NewPrivateKeyFromBytes(PrivKeyBytes)
 	if err != nil {
 		log.Fatalf("Failed to deserialize genesis private key: %v", err)
@@ -124,11 +96,8 @@ func main() {
 	log.Println("Successfully loaded persistent Genesis private key.")
 
 	if genesisPrivKey != nil && genesisPrivKey.PublicKey() != nil {
-		pubKey := genesisPrivKey.PublicKey()
-		// Use the Bytes() method which should be returning raw bytes now
-		rawPubKeyBytes := pubKey.Bytes() // Get raw bytes from the crypto.PublicKey implementation
+		rawPubKeyBytes := genesisPrivKey.PublicKey().Bytes()
 		if rawPubKeyBytes != nil {
-			// *** ADD THIS LOG ***
 			log.Printf("DEBUG: [main] Loaded Genesis RAW Public Key Bytes: %x", rawPubKeyBytes)
 		} else {
 			log.Printf("ERROR: [main] Failed to get raw bytes from loaded Genesis public key")
@@ -137,46 +106,79 @@ func main() {
 		log.Printf("ERROR: [main] Loaded Genesis private key or its public key is nil")
 	}
 
-	// Get the absolute path of the node data directory
 	absPath, err := filepath.Abs(dataDir)
 	if err != nil {
 		log.Fatalf("Error resolving the absolute path of the blockchain data directory: %v", err)
 	}
 	log.Printf("Using blockchain data directory: %s", absPath)
 
-	// Attempt to remove any existing lock file
 	lockFile := filepath.Join(absPath, "LOCK")
 	log.Printf("Attempting to remove lock file: %s", lockFile)
-	_ = os.Remove(lockFile) // Ignore errors if file doesn't exist or can't be removed
+	_ = os.Remove(lockFile)
 
-	// Initialize the blockchain and database with the AES key
-	// Set TestMode to false for testnet deployment
-	blockchainSetupConfig := &types.BlockchainConfig{
+	blockchainConfig := &types.BlockchainConfig{
 		DataDir:           absPath,
 		AESKey:            aesKey,
-		GenesisAccount:    genesisPrivKey, // <-- Use the LOADED persistent key
-		TestMode:          false,          // For testnet, we should set this to false
+		GenesisAccount:    genesisPrivKey,
+		TestMode:          false,
 		DisableBackground: false,
-		// Note: StateManager isn't initialized here yet, NewBlockchain might handle it internally or it might need setup
 	}
 
-	// Load the application config
 	cfg, err := config.LoadOrCreateConfig("config.toml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Now call NewBlockchain with BOTH config arguments
-	blockchain, _, err := chain.NewBlockchain(blockchainSetupConfig, cfg) // <-- PASS cfg HERE
+	messageBus := types.GetGlobalMessageBus()
+	// This function uses the messageBus, which is correctly initialized.
+	// We'll call connectBlockchainToMessageBus AFTER the blockchain is initialized.
+
+	var libp2pBootstrapPeers []multiaddr.Multiaddr
+	if peersStr != "" {
+		for _, p := range strings.Split(peersStr, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			addr, err := multiaddr.NewMultiaddr(p)
+			if err != nil {
+				log.Printf("WARN: Invalid libp2p bootstrap peer address '%s': %v", p, err)
+				continue
+			}
+			libp2pBootstrapPeers = append(libp2pBootstrapPeers, addr)
+		}
+		log.Printf("Configured with %d initial libp2p bootstrap peers", len(libp2pBootstrapPeers))
+	} else {
+		log.Println("No initial libp2p bootstrap peers configured. Node will rely on mDNS and DHT for discovery.")
+	}
+
+	libp2pPort := 4001
+	if pStr := os.Getenv("LIBP2P_PORT"); pStr != "" {
+		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
+			libp2pPort = p
+		} else {
+			log.Printf("WARN: Invalid LIBP2P_PORT '%s', using default %d", pStr, libp2pPort)
+		}
+	}
+
+	// MOVE THIS BLOCK UP: netManager must be declared and initialized BEFORE NewBlockchain
+	netManager, err := network.NewLibp2pManager(messageBus, libp2pPort, libp2pBootstrapPeers)
+	if err != nil {
+		log.Fatalf("Failed to create libp2p network manager: %v", err)
+	}
+	defer netManager.Close()
+	netManager.StartLibp2pServices()
+	// END MOVE
+
+	// Now call NewBlockchain with the initialized netManager
+	blockchain, _, err := chain.NewBlockchain(blockchainConfig, cfg, netManager) // <--- Pass netManager here
 	if err != nil {
 		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
 	}
 
-	if err != nil {
-		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
-	}
+	// This function depends on `blockchain` being initialized
+	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID)
 
-	// Ensure blockchain is properly closed on shutdown
 	defer func() {
 		log.Println("Closing blockchain in defer function...")
 		if blockchain != nil {
@@ -188,7 +190,6 @@ func main() {
 		}
 	}()
 
-	// Perform an integrity check on the blockchain
 	if !blockchain.CheckChainIntegrity() {
 		log.Fatal("Blockchain integrity check failed.")
 	} else {
@@ -200,71 +201,53 @@ func main() {
 		log.Printf("Generating validator %d...", i+1)
 		newAddr, err := blockchain.GenerateAndStoreValidatorKey()
 		if err != nil {
-			// !!! Log the error !!!
 			log.Printf("ERROR: Failed to generate validator %d: %v", i+1, err)
-			// Decide if you want to continue or stop on error
 		} else {
 			log.Printf("Successfully generated validator %d: %s", i+1, newAddr)
 		}
 	}
 	log.Println("Finished attempting validator generation.")
 
-	// Get the singleton message bus
-	messageBus := types.GetGlobalMessageBus()
+	// Instantiate the Node here, passing all necessary configuration
+	mainNode := node.NewNode(
+		httpAddress,      // nodeAddress (e.g., "http://localhost:8080")
+		blockchainConfig, // blockchainConfig (already loaded)
+		gasEstimateURL,   // gasEstimateURL (from envFile)
+		serverHost,       // serverHost (from envFile)
+		useSSL,           // useSSL (derived from httpAddress)
+		netManager,       // libp2pManager (the new network manager)
+	)
 
-	// Connect blockchain to message bus
-	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID)
+	// Now set the blockchain on the node
+	mainNode.SetBlockchain(blockchain.Blockchain)
+	// isDesignatedVoteCounter := false // Placeholder: You need to implement logic to determine this
+	// if blockchainConfig.GenesisAccount.PublicKey().Address().String() == mainNode.Address {
+	// 	// Example: If this node is the genesis node, maybe it's designated
+	// 	isDesignatedVoteCounter = true
+	// }
+	// // Or, if your consensus selects a leader, you'd check `mainNode.Address` against the current leader.
 
-	// Initialize router with message bus
-	router := network.NewRouter(messageBus, cfg)
+	// mainNode.VoteCounter = validator.NewVoteCounter(
+	// 	mainNode,                // This node implements NodeInterface
+	// 	isDesignatedVoteCounter, // Determine this based on your consensus
+	// 	netManager,              // The Libp2pManager
+	// 	mainNode.Address,        // This node's own address
+	// )
+	// Initialize router with message bus and the new network manager
+	router := network.NewRouter(messageBus, cfg, netManager)
+	mux := router.SetupRoutes()
 
-	// Create and initialize the peer manager
-	peerManager := network.NewPeerManager(messageBus, 50, 20) // 50 inbound, 20 outbound max connections
-	peerManager.SeedPeers = seedPeers
-
-	// Determine local address for peer connections
-	var localAddress string
-	if domainName != "" {
-		localAddress = domainName
-	} else if serverHost != "" {
-		localAddress = serverHost
-		if !strings.Contains(localAddress, ":") {
-			// Add the WebSocket port if not included
-			if strings.HasPrefix(wsAddress, ":") {
-				localAddress += wsAddress
-			} else {
-				localAddress += ":" + wsAddress
-			}
-		}
-	} else {
-		// Use localhost with port as fallback
-		if strings.HasPrefix(wsAddress, ":") {
-			localAddress = "localhost" + wsAddress
-		} else {
-			localAddress = "localhost:" + wsAddress
-		}
-	}
-
-	log.Printf("Node identity: %s", localAddress)
-
-	// Start peer discovery and management
-	peerManager.StartPeerManagement()
-
-	// Setup HTTP routes with peer manager
-	mux := router.SetupRoutes(peerManager)
-
-	// Setup HTTP/WS servers with context for graceful shutdown
 	wsServer, httpServer := setupServers(mux, envFile)
 
-	// Start servers
 	go startServer(ctx, wsServer, "WebSocket", envFile["ENV"] == "development")
 	go startServer(ctx, httpServer, "HTTP(S)", envFile["ENV"] == "development")
 
-	// Keep main goroutine running until context is canceled
 	<-ctx.Done()
 }
 
+// loadEnv function is now only in main.go
 func loadEnv() (map[string]string, error) {
+	// ... (content of loadEnv is unchanged and remains here) ...
 	env := os.Getenv("ENV")
 	if env == "" {
 		env = "development" // Default to development if not set
@@ -278,24 +261,20 @@ func loadEnv() (map[string]string, error) {
 		envPath = "../../.env.dev"
 	}
 
-	// Get the absolute path for better error reporting
 	absPath, err := filepath.Abs(envPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path for %s: %v", envPath, err)
 	}
 
-	// Check if file exists
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("environment file not found at %s", absPath)
 	}
 
-	// Load the environment file
 	envFile, err := godotenv.Read(envPath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading environment file at %s: %v", absPath, err)
 	}
 
-	// Validate required environment variables
 	requiredVars := []string{
 		"WS_ADDRESS",
 		"HTTP_NODE_ADDRESS",
@@ -303,6 +282,8 @@ func loadEnv() (map[string]string, error) {
 		"AES_KEY_ENV_VAR",
 		"DATA_DIR",
 		"GENESIS_PRIVATE_KEY_RAW_B64",
+		"GAS_ESTIMATE_URL", // Added this to requiredVars check
+		"SERVER_HOST",      // Added this to requiredVars check, assuming it's for Node's own host
 	}
 
 	missingVars := []string{}
@@ -316,12 +297,9 @@ func loadEnv() (map[string]string, error) {
 		return nil, fmt.Errorf("missing required environment variables: %v", missingVars)
 	}
 
-	// Force development mode settings
 	if env == "development" {
 		log.Println("Running in development mode - TLS will be disabled")
-		// Explicitly set development mode variables
 		envFile["ENV"] = "development"
-		// Clear any TLS-related settings to prevent accidental usage
 		envFile["CERT_FILE"] = ""
 		envFile["KEY_FILE"] = ""
 		envFile["TLS_CERT_PATH"] = ""

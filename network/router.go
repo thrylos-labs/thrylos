@@ -8,26 +8,28 @@ import (
 )
 
 type Router struct {
-	rpc         *Handler          // JSON-RPC handler
-	ws          *WebSocketManager // WebSocket handler
-	messageBus  types.MessageBusInterface
-	peerManager *PeerManager // Peer manager reference
+	rpc        *Handler          // JSON-RPC handler
+	ws         *WebSocketManager // WebSocket handler
+	messageBus types.MessageBusInterface
+	// REMOVED: peerManager *PeerManager // Old Peer manager reference
+	Libp2pManager *Libp2pManager // NEW: Reference to the Libp2p network manager
 }
 
-func NewRouter(messageBus types.MessageBusInterface, cfg *config.Config) *Router { // <-- ADD cfg argument
-	// Add a check for nil config for robustness
+// NewRouter creates a new Router with the message bus, configuration, and Libp2pManager.
+func NewRouter(messageBus types.MessageBusInterface, cfg *config.Config, lm *Libp2pManager) *Router { // <-- ADD lm *Libp2pManager argument
 	if cfg == nil {
 		log.Panic("FATAL: NewRouter called with nil config")
 	}
-
-	router := &Router{
-		messageBus: messageBus,
+	if lm == nil { // It's important to pass a non-nil Libp2pManager
+		log.Panic("FATAL: NewRouter called with nil Libp2pManager")
 	}
 
-	// --- MODIFIED Handler Initialization ---
-	// Pass both messageBus and cfg to NewHandler
-	router.rpc = NewHandler(messageBus, cfg) // <-- PASS cfg
-	// Assuming NewWebSocketManager doesn't need config, otherwise update it too
+	router := &Router{
+		messageBus:    messageBus,
+		Libp2pManager: lm, // Store the Libp2pManager
+	}
+
+	router.rpc = NewHandler(messageBus, cfg)
 	router.ws = NewWebSocketManager(messageBus)
 
 	return router

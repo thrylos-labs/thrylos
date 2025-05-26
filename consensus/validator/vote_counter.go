@@ -2,12 +2,13 @@ package validator
 
 import (
 	"fmt"
-	"hash"
 	"log"
 	"sync"
 	"time"
 
-	"github.com/thrylos-labs/thrylos/crypto/address"
+	"github.com/thrylos-labs/thrylos/network" // <--- Import network package
+	"github.com/thrylos-labs/thrylos/types"
+	// <--- Import types package for types.Vote
 )
 
 type NodeInterface interface {
@@ -15,33 +16,37 @@ type NodeInterface interface {
 	IsActiveValidator(address string) bool
 	GetStakeholders() map[string]int64
 	ConfirmBlock(blockNumber int32)
-}
-
-type Vote struct {
-	ValidatorAddrss address.Address
-	BlockNumber     int32
-	BlockHash       hash.Hash
-	ValidationPass  bool // Result of validation
-	Timestamp       time.Time
-	VoterNode       string
+	// Add a method to get this node's own address if it's not directly in VoteCounter
+	// GetNodeAddress() string
 }
 
 type VoteCounter struct {
 	mu            sync.RWMutex
-	votes         map[string][]Vote
-	node          NodeInterface // Changed from *Node to NodeInterface
+	votes         map[string][]types.Vote
+	node          NodeInterface
 	isDesignated  bool
 	requiredVotes int
+	libp2pManager *network.Libp2pManager // <--- NEW: Reference to the Libp2p network manager
+	nodeAddress   string                 // <--- NEW: This node's own address for votes
 }
 
-func NewVoteCounter(node NodeInterface, isDesignated bool) *VoteCounter {
-	counter := &VoteCounter{
-		votes:        make(map[string][]Vote),
-		node:         node,
-		isDesignated: isDesignated,
+// It now accepts the Libp2pManager and this node's address.
+func NewVoteCounter(node NodeInterface, isDesignated bool, libp2pManager *network.Libp2pManager, nodeAddress string) *VoteCounter { // <--- ADD libp2pManager, nodeAddress
+	if libp2pManager == nil { // Validate crucial dependency
+		log.Panic("FATAL: NewVoteCounter called with nil Libp2pManager")
+	}
+	if nodeAddress == "" { // Validate this node's address
+		log.Panic("FATAL: NewVoteCounter called with empty nodeAddress")
 	}
 
-	// Calculate 2/3 of validators
+	counter := &VoteCounter{
+		votes:         make(map[string][]types.Vote),
+		node:          node,
+		isDesignated:  isDesignated,
+		libp2pManager: libp2pManager, // <--- Store it
+		nodeAddress:   nodeAddress,   // <--- Store it
+	}
+
 	if node != nil && len(node.GetActiveValidators()) > 0 {
 		counter.requiredVotes = (2*len(node.GetActiveValidators()) + 2) / 3
 	}
@@ -68,36 +73,56 @@ func (vc *VoteCounter) GetVoteCount(validatorID string) int {
 }
 
 // AddVote adds a vote for a validator with additional validation
-func (vc *VoteCounter) AddVote(vote Vote) error {
+func (vc *VoteCounter) AddVote(vote types.Vote) error { // <--- PARAMETER TYPE CHANGED TO types.Vote
+	// Only the designated vote counter node should aggregate votes
 	if !vc.isDesignated {
-		return fmt.Errorf("this node is not the designated vote counter")
+		return fmt.Errorf("this node is not the designated vote counter to add votes")
 	}
 
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 
-	// Verify voter is an active validator using interface method
+	// Verify voter is an active validator
 	if !vc.node.IsActiveValidator(vote.VoterNode) {
 		return fmt.Errorf("vote from non-validator node rejected: %s", vote.VoterNode)
 	}
 
-	// Check for duplicate votes using block number
+	// Check for duplicate votes (based on voter and block number within a recent timeframe)
 	if vc.hasVotedAlready(vote.VoterNode, vote.BlockNumber) {
 		return fmt.Errorf("duplicate vote rejected from node: %s for block %d",
 			vote.VoterNode, vote.BlockNumber)
 	}
 
-	// Initialize votes slice if needed
-	if vc.votes[vote.ValidatorAddrss.String()] == nil {
-		vc.votes[vote.ValidatorAddrss.String()] = make([]Vote, 0)
+	// Initialize votes slice if needed for this validator
+	if vc.votes[vote.ValidatorID] == nil { // <--- Using ValidatorID as the map key
+		vc.votes[vote.ValidatorID] = make([]types.Vote, 0)
 	}
 
-	vc.votes[vote.ValidatorAddrss.String()] = append(vc.votes[vote.ValidatorAddrss.String()], vote)
+	// Add the vote to the local tally
+	vc.votes[vote.ValidatorID] = append(vc.votes[vote.ValidatorID], vote)
+
+	log.Printf("INFO: Added vote from %s for block %d (target validator: %s, pass: %t)",
+		vote.VoterNode, vote.BlockNumber, vote.ValidatorID, vote.ValidationPass)
+
+	// --- BROADCAST THE VOTE VIA LIBP2P (ONLY IF IT ORIGINATED FROM THIS NODE) ---
+	// This is critical to prevent broadcasting messages received from other peers.
+	if vote.VoterNode == vc.nodeAddress { // Check if this node is the originator of *this specific vote*
+		if vc.libp2pManager != nil {
+			log.Printf("INFO: Attempting to broadcast vote for block %d from %s via Libp2p.", vote.BlockNumber, vote.VoterNode)
+			if err := vc.libp2pManager.BroadcastVote(vote); err != nil { // Call BroadcastVote on Libp2pManager
+				log.Printf("WARN: Failed to broadcast vote for block %d (from %s) via Libp2p: %v", vote.BlockNumber, vote.VoterNode, err)
+			} else {
+				log.Printf("INFO: Successfully broadcast vote for block %d (from %s) via Libp2p.", vote.BlockNumber, vote.VoterNode)
+			}
+		} else {
+			log.Printf("WARN: Libp2pManager not available in VoteCounter, cannot broadcast vote for block %d (from %s).", vote.BlockNumber, vote.VoterNode)
+		}
+	}
+	// --- END BROADCAST ---
 
 	// Check if we've reached 2/3 majority
-	if vc.HasSuperMajority(vote.ValidatorAddrss.String()) {
-		log.Printf("Achieved 2/3 majority for block %d", vote.BlockNumber)
-		// Use interface method ConfirmBlock instead of confirmBlock
+	if vc.HasSuperMajority(vote.ValidatorID) { // <--- Using ValidatorID
+		log.Printf("Achieved 2/3 majority for block %d (target validator: %s)", vote.BlockNumber, vote.ValidatorID)
 		vc.node.ConfirmBlock(vote.BlockNumber)
 	}
 
@@ -139,7 +164,7 @@ func (vc *VoteCounter) ClearOldVotes() {
 
 	cutoff := time.Now().Add(-1 * time.Minute)
 	for validatorID := range vc.votes {
-		validVotes := make([]Vote, 0)
+		validVotes := make([]types.Vote, 0)
 		for _, vote := range vc.votes[validatorID] {
 			if vote.Timestamp.After(cutoff) {
 				validVotes = append(validVotes, vote)

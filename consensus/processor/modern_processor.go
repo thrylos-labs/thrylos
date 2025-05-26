@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/network"
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -38,6 +39,7 @@ type ModernProcessor struct {
 	txPool         types.TxPool
 	txProcessor    *TransactionProcessorImpl
 	balanceCache   sync.Map // For caching balances
+	libp2pManager  *network.Libp2pManager
 }
 
 // ProcessorMetrics tracks performance metrics
@@ -62,7 +64,7 @@ type workerMetrics struct {
 }
 
 // NewModernProcessor creates a new transaction processor with multiple worker shards
-func NewModernProcessor(txProcessor *TransactionProcessorImpl, txPool types.TxPool, dagManager *DAGManager) *ModernProcessor {
+func NewModernProcessor(txProcessor *TransactionProcessorImpl, libp2pManager *network.Libp2pManager, txPool types.TxPool, dagManager *DAGManager) *ModernProcessor {
 	ctx, cancel := context.WithCancel(context.Background())
 	workerCount := runtime.NumCPU() * 2 // Or your desired count
 
@@ -78,6 +80,7 @@ func NewModernProcessor(txProcessor *TransactionProcessorImpl, txPool types.TxPo
 		txProcessor:    txProcessor,
 		txPool:         txPool,
 		DAGManager:     dagManager,
+		libp2pManager:  libp2pManager, // <--- Libp2pManager stored here
 	}
 
 	// Initialize queues (assuming 12 shards)
@@ -179,19 +182,18 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 	txID := tx.GetId()
 	log.Printf("=== BEGIN ModernProcessor.ProcessIncomingTransaction [%s] ===", txID)
 
-	// Check processed status (remains the same)
+	// Check processed status
 	if status, exists := mp.processedTxs.Load(txID); exists {
 		log.Printf("Transaction [%s] already processed/queued by ModernProcessor (Status: %v), skipping", txID, status)
-		return nil
+		return nil // Successfully handled, no error
 	}
 
 	// --- DAG Processing ---
 	log.Printf("Processing DAG for transaction [%s]", txID)
 	responseCh := make(chan types.Response)
-	// --- CHANGE HERE ---
 	messageBus := types.GetGlobalMessageBus() // Use the canonical singleton getter
-	// --- END CHANGE ---
-	log.Printf("DEBUG: [ModernProcessor] Publishing ValidateDAGTx using MessageBus instance at %p", messageBus) // Keep log
+
+	log.Printf("DEBUG: [ModernProcessor] Publishing ValidateDAGTx using MessageBus instance at %p", messageBus)
 	messageBus.Publish(types.Message{
 		Type:       types.ValidateDAGTx,
 		Data:       tx,
@@ -202,14 +204,12 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 	select {
 	case response := <-responseCh:
 		if response.Error != nil {
-			// Handle "already exists" specifically if needed (e.g., return nil or a specific error)
 			if strings.Contains(response.Error.Error(), "already exists") {
-				log.Printf("Transaction [%s] already exists in DAG (according to DAG manager response)", txID)
-				return nil // Or return the specific error e.g., ErrTxAlreadyExists
+				log.Printf("Transaction [%s] already exists in DAG (according to DAG manager response).", txID)
+				return nil // It's already processed, so no error for this
 			}
-			// For other DAG errors (like "not enough tips"), log and RETURN the error
 			log.Printf("ERROR: DAG processing failed for [%s]: %v. Transaction will NOT be queued.", txID, response.Error)
-			return response.Error // <<< RETURN THE ERROR HERE
+			return response.Error
 		} else {
 			log.Printf("DEBUG: DAG processing successful for [%s]", txID)
 		}
@@ -219,11 +219,37 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 	}
 	// --- End DAG Processing ---
 
-	// --- *** Transaction Pool Add Logic is Correctly REMOVED *** ---
+	// --- Queue for Internal Worker Processing (e.g., adding to mempool) ---
+	log.Printf("Adding transaction [%s] to ModernProcessor worker queue", txID)
+	// This `mp.AddTransaction(tx)` typically adds to a local mempool/queue.
+	// We need to pass the Libp2pManager to ModernProcessor to allow it to broadcast.
+	err := mp.AddTransaction(tx)
+	if err != nil {
+		log.Printf("ERROR: Failed to queue transaction [%s] for worker: %v", txID, err)
+		return fmt.Errorf("modern processing queue failed: %v", err)
+	}
 
-	// --- Status Update (Optional at this stage) ---
+	// --- BROADCAST THE TRANSACTION VIA LIBP2P ---
+	// This is the key integration point.
+	// Assuming mp.libp2pManager is a field on ModernProcessor that holds *network.Libp2pManager
+	// Or, if mp.AddTransaction() broadcasts internally after adding to the pool.
+	// For now, let's assume ModernProcessor directly has the reference.
+	if mp.libp2pManager != nil { // Check if the manager is available
+		log.Printf("INFO: Attempting to broadcast transaction [%s] via Libp2p.", txID)
+		if err := mp.libp2pManager.BroadcastTransaction(tx); err != nil {
+			log.Printf("WARN: Failed to broadcast transaction [%s] via Libp2p: %v", txID, err)
+			// A broadcast failure is usually non-fatal; log it but don't return error
+		} else {
+			log.Printf("INFO: Successfully broadcast transaction [%s] via Libp2p.", txID)
+		}
+	} else {
+		log.Printf("WARN: Libp2pManager not available in ModernProcessor, cannot broadcast transaction [%s].", txID)
+	}
+	// --- END BROADCAST ---
+
+	// --- Status Update (Optional at this stage, but good for tracking) ---
 	updateStatusCh := make(chan types.Response)
-	messageBus.Publish(types.Message{ // Use the same messageBus instance obtained above
+	messageBus.Publish(types.Message{
 		Type: types.UpdateProcessorState,
 		Data: types.UpdateProcessorStateRequest{
 			TransactionID: txID,
@@ -231,7 +257,6 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 		},
 		ResponseCh: updateStatusCh,
 	})
-	// Non-blocking wait (remains the same)
 	go func() {
 		select {
 		case statusResponse := <-updateStatusCh:
@@ -246,20 +271,13 @@ func (mp *ModernProcessor) ProcessIncomingTransaction(tx *thrylos.Transaction) e
 	}()
 	// --- End Status Update ---
 
-	// --- Clear Balance Cache --- (remains the same)
+	// --- Clear Balance Cache ---
 	mp.balanceCache.Delete(tx.Sender)
 	for _, output := range tx.Outputs {
 		mp.balanceCache.Delete(output.OwnerAddress)
 	}
 
-	// --- Queue for Internal Worker Processing ---
-	log.Printf("Adding transaction [%s] to ModernProcessor worker queue", txID)
-	if err := mp.AddTransaction(tx); err != nil { // Queues the transaction
-		log.Printf("ERROR: Failed to queue transaction [%s] for worker: %v", txID, err)
-		return fmt.Errorf("modern processing queue failed: %v", err)
-	}
-
-	// Mark as processed *by this initial stage* (remains the same)
+	// Mark as processed *by this initial stage*
 	mp.processedTxs.Store(txID, "queued_for_worker")
 
 	log.Printf("=== END ModernProcessor.ProcessIncomingTransaction [%s] - Queued for Worker ===", txID)

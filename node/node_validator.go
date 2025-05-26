@@ -1,5 +1,7 @@
 package node
 
+// import "log"
+
 // // // IsActiveValidator checks if a given address is an active validator
 // func (node *Node) IsActiveValidator(address string) bool {
 // 	node.Mu.RLock()

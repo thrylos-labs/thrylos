@@ -84,7 +84,9 @@ const (
 	IsValidator          MessageType = "IS_VALIDATOR"
 	AddTransactionToPool MessageType = "ADD_TRANSACTION_TO_POOL"
 
-	GetBlockchainInfo MessageType = "GET_BLOCKCHAIN_INFO"
+	GetBlockchainInfo   MessageType = "GET_BLOCKCHAIN_INFO"
+	GetBlocksFromHeight MessageType = "GET_BLOCKS_FROM_HEIGHT"
+	ProcessVote         MessageType = "PROCESS_VOTE"
 )
 
 // Message represents a generic message in the system
