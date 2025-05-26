@@ -180,32 +180,45 @@ func (dm *DAGManager) processTransaction(tx *thrylos.Transaction) error {
 	}
 
 	log.Printf("DEBUG: [DAGManager.processTransaction] Selecting tips for TxID: %s", txID)
-	tips := dm.selectTips()
-	log.Printf("DEBUG: [DAGManager.processTransaction] Selected %d tips for TxID: %s", len(tips), txID)
+	tips := dm.selectTips()                                                                                                                                                  // tips is []*TransactionVertex
+	log.Printf("DEBUG: [DAGManager.processTransaction] Selected %d tips for TxID: %s (MinReferences: %d, MaxReferences: %d)", len(tips), txID, MinReferences, MaxReferences) // Added Min/Max for context
 
-	// Check if enough tips were selected
-	if len(tips) < MinReferences && len(dm.vertices) > 0 { // Allow < MinReferences only if DAG is empty
-		log.Printf("WARN: [DAGManager.processTransaction] Not enough tips (%d < %d) found for TxID: %s", len(tips), MinReferences, txID)
-		// Decide how to handle this - return error or proceed with fewer refs?
-		// Returning error for now, prevents adding dangling transactions.
-		return fmt.Errorf("not enough tips (%d) found to reference", len(tips))
+	// --- RECOMMENDED CHANGE BEGIN ---
+	if len(dm.vertices) > 0 && len(tips) == 0 {
+		// If the DAG is not empty, but selectTips returned 0 tips, it's problematic.
+		// This could happen if all existing tips in dm.tips are older than the 500ms recency filter
+		// AND dm.tips initially had >= MinReferences items (so it didn't take the "return all available dm.tips" path in selectTips).
+		// OR if dm.tips itself became empty after all prior tips were referenced.
+		log.Printf("WARN: [DAGManager.processTransaction] Not enough tips (0 selected by selectTips) for TxID: %s when DAG is not empty. Total vertices in DAG: %d. Current total tips in dm.tips: %d", txID, len(dm.vertices), len(dm.tips))
+		return fmt.Errorf("not enough tips (0 selected by selectTips) found to reference when DAG is not empty. MinDesired: %d, VerticesInDAG: %d", MinReferences, len(dm.vertices))
 	}
+	// If len(dm.vertices) == 0 (first transaction being added to an empty DAG), it's okay if len(tips) is 0.
+	// If len(dm.vertices) > 0, the above check ensures we have at least 1 tip (len(tips) >= 1).
+	// The MinReferences constant (e.g., 2) primarily guides selectTips on how many to pick if available.
+	// processTransaction will proceed if at least one tip is found when the DAG is not empty.
+	// --- RECOMMENDED CHANGE END ---
 
-	for _, tip := range tips {
-		tipID := tip.Transaction.GetId()
+	// Original problematic check (to be replaced by the logic above):
+	// if len(tips) < MinReferences && len(dm.vertices) > 0 {
+	//     log.Printf("WARN: [DAGManager.processTransaction] Not enough tips (%d < %d) found for TxID: %s", len(tips), MinReferences, txID)
+	//     return fmt.Errorf("not enough tips (%d) found to reference", len(tips))
+	// }
+
+	for _, tipVertex := range tips { // Changed 'tip' to 'tipVertex' to avoid confusion if 'tips' was the slice name
+		tipID := tipVertex.Transaction.GetId()
 		log.Printf("DEBUG: [DAGManager.processTransaction] Referencing tip %s for new TxID: %s", tipID, txID)
 		vertex.References = append(vertex.References, tipID)
-		tip.ReferencedBy = append(tip.ReferencedBy, txID)
-		log.Printf("DEBUG: [DAGManager.processTransaction] Tip %s now referenced by %d transactions.", tipID, len(tip.ReferencedBy))
+		tipVertex.ReferencedBy = append(tipVertex.ReferencedBy, txID) // Corrected: tipVertex here
+		log.Printf("DEBUG: [DAGManager.processTransaction] Tip %s now referenced by %d transactions.", tipID, len(tipVertex.ReferencedBy))
 
-		if !tip.IsConfirmed && len(tip.ReferencedBy) >= ConfirmationThreshold {
-			log.Printf("INFO: [DAGManager.processTransaction] Confirming Tip %s due to reference count (%d >= %d)", tipID, len(tip.ReferencedBy), ConfirmationThreshold)
-			tip.IsConfirmed = true
-			dm.notifyNodeOfConfirmation(tip.Transaction) // Notify asynchronously
+		if !tipVertex.IsConfirmed && len(tipVertex.ReferencedBy) >= ConfirmationThreshold {
+			log.Printf("INFO: [DAGManager.processTransaction] Confirming Tip %s due to reference count (%d >= %d)", tipID, len(tipVertex.ReferencedBy), ConfirmationThreshold)
+			tipVertex.IsConfirmed = true // Corrected: tipVertex here
+			dm.notifyNodeOfConfirmation(tipVertex.Transaction)
 		}
 
 		log.Printf("DEBUG: [DAGManager.processTransaction] Removing tip %s from tip set.", tipID)
-		delete(dm.tips, tipID)
+		delete(dm.tips, tipID) // dm.tips stores *TransactionVertex
 	}
 
 	log.Printf("DEBUG: [DAGManager.processTransaction] Adding new vertex %s to vertices map.", txID)

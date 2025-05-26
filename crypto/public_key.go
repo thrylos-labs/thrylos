@@ -5,13 +5,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log" 
+	"log"
 
 	"github.com/cloudflare/circl/sign/mldsa/mldsa44"
 	// "github.com/fxamacker/cbor/v2"
 	"github.com/thrylos-labs/thrylos/crypto/address"
 )
-
 
 type publicKey struct {
 	pubKey *mldsa44.PublicKey
@@ -117,7 +116,6 @@ func (p *publicKey) Marshal() ([]byte, error) {
 	return keyBytes, nil
 }
 
-
 func (p *publicKey) Unmarshal(data []byte) error {
 	// --- REMOVED CBOR Unmarshal Step ---
 	// var keyBytes []byte
@@ -150,7 +148,6 @@ func (p *publicKey) Unmarshal(data []byte) error {
 	log.Printf("DEBUG: [publicKey.Unmarshal] mldsa44PubKey.UnmarshalBinary successful.")
 	return nil
 }
-
 
 // Equal takes a pointer to a PublicKey interface value.
 func (p *publicKey) Equal(other *PublicKey) bool {
