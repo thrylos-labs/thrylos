@@ -649,30 +649,43 @@ func (s *store) GetUTXOsByAddress(address string) (map[string][]types.UTXO, erro
 
 // TRANSACTION
 
-func (s *store) RetrieveTransaction(txn *badger.Txn, transactionID string) (*types.Transaction, error) {
+func (s *store) RetrieveTransaction(txn *badger.Txn, transactionID string, shardID types.ShardID) (*types.Transaction, error) { // MODIFIED signature
 	var tx types.Transaction
 
-	key := []byte("transaction-" + transactionID)
+	// Construct the sharded key
+	key := GetShardedKey(TransactionPrefix, shardID, transactionID) // Use GetShardedKey
 
 	item, err := txn.Get(key)
 	if err != nil {
-		return nil, err
+		if err == badger.ErrKeyNotFound {
+			return nil, fmt.Errorf("transaction %s not found for shard %d", transactionID, shardID)
+		}
+		return nil, fmt.Errorf("error retrieving transaction %s for shard %d: %w", transactionID, shardID, err)
 	}
 
 	err = item.Value(func(val []byte) error {
-		return json.Unmarshal(val, &tx)
+		// Use CBOR Unmarshal as per your types.Transaction struct
+		return tx.Unmarshal(val)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("error unmarshaling transaction: %v", err)
+		return nil, fmt.Errorf("error unmarshaling transaction %s for shard %d: %v", transactionID, shardID, err)
 	}
 
 	return &tx, nil
 }
 
-func (s *store) SendTransaction(fromAddress, toAddress string, amount int, privKey crypto.PrivateKey) (bool, error) {
+func (s *store) SendTransaction(fromAddress, toAddress string, amount int, privKey crypto.PrivateKey, totalNumShards int) (bool, error) { // Added totalNumShards
 	db := s.db.GetDB()
 
+	// Determine the shard based on the sender's address.
+	// This transaction will be primarily processed and stored on this shard.
+	senderShardID := CalculateShardID(fromAddress, totalNumShards)
+	log.Printf("DEBUG: [SendTransaction] Transaction from %s assigned to Shard %d.", fromAddress, senderShardID)
+
 	// Step 1: Create transaction data
+	// NOTE: This `transactionData` map seems to be for an *encrypted payload*,
+	// not the blockchain transaction itself. Your `types.Transaction` struct
+	// should be used for the actual blockchain transaction.
 	transactionData := map[string]interface{}{
 		"from":      fromAddress,
 		"to":        toAddress,
@@ -680,10 +693,10 @@ func (s *store) SendTransaction(fromAddress, toAddress string, amount int, privK
 		"timestamp": time.Now().Unix(),
 	}
 
-	// Step 2: Serialize transaction data to JSON
+	// Step 2: Serialize transaction data to JSON (for encryption)
 	jsonData, err := json.Marshal(transactionData)
 	if err != nil {
-		return false, fmt.Errorf("error serializing transaction data: %v", err)
+		return false, fmt.Errorf("error serializing transaction data for encryption: %v", err)
 	}
 
 	// Step 3: Encrypt the transaction data
@@ -692,101 +705,120 @@ func (s *store) SendTransaction(fromAddress, toAddress string, amount int, privK
 		return false, fmt.Errorf("error encrypting transaction data: %v", err)
 	}
 
-	// Step 4: Create hash of the encrypted data
+	// Step 4: Create hash of the encrypted data (this will be the txID)
 	dataHash := hash.NewHash(encryptedData)
 
 	// Step 5: Sign the hashed data
 	signature := privKey.Sign(dataHash.Bytes())
 	if signature == nil {
-		return false, fmt.Errorf("error creating signature")
+		return false, fmt.Errorf("error creating signature for transaction data hash")
 	}
 
 	// Step 6: Store the encrypted transaction and signature in the database atomically
 	txn := db.NewTransaction(true)
-	defer txn.Discard()
+	defer txn.Discard() // Ensure transaction is discarded if not committed
 
 	// Create transaction ID using hash of encrypted data
 	txID := dataHash.String()
 
-	// Create and store a new Transaction object
-	addr := address.NullAddress()
-	if err := addr.Unmarshal([]byte(fromAddress)); err != nil {
-		return false, fmt.Errorf("error creating address: %v", err)
+	// Create the actual `types.Transaction` object for the blockchain.
+	// This is the object that will be stored in the blockchain's transaction ledger.
+	senderAddrObj := address.NullAddress()
+	if err := senderAddrObj.Unmarshal([]byte(fromAddress)); err != nil {
+		return false, fmt.Errorf("error creating sender address object: %v", err)
 	}
 
-	// Create and store a new Transaction object
+	// You need to ensure 'Inputs' and 'Outputs' are correctly formed here for a real transaction.
+	// For simplicity in this function, we'll assume they are handled upstream or are minimal for now.
+	// However, a complete SendTransaction would involve:
+	// 1. Collecting UTXOs for `fromAddress` (from its shard's DB).
+	// 2. Creating `types.UTXO` inputs from those collected UTXOs.
+	// 3. Creating `types.UTXO` outputs (to `toAddress` and a change address).
+	// 4. Calculating `GasFee`.
 	transaction := &types.Transaction{
-		ID:            txID,
-		Timestamp:     time.Now().Unix(),
-		SenderAddress: *addr, // Use the address pointer
-		Signature:     signature,
-		// Add other fields as needed
+		ID:              txID,
+		Timestamp:       time.Now().Unix(),
+		SenderAddress:   *senderAddrObj,      // Use the address object
+		SenderPublicKey: privKey.PublicKey(), // Include sender's public key
+		Signature:       signature,
+		// Inputs:   ... (needs to be collected/constructed)
+		// Outputs:  ... (needs to be constructed)
+		// GasFee:   ... (needs to be calculated)
+		// Salt:     ... (if salt is part of transaction uniqueness, generate here)
+		Status: "pending", // Set initial status
 	}
 
-	// Serialize the transaction
+	// Serialize the `types.Transaction` object using its CBOR Marshal method
 	txData, err := transaction.Marshal()
 	if err != nil {
-		return false, fmt.Errorf("error marshaling transaction: %v", err)
+		return false, fmt.Errorf("error marshaling types.Transaction %s: %v", txID, err)
 	}
 
-	// Store transaction data
-	if err := txn.Set([]byte("tx-"+txID), txData); err != nil {
-		return false, fmt.Errorf("error storing transaction data: %v", err)
+	// Store `types.Transaction` data with a sharded key.
+	// This ensures transaction records live on their respective shards.
+	txKey := GetShardedKey(TransactionPrefix, senderShardID, txID) // Uses sharded key
+	if err := txn.Set(txKey, txData); err != nil {
+		return false, fmt.Errorf("error storing types.Transaction %s for shard %d: %v", txID, senderShardID, err)
 	}
+	log.Printf("DEBUG: [SendTransaction] Stored types.Transaction %s on Shard %d.", txID, senderShardID)
 
-	// Store encrypted payload
-	if err := txn.Set([]byte("tx-payload-"+txID), encryptedData); err != nil {
-		return false, fmt.Errorf("error storing encrypted payload: %v", err)
+	// Store encrypted payload with a sharded key.
+	// Assuming "tx-payload-" is a separate prefix.
+	payloadKey := GetShardedKey("tx-payload-", senderShardID, txID) // FIXED: Changed []byte to string literal
+	if err := txn.Set(payloadKey, encryptedData); err != nil {
+		return false, fmt.Errorf("error storing encrypted payload for tx %s for shard %d: %v", txID, senderShardID, err)
 	}
+	log.Printf("DEBUG: [SendTransaction] Stored encrypted payload for %s on Shard %d.", txID, senderShardID)
 
-	// Commit the transaction
+	// Commit the BadgerDB transaction
 	if err := txn.Commit(); err != nil {
-		return false, fmt.Errorf("transaction commit failed: %v", err)
+		return false, fmt.Errorf("transaction commit failed for tx %s on shard %d: %v", txID, senderShardID, err)
 	}
+	log.Printf("INFO: [SendTransaction] Transaction %s successfully recorded for shard %d.", txID, senderShardID)
 
 	return true, nil
 }
 
-func (s *store) storeTransactionInTxn(txn *badger.Txn, encryptedData, signature []byte, fromAddress, toAddress string) error {
-	err := txn.Set([]byte(fmt.Sprintf("transaction:%s:%s", fromAddress, toAddress)), encryptedData)
+func (s *store) storeTransactionInTxn(txn *badger.Txn, tx *types.Transaction, shardID types.ShardID) error { // MODIFIED signature
+	// This is a helper, so it takes the full tx and shardID
+	key := GetShardedKey(TransactionPrefix, shardID, tx.ID) // Use GetShardedKey
+	value, err := tx.Marshal()                              // Use CBOR Marshal
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal transaction %s for shard %d: %v", tx.ID, shardID, err)
 	}
-	err = txn.Set([]byte(fmt.Sprintf("signature:%s:%s", fromAddress, toAddress)), signature)
-	if err != nil {
-		return err
-	}
-	return nil
+	return txn.Set(key, value)
 }
 
-func (s *store) SaveTransaction(tx *types.Transaction) error {
-	db := s.db.GetDB()
-	keyString := fmt.Sprintf("%s%s", TransactionPrefix, tx.ID)
+func (s *store) SaveTransaction(ctx types.TransactionContext, tx *types.Transaction, totalNumShards int) error { // MODIFIED signature
+	badgerTxn := ctx.GetBadgerTxn()
+	if badgerTxn == nil {
+		return fmt.Errorf("invalid transaction context: nil badger transaction")
+	}
+
+	// Determine the shard based on the sender's address
+	shardID := CalculateShardID(tx.SenderAddress.String(), totalNumShards)
+	keyString := string(GetShardedKey(TransactionPrefix, shardID, tx.ID))
 	keyBytes := []byte(keyString)
 
-	// Use CBOR Marshal
-	txData, err := tx.Marshal()
+	txData, err := tx.Marshal() // Use CBOR Marshal
 	if err != nil {
-		log.Printf("ERROR: Failed to marshal transaction %s: %v", tx.ID, err)
-		return fmt.Errorf("error marshaling transaction %s: %w", tx.ID, err)
+		log.Printf("ERROR: Failed to marshal transaction %s for shard %d: %v", tx.ID, shardID, err)
+		return fmt.Errorf("error marshaling transaction %s for shard %d: %w", tx.ID, shardID, err)
 	}
 
-	err = db.Update(func(txn *badger.Txn) error {
-		log.Printf("DEBUG: [SaveTransaction] Storing transaction key: %s", keyString)
-		return txn.Set(keyBytes, txData)
-	})
-
+	log.Printf("DEBUG: [SaveTransaction] Storing transaction key: %s (Shard: %d)", keyString, shardID)
+	err = badgerTxn.Set(keyBytes, txData) // Use badgerTxn from context
 	if err != nil {
-		log.Printf("ERROR: Failed to save transaction %s: %v", tx.ID, err)
-		return fmt.Errorf("error storing transaction %s in BadgerDB: %w", tx.ID, err)
+		log.Printf("ERROR: Failed to save transaction %s for shard %d: %v", tx.ID, shardID, err)
+		return fmt.Errorf("error storing transaction %s for shard %d in BadgerDB: %w", tx.ID, shardID, err)
 	}
-	log.Printf("DEBUG: [SaveTransaction] Successfully saved transaction %s", tx.ID)
+	log.Printf("DEBUG: [SaveTransaction] Successfully saved transaction %s for shard %d", tx.ID, shardID)
 	return nil
 }
 
-func (s *store) GetTransaction(id string) (*types.Transaction, error) {
+func (s *store) GetTransaction(id string, shardID types.ShardID) (*types.Transaction, error) { // MODIFIED signature
 	var tx types.Transaction
-	keyString := fmt.Sprintf("%s%s", TransactionPrefix, id)
+	keyString := string(GetShardedKey(TransactionPrefix, shardID, id)) // Use GetShardedKey
 	keyBytes := []byte(keyString)
 
 	db := s.db.GetDB()
@@ -796,40 +828,41 @@ func (s *store) GetTransaction(id string) (*types.Transaction, error) {
 			return err // Includes KeyNotFound
 		}
 		return item.Value(func(val []byte) error {
-			// Use CBOR Unmarshal
-			return tx.Unmarshal(val)
+			return tx.Unmarshal(val) // Use CBOR Unmarshal
 		})
 	})
 
 	if err != nil {
 		if err == badger.ErrKeyNotFound {
-			return nil, fmt.Errorf("transaction %s not found", id)
+			return nil, fmt.Errorf("transaction %s not found for shard %d", id, shardID)
 		}
-		log.Printf("ERROR: Failed to retrieve/unmarshal transaction %s: %v", id, err)
-		return nil, fmt.Errorf("error retrieving transaction %s: %w", id, err)
+		log.Printf("ERROR: Failed to retrieve/unmarshal transaction %s for shard %d: %v", id, shardID, err)
+		return nil, fmt.Errorf("error retrieving transaction %s for shard %d: %w", id, shardID, err)
 	}
 	return &tx, nil
 }
 
-func (s *store) ProcessTransaction(tx *types.Transaction) error {
+func (s *store) ProcessTransaction(tx *types.Transaction, totalNumShards int) error { // MODIFIED signature
 	db := s.db.GetDB()
 	return db.Update(func(txn *badger.Txn) error {
-		if err := s.updateUTXOsInTxn(txn, tx.Inputs, tx.Outputs); err != nil {
+		// These calls need to be updated to pass totalNumShards
+		if err := s.updateUTXOsInTxn(txn, tx.Inputs, tx.Outputs); err != nil { // updateUTXOsInTxn needs tx and totalNumShards
 			return err
 		}
-		if err := s.addTransactionInTxn(txn, tx); err != nil {
+		// addTransactionInTxn needs the shardID
+		shardID := CalculateShardID(tx.SenderAddress.String(), totalNumShards) // Determine shard for tx record
+		if err := s.storeTransactionInTxn(txn, tx, shardID); err != nil {      // MODIFIED call
 			return err
 		}
 		return nil
 	})
 }
 
-func (s *store) addTransactionInTxn(txn *badger.Txn, tx *types.Transaction) error {
-	key := []byte(TransactionPrefix + tx.ID)
-	value, err := cbor.Marshal(tx)
+func (s *store) addTransactionInTxn(txn *badger.Txn, tx *types.Transaction, shardID types.ShardID) error { // MODIFIED signature
+	key := GetShardedKey(TransactionPrefix, shardID, tx.ID) // Use GetShardedKey
+	value, err := tx.Marshal()                              // Use CBOR Marshal
 	if err != nil {
-		log.Fatalf("Failed to marshal transaction: %v", err)
-		return err
+		return fmt.Errorf("failed to marshal transaction %s for shard %d: %v", tx.ID, shardID, err)
 	}
 	return txn.Set(key, value)
 }
@@ -890,24 +923,33 @@ func (s *store) SetTransaction(txn types.TransactionContext, key []byte, value [
 	return badgerTxn.Set(key, value)
 }
 
-func (s *store) AddTransaction(tx *thrylos.Transaction) error {
+func (s *store) AddTransaction(tx *thrylos.Transaction, shardID types.ShardID) error { // MODIFIED signature
 	db := s.db.GetDB()
 	txn := db.NewTransaction(true)
 	defer txn.Discard()
 
-	txJSON, err := json.Marshal(tx)
-	if err != nil {
-		return fmt.Errorf("error marshaling transaction: %v", err)
+	// Determine the shard ID for this thrylos.Transaction if not already passed or known
+	// This is redundant if `shardID` is correctly passed, but good for safety.
+	txSenderAddress := tx.Sender // Assuming Sender is the string address
+	calculatedShardID := CalculateShardID(txSenderAddress, s.totalNumShards)
+	if calculatedShardID != shardID && shardID != types.ShardID(-1) { // If it's a specific shard node AND tx is for another shard
+		return fmt.Errorf("attempted to add transaction %s for shard %d to store instance for shard %d", tx.Id, calculatedShardID, shardID)
 	}
 
-	key := []byte("transaction-" + tx.Id)
+	// Construct sharded key
+	key := GetShardedKey(TransactionPrefix, shardID, tx.Id)
+	// Marshal the thrylos.Transaction (protobuf)
+	txData, err := json.Marshal(tx) // Assuming this is still JSON for thrylos.Transaction
+	if err != nil {
+		return fmt.Errorf("error marshaling thrylos.Transaction: %v", err)
+	}
 
-	if err := txn.Set(key, txJSON); err != nil {
-		return fmt.Errorf("error storing transaction in BadgerDB: %v", err)
+	if err := txn.Set(key, txData); err != nil {
+		return fmt.Errorf("error storing thrylos.Transaction %s for shard %d in BadgerDB: %v", tx.Id, shardID, err)
 	}
 
 	if err := txn.Commit(); err != nil {
-		return fmt.Errorf("transaction commit failed: %v", err)
+		return fmt.Errorf("thrylos.Transaction commit failed for %s on shard %d: %v", tx.Id, shardID, err)
 	}
 
 	return nil
@@ -937,13 +979,13 @@ func (s *store) VerifyTransactionSignature(tx *types.Transaction, pubKey *crypto
 	return nil
 }
 
-func (s *store) TransactionExists(ctx types.TransactionContext, txID string) (bool, error) {
+func (s *store) TransactionExists(ctx types.TransactionContext, txID string, shardID types.ShardID) (bool, error) { // MODIFIED signature
 	badgerTxn := ctx.GetBadgerTxn()
 	if badgerTxn == nil {
 		return false, fmt.Errorf("invalid transaction context: nil badger transaction")
 	}
 
-	keyString := fmt.Sprintf("%s%s", TransactionPrefix, txID)
+	keyString := string(GetShardedKey(TransactionPrefix, shardID, txID)) // Use GetShardedKey
 	keyBytes := []byte(keyString)
 
 	_, err := badgerTxn.Get(keyBytes)
@@ -951,8 +993,8 @@ func (s *store) TransactionExists(ctx types.TransactionContext, txID string) (bo
 		return false, nil // Not found is not an error here
 	}
 	if err != nil {
-		log.Printf("ERROR: Error checking transaction existence for %s: %v", txID, err)
-		return false, fmt.Errorf("error checking transaction existence for %s: %w", txID, err)
+		log.Printf("ERROR: Error checking transaction existence for %s (shard %d): %v", txID, shardID, err)
+		return false, fmt.Errorf("error checking transaction existence for %s (shard %d): %w", txID, shardID, err)
 	}
 	return true, nil // Found
 }

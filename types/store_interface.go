@@ -1,6 +1,7 @@
 package types
 
 import (
+	badger "github.com/dgraph-io/badger/v3"
 	thrylos "github.com/thrylos-labs/thrylos"
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/crypto"
@@ -21,16 +22,17 @@ type Store interface {
 	MarkUTXOAsSpent(ctx TransactionContext, utxo UTXO, totalNumShards int) error
 
 	//Transaction
-	GetTransaction(id string) (*Transaction, error)
-	ProcessTransaction(tx *Transaction) error
-	SetTransaction(txn TransactionContext, key []byte, value []byte) error
-	SaveTransaction(tx *Transaction) error
 
-	TransactionExists(txContext TransactionContext, txID string) (bool, error)
+	RetrieveTransaction(txn *badger.Txn, transactionID string, shardID ShardID) (*Transaction, error)
+	SendTransaction(fromAddress, toAddress string, amount int, privKey crypto.PrivateKey, totalNumShards int) (bool, error) // MODIFIED
+	SaveTransaction(ctx TransactionContext, tx *Transaction, totalNumShards int) error                                      // MODIFIED (added ctx to align with common usage)
+	GetTransaction(id string, shardID ShardID) (*Transaction, error)                                                        // MODIFIED
+	ProcessTransaction(tx *Transaction, totalNumShards int) error                                                           // MODIFIED (assuming it orchestrates other sharded ops)
+	AddTransaction(tx *thrylos.Transaction, shardID ShardID) error                                                          // MODIFIED (if thrylos.Transaction is stored directly per-shard)
+	TransactionExists(ctx TransactionContext, txID string, shardID ShardID) (bool, error)                                   // MODIFIED
+	SetTransaction(txn TransactionContext, key []byte, value []byte) error
 
 	CommitTransaction(ctx TransactionContext) error
-	AddTransaction(tx *thrylos.Transaction) error
-	SendTransaction(fromAddress, toAddress string, amount int, privKey crypto.PrivateKey) (bool, error)
 	BeginTransaction() (TransactionContext, error)
 	RollbackTransaction(txn TransactionContext) error
 

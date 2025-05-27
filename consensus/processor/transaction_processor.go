@@ -26,6 +26,8 @@ type TransactionProcessorImpl struct {
 	ChainState         *types.ChainState       // This should be updated to point to the current ChainState
 	database           types.Store             // Add reference to database
 	stakingService     *staking.StakingService // Add reference to staking service
+	shardID            types.ShardID           // NEW: The ID of the shard this txPool serves
+
 }
 
 // Staking transaction types
@@ -101,7 +103,7 @@ func (tp *TransactionProcessorImpl) handleProcessedTransaction(tx *thrylos.Trans
 // HasTransaction checks whether a transaction with the specified ID exists in the node's pool of pending transactions.
 func (tp *TransactionProcessorImpl) HasTransaction(txID string) bool {
 	// Use the database to check if the transaction exists
-	tx, err := tp.database.GetTransaction(txID)
+	tx, err := tp.database.GetTransaction(txID, tp.shardID)
 	return err == nil && tx != nil
 }
 
