@@ -48,7 +48,7 @@ func (bc *BlockchainImpl) RegisterValidator(address string, pubKey string, bypas
 
 	lockChan := make(chan struct{})
 	go func() {
-		bc.Blockchain.Mu.Lock()
+		bc.ShardState.Mu.Lock()
 		close(lockChan)
 	}()
 
@@ -56,7 +56,7 @@ func (bc *BlockchainImpl) RegisterValidator(address string, pubKey string, bypas
 	case <-lockChan:
 		log.Printf("Lock acquired for address: %s", address)
 		defer func() {
-			bc.Blockchain.Mu.Unlock()
+			bc.ShardState.Mu.Unlock()
 			log.Printf("Lock released for address: %s", address)
 		}()
 	case <-time.After(10 * time.Second):
@@ -89,16 +89,16 @@ func (bc *BlockchainImpl) RegisterValidator(address string, pubKey string, bypas
 
 	// Store a pointer to the interface
 	var pubKeyInterface crypto.PublicKey = cryptoPubKey
-	bc.Blockchain.PublicKeyMap[formattedAddress] = &pubKeyInterface
+	bc.ShardState.PublicKeyMap[formattedAddress] = &pubKeyInterface
 
 	log.Printf("Stored public key in memory for address: %s", formattedAddress)
 
 	// Validate stake if not bypassing check
 	if !bypassStakeCheck {
-		stake, exists := bc.Blockchain.Stakeholders[formattedAddress]
-		if !exists || stake < bc.Blockchain.MinStakeForValidator.Int64() {
+		stake, exists := bc.ShardState.Stakeholders[formattedAddress]
+		if !exists || stake < bc.ShardState.MinStakeForValidator.Int64() {
 			log.Printf("Insufficient stake for %s: exists=%v, stake=%d, minStake=%d",
-				formattedAddress, exists, stake, bc.Blockchain.MinStakeForValidator.Int64())
+				formattedAddress, exists, stake, bc.ShardState.MinStakeForValidator.Int64())
 			return fmt.Errorf("insufficient stake or not found")
 		}
 	}
@@ -112,7 +112,7 @@ func (bc *BlockchainImpl) RegisterValidator(address string, pubKey string, bypas
 		cryptoPubKey := crypto.NewPublicKey(mldsaPubKey)
 
 		// Save the wrapped public key
-		dbChan <- bc.Blockchain.Database.SavePublicKey(cryptoPubKey)
+		dbChan <- bc.ShardState.Database.SavePublicKey(cryptoPubKey)
 	}()
 
 	select {
@@ -129,8 +129,8 @@ func (bc *BlockchainImpl) RegisterValidator(address string, pubKey string, bypas
 	log.Printf("Successfully stored public key in database for address: %s", formattedAddress)
 
 	// Assign the minimum stake to the new validator
-	minStake := bc.Blockchain.MinStakeForValidator.Int64()
-	bc.Blockchain.Stakeholders[formattedAddress] = minStake
+	minStake := bc.ShardState.MinStakeForValidator.Int64()
+	bc.ShardState.Stakeholders[formattedAddress] = minStake
 	log.Printf("Assigned minimum stake %d to validator %s", minStake, formattedAddress)
 
 	log.Printf("Validator registered successfully: address=%s", formattedAddress)
@@ -154,7 +154,7 @@ func (bc *BlockchainImpl) StoreValidatorPrivateKey(address string, privKeyBytes 
 	var privKeyInterface crypto.PrivateKey = cryptoPrivKey
 
 	// Store the pointer to the interface
-	if err := bc.Blockchain.ValidatorKeys.StoreKey(address, &privKeyInterface); err != nil {
+	if err := bc.ShardState.ValidatorKeys.StoreKey(address, &privKeyInterface); err != nil {
 		log.Printf("Failed to store private key for validator %s: %v", address, err)
 		return fmt.Errorf("failed to store private key for validator %s: %v", address, err)
 	}
@@ -168,8 +168,8 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, er
 	log.Printf("Starting to generate and store %d validator keys", count)
 	generatedAddresses := make([]string, 0, count) // Changed name for clarity
 
-	bc.Blockchain.Mu.Lock() // Lock access to PublicKeyMap
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock() // Lock access to PublicKeyMap
+	defer bc.ShardState.Mu.Unlock()
 
 	for i := 0; i < count; i++ {
 		log.Printf("Generating validator key %d of %d", i+1, count)
@@ -197,7 +197,7 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, er
 
 		// --- Step 4: Store Private Key using derived address string ---
 		var privKeyInterface crypto.PrivateKey = cryptoPrivKey
-		err = bc.Blockchain.ValidatorKeys.StoreKey(derivedAddressString, &privKeyInterface)
+		err = bc.ShardState.ValidatorKeys.StoreKey(derivedAddressString, &privKeyInterface)
 		if err != nil {
 			log.Printf("Failed to store validator private key for derived address %s: %v", derivedAddressString, err)
 			return generatedAddresses, fmt.Errorf("failed to store validator private key for %s: %w", derivedAddressString, err)
@@ -205,7 +205,7 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, er
 		// StoreKey now logs success and cache update internally
 
 		// --- Step 5: Store Public Key ---
-		err = bc.Blockchain.Database.SavePublicKey(cryptoPubKey)
+		err = bc.ShardState.Database.SavePublicKey(cryptoPubKey)
 		if err != nil {
 			log.Printf("Failed to store validator public key for derived address %s: %v", derivedAddressString, err)
 			return generatedAddresses, fmt.Errorf("failed to store validator public key for %s: %w", derivedAddressString, err)
@@ -214,11 +214,11 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, er
 
 		// --- Step 6: Store Public Key in In-Memory Map (using derived address string) ---
 		var pubKeyInterface crypto.PublicKey = cryptoPubKey
-		bc.Blockchain.PublicKeyMap[derivedAddressString] = &pubKeyInterface
+		bc.ShardState.PublicKeyMap[derivedAddressString] = &pubKeyInterface
 		log.Printf("DEBUG: Stored public key in PublicKeyMap cache for derived address %s", derivedAddressString)
 
 		// --- Step 7: Verification (Optional but Recommended) ---
-		retrievedPrivKeyPtr, exists := bc.Blockchain.ValidatorKeys.GetKey(derivedAddressString)
+		retrievedPrivKeyPtr, exists := bc.ShardState.ValidatorKeys.GetKey(derivedAddressString)
 		if !exists || retrievedPrivKeyPtr == nil || *retrievedPrivKeyPtr == nil {
 			log.Printf("CRITICAL: Failed to retrieve private key %s from cache immediately after storing", derivedAddressString)
 			return generatedAddresses, fmt.Errorf("failed to verify private key storage in cache for %s", derivedAddressString)
@@ -262,7 +262,7 @@ func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa
 
 	// Get the public key using the store's method
 	// This returns your *wrapper* type (crypto.PublicKey)
-	pubKeyWrapper, err := bc.Blockchain.Database.GetPublicKey(addr) // Assuming this returns crypto.PublicKey
+	pubKeyWrapper, err := bc.ShardState.Database.GetPublicKey(addr) // Assuming this returns crypto.PublicKey
 	if err != nil {
 		log.Printf("DEBUG: Failed GetPublicKey lookup for address object: %+v", addr)
 		return nil, fmt.Errorf("failed to get public key for validator %s from DB: %v", validatorAddress, err)
@@ -336,15 +336,15 @@ func (bc *BlockchainImpl) validatorExists(addr string) bool {
 	}
 
 	// Use the Address type with GetPublicKey
-	_, err = bc.Blockchain.Database.GetPublicKey(*validatorAddr)
+	_, err = bc.ShardState.Database.GetPublicKey(*validatorAddr)
 	return err == nil
 }
 
 func (bc *BlockchainImpl) IsActiveValidator(address string) bool {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
 
-	for _, validator := range bc.Blockchain.ActiveValidators {
+	for _, validator := range bc.ShardState.ActiveValidators {
 		if validator == address {
 			return true
 		}
@@ -353,8 +353,8 @@ func (bc *BlockchainImpl) IsActiveValidator(address string) bool {
 }
 
 func (bc *BlockchainImpl) UpdateActiveValidators(count int) {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
 
 	// Sort stakeholders by stake amount
 	type validatorStake struct {
@@ -365,7 +365,7 @@ func (bc *BlockchainImpl) UpdateActiveValidators(count int) {
 
 	// --- MODIFICATION START ---
 	// Get the minimum stake required from the Blockchain struct field
-	minStakeRequiredBigInt := bc.Blockchain.MinStakeForValidator
+	minStakeRequiredBigInt := bc.ShardState.MinStakeForValidator
 	if minStakeRequiredBigInt == nil {
 		log.Printf("WARN: MinStakeForValidator is nil in UpdateActiveValidators. Using default 0.")
 		minStakeRequiredBigInt = big.NewInt(0) // Avoid nil pointer panic, default to 0 or log error
@@ -377,7 +377,7 @@ func (bc *BlockchainImpl) UpdateActiveValidators(count int) {
 	log.Printf("DEBUG: [UpdateActiveValidators] Minimum stake required: %d nanoTHR", minStakeRequiredInt64)
 	// --- MODIFICATION END ---
 
-	for addr, stake := range bc.Blockchain.Stakeholders {
+	for addr, stake := range bc.ShardState.Stakeholders {
 		// --- MODIFICATION START ---
 		// Compare the stakeholder's stake (int64) with the required minimum (int64)
 		if stake >= minStakeRequiredInt64 {
@@ -409,14 +409,14 @@ func (bc *BlockchainImpl) UpdateActiveValidators(count int) {
 	}
 
 	// Check if the list actually changed before assigning and resetting index
-	currentActiveValidators := bc.Blockchain.ActiveValidators
+	currentActiveValidators := bc.ShardState.ActiveValidators
 	sort.Strings(currentActiveValidators) // Sort for comparison
 	sort.Strings(newActiveValidators)     // Sort for comparison
 
 	if !equalStringSlices(currentActiveValidators, newActiveValidators) {
 		log.Printf("INFO: [UpdateActiveValidators] Active validator set changed. New set has %d validators.", len(newActiveValidators))
-		bc.Blockchain.ActiveValidators = newActiveValidators // Assign the potentially new list
-		bc.Blockchain.NextValidatorIndex = 0                 // Reset index when the list changes
+		bc.ShardState.ActiveValidators = newActiveValidators // Assign the potentially new list
+		bc.ShardState.NextValidatorIndex = 0                 // Reset index when the list changes
 	} else {
 		log.Printf("DEBUG: [UpdateActiveValidators] Active validator set remains unchanged (%d validators).", len(newActiveValidators))
 	}
@@ -437,33 +437,33 @@ func equalStringSlices(a, b []string) bool {
 
 // // GetMinStakeForValidator returns the current minimum stake required for a validator
 func (bc *BlockchainImpl) GetMinStakeForValidator() *big.Int {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
-	return new(big.Int).Set(bc.Blockchain.MinStakeForValidator) // Return a copy to prevent modification
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
+	return new(big.Int).Set(bc.ShardState.MinStakeForValidator) // Return a copy to prevent modification
 }
 
 // // // You might also want to add a setter method if you need to update this value dynamically
 func (bc *BlockchainImpl) SetMinStakeForValidator(newMinStake *big.Int) {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
-	bc.Blockchain.MinStakeForValidator = new(big.Int).Set(newMinStake)
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
+	bc.ShardState.MinStakeForValidator = new(big.Int).Set(newMinStake)
 }
 
 func (bc *BlockchainImpl) SlashMaliciousValidator(validatorAddress string, slashAmount int64) {
-	if _, ok := bc.Blockchain.Stakeholders[validatorAddress]; ok {
+	if _, ok := bc.ShardState.Stakeholders[validatorAddress]; ok {
 		// Deduct the slashAmount from the stake
-		bc.Blockchain.Stakeholders[validatorAddress] -= slashAmount
-		if bc.Blockchain.Stakeholders[validatorAddress] <= 0 {
+		bc.ShardState.Stakeholders[validatorAddress] -= slashAmount
+		if bc.ShardState.Stakeholders[validatorAddress] <= 0 {
 			// Remove validator if their stake goes to zero or negative
-			delete(bc.Blockchain.Stakeholders, validatorAddress)
+			delete(bc.ShardState.Stakeholders, validatorAddress)
 		}
 	}
 }
 
 func (bc *BlockchainImpl) IsSlashed(validator string) bool {
 	// Check if validator is in slashed state
-	if stake, exists := bc.Blockchain.Stakeholders[validator]; exists {
-		return stake < bc.Blockchain.MinStakeForValidator.Int64() // Validator is slashed if below min stake
+	if stake, exists := bc.ShardState.Stakeholders[validator]; exists {
+		return stake < bc.ShardState.MinStakeForValidator.Int64() // Validator is slashed if below min stake
 	}
 	return false
 }
@@ -533,7 +533,7 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKey() (string, error) {
 	}
 
 	// Store the private key
-	err = bc.Blockchain.ValidatorKeys.StoreKey(address, &cryptoPrivKey)
+	err = bc.ShardState.ValidatorKeys.StoreKey(address, &cryptoPrivKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to store validator private key: %v", err)
 	}
@@ -542,19 +542,19 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKey() (string, error) {
 }
 
 func (bc *BlockchainImpl) GetActiveValidators() []string {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
-	return bc.Blockchain.ActiveValidators
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
+	return bc.ShardState.ActiveValidators
 }
 
 func (bc *BlockchainImpl) SelectNextValidator() (string, error) {
-	bc.Blockchain.Mu.Lock() // Lock needed to read ActiveValidators and read/write NextValidatorIndex safely
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock() // Lock needed to read ActiveValidators and read/write NextValidatorIndex safely
+	defer bc.ShardState.Mu.Unlock()
 
-	if len(bc.Blockchain.ActiveValidators) == 0 {
+	if len(bc.ShardState.ActiveValidators) == 0 {
 		// Fallback to Genesis if no active validators and Genesis key exists
-		if bc.Blockchain.GenesisAccount != nil && bc.Blockchain.GenesisAccount.PublicKey() != nil {
-			addr, err := bc.Blockchain.GenesisAccount.PublicKey().Address()
+		if bc.ShardState.GenesisAccount != nil && bc.ShardState.GenesisAccount.PublicKey() != nil {
+			addr, err := bc.ShardState.GenesisAccount.PublicKey().Address()
 			if err != nil {
 				log.Printf("ERROR: Cannot get Genesis address for fallback validator selection: %v", err)
 				return "", errors.New("no active validators and failed to get genesis address")
@@ -568,13 +568,13 @@ func (bc *BlockchainImpl) SelectNextValidator() (string, error) {
 
 	// Ensure index wraps around correctly
 	// Use modulo operator for cleaner wrap-around
-	currentIndex := bc.Blockchain.NextValidatorIndex % len(bc.Blockchain.ActiveValidators)
+	currentIndex := bc.ShardState.NextValidatorIndex % len(bc.ShardState.ActiveValidators)
 
-	selectedValidator := bc.Blockchain.ActiveValidators[currentIndex]
+	selectedValidator := bc.ShardState.ActiveValidators[currentIndex]
 	log.Printf("Selected validator index %d: %s", currentIndex, selectedValidator)
 
 	// Increment index for the next call, wrapping around using modulo
-	bc.Blockchain.NextValidatorIndex = (currentIndex + 1) // No need for explicit modulo here if we calculate currentIndex each time
+	bc.ShardState.NextValidatorIndex = (currentIndex + 1) // No need for explicit modulo here if we calculate currentIndex each time
 
 	return selectedValidator, nil
 }

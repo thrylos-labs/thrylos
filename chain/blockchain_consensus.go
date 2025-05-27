@@ -64,14 +64,14 @@ func (bc *BlockchainImpl) VerifySignedBlock(signedBlock *types.Block) error {
 // // This method encapsulates the logic for building a block to be added to the blockchain.
 func (bc *BlockchainImpl) CreateUnsignedBlock(transactions []*thrylos.Transaction, validator string) (*types.Block, error) {
 	// --- Acquire Lock (Read lock sufficient for getting prev block) ---
-	bc.Blockchain.Mu.RLock()
-	if len(bc.Blockchain.Blocks) == 0 {
-		bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock()
+	if len(bc.ShardState.Blocks) == 0 {
+		bc.ShardState.Mu.RUnlock()
 		return nil, errors.New("cannot create new block: blockchain is empty (no genesis block?)")
 	}
-	prevBlock := bc.Blockchain.Blocks[len(bc.Blockchain.Blocks)-1]
-	nextIndex := int64(len(bc.Blockchain.Blocks))
-	bc.Blockchain.Mu.RUnlock() // Release read lock
+	prevBlock := bc.ShardState.Blocks[len(bc.ShardState.Blocks)-1]
+	nextIndex := int64(len(bc.ShardState.Blocks))
+	bc.ShardState.Mu.RUnlock() // Release read lock
 	// --- End Lock ---
 
 	// Convert transactions from protobuf (thrylos.Transaction) to shared type (types.Transaction)

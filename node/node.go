@@ -24,7 +24,7 @@ type Node struct {
 
 	// Essential configuration and blockchain components
 	config     *types.BlockchainConfig
-	blockchain *types.Blockchain
+	Blockchain *types.ChainState // <--- Change this to *types.ChainState
 	Database   types.Store
 
 	// Transaction handling
@@ -72,8 +72,8 @@ type Node struct {
 	Address            string
 }
 
-func (n *Node) SetBlockchain(bc *types.Blockchain) {
-	n.blockchain = bc
+func (n *Node) SetBlockchain(chainState *types.ChainState) { // <--- New signature
+	n.Blockchain = chainState // Assign the new ChainState
 }
 
 func (n *Node) SetMessageChannel(ch chan types.Message) {
@@ -197,16 +197,20 @@ func (n *Node) ConfirmBlock(blockNumber int32) {
 // --- Methods from node_stakes.go (NOW INTEGRATED HERE) ---
 
 // UnstakeTokens handles unstaking/undelegation requests.
+// In node/node.go
+
 func (n *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64) error {
+
 	if n.StakingService == nil { // Will be initialized in main.go and set on node
 		return fmt.Errorf("StakingService is not initialized on Node")
 	}
-	if n.blockchain == nil || n.blockchain == nil { // Will be initialized in main.go and set on node
+
+	if n.Blockchain == nil {
 		return fmt.Errorf("Blockchain is not initialized on Node")
 	}
 
 	isValidator := n.StakingService.IsValidator(userAddress)
-	isDelegator = !isValidator
+	isDelegator = !isValidator // Logic here seems inverted for `isDelegator` based on `isValidator`
 
 	txType := "unstake"
 	if isDelegator {
@@ -217,14 +221,15 @@ func (n *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64)
 	timestamp := time.Now().Unix()
 
 	unstakingTx := &thrylos.Transaction{
-		Id:        txID,
-		Sender:    "staking_pool",
+		Id:     txID,
+		Sender: "staking_pool", // Be careful with "staking_pool" sender in a sharded system.
+		// This might need to point to a specific staking contract on a shard.
 		Timestamp: timestamp,
 		Outputs: []*thrylos.UTXO{{
 			OwnerAddress:  userAddress,
 			Amount:        amount,
-			Index:         0,
-			TransactionId: "",
+			Index:         0,  // Ensure this index logic is sound for UTXOs
+			TransactionId: "", // This will be the txID of the unstaking tx itself later
 		}},
 	}
 
@@ -245,6 +250,8 @@ func (n *Node) UnstakeTokens(userAddress string, isDelegator bool, amount int64)
 		return fmt.Errorf("timeout adding unstaking transaction to pool")
 	}
 
+	// This internal method in StakingService also needs to be updated to work with ChainState
+	// and potentially know which shard this unstake applies to.
 	return n.StakingService.UnstakeTokensInternal(userAddress, isDelegator, amount, timestamp)
 }
 

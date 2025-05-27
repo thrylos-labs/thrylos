@@ -33,27 +33,30 @@ type store struct {
 	validatorStore types.ValidatorKeyStore // Note lowercase first letter for internal field
 	utxos          map[string]types.UTXO   // Add this line
 	encryptionKey  []byte                  // The AES-256 key used for encryption and decryption
+	totalNumShards int                     // NEW: Store the total number of shards here
+
 }
 
 var globalUTXOCache *UTXOCache
 
 // NewStore creates a new store instance with the provided BadgerDB instance and encryption key.
 // NewStore creates a new store instance
-func NewStore(database *Database, encryptionKey []byte) (types.Store, error) {
+func NewStore(database *Database, encryptionKey []byte, totalNumShards int) (types.Store, error) { // Added totalNumShards
 	if database == nil {
 		return nil, fmt.Errorf("database cannot be nil")
 	}
 
-	c, err := NewUTXOCache(1024, 10000, 0.01)
+	c, err := NewUTXOCache(1024, 10000, 0.01) // Assuming this is correct
 	if err != nil {
 		return nil, fmt.Errorf("failed to create UTXO cache: %v", err)
 	}
 
 	s := &store{
-		db:            database,
-		cache:         c,
-		utxos:         make(map[string]types.UTXO),
-		encryptionKey: encryptionKey,
+		db:             database,
+		cache:          c,
+		utxos:          make(map[string]types.UTXO),
+		encryptionKey:  encryptionKey,
+		totalNumShards: totalNumShards, // NEW: Initialize totalNumShards
 	}
 
 	return s, nil
@@ -238,7 +241,8 @@ func (s *store) UpdateUTXOs(inputs []types.UTXO, outputs []types.UTXO) error {
 	txn := shared.NewTransactionContext(badgerTxn)
 
 	for _, input := range inputs {
-		err := s.MarkUTXOAsSpent(txn, input)
+		// Pass s.totalNumShards
+		err := s.MarkUTXOAsSpent(txn, input, s.totalNumShards) // FIXED: Added s.totalNumShards
 		if err != nil {
 			txn.Rollback()
 			return fmt.Errorf("error marking UTXO as spent: %w", err)
@@ -246,7 +250,8 @@ func (s *store) UpdateUTXOs(inputs []types.UTXO, outputs []types.UTXO) error {
 	}
 
 	for _, output := range outputs {
-		err := s.AddNewUTXO(txn, output)
+		// Pass s.totalNumShards
+		err := s.AddNewUTXO(txn, output, s.totalNumShards) // FIXED: Added s.totalNumShards
 		if err != nil {
 			txn.Rollback()
 			return fmt.Errorf("error adding new UTXO: %w", err)
@@ -289,7 +294,7 @@ func (s *store) updateUTXOsInTxn(txn *badger.Txn, inputs []types.UTXO, outputs [
 	return nil
 }
 
-func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO) error {
+func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO, totalNumShards int) error { // Added totalNumShards
 	if utxo.TransactionID == "" {
 		return fmt.Errorf("cannot add UTXO without TransactionID")
 	}
@@ -299,7 +304,8 @@ func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO) error 
 	}
 
 	// Use standard key format
-	keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxo.Key()) // utxo.Key() gives txid-index
+	shardID := CalculateShardID(utxo.OwnerAddress, totalNumShards) // Use utxo.OwnerAddress for UTXO shard ID
+	keyString := string(GetShardedKey(UTXOPrefix, shardID, utxo.Key()))
 	keyBytes := []byte(keyString)
 
 	// Use CBOR Marshal
@@ -320,7 +326,7 @@ func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO) error 
 	return nil
 }
 
-func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO) error {
+func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO, totalNumShards int) error { // Added totalNumShards
 	if utxo.TransactionID == "" {
 		return fmt.Errorf("transaction ID is required")
 	}
@@ -331,7 +337,8 @@ func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO) e
 	}
 
 	// Use standard key format from the UTXO object passed in
-	keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxo.Key())
+	shardID := CalculateShardID(utxo.OwnerAddress, totalNumShards) // Use utxo.OwnerAddress
+	keyString := string(GetShardedKey(UTXOPrefix, shardID, utxo.Key()))
 	keyBytes := []byte(keyString)
 	log.Printf("DEBUG: [MarkUTXOAsSpent TX] Marking UTXO key: %s", keyString)
 
@@ -372,7 +379,7 @@ func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO) e
 	return nil
 }
 
-func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string) (amount int64, err error) {
+func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string, ownerAddress string, totalNumShards int) (amount int64, err error) { // Added ownerAddress, totalNumShards
 	badgerTxn := ctx.GetBadgerTxn()
 	if badgerTxn == nil {
 		return 0, fmt.Errorf("invalid transaction context")
@@ -420,7 +427,7 @@ func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string) (amount 
 }
 
 // Uses standardized key prefix and CBOR.
-func (s *store) GetUTXOsForAddress(address string) ([]types.UTXO, error) {
+func (s *store) GetUTXOsForAddress(address string, totalNumShards int) ([]types.UTXO, error) { // Added totalNumShards
 	var utxos []types.UTXO
 	db := s.db.GetDB()
 	err := db.View(func(txn *badger.Txn) error {
@@ -971,31 +978,34 @@ func (s *store) InsertBlock(blockData []byte, blockNumber int) error {
 	return nil
 }
 
-func (s *store) GetLastBlockData() ([]byte, error) {
+func (s *store) GetLastBlockData(shardID types.ShardID) ([]byte, error) { // CORRECTED signature
 	var latestBlockData []byte
 	db := s.db.GetDB()
 
+	// Use sharded prefix for blocks
+	shardedPrefix := GetShardedKey(BlockPrefix, shardID) // GetShardedKey expects types.ShardID now
+
 	err := db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
-		opts.Reverse = true // Iterate in reverse order
+		opts.Reverse = true
+		opts.Prefix = shardedPrefix // Iterate only blocks for this shard
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		for it.Rewind(); it.Valid(); it.Next() {
+		for it.Rewind(); it.ValidForPrefix(shardedPrefix); it.Next() {
 			item := it.Item()
 			key := item.Key()
-			if strings.HasPrefix(string(key), "block-") {
-				// We've found the latest block
+			// Validate key format (e.g., blk-0-123) - it should now be "BlockPrefix + shardID + - + index"
+			// So, check if it starts with the sharded prefix.
+			if strings.HasPrefix(string(key), string(shardedPrefix)) { // Check if key starts with the specific sharded prefix
 				err := item.Value(func(val []byte) error {
-					// Make a copy of the block data
 					latestBlockData = append([]byte(nil), val...)
 					return nil
 				})
 				return err // Return from the View function after finding the latest block
 			}
 		}
-
-		return fmt.Errorf("no blocks found in the database")
+		return fmt.Errorf("no blocks found in the database for shard %d", shardID)
 	})
 
 	if err != nil {
@@ -1004,36 +1014,60 @@ func (s *store) GetLastBlockData() ([]byte, error) {
 	return latestBlockData, nil
 }
 
-func (s *store) GetLastBlockIndex() (int, error) {
+func (s *store) GetLastBlockIndex(shardID types.ShardID) (int, error) { // Already has shardID in signature (GOOD!)
 	var lastIndex int = -1 // Default to -1 to indicate no blocks if none found
 	db := s.db.GetDB()
+
+	// 1. Construct the sharded prefix for blocks
+	shardedBlockPrefix := GetShardedKey(BlockPrefix, shardID) // Use GetShardedKey
 
 	err := db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
 		opts.Reverse = true // Iterate in reverse order to get the latest block first
+		// 2. Set the iterator's prefix to the sharded block prefix
+		opts.Prefix = shardedBlockPrefix
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
-		if it.Rewind(); it.Valid() {
+		// 3. Rewind to the end of the specified prefix range
+		it.Rewind() // For reverse iteration with prefix, Rewind() typically seeks to the largest key <= prefix + max_byte
+
+		// 4. Check if the iterator is valid and within the prefix
+		// ValidForPrefix will check if the current key starts with `shardedBlockPrefix`
+		if it.ValidForPrefix(shardedBlockPrefix) {
 			item := it.Item()
 			key := item.Key()
-			if strings.HasPrefix(string(key), "block-") {
-				blockNumberStr := strings.TrimPrefix(string(key), "block-")
-				var parseErr error
-				lastIndex, parseErr = strconv.Atoi(blockNumberStr)
-				if parseErr != nil {
-					log.Printf("Error parsing block number from key %s: %v", key, parseErr)
-					return parseErr
-				}
-				return nil // Stop after the first (latest) block
+			// The key format is now "BlockPrefix-ShardID-Index" (e.g., "blk-0-123")
+			// So, we need to extract the index correctly.
+
+			// Example: Split key "blk-0-123" into parts: ["blk", "0", "123"]
+			// The block number/index is the third part (index 2).
+			keyParts := strings.Split(string(key), "-")
+			if len(keyParts) < 3 {
+				log.Printf("ERROR: Malformed block key encountered in GetLastBlockIndex for shard %d: %s", shardID, string(key))
+				return fmt.Errorf("malformed block key for shard %d: %s", shardID, string(key))
 			}
+			blockNumberStr := keyParts[2] // The block index part of the key
+			var parseErr error
+			lastIndex, parseErr = strconv.Atoi(blockNumberStr)
+			if parseErr != nil {
+				log.Printf("Error parsing block number from key %s for shard %d: %v", key, shardID, parseErr)
+				return parseErr
+			}
+			log.Printf("DEBUG: Found last block key %s with index %d for shard %d", string(key), lastIndex, shardID)
+			return nil // Stop after finding the latest block for this shard
 		}
-		return fmt.Errorf("no blocks found in the database")
+		// If the loop finishes and ValidForPrefix never returned true
+		log.Printf("DEBUG: No blocks found in the database for shard %d (prefix: %s)", shardID, string(shardedBlockPrefix))
+		return badger.ErrKeyNotFound // Treat as not found
 	})
 
 	if err != nil {
-		log.Printf("Failed to retrieve the last block index: %v", err)
-		return -1, err // Return -1 when no block is found
+		if err == badger.ErrKeyNotFound {
+			return -1, nil // No blocks found for this shard, which is not an error if it's a new shard
+		}
+		log.Printf("Failed to retrieve the last block index for shard %d: %v", shardID, err)
+		return -1, err
 	}
 
 	return lastIndex, nil
@@ -1193,28 +1227,36 @@ func (s *store) StoreBlock(blockData []byte, blockNumber int) error {
 }
 
 // RetrieveBlock retrieves serialized block data by block number.
-func (s *store) RetrieveBlock(blockNumber int) ([]byte, error) {
-	key := fmt.Sprintf("block-%d", blockNumber)
-	log.Printf("Retrieving block %d from the database", blockNumber)
+func (s *store) RetrieveBlock(shardID types.ShardID, blockNumber int) ([]byte, error) { // MODIFIED signature
+	// Construct the sharded key for the block
+	// Key format: BlockPrefix-ShardID-BlockNumber (e.g., "blk-0-123")
+	keyString := string(GetShardedKey(BlockPrefix, shardID, strconv.Itoa(blockNumber)))
+	keyBytes := []byte(keyString)
+
+	log.Printf("Retrieving block %d from shard %d from the database (key: %s)", blockNumber, shardID, keyString)
 	var blockData []byte
 	db := s.db.GetDB()
 	err := db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte(key))
+		item, err := txn.Get(keyBytes)
 		if err != nil {
-			return err
+			return err // Includes badger.ErrKeyNotFound
 		}
 		blockData, err = item.ValueCopy(nil)
 		if err != nil {
-			log.Printf("Error retrieving block data from key %s: %v", key, err)
+			log.Printf("Error retrieving block data from key %s: %v", keyString, err)
 		}
 		return err
 	})
 
 	if err != nil {
-		log.Printf("Failed to retrieve block %d: %v", blockNumber, err)
-		return nil, fmt.Errorf("failed to retrieve block data: %v", err)
+		if err == badger.ErrKeyNotFound {
+			log.Printf("Failed to retrieve block %d from shard %d: Key not found.", blockNumber, shardID)
+			return nil, fmt.Errorf("block %d not found for shard %d", blockNumber, shardID)
+		}
+		log.Printf("Failed to retrieve block %d from shard %d: %v", blockNumber, shardID, err)
+		return nil, fmt.Errorf("failed to retrieve block data for shard %d: %w", shardID, err)
 	}
-	log.Printf("Block %d retrieved successfully", blockNumber)
+	log.Printf("Block %d retrieved successfully from shard %d", blockNumber, shardID)
 	return blockData, nil
 }
 
@@ -1323,10 +1365,11 @@ func (s *store) UpdateTransactionStatus(txID string, status string, blockHash []
 }
 
 // BALANCE
-func (s *store) AddToBalance(ctx types.TransactionContext, address string, amount int64) error {
+func (s *store) AddToBalance(ctx types.TransactionContext, address string, amount int64, totalNumShards int) error { // Added totalNumShards
 	// ... (initial checks) ...
 
-	keyString := fmt.Sprintf("%s%s", BalancePrefix, address)
+	shardID := CalculateShardID(address, totalNumShards)
+	keyString := string(GetShardedKey(BalancePrefix, shardID, address))
 	keyBytes := []byte(keyString)
 	var currentBalance int64 = 0 // Initialize to 0
 	badgerTxn := ctx.GetBadgerTxn()
@@ -1412,9 +1455,10 @@ func (s *store) SaveStakeholderBalance(address string, balance int64) error {
 	return err
 }
 
-func (s *store) GetStakeholderBalance(address string) (int64, error) {
+func (s *store) GetStakeholderBalance(address string, totalNumShards int) (int64, error) { // Added totalNumShards
 	db := s.db.GetDB()
-	keyString := fmt.Sprintf("%s%s", BalancePrefix, address)
+	shardID := CalculateShardID(address, totalNumShards)
+	keyString := string(GetShardedKey(BalancePrefix, shardID, address))
 	keyBytes := []byte(keyString)
 	var balance int64 = 0
 

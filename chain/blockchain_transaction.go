@@ -51,19 +51,19 @@ func (bc *BlockchainImpl) ProcessPendingTransactions(validator string) (*types.B
 	}
 
 	// Take a snapshot of pending transactions under lock
-	bc.Blockchain.Mu.Lock()
+	bc.ShardState.Mu.Lock()
 	// Check if the pool is empty *after* acquiring the lock
-	if len(bc.Blockchain.PendingTransactions) == 0 {
-		bc.Blockchain.Mu.Unlock()
+	if len(bc.ShardState.PendingTransactions) == 0 {
+		bc.ShardState.Mu.Unlock()
 		log.Println("INFO: [ProcessPending] No pending transactions to process.")
 		return nil, nil // Nothing to process
 	}
 	// Create a copy to work with outside the lock
-	pendingTransactions := make([]*thrylos.Transaction, len(bc.Blockchain.PendingTransactions))
-	copy(pendingTransactions, bc.Blockchain.PendingTransactions)
+	pendingTransactions := make([]*thrylos.Transaction, len(bc.ShardState.PendingTransactions))
+	copy(pendingTransactions, bc.ShardState.PendingTransactions)
 	// Clear the main pending list immediately after copying
-	bc.Blockchain.PendingTransactions = make([]*thrylos.Transaction, 0)
-	bc.Blockchain.Mu.Unlock() // Release lock after copying/clearing
+	bc.ShardState.PendingTransactions = make([]*thrylos.Transaction, 0)
+	bc.ShardState.Mu.Unlock() // Release lock after copying/clearing
 
 	log.Printf("INFO: [ProcessPending] Attempting to process %d pending transactions.", len(pendingTransactions))
 
@@ -208,11 +208,11 @@ func (bc *BlockchainImpl) convertToSharedTransaction(tx *thrylos.Transaction) (t
 // // This function should return the number of transactions for a given address, which is often referred to as the "nonce."
 
 func (bc *BlockchainImpl) GetTransactionCount(address string) int {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
 
 	count := 0
-	for _, block := range bc.Blockchain.Blocks {
+	for _, block := range bc.ShardState.Blocks {
 		for _, transaction := range block.Transactions {
 			// Use SenderAddress instead of Sender and convert it to string for comparison
 			if transaction.SenderAddress.String() == address {
@@ -225,7 +225,7 @@ func (bc *BlockchainImpl) GetTransactionCount(address string) int {
 
 func (bc *BlockchainImpl) UpdateTransactionStatus(txID string, status string, blockHash []byte) (err error) { // Named return 'err'
 	// Begin a new database transaction specifically for this status update
-	txnCtx, startErr := bc.Blockchain.Database.BeginTransaction()
+	txnCtx, startErr := bc.ShardState.Database.BeginTransaction()
 	if startErr != nil {
 		err = fmt.Errorf("failed to begin database transaction for status update %s: %w", txID, startErr)
 		return err
@@ -235,7 +235,7 @@ func (bc *BlockchainImpl) UpdateTransactionStatus(txID string, status string, bl
 	defer func() {
 		if err != nil && txnCtx != nil {
 			log.Printf("Rolling back transaction status update for %s due to error: %v", txID, err)
-			_ = bc.Blockchain.Database.RollbackTransaction(txnCtx)
+			_ = bc.ShardState.Database.RollbackTransaction(txnCtx)
 		}
 	}() // Invoke the func literal
 
@@ -297,14 +297,14 @@ func (bc *BlockchainImpl) UpdateTransactionStatus(txID string, status string, bl
 
 	// Set the updated value in the transaction context
 	// Ensure SetTransaction exists and works with your context type
-	setErr := bc.Blockchain.Database.SetTransaction(txnCtx, txKey, updatedTxBytes)
+	setErr := bc.ShardState.Database.SetTransaction(txnCtx, txKey, updatedTxBytes)
 	if setErr != nil {
 		err = fmt.Errorf("error storing updated transaction %s: %w", txID, setErr)
 		return err
 	}
 
 	// --- Commit the transaction ---
-	commitErr := bc.Blockchain.Database.CommitTransaction(txnCtx)
+	commitErr := bc.ShardState.Database.CommitTransaction(txnCtx)
 	if commitErr != nil {
 		err = fmt.Errorf("error committing transaction status update for %s: %w", txID, commitErr)
 		txnCtx = nil // Prevent defer rollback after commit failure
@@ -321,7 +321,7 @@ func (bc *BlockchainImpl) UpdateTransactionStatus(txID string, status string, bl
 }
 
 // verifyTransactionUniqueness checks if a transaction's salt is unique across the blockchain
-func verifyTransactionUniqueness(tx *types.Transaction, bc *BlockchainImpl) error {
+func verifyTransactionUniqueness(tx *types.Transaction, bc *BlockchainImpl, shardID types.ShardID) error {
 	if tx == nil {
 		return fmt.Errorf("nil transaction")
 	}
@@ -333,7 +333,7 @@ func verifyTransactionUniqueness(tx *types.Transaction, bc *BlockchainImpl) erro
 	}
 
 	// Use the efficient helper function to check salt uniqueness
-	if bc.checkSaltInBlocks(tx.Salt) {
+	if bc.checkSaltInBlocks(tx.Salt, shardID) {
 		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
 	}
 
@@ -341,30 +341,42 @@ func verifyTransactionUniqueness(tx *types.Transaction, bc *BlockchainImpl) erro
 }
 
 // // // // Helper function to efficiently check salt uniqueness in all blocks
-func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte) bool {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
+func (bc *BlockchainImpl) checkSaltInBlocks(salt []byte, shardID types.ShardID) bool { // MODIFIED: Added shardID parameter
+	// Log for clarity, showing which shard this check is for.
+	log.Printf("DEBUG: checkSaltInBlocks called for salt %x on shard %d", salt, shardID)
+
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
 
 	// Create an efficient lookup for pending transaction salts
+	// These pending transactions should already be for THIS shard.
 	pendingSalts := make(map[string]bool)
-	for _, tx := range bc.Blockchain.PendingTransactions {
-		pendingSalts[string(tx.Salt)] = true
+	for _, tx := range bc.ShardState.PendingTransactions {
+		// Double check: ensure tx.Salt is not nil or empty before using as map key
+		if len(tx.Salt) > 0 {
+			pendingSalts[string(tx.Salt)] = true
+		}
 	}
 
 	// Check pending transactions first (faster in-memory check)
-	if pendingSalts[string(salt)] {
+	if len(salt) > 0 && pendingSalts[string(salt)] { // Add check for salt length
+		log.Printf("INFO: Duplicate salt %x found in pending transactions for shard %d.", salt, shardID)
 		return true
 	}
 
-	// Check confirmed blocks
-	for _, block := range bc.Blockchain.Blocks {
+	// Check confirmed blocks for this shard
+	// `bc.ShardState.Blocks` already represents the blocks for *this specific shard*,
+	// so no further filtering by `shardID` is needed here.
+	for _, block := range bc.ShardState.Blocks {
 		for _, tx := range block.Transactions {
 			if bytes.Equal(tx.Salt, salt) {
+				log.Printf("INFO: Duplicate salt %x found in block %d (Tx: %s) for shard %d.", salt, block.Index, tx.ID, shardID)
 				return true
 			}
 		}
 	}
 
+	log.Printf("DEBUG: Salt %x not found in blocks or pending transactions for shard %d.", salt, shardID)
 	return false
 }
 
@@ -376,9 +388,9 @@ func (bc *BlockchainImpl) validatePoolTransaction(tx *thrylos.Transaction) error
 		amount := tx.Outputs[0].Amount
 
 		// Get the delegator's balance directly from the blockchain's stakeholders map
-		bc.Blockchain.Mu.RLock()
-		delegatorBalance, exists := bc.Blockchain.Stakeholders[delegator]
-		bc.Blockchain.Mu.RUnlock()
+		bc.ShardState.Mu.RLock()
+		delegatorBalance, exists := bc.ShardState.Stakeholders[delegator]
+		bc.ShardState.Mu.RUnlock()
 
 		if !exists {
 			return fmt.Errorf("delegator not found: %s", delegator)
@@ -395,7 +407,7 @@ func (bc *BlockchainImpl) validatePoolTransaction(tx *thrylos.Transaction) error
 }
 
 // Update verifyTransactionUniqueness to handle thrylos.Transaction
-func verifyTransactionUniquenessTx(tx *thrylos.Transaction, bc *BlockchainImpl) error {
+func verifyTransactionUniquenessTx(tx *thrylos.Transaction, bc *BlockchainImpl, shardID types.ShardID) error {
 	if tx == nil {
 		return fmt.Errorf("nil transaction")
 	}
@@ -407,8 +419,9 @@ func verifyTransactionUniquenessTx(tx *thrylos.Transaction, bc *BlockchainImpl) 
 	}
 
 	// Use the efficient helper function to check salt uniqueness
-	if bc.checkSaltInBlocks(tx.Salt) {
-		return fmt.Errorf("duplicate salt detected: transaction replay attempt")
+	// This call is correct, as `bc.checkSaltInBlocks` takes `salt` and `shardID`.
+	if bc.checkSaltInBlocks(tx.Salt, shardID) {
+		return fmt.Errorf("duplicate salt detected: transaction replay attempt on shard %d", shardID) // Added shardID to error msg
 	}
 
 	return nil
@@ -423,14 +436,19 @@ func (bc *BlockchainImpl) VerifyTransaction(tx *thrylos.Transaction) (bool, erro
 		return false, fmt.Errorf("invalid salt length: expected 32 bytes, got %d", len(tx.Salt))
 	}
 
+	// Get the shardID from the current BlockchainImpl's state
+	currentShardID := bc.ShardState.ShardID
+
 	// Verify transaction uniqueness using salt
-	if err := verifyTransactionUniquenessTx(tx, bc); err != nil {
+	// Pass the currentShardID as the third argument
+	if err := verifyTransactionUniquenessTx(tx, bc, currentShardID); err != nil { // FIXED: Added currentShardID
 		return false, fmt.Errorf("salt verification failed: %v", err)
 	}
 
 	// Convert UTXOs to proto format
+	// This section also implicitly operates on the current shard's state
 	protoUTXOs := make(map[string][]*thrylos.UTXO)
-	for key, utxos := range bc.Blockchain.UTXOs {
+	for key, utxos := range bc.ShardState.UTXOs {
 		protoUTXOs[key] = utxos
 	}
 
@@ -443,7 +461,9 @@ func (bc *BlockchainImpl) VerifyTransaction(tx *thrylos.Transaction) (bool, erro
 		}
 
 		// This returns the crypto.PublicKey directly, don't try to convert to bytes
-		pubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+		// GetPublicKey doesn't typically need shardID if public keys are global.
+		// If your types.Store.GetPublicKey was updated to take shardID, pass it here.
+		pubKey, err := bc.ShardState.Database.GetPublicKey(*addr)
 		if err != nil {
 			return nil, err
 		}
@@ -452,6 +472,7 @@ func (bc *BlockchainImpl) VerifyTransaction(tx *thrylos.Transaction) (bool, erro
 	}
 
 	// Call VerifyTransactionData with the function that returns crypto.PublicKey
+	// VerifyTransactionData itself might need to be shard-aware if it does lookups.
 	isValid, err := VerifyTransactionData(tx, protoUTXOs, pubKeyFetcher)
 
 	if err != nil {
@@ -467,8 +488,8 @@ func (bc *BlockchainImpl) VerifyTransaction(tx *thrylos.Transaction) (bool, erro
 // // Now we can update ProcessPoolTransaction to use these conversion functions
 func (bc *BlockchainImpl) ProcessPoolTransaction(tx *thrylos.Transaction) error {
 	// Use the Blockchain's mutex instead of Mu which doesn't exist directly on BlockchainImpl
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
 
 	// Verify pool-related transaction if needed
 	if tx.Sender == "staking_pool" || (len(tx.Outputs) > 0 && tx.Outputs[0].OwnerAddress == "staking_pool") {
@@ -494,7 +515,7 @@ func min(a, b int) int {
 
 func (bc *BlockchainImpl) GetTransactionByID(id string) (*thrylos.Transaction, error) {
 	// iterate over blocks and transactions to find by ID
-	for _, block := range bc.Blockchain.Blocks {
+	for _, block := range bc.ShardState.Blocks {
 		for _, tx := range block.Transactions {
 			if tx.ID == id { // Changed from Id to ID to match the field name
 				// Convert from *types.Transaction to *thrylos.Transaction

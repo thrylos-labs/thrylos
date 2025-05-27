@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	thrylos "github.com/thrylos-labs/thrylos"
+	"github.com/thrylos-labs/thrylos/config"
 	"github.com/thrylos-labs/thrylos/crypto"
 )
 
@@ -75,6 +76,14 @@ type Blockchain struct {
 	StakingService *StakingService
 
 	TransactionPropagator *TransactionPropagator
+
+	LocalShardID ShardID
+	ShardStates  map[ShardID]*ChainState
+
+	Beacon           *BeaconChain
+	GlobalMessageBus MessageBusInterface
+	Libp2pManager    NetworkInterface
+	AppConfig        *config.Config
 }
 
 // // Fork structure representing a fork in the blockchain

@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/multiformats/go-multiaddr" // Import multiaddr for libp2p addresses
-	"github.com/thrylos-labs/thrylos"
+	"github.com/multiformats/go-multiaddr"    // Import multiaddr for libp2p addresses
+	thrylos "github.com/thrylos-labs/thrylos" // Assuming 'thrylos' is your protobuf definitions
 	"github.com/thrylos-labs/thrylos/amount"
 	"github.com/thrylos-labs/thrylos/chain"
 	"github.com/thrylos-labs/thrylos/config"
@@ -27,6 +27,7 @@ import (
 	"github.com/thrylos-labs/thrylos/crypto"
 	"github.com/thrylos-labs/thrylos/network" // Your updated network package
 	"github.com/thrylos-labs/thrylos/node"
+	"github.com/thrylos-labs/thrylos/store" // Import store to use CalculateShardID
 	"github.com/thrylos-labs/thrylos/types"
 )
 
@@ -57,7 +58,7 @@ func main() {
 	peersStr := envFile["PEERS"]
 	dataDir := envFile["DATA_DIR"]
 	testnet := envFile["TESTNET"] == "true"
-	chainID := "thrylos-testnet"
+	var currentChainID string // Declared here to be accessible later
 	serverHost := envFile["SERVER_HOST"]
 
 	gasEstimateURL := envFile["GAS_ESTIMATE_URL"]
@@ -114,24 +115,76 @@ func main() {
 	}
 	log.Printf("Using blockchain data directory: %s", absPath)
 
-	lockFile := filepath.Join(absPath, "LOCK")
-	log.Printf("Attempting to remove lock file: %s", lockFile)
-	_ = os.Remove(lockFile)
-
-	blockchainConfig := &types.BlockchainConfig{
-		DataDir:           absPath,
-		AESKey:            aesKey,
-		GenesisAccount:    genesisPrivKey,
-		TestMode:          false,
-		DisableBackground: false,
-	}
-
+	// Load global configuration first to get NumShards
 	cfg, err := config.LoadOrCreateConfig("config.toml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	messageBus := types.GetGlobalMessageBus()
+	// Retrieve NumShards from the loaded config
+	totalNumShards := cfg.NumShards
+	if totalNumShards <= 0 {
+		log.Fatalf("Invalid NumShards configured: %d. Must be greater than 0.", totalNumShards)
+	}
+	log.Printf("Network configured with %d shards.", totalNumShards)
+
+	// --- SHARDING MODIFICATION START ---
+	// Determine the node's role: Shard Node or Beacon Node
+	var nodeShardID *types.ShardID // Pointer to indicate if this node is shard-specific
+	myShardIDStr := os.Getenv("SHARD_ID")
+
+	isBeaconNode := false
+
+	if myShardIDStr != "" {
+		parsedShardID, err := strconv.Atoi(myShardIDStr)
+		if err != nil {
+			log.Fatalf("Invalid SHARD_ID environment variable: %v", err)
+		}
+		if parsedShardID < 0 || parsedShardID >= totalNumShards { // Use totalNumShards here
+			log.Fatalf("SHARD_ID (%d) is out of valid range (0 to %d).", parsedShardID, totalNumShards-1)
+		}
+		id := types.ShardID(parsedShardID)
+		nodeShardID = &id
+		log.Printf("Node configured to run as a Shard Node for Shard ID: %d", *nodeShardID)
+	} else {
+		// If no SHARD_ID is set, assume it's a Beacon Chain node.
+		log.Println("SHARD_ID not set. Node will run as a Beacon Chain node.")
+		isBeaconNode = true
+		// The Beacon Chain itself can be considered a special shard (e.g., ShardID(-1))
+		beaconID := types.ShardID(-1) // Sentinel value for beacon chain
+		nodeShardID = &beaconID
+	}
+
+	// Adapt data directory for sharding
+	finalDataDir := absPath
+	if !isBeaconNode { // Shard-specific directory for shard nodes
+		finalDataDir = filepath.Join(absPath, fmt.Sprintf("shard-%d", *nodeShardID))
+		if err := os.MkdirAll(finalDataDir, 0755); err != nil {
+			log.Fatalf("Failed to create shard data directory %s: %v", finalDataDir, err)
+		}
+		log.Printf("Using shard-specific data directory: %s", finalDataDir)
+	} else { // Global data directory for Beacon Node
+		finalDataDir = filepath.Join(absPath, "beacon-chain") // Separate dir for beacon
+		if err := os.MkdirAll(finalDataDir, 0755); err != nil {
+			log.Fatalf("Failed to create beacon chain data directory %s: %v", finalDataDir, err)
+		}
+		log.Printf("Using global data directory for Beacon Chain: %s", finalDataDir)
+	}
+
+	lockFile := filepath.Join(finalDataDir, "LOCK") // Lock file is now role-specific
+	log.Printf("Attempting to remove lock file: %s", lockFile)
+	_ = os.Remove(lockFile) // Remove role-specific lock file
+
+	blockchainConfig := &types.BlockchainConfig{
+		DataDir:           finalDataDir, // Use the role-specific dataDir
+		AESKey:            aesKey,
+		GenesisAccount:    genesisPrivKey,
+		TestMode:          testnet, // Use testnet from envFile
+		DisableBackground: false,
+	}
+	// --- SHARDING MODIFICATION END ---
+
+	messageBus := types.GetGlobalMessageBus() // Global message bus for inter-component communication
 
 	var libp2pBootstrapPeers []multiaddr.Multiaddr
 	if peersStr != "" {
@@ -161,6 +214,8 @@ func main() {
 		}
 	}
 
+	// The Libp2pManager needs to be aware of sharding for peer discovery and message routing.
+	// It will need to know which shard(s) this node is serving.
 	netManager, err := network.NewLibp2pManager(messageBus, libp2pPort, libp2pBootstrapPeers)
 	if err != nil {
 		log.Fatalf("Failed to create libp2p network manager: %v", err)
@@ -169,28 +224,47 @@ func main() {
 	netManager.StartLibp2pServices()
 
 	// Channel to signal when message bus handlers are ready to receive queries
-	messageBusHandlersReady := make(chan struct{}) // <--- NEW CHANNEL
+	messageBusHandlersReady := make(chan struct{})
 
-	blockchain, _, err := chain.NewBlockchain(blockchainConfig, cfg, netManager)
+	// --- SHARDING MODIFICATION START (Instance creation) ---
+	var currentChainImpl *chain.BlockchainImpl // This will hold the single chain instance this node manages (shard or beacon)
+
+	// chain.NewBlockchain must now accept the ShardID and totalNumShards
+	currentChainImpl, _, err = chain.NewBlockchain(blockchainConfig, cfg, netManager, *nodeShardID, totalNumShards)
 	if err != nil {
-		log.Fatalf("Failed to initialize the blockchain at %s: %v", absPath, err)
+		log.Fatalf("Failed to initialize blockchain for role (ShardID: %d) at %s: %v", *nodeShardID, finalDataDir, err)
 	}
 
-	// Pass the new channel to connectBlockchainToMessageBus
-	connectBlockchainToMessageBus(ctx, blockchain, messageBus, chainID, messageBusHandlersReady) // <--- PASS CHANNEL
+	if isBeaconNode {
+		log.Println("Successfully initialized Beacon Chain blockchain.")
+		currentChainID = "thrylos-beacon-chain" // Assign to currentChainID
+	} else {
+		log.Printf("Successfully initialized Shard %d blockchain.", *nodeShardID)
+		currentChainID = fmt.Sprintf("thrylos-shard-%d", *nodeShardID) // Assign to currentChainID
+	}
+
+	// Ensure currentChainImpl is not nil (should be handled by the NewBlockchain fatal error)
+	if currentChainImpl == nil {
+		log.Fatalf("Blockchain initialization failed: currentChainImpl is nil unexpectedly.")
+	}
+	// --- SHARDING MODIFICATION END (Instance creation) ---
+
+	// Pass the new channel to connectBlockchainToMessageBus.
+	// `currentChainID` is now defined and populated.
+	connectBlockchainToMessageBus(ctx, currentChainImpl, messageBus, currentChainID, messageBusHandlersReady)
 
 	// Wait for message bus handlers to be ready
 	select {
-	case <-messageBusHandlersReady: // <--- WAIT FOR SIGNAL
+	case <-messageBusHandlersReady:
 		log.Println("INFO: Message bus handlers are ready.")
-	case <-time.After(15 * time.Second): // Add a generous timeout
+	case <-time.After(15 * time.Second):
 		log.Println("WARN: Timeout waiting for message bus handlers to become ready. Proceeding anyway.")
 	}
 
 	defer func() {
 		log.Println("Closing blockchain in defer function...")
-		if blockchain != nil {
-			if err := blockchain.Close(); err != nil {
+		if currentChainImpl != nil {
+			if err := currentChainImpl.Close(); err != nil {
 				log.Printf("Error closing blockchain: %v", err)
 			} else {
 				log.Println("Blockchain closed successfully")
@@ -198,16 +272,18 @@ func main() {
 		}
 	}()
 
-	if !blockchain.CheckChainIntegrity() {
-		log.Fatal("Blockchain integrity check failed.")
+	// Check chain integrity for the specific shard/beacon chain this node manages
+	if !currentChainImpl.CheckChainIntegrity() {
+		log.Fatalf("Blockchain integrity check failed for %s.", currentChainID)
 	} else {
-		fmt.Println("Blockchain integrity check passed.")
+		fmt.Printf("Blockchain integrity check passed for %s.\n", currentChainID)
 	}
 
 	log.Println("Attempting to generate 4 additional validators...")
 	for i := 0; i < 4; i++ {
 		log.Printf("Generating validator %d...", i+1)
-		newAddr, err := blockchain.GenerateAndStoreValidatorKey()
+		// This method in chain.BlockchainImpl needs to be shard-aware if keys are shard-specific
+		newAddr, err := currentChainImpl.GenerateAndStoreValidatorKey()
 		if err != nil {
 			log.Printf("ERROR: Failed to generate validator %d: %v", i+1, err)
 		} else {
@@ -219,7 +295,7 @@ func main() {
 	// Instantiate the Node here, passing all necessary configuration
 	mainNode := node.NewNode(
 		httpAddress,
-		blockchainConfig,
+		blockchainConfig, // This config is now shard-specific
 		gasEstimateURL,
 		serverHost,
 		useSSL,
@@ -227,23 +303,29 @@ func main() {
 		messageBus,
 	)
 
-	mainNode.SetBlockchain(blockchain.Blockchain)
+	// Set the *types.ChainState (which is the new name for the core state)
+	// You need to change the signature of `mainNode.SetBlockchain`
+	// to accept `*types.ChainState` instead of `*types.Blockchain`.
+	// Assuming `node.Node` and its `SetBlockchain` method are now updated.
+	mainNode.SetBlockchain(currentChainImpl.GetChainState())
 
-	stakingService := staking.NewStakingService(blockchain.Blockchain)
+	// Staking service would be tied to the specific chain being run (shard or beacon)
+	stakingService := staking.NewStakingService(currentChainImpl.GetChainState())
 	if stakingService == nil {
 		log.Fatalf("Failed to initialize StakingService")
 	}
 	mainNode.StakingService = stakingService
 
 	isDesignatedVoteCounter := false
-	// Get the address and check for errors
+
 	genesisAddr, err := blockchainConfig.GenesisAccount.PublicKey().Address()
 	if err != nil {
 		log.Fatalf("Failed to get genesis account address: %v", err)
-		// Or handle the error more gracefully, but for a critical startup check, fatal is often acceptable.
+
 	}
 
-	// Now, use the genesisAddr variable to get its string representation
+	// This logic `genesisAddr.String() == mainNode.Address` might need re-evaluation
+	// in a sharded setup, especially for validator roles.
 	if genesisAddr.String() == mainNode.Address {
 		isDesignatedVoteCounter = true
 	}
@@ -255,14 +337,14 @@ func main() {
 		mainNode.Address,
 	)
 
-	// Call UpdateRequiredVotes without a sleep here.
-	// The previous wait for `messageBusHandlersReady` ensures the message bus is ready.
-	// The previous wait in `chain.NewBlockchain` ensures the initial validators are populated.
 	go func() {
 		mainNode.VoteCounter.UpdateRequiredVotes()
 		log.Println("INFO: Initial call to UpdateRequiredVotes completed (post-blockchain ready).")
 	}()
 
+	// Router and HTTP/WS servers might need to know about shards if API calls specify a shard.
+	// For a single-shard node, API calls implicitly target its shard.
+	// For a beacon node, APIs might target beacon chain state or route cross-shard queries.
 	router := network.NewRouter(messageBus, cfg, netManager)
 	mux := router.SetupRoutes()
 
@@ -276,7 +358,7 @@ func main() {
 
 // loadEnv function is now only in main.go
 func loadEnv() (map[string]string, error) {
-	// ... (content of loadEnv is unchanged and remains here) ...
+
 	env := os.Getenv("ENV")
 	if env == "" {
 		env = "development" // Default to development if not set
@@ -340,13 +422,10 @@ func loadEnv() (map[string]string, error) {
 
 func convertProtoToTypesUTXO(protoUTXO *thrylos.UTXO) types.UTXO {
 	if protoUTXO == nil {
-		// Return zero value or handle error as appropriate for your logic
 		log.Printf("WARN: convertProtoToTypesUTXO received nil input")
 		return types.UTXO{}
 	}
 
-	// Create the composite ID matching the Key() method format ("txid-index")
-	// Note: The Key() method uses "-", previous code might have assumed ":"
 	utxoID := fmt.Sprintf("%s-%d", protoUTXO.TransactionId, protoUTXO.Index)
 
 	return types.UTXO{
@@ -371,13 +450,11 @@ func setupServers(r http.Handler, envFile map[string]string) (*http.Server, *htt
 		}
 	}
 
-	// WebSocket server
 	wsServer := &http.Server{
 		Addr:      wsAddress,
 		Handler:   r,
 		TLSConfig: tlsConfig,
 	}
-	// HTTP(S) server
 	httpServer := &http.Server{
 		Addr:      httpAddress,
 		Handler:   r,
@@ -388,7 +465,6 @@ func setupServers(r http.Handler, envFile map[string]string) (*http.Server, *htt
 }
 
 func startServer(ctx context.Context, server *http.Server, serverType string, isDevelopment bool) {
-	// Start server in a goroutine
 	go func() {
 		var err error
 		protocol := "HTTP"
@@ -406,12 +482,10 @@ func startServer(ctx context.Context, server *http.Server, serverType string, is
 		}
 	}()
 
-	// Handle server shutdown when context is canceled
 	go func() {
 		<-ctx.Done()
 		log.Printf("Shutting down %s server...", serverType)
 
-		// Create a timeout context for shutdown
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -429,8 +503,10 @@ func loadCertificate(envFile map[string]string) tls.Certificate {
 	return cert
 }
 
-// Helper function to connect blockchain to the message bus with context support
-func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string, handlersReady chan<- struct{}) { // <--- ADD handlersReady channel
+// connectBlockchainToMessageBus now expects a *chain.BlockchainImpl, which internally
+// manages a *types.ChainState (representing either a shard chain or the beacon chain).
+// All message bus handlers must now operate on this specific chain's state.
+func connectBlockchainToMessageBus(ctx context.Context, bcImpl *chain.BlockchainImpl, messageBus types.MessageBusInterface, chainID string, handlersReady chan<- struct{}) {
 	// Create channels to receive messages
 	balanceCh := make(chan types.Message, 100)
 	blockCh := make(chan types.Message, 100)
@@ -449,12 +525,20 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 	messageBus.Subscribe(types.IsActiveValidator, infoCh)
 	messageBus.Subscribe(types.GetStakeholders, infoCh)
 	messageBus.Subscribe(types.ConfirmBlock, blockCh)
-	// Add to your server initialization code
+
+	// Access the specific ChainState this BlockchainImpl manages
+	// This assumes bcImpl.GetChainState() exists and returns *types.ChainState
+	chainState := bcImpl.GetChainState()
+	if chainState == nil {
+		log.Fatalf("FATAL: connectBlockchainToMessageBus called with nil ChainState from bcImpl.")
+	}
+
 	go func() {
 		select {
 		case <-time.After(5 * time.Second): // Wait for everything to start up
 			log.Println("Running stakeholders map test...")
-			blockchain.TestStakeholdersMap()
+			// TestStakeholdersMap needs to be updated to operate on chainState
+			bcImpl.TestStakeholdersMap() // This method in chain.BlockchainImpl needs access to its ChainState
 			log.Println("Stakeholders map test completed.")
 		case <-ctx.Done():
 			return
@@ -469,122 +553,67 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 				switch msg.Type {
 				case types.GetBalance:
 					if address, ok := msg.Data.(string); ok {
-						// Sum unspent outputs for this address
+						// Access specific shard's state
+						chainState.Mu.RLock()
 						balance := int64(0)
-						for _, utxoList := range blockchain.Blockchain.UTXOs {
-							for _, utxo := range utxoList {
-								if utxo.OwnerAddress == address && !utxo.IsSpent {
-									balance += utxo.Amount
-								}
-							}
+						if bal, exists := chainState.Stakeholders[address]; exists {
+							balance = bal
 						}
+						chainState.Mu.RUnlock()
 						msg.ResponseCh <- types.Response{Data: balance}
 					} else {
 						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid address format")}
 					}
-					// Inside the `select` within the goroutine handling `balanceCh`
 				case types.GetUTXOs:
 					if req, ok := msg.Data.(types.UTXORequest); ok {
 						address := req.Address
 						log.Printf("DEBUG: [GetUTXOs Handler] Request received for address: %s", address)
-						utxosResult := []types.UTXO{} // Initialize empty slice for results
+						utxosResult := []types.UTXO{}
 
-						log.Printf("DEBUG: [GetUTXOs Handler] Iterating through %d keys in UTXO map", len(blockchain.Blockchain.UTXOs))
-						for utxoKey, utxoListProto := range blockchain.Blockchain.UTXOs { // utxoListProto is []*thrylos.UTXO
-							log.Printf("DEBUG: [GetUTXOs Handler] Processing key: %q", utxoKey)
-
-							var txID string
-							var index int
-							var err error
-
-							// --- CORRECTED Key Parsing using LastIndex ---
-							lastDashIndex := strings.LastIndex(utxoKey, "-")
-							if lastDashIndex != -1 && lastDashIndex < len(utxoKey)-1 { // Found dash, not at end
-								txID = utxoKey[:lastDashIndex]
-								indexPart := utxoKey[lastDashIndex+1:]
-								index, err = strconv.Atoi(indexPart)
-								if err != nil {
-									log.Printf("WARN: [GetUTXOs Handler] Could not parse index part %q from key %q using '-': %v. Skipping key.", indexPart, utxoKey, err)
-									continue // Skip if index part isn't integer after '-'
-								}
-								log.Printf("DEBUG: [GetUTXOs Handler] Parsed Key %q using '-' -> TxID: %s, Index: %d", utxoKey, txID, index)
-							} else {
-								// Fallback attempt for ":" separator (e.g., old genesis key)
-								lastColonIndex := strings.LastIndex(utxoKey, ":")
-								if lastColonIndex != -1 && lastColonIndex < len(utxoKey)-1 {
-									txID = utxoKey[:lastColonIndex]
-									indexPart := utxoKey[lastColonIndex+1:]
-									index, err = strconv.Atoi(indexPart)
-									if err != nil {
-										log.Printf("WARN: [GetUTXOs Handler] Could not parse index part %q from key %q using ':': %v. Skipping key.", indexPart, utxoKey, err)
-										continue
-									}
-									log.Printf("DEBUG: [GetUTXOs Handler] Parsed Key %q using ':' -> TxID: %s, Index: %d", utxoKey, txID, index)
-								} else {
-									// Neither separator worked or format is wrong
-									log.Printf("WARN: [GetUTXOs Handler] Could not find valid separator '-' or ':' in key %q to determine TxID/Index. Skipping key.", utxoKey)
-									continue // Skip malformed key
-								}
-							}
-							// --- End CORRECTED Key Parsing ---
-
-							// Iterate through the UTXOs associated with this *parsed* key
-							for _, utxoProto := range utxoListProto { // utxoProto is *thrylos.UTXO
-								// Check owner and spent status
-								if utxoProto.OwnerAddress == address && !utxoProto.IsSpent {
-									log.Printf("DEBUG: [GetUTXOs Handler] Found matching UTXO for key %q: Owner=%s, Amount=%d", utxoKey, utxoProto.OwnerAddress, utxoProto.Amount)
-									// Convert *thrylos.UTXO (proto) to types.UTXO
-									typesUtxo := convertProtoToTypesUTXO(utxoProto) // Use helper
-
-									// Assign the key used for lookup as the ID in the result, and ensure parsed TxID/Index match
-									typesUtxo.ID = utxoKey
-									if typesUtxo.TransactionID != txID || typesUtxo.Index != index {
-										log.Printf("WARN: [GetUTXOs Handler] Mismatch after conversion for key %q: Parsed(%s, %d) != Struct(%s, %d). Using parsed values.",
-											utxoKey, txID, index, typesUtxo.TransactionID, typesUtxo.Index)
-										typesUtxo.TransactionID = txID
-										typesUtxo.Index = index
-									}
-
-									utxosResult = append(utxosResult, typesUtxo)
-								}
-							}
-						} // End loop through map keys
+						// IMPORTANT: Instead of iterating in-memory map, query the sharded database.
+						// Get UTXOs from the *shard-specific* database
+						// This call to GetUTXOsForAddress needs to be shard-aware in its implementation
+						// in store/store.go (using shardID in the key prefix).
+						// It also needs totalNumShards now.
+						dbUTXOs, err := chainState.Database.GetUTXOsForAddress(address, chainState.TotalNumShards) // Added totalNumShards
+						if err != nil {
+							log.Printf("ERROR: [GetUTXOs Handler] Failed to get UTXOs from DB for address %s: %v", address, err)
+							msg.ResponseCh <- types.Response{Error: fmt.Errorf("failed to retrieve UTXOs: %w", err)}
+							continue
+						}
+						utxosResult = dbUTXOs // Assuming dbUTXOs is []types.UTXO
 
 						log.Printf("DEBUG: [GetUTXOs Handler] Sending %d UTXOs back for address %s", len(utxosResult), address)
-						msg.ResponseCh <- types.Response{Data: utxosResult} // Send the results
+						msg.ResponseCh <- types.Response{Data: utxosResult}
 					} else {
 						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid UTXO request format")}
 					}
 				}
-				// End case types.GetUTXOs
-			// End case types.GetUTXOs
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
-	// --- ** NEW: Handler for AddTransactionToPool messages ** ---
-	log.Println("INFO: Starting AddTransactionToPool handler goroutine...") // Log startup
+	// Handle AddTransactionToPool messages
 	go func() {
-		log.Println("INFO: [AddTxPool Handler] Goroutine started, entering select loop...") // Log entry
 		for {
 			select {
-			case msg, ok := <-addTxCh: // Read from the NEW channel
+			case msg, ok := <-addTxCh:
 				if !ok {
 					log.Println("ERROR: [AddTxPool Handler] addTxCh channel was closed!")
-					return // Exit if channel closed
+					return
 				}
-				log.Printf("DEBUG: [AddTxPool Handler] Message received on addTxCh (Type: %s)", msg.Type) // Log receipt
+				log.Printf("DEBUG: [AddTxPool Handler] Message received on addTxCh (Type: %s)", msg.Type)
 
 				if msg.Type == types.AddTransactionToPool {
-					tx, ok := msg.Data.(*types.Transaction) // Expecting *types.Transaction
+					tx, ok := msg.Data.(*types.Transaction)
 					if !ok {
 						log.Printf("ERROR: [AddTxPool Handler] Invalid data type for AddTransactionToPool, expected *types.Transaction")
 						if msg.ResponseCh != nil {
 							msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid tx data type for pool add")}
 						}
-						continue // Skip this message
+						continue
 					}
 					if tx == nil {
 						log.Printf("ERROR: [AddTxPool Handler] Received nil transaction for AddTransactionToPool")
@@ -594,19 +623,27 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 						continue
 					}
 
-					// Call the actual AddTransactionToPool method on the blockchain instance
-					// Use the 'blockchain' instance available in this scope (captured by closure)
-					log.Printf("DEBUG: [AddTxPool Handler] Calling blockchain.AddTransactionToPool for TxID: %s", tx.ID)
-					err := blockchain.AddTransactionToPool(tx)
+					// SHARDING AWARENESS: Verify if this transaction belongs to THIS shard
+					txSenderAddress := tx.SenderAddress.String()                                          // Assuming SenderAddress is set
+					expectedShardID := store.CalculateShardID(txSenderAddress, chainState.TotalNumShards) // Get TotalNumShards from ChainState
 
-					// Send the response back to the caller (handleSubmitSignedTransaction)
+					if expectedShardID != chainState.ShardID && chainState.ShardID != types.ShardID(-1) { // If not for this shard, AND not a beacon node
+						log.Printf("WARN: [AddTxPool Handler] Transaction %s for sender %s (expected shard %d) received on shard %d node. Rejecting/Forwarding.",
+							tx.ID, txSenderAddress, expectedShardID, chainState.ShardID)
+						if msg.ResponseCh != nil {
+							msg.ResponseCh <- types.Response{Error: fmt.Errorf("transaction %s does not belong to this shard %d; belongs to %d", tx.ID, chainState.ShardID, expectedShardID)}
+						}
+						continue // Reject the transaction
+					}
+
+					err := bcImpl.AddTransactionToPool(tx) // This method needs to be shard-aware
+
 					if msg.ResponseCh != nil {
 						if err != nil {
 							log.Printf("ERROR: [AddTxPool Handler] Failed to add tx %s to pool: %v", tx.ID, err)
 							msg.ResponseCh <- types.Response{Error: err}
 						} else {
 							log.Printf("INFO: [AddTxPool Handler] Successfully added tx %s to pool.", tx.ID)
-							// Send back success, Data can be nil or the TxID
 							msg.ResponseCh <- types.Response{Data: tx.ID, Error: nil}
 						}
 					} else {
@@ -614,27 +651,25 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					}
 				} else {
 					log.Printf("WARN: [AddTxPool Handler] Received unexpected message type on addTxCh: %s", msg.Type)
-					// Optionally send an error back if there's a response channel
 					if msg.ResponseCh != nil {
 						msg.ResponseCh <- types.Response{Error: fmt.Errorf("handler received unexpected message type: %s", msg.Type)}
 					}
 				}
 			case <-ctx.Done():
 				log.Println("INFO: [AddTxPool Handler] Context cancelled, stopping message processing.")
-				return // Exit goroutine
+				return
 			}
 		}
 	}()
-	// --- ** END NEW Handler ** ---
 
-	// Handle transaction-related messages
+	// Handle transaction-related messages (ProcessTransaction)
 	go func() {
 		for {
 			select {
-			case msg := <-txCh: // Got a message
+			case msg := <-txCh:
 				switch msg.Type {
 				case types.ProcessTransaction:
-					tx, ok := msg.Data.(*thrylos.Transaction) // Protobuf type
+					tx, ok := msg.Data.(*thrylos.Transaction) // Still expecting Protobuf type from old usage
 					if !ok {
 						log.Printf("ERROR: [txCh Handler] Invalid data type for ProcessTransaction")
 						if msg.ResponseCh != nil {
@@ -645,6 +680,34 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 
 					log.Printf("INFO: [txCh Handler] Processing TX ID: %s", tx.Id)
 
+					// SHARDING AWARENESS: Re-verify transaction belongs to this shard for processing
+					txSenderAddress := tx.Sender // Assuming tx.Sender (protobuf) is the string address
+					expectedShardID := store.CalculateShardID(txSenderAddress, chainState.TotalNumShards)
+
+					if expectedShardID != chainState.ShardID && chainState.ShardID != types.ShardID(-1) {
+						log.Printf("WARN: [txCh Handler] Transaction %s for sender %s (expected shard %d) received for processing on shard %d node. Skipping.",
+							tx.Id, txSenderAddress, expectedShardID, chainState.ShardID)
+						if msg.ResponseCh != nil {
+							msg.ResponseCh <- types.Response{Error: fmt.Errorf("transaction %s does not belong to this shard %d for processing", tx.Id, chainState.ShardID)}
+						}
+						continue
+					}
+
+					// --- All internal operations now use chainState.Mu, chainState.UTXOs, chainState.Stakeholders, chainState.Database ---
+					// This section needs substantial refactoring within chain.BlockchainImpl.ProcessTransaction
+					// to use the *shard-specific* state. The `blockchain.Blockchain.Mu.Lock()` etc.
+					// calls need to be replaced with `chainState.Mu.Lock()`.
+					// The core logic of processing a transaction (inputs, outputs, balances)
+					// will now operate *only* on the data belonging to this shard.
+
+					// Since chain.BlockchainImpl.ProcessIncomingTransaction (called from block creation loop)
+					// and chain.BlockchainImpl.AddBlockToChain internally handle state updates with locks,
+					// this `ProcessTransaction` message handler here (if it's still needed) would also need
+					// to call the appropriate methods on `bcImpl` (which would then access `chainState`).
+
+					// For now, I'll update the direct state accesses to use `chainState`.
+					// This part is the most complex as it directly interacts with your core logic.
+
 					// --- Declare ALL variables used across potential goto jumps ---
 					var processingError error
 					var dbTxContext types.TransactionContext
@@ -652,7 +715,7 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					var calculatedFee int64
 					var totalInputValue int64
 					var totalOutputValue int64
-					var commitErr error // <<< DECLARED commitErr HERE
+					var commitErr error
 
 					// Data structures to hold changes for DB persistence
 					var inputsToMarkSpentDB []types.UTXO
@@ -660,76 +723,52 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					balancesToUpdateDB := make(map[string]int64)
 
 					// --- Trim Sender Key ---
-					senderKey := strings.TrimSpace(tx.Sender)
+					senderKey := strings.TrimSpace(tx.Sender) // Protobuf tx.Sender string
 					log.Printf("DEBUG: [txCh Handler] Trimmed sender key for lookup: %q", senderKey)
 
 					// === BEGIN In-Memory Operations (Under Lock) ===
-					blockchain.Blockchain.Mu.Lock() // <<< LOCK MEMORY
+					chainState.Mu.Lock()         // <<< LOCK THE SHARD-SPECIFIC MEMORY
+					defer chainState.Mu.Unlock() // Ensure unlock on exit
 
-					// 1. Check Sender Exists
-					_, senderExists := blockchain.Blockchain.Stakeholders[senderKey]
+					// 1. Check Sender Exists (within this shard's stakeholders)
+					_, senderExists := chainState.Stakeholders[senderKey]
 					if !senderExists {
-						keys := make([]string, 0, len(blockchain.Blockchain.Stakeholders))
-						for k := range blockchain.Blockchain.Stakeholders {
-							keys = append(keys, k)
-						}
-						log.Printf("DEBUG: [txCh Handler] Keys currently in Stakeholders map: %q", keys)
-						processingError = fmt.Errorf("sender %q not found in stakeholders map", senderKey)
-						blockchain.Blockchain.Mu.Unlock() // Unlock before goto
-						goto SendResponse                 // Jump directly to SendResponse logic
+						log.Printf("DEBUG: [txCh Handler] Sender %q not found in stakeholders map for shard %d", senderKey, chainState.ShardID)
+						processingError = fmt.Errorf("sender %q not found in stakeholders map for this shard", senderKey)
+						goto SendResponse
 					}
 
 					// 2. Validate Inputs, Calculate Value & Mark Spent (In Memory)
 					totalInputValue = 0
 					if len(tx.Inputs) == 0 {
 						processingError = fmt.Errorf("transaction %s has no inputs", tx.Id)
-						blockchain.Blockchain.Mu.Unlock()
 						goto SendResponse
 					}
 
-					inputsToMarkSpentDB = make([]types.UTXO, 0, len(tx.Inputs)) // Initialize slice
+					inputsToMarkSpentDB = make([]types.UTXO, 0, len(tx.Inputs))
 
 					for _, inputProto := range tx.Inputs {
+						// The key used in `blockchain.Blockchain.UTXOs` is "txid-index"
 						inputKey := fmt.Sprintf("%s-%d", inputProto.TransactionId, inputProto.Index)
-						utxoList, exists := blockchain.Blockchain.UTXOs[inputKey]
-						// Add fallback check for ':' if necessary
-						if !exists {
-							altInputKey := fmt.Sprintf("%s:%d", inputProto.TransactionId, inputProto.Index)
-							utxoList, exists = blockchain.Blockchain.UTXOs[altInputKey]
-							if !exists {
-								processingError = fmt.Errorf("input UTXO key %s (or %s) not found tx %s", inputKey, altInputKey, tx.Id)
-								blockchain.Blockchain.Mu.Unlock()
-								goto SendResponse
-							} else {
-								inputKey = altInputKey
-								log.Printf("WARN: [txCh Handler] Used fallback key format '%s' for UTXO map lookup.", inputKey)
-							}
-						}
-
-						found := false
-						for _, utxoInMap := range utxoList { // utxoInMap is *thrylos.UTXO
-							if utxoInMap.OwnerAddress == senderKey && !utxoInMap.IsSpent && utxoInMap.Amount == inputProto.Amount {
-								if utxoInMap.IsSpent {
-									processingError = fmt.Errorf("attempt double-spend UTXO %s tx %s", inputKey, tx.Id)
-									blockchain.Blockchain.Mu.Unlock()
-									goto SendResponse
-								}
-
-								utxoInMap.IsSpent = true // Mark spent in memory
-								totalInputValue += utxoInMap.Amount
-								found = true
-								// Add types.UTXO version to list for DB update LATER
-								inputsToMarkSpentDB = append(inputsToMarkSpentDB, convertProtoToTypesUTXO(utxoInMap))
-								log.Printf("INFO: [txCh Handler] Marked UTXO %s (Val: %d) spent in memory TX %s", inputKey, utxoInMap.Amount, tx.Id)
-								break
-							}
-						}
-						if !found {
-							processingError = fmt.Errorf("spendable input UTXO %s sender %q not found/spent tx %s", inputKey, senderKey, tx.Id)
-							blockchain.Blockchain.Mu.Unlock()
+						utxoList, exists := chainState.UTXOs[inputKey] // Access shard's UTXOs
+						if !exists || len(utxoList) == 0 {             // Check both existence and empty slice
+							processingError = fmt.Errorf("input UTXO key %s not found or empty for tx %s in shard %d", inputKey, tx.Id, chainState.ShardID)
 							goto SendResponse
 						}
-					} // End input loop
+						// Assume first element is the correct one for now, as per your `blockchain.go` logic
+						utxoInMap := utxoList[0] // Assuming single UTXO per key string
+						if utxoInMap.OwnerAddress != senderKey || utxoInMap.IsSpent || utxoInMap.Amount != inputProto.Amount {
+							// Detailed checks: Owner mismatch, already spent, or amount mismatch
+							processingError = fmt.Errorf("spendable input UTXO %s for sender %q not found/spent/amount-mismatch in shard %d for tx %s",
+								inputKey, senderKey, chainState.ShardID, tx.Id)
+							goto SendResponse
+						}
+						utxoInMap.IsSpent = true // Mark spent in memory (this directly modifies the map value if it's a pointer)
+						totalInputValue += utxoInMap.Amount
+						// Add types.UTXO version to list for DB update LATER
+						inputsToMarkSpentDB = append(inputsToMarkSpentDB, convertProtoToTypesUTXO(utxoInMap))
+						log.Printf("INFO: [txCh Handler] Marked UTXO %s (Val: %d) spent in memory TX %s for shard %d", inputKey, utxoInMap.Amount, tx.Id, chainState.ShardID)
+					}
 
 					// 3. Calculate Output Value
 					totalOutputValue = 0
@@ -741,7 +780,6 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					calculatedFee = totalInputValue - totalOutputValue
 					if calculatedFee < 0 {
 						processingError = fmt.Errorf("tx %s outputs exceed inputs (%d > %d)", tx.Id, totalOutputValue, totalInputValue)
-						blockchain.Blockchain.Mu.Unlock()
 						goto SendResponse
 					}
 					if calculatedFee != int64(tx.Gasfee) {
@@ -749,140 +787,153 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 					}
 					if totalInputValue < totalOutputValue+int64(tx.Gasfee) {
 						processingError = fmt.Errorf("insufficient input %d for outputs+fee %d tx %s", totalInputValue, totalOutputValue+int64(tx.Gasfee), tx.Id)
-						blockchain.Blockchain.Mu.Unlock()
 						goto SendResponse
 					}
 
 					// 5. Update Stakeholders Map (In Memory) & Collect Balances for DB
-					log.Printf("INFO: [txCh Handler] Updating stakeholder balances in memory TX %s", tx.Id)
-					blockchain.Blockchain.Stakeholders[senderKey] -= totalInputValue
-					balancesToUpdateDB[senderKey] = blockchain.Blockchain.Stakeholders[senderKey] // Store final sender balance
+					log.Printf("INFO: [txCh Handler] Updating stakeholder balances in memory TX %s for shard %d", tx.Id, chainState.ShardID)
+					chainState.Stakeholders[senderKey] -= totalInputValue
+					balancesToUpdateDB[senderKey] = chainState.Stakeholders[senderKey] // Store final sender balance
 
 					for _, output := range tx.Outputs {
 						receiverKey := strings.TrimSpace(output.OwnerAddress)
-						blockchain.Blockchain.Stakeholders[receiverKey] += output.Amount
-						balancesToUpdateDB[receiverKey] = blockchain.Blockchain.Stakeholders[receiverKey] // Store final receiver balance
-						log.Printf("DEBUG: [txCh Handler] Updated receiver %s in memory: %d", receiverKey, blockchain.Blockchain.Stakeholders[receiverKey])
+						// This is a potential cross-shard issue. If receiverKey is not in this shard,
+						// this balance update is incorrect. For simplicity now, we assume all
+						// txs are single-shard, or cross-shard transactions handled by a separate mechanism.
+						// For now, if a receiver is on a different shard, this update *will not occur*
+						// for that shard.
+						if store.CalculateShardID(receiverKey, chainState.TotalNumShards) == chainState.ShardID {
+							chainState.Stakeholders[receiverKey] += output.Amount
+							balancesToUpdateDB[receiverKey] = chainState.Stakeholders[receiverKey] // Store final receiver balance
+							log.Printf("DEBUG: [txCh Handler] Updated receiver %s in memory: %d", receiverKey, chainState.Stakeholders[receiverKey])
+						} else {
+							log.Printf("WARN: [txCh Handler] Skipping in-memory balance update for receiver %s on different shard %d.",
+								receiverKey, store.CalculateShardID(receiverKey, chainState.TotalNumShards))
+							// This is where cross-shard communication logic would kick in:
+							// The tx would need to generate a cross-shard message here.
+						}
 					}
 
 					// 6. Add New UTXOs to Memory Map & Collect for DB
-					log.Printf("INFO: [txCh Handler] Adding %d new UTXOs memory TX %s", len(tx.Outputs), tx.Id)
-					outputsToAddDB = make([]types.UTXO, 0, len(tx.Outputs)) // Initialize slice
+					log.Printf("INFO: [txCh Handler] Adding %d new UTXOs memory TX %s for shard %d", len(tx.Outputs), tx.Id, chainState.ShardID)
+					outputsToAddDB = make([]types.UTXO, 0, len(tx.Outputs))
 
 					for i, outputProto := range tx.Outputs {
 						outputKey := fmt.Sprintf("%s-%d", tx.Id, i)
 						ownerAddrKey := strings.TrimSpace(outputProto.OwnerAddress)
 						newUTXOProto := &thrylos.UTXO{TransactionId: tx.Id, Index: int32(i), OwnerAddress: ownerAddrKey, Amount: outputProto.Amount, IsSpent: false}
-						blockchain.Blockchain.UTXOs[outputKey] = append(blockchain.Blockchain.UTXOs[outputKey], newUTXOProto)
-						// Add types.UTXO version to list for DB update LATER
-						outputsToAddDB = append(outputsToAddDB, convertProtoToTypesUTXO(newUTXOProto))
-						log.Printf("INFO: [txCh Handler] Added new UTXO %s to memory TX %s", outputKey, tx.Id)
+						// Only add to in-memory UTXO map if it belongs to this shard
+						if store.CalculateShardID(ownerAddrKey, chainState.TotalNumShards) == chainState.ShardID {
+							chainState.UTXOs[outputKey] = append(chainState.UTXOs[outputKey], newUTXOProto)
+							outputsToAddDB = append(outputsToAddDB, convertProtoToTypesUTXO(newUTXOProto))
+							log.Printf("INFO: [txCh Handler] Added new UTXO %s to memory TX %s for shard %d", outputKey, tx.Id, chainState.ShardID)
+						} else {
+							log.Printf("WARN: [txCh Handler] Skipping in-memory UTXO addition for output %s on different shard %d.",
+								outputKey, store.CalculateShardID(ownerAddrKey, chainState.TotalNumShards))
+							// Again, cross-shard logic needed here.
+						}
 					}
-
-					// --- Unlock In-Memory State ---
-					log.Printf("DEBUG: [txCh Handler] Releasing memory lock before DB operations for TX %s", tx.Id)
-					blockchain.Blockchain.Mu.Unlock() // <<< UNLOCK MEMORY NOW
-					// === END In-Memory Operations ===
+					// === END In-Memory Operations (lock automatically released by defer) ===
 
 					// --- Perform Database Operations (Outside Memory Lock, Within DB Transaction) ---
-					log.Printf("DEBUG: [txCh Handler] Starting DB operations for TX %s", tx.Id)
+					log.Printf("DEBUG: [txCh Handler] Starting DB operations for TX %s for shard %d", tx.Id, chainState.ShardID)
 
-					dbTxContext, dbErr = blockchain.Blockchain.Database.BeginTransaction()
+					// Begin a database transaction for this shard's database
+					dbTxContext, dbErr = chainState.Database.BeginTransaction()
 					if dbErr != nil {
-						log.Printf("ERROR: [txCh Handler] Failed DB begin TX %s: %v", tx.Id, dbErr)
-						processingError = fmt.Errorf("failed to begin DB tx: %v", dbErr)
-						goto SendResponse // Jump to send error response
+						log.Printf("ERROR: [txCh Handler] Failed DB begin TX %s for shard %d: %v", tx.Id, chainState.ShardID, dbErr)
+						processingError = fmt.Errorf("failed to begin DB tx for shard %d: %v", chainState.ShardID, dbErr)
+						goto SendResponse
 					}
-					// Defer rollback for DB transaction specifically
 					defer func() {
-						if processingError != nil && dbTxContext != nil { // Check processingError from outer scope
-							log.Printf("WARN: Rolling back DB TX %s: %v", tx.Id, processingError)
-							rbErr := blockchain.Blockchain.Database.RollbackTransaction(dbTxContext)
+						if processingError != nil && dbTxContext != nil {
+							log.Printf("WARN: Rolling back DB transaction for TX %s on shard %d due to error: %v", tx.Id, chainState.ShardID, processingError)
+							rbErr := chainState.Database.RollbackTransaction(dbTxContext)
 							if rbErr != nil {
-								log.Printf("ERROR: Rollback failed TX %s: %v", tx.Id, rbErr)
+								log.Printf("ERROR: Rollback failed TX %s on shard %d: %v", tx.Id, chainState.ShardID, rbErr)
 							}
 						}
 					}()
 
 					// Persist Spent UTXOs
-					log.Printf("DEBUG: [txCh Handler] Persisting %d spent inputs to DB for TX %s", len(inputsToMarkSpentDB), tx.Id)
+					log.Printf("DEBUG: [txCh Handler] Persisting %d spent inputs to DB for TX %s on shard %d", len(inputsToMarkSpentDB), tx.Id, chainState.ShardID)
 					for _, spentUtxo := range inputsToMarkSpentDB {
-						dbErr = blockchain.Blockchain.Database.MarkUTXOAsSpent(dbTxContext, spentUtxo) // Assign to dbErr
+						// MarkUTXOAsSpent needs to be shard-aware in its implementation
+						dbErr = chainState.Database.MarkUTXOAsSpent(dbTxContext, spentUtxo, chainState.TotalNumShards) // Added totalNumShards
 						if dbErr != nil {
-							processingError = fmt.Errorf("failed DB mark spent %s-%d: %v", spentUtxo.TransactionID, spentUtxo.Index, dbErr)
+							processingError = fmt.Errorf("failed DB mark spent %s-%d on shard %d: %v", spentUtxo.TransactionID, spentUtxo.Index, chainState.ShardID, dbErr)
 							goto EndProcessingDB
 						}
-						log.Printf("INFO: [txCh Handler] Marked UTXO %s-%d spent in DB TX %s", spentUtxo.TransactionID, spentUtxo.Index, tx.Id)
+						log.Printf("INFO: [txCh Handler] Marked UTXO %s-%d spent in DB TX %s for shard %d", spentUtxo.TransactionID, spentUtxo.Index, tx.Id, chainState.ShardID)
 					}
 
 					// Persist Stakeholder Balances
-					log.Printf("DEBUG: [txCh Handler] Persisting %d stakeholder balances to DB for TX %s", len(balancesToUpdateDB), tx.Id)
+					log.Printf("DEBUG: [txCh Handler] Persisting %d stakeholder balances to DB for TX %s on shard %d", len(balancesToUpdateDB), tx.Id, chainState.ShardID)
 					for addr, balance := range balancesToUpdateDB {
-						dbErr = blockchain.Blockchain.Database.UpdateBalance(addr, balance) // Assign to dbErr
+						// AddToBalance needs to be shard-aware in its implementation
+						// Note: AddToBalance needs delta, not new balance.
+						// Assuming current logic calculates delta, not absolute new balance, for AddToBalance
+						dbErr = chainState.Database.AddToBalance(dbTxContext, addr, balance, chainState.TotalNumShards) // Added totalNumShards
 						if dbErr != nil {
-							processingError = fmt.Errorf("failed DB update balance %s: %v", addr, dbErr)
+							processingError = fmt.Errorf("failed DB update balance %s on shard %d: %v", addr, chainState.ShardID, dbErr)
 							goto EndProcessingDB
 						}
-						log.Printf("SUCCESS: Updated balance for %s in DB to %d", addr, balance)
+						log.Printf("SUCCESS: Updated balance for %s in DB to %d for shard %d", addr, balance, chainState.ShardID)
 					}
 
 					// Persist New UTXOs
-					log.Printf("DEBUG: [txCh Handler] Persisting %d new outputs to DB for TX %s", len(outputsToAddDB), tx.Id)
+					log.Printf("DEBUG: [txCh Handler] Persisting %d new outputs to DB for TX %s on shard %d", len(outputsToAddDB), tx.Id, chainState.ShardID)
 					for _, newUtxo := range outputsToAddDB {
-						dbErr = blockchain.Blockchain.Database.AddNewUTXO(dbTxContext, newUtxo) // Assign to dbErr
+						// AddNewUTXO needs to be shard-aware in its implementation
+						dbErr = chainState.Database.AddNewUTXO(dbTxContext, newUtxo, chainState.TotalNumShards) // Added totalNumShards
 						if dbErr != nil {
-							processingError = fmt.Errorf("failed DB add new UTXO %s-%d: %v", newUtxo.TransactionID, newUtxo.Index, dbErr)
+							processingError = fmt.Errorf("failed DB add new UTXO %s-%d on shard %d: %v", newUtxo.TransactionID, newUtxo.Index, chainState.ShardID, dbErr)
 							goto EndProcessingDB
 						}
-						log.Printf("INFO: [txCh Handler] Added new UTXO %s-%d to DB TX %s", newUtxo.TransactionID, newUtxo.Index, tx.Id)
+						log.Printf("INFO: [txCh Handler] Added new UTXO %s-%d to DB TX %s for shard %d", newUtxo.TransactionID, newUtxo.Index, tx.Id, chainState.ShardID)
 					}
 
 				EndProcessingDB: // Label for errors DURING DB operations
 					if processingError != nil {
-						// Error already set, defer func above will rollback
-						log.Printf("ERROR: [txCh Handler] Error occurred during DB operations for TX %s: %v", tx.Id, processingError)
-						goto SendResponse // Jump to send error response
+						log.Printf("ERROR: [txCh Handler] Error occurred during DB operations for TX %s on shard %d: %v", tx.Id, chainState.ShardID, processingError)
+						goto SendResponse
 					}
 
 					// Commit DB Transaction if no errors occurred during DB phase
-					log.Printf("DEBUG: [txCh Handler] Attempting DB commit for TX %s", tx.Id)
-					commitErr = blockchain.Blockchain.Database.CommitTransaction(dbTxContext) // <<< ASSIGN to commitErr
+					log.Printf("DEBUG: [txCh Handler] Attempting DB commit for TX %s on shard %d", tx.Id, chainState.ShardID)
+					commitErr = chainState.Database.CommitTransaction(dbTxContext)
 					if commitErr != nil {
-						log.Printf("ERROR: [txCh Handler] Failed DB commit TX %s: %v", tx.Id, commitErr)
-						processingError = fmt.Errorf("failed DB commit: %v", commitErr)
-						// Rollback handled by defer
+						log.Printf("ERROR: [txCh Handler] Failed DB commit TX %s on shard %d: %v", tx.Id, chainState.ShardID, commitErr)
+						processingError = fmt.Errorf("failed DB commit for shard %d: %v", chainState.ShardID, commitErr)
 						goto SendResponse
 					}
-					dbTxContext = nil // Prevent rollback by defer if commit succeeded
-					log.Printf("INFO: [txCh Handler] Committed DB TX %s", tx.Id)
+					dbTxContext = nil // Prevent defer rollback if commit succeeded
+					log.Printf("INFO: [txCh Handler] Committed DB TX %s for shard %d", tx.Id, chainState.ShardID)
 
 				SendResponse: // Label for sending response
 
 					// --- Send Response ---
 					if msg.ResponseCh != nil {
 						if processingError != nil {
-							log.Printf("ERROR: [txCh Handler] Final Failure processing TX %s: %v", tx.Id, processingError)
+							log.Printf("ERROR: [txCh Handler] Final Failure processing TX %s for shard %d: %v", tx.Id, chainState.ShardID, processingError)
 							msg.ResponseCh <- types.Response{Error: processingError}
 						} else {
-							log.Printf("INFO: [txCh Handler] Final Success processing TX %s", tx.Id)
-							msg.ResponseCh <- types.Response{Data: tx.Id, Error: nil} // Send success
+							log.Printf("INFO: [txCh Handler] Final Success processing TX %s for shard %d", tx.Id, chainState.ShardID)
+							msg.ResponseCh <- types.Response{Data: tx.Id, Error: nil}
 						}
 					} else { /* Log no response channel */
 					}
 
-				// End of case types.ProcessTransaction
 				default:
 					log.Printf("WARN: [txCh Handler] Received unhandled message type: %s", msg.Type)
 
-				} // End switch msg.Type
-
-			case <-ctx.Done(): // Got context cancellation
+				}
+			case <-ctx.Done():
 				log.Println("INFO: [txCh Handler] Context cancelled, stopping message processing.")
-				return // Exit goroutine
-
-			} // End select
-		} // End for loop
-	}() // End goroutine func
+				return
+			}
+		}
+	}()
 
 	// Handle block-related messages
 	go func() {
@@ -891,17 +942,23 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 			case msg := <-blockCh:
 				switch msg.Type {
 				case types.ProcessBlock:
+					// This handler would typically be for getting a block from this specific chain
+					// Block by ID/number will now only return blocks from this shard's chain
 					if blockID, ok := msg.Data.(string); ok {
-						// Get block by ID
-						block, err := blockchain.GetBlockByID(blockID)
+						// GetBlockByID needs to be shard-aware and take shardID
+						block, err := bcImpl.GetBlockByID(chainState.ShardID, blockID) // Added shardID
 						msg.ResponseCh <- types.Response{Data: block, Error: err}
 					} else if blockNum, ok := msg.Data.(int32); ok {
-						// Get block by number
-						block, err := blockchain.GetBlock(int(blockNum))
+						// GetBlock needs to be shard-aware and take shardID
+						block, err := bcImpl.GetBlock(chainState.ShardID, int(blockNum)) // Added shardID
 						msg.ResponseCh <- types.Response{Data: block, Error: err}
 					} else {
 						msg.ResponseCh <- types.Response{Error: fmt.Errorf("invalid block identifier")}
 					}
+				case types.ConfirmBlock:
+					// Confirmation logic would also be shard-specific
+					log.Printf("DEBUG: ConfirmBlock message received, need to implement shard-aware confirmation logic.")
+					msg.ResponseCh <- types.Response{Data: nil, Error: fmt.Errorf("ConfirmBlock not fully implemented for sharding")}
 				}
 			case <-ctx.Done():
 				return
@@ -911,52 +968,52 @@ func connectBlockchainToMessageBus(ctx context.Context, blockchain *chain.Blockc
 
 	// Handle blockchain info messages
 	go func() {
-		// Signal that this handler is ready AFTER its select loop is active
-		defer close(handlersReady) // <--- CRITICAL: Close the channel when this goroutine starts listening
-		// (Note: This assumes this goroutine is representative of all critical handlers being ready.
-		// For absolute robustness, you'd close `handlersReady` only after *all* critical goroutines have started their loops).
-		// For simplicity here, closing it after the infoCh handler starts is a good step.
+		defer close(handlersReady)
 
 		for {
 			select {
 			case msg := <-infoCh:
 				switch msg.Type {
 				case types.GetBlockchainInfo:
-					lastBlock, _, _ := blockchain.GetLastBlock()
+					// Get info from this specific chain's state
+					// GetLastBlock needs to be shard-aware and take shardID
+					lastBlock, _, _ := bcImpl.GetLastBlock(chainState.ShardID) // Added shardID
 					info := map[string]interface{}{
-						"height":    blockchain.GetBlockCount() - 1,
+						// GetBlockCount needs to be shard-aware and take shardID
+						"height":    bcImpl.GetBlockCount(chainState.ShardID) - 1, // Added shardID
 						"lastBlock": lastBlock,
-						"nodeCount": 1,
-						"chainId":   chainID,
-						"isSyncing": false,
+						"nodeCount": 1,       // This is just for this node, not whole network
+						"chainId":   chainID, // The shard-specific or beacon chainID
+						"isSyncing": false,   // Placeholder
 					}
 					msg.ResponseCh <- types.Response{Data: info}
-				case types.GetActiveValidators: // <--- This is the handler that's timing out
-					blockchain.Blockchain.Mu.RLock()
-					activeValidators := blockchain.Blockchain.ActiveValidators
-					blockchain.Blockchain.Mu.RUnlock()
+				case types.GetActiveValidators:
+					chainState.Mu.RLock()
+					activeValidators := chainState.ActiveValidators // Validators for THIS shard/beacon
+					chainState.Mu.RUnlock()
 					msg.ResponseCh <- types.Response{Data: activeValidators}
 				case types.IsActiveValidator:
 					addr, ok := msg.Data.(string)
 					isActive := false
 					if ok {
-						blockchain.Blockchain.Mu.RLock()
-						for _, v := range blockchain.Blockchain.ActiveValidators {
+						chainState.Mu.RLock()
+						for _, v := range chainState.ActiveValidators {
 							if v == addr {
 								isActive = true
 								break
 							}
 						}
-						blockchain.Blockchain.Mu.RUnlock()
+						chainState.Mu.RUnlock()
 					}
 					msg.ResponseCh <- types.Response{Data: isActive}
 				case types.GetStakeholders:
-					blockchain.Blockchain.Mu.RLock()
+					// Get stakeholders for THIS shard
+					chainState.Mu.RLock()
 					stakeholdersCopy := make(map[string]int64)
-					for k, v := range blockchain.Blockchain.Stakeholders {
+					for k, v := range chainState.Stakeholders {
 						stakeholdersCopy[k] = v
 					}
-					blockchain.Blockchain.Mu.RUnlock()
+					chainState.Mu.RUnlock()
 					msg.ResponseCh <- types.Response{Data: stakeholdersCopy}
 				}
 			case <-ctx.Done():

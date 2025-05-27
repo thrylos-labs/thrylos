@@ -44,6 +44,8 @@ type Config struct {
 
 	// --- ADDED: Consensus Field (Pointer to allow optional section in TOML) ---
 	Consensus *ConsensusConfig `toml:"Consensus"`
+	NumShards int              `toml:"num_shards"` // Add this field to the Config struct itself
+
 }
 
 // --- Define default values here ---
@@ -64,6 +66,10 @@ const (
 	defaultValidatorUpdateInterval = 60 // seconds (1 minute)
 	defaultMaxActiveValidators     = 5  // validators
 	defaultBlockInterval           = 10 // seconds
+
+	// Sharding
+	defaultNumShards = 4 // Default value for NumShards
+
 )
 
 func LoadConfigFromFile(filePath string) (*Config, error) {
@@ -128,6 +134,12 @@ func LoadConfigFromFile(filePath string) (*Config, error) {
 		return nil, fmt.Errorf("error decoding TOML file '%s': %w", filePath, err)
 	}
 
+	// Apply default for NumShards if not set in TOML
+	if config.NumShards == 0 { // Check if it's zero, meaning it wasn't set or was set to 0
+		config.NumShards = defaultNumShards
+		log.Printf("INFO: NumShards not found in config.toml, defaulting to %d", defaultNumShards)
+	}
+
 	// Apply Consensus defaults if needed
 	if config.Consensus == nil {
 		log.Println("DEBUG: Consensus section missing in TOML, applying defaults.")
@@ -163,6 +175,7 @@ func GenerateDefaultConfig() *Config {
 		MinGasFee:                      defaultMinGasFee,
 		MaxGasFee:                      defaultMaxGasFee,
 		DefaultGasFee:                  defaultDefaultGasFee,
+		NumShards:                      defaultNumShards, // Set default in the generated config
 		// --- ADDED: Assign Default Consensus Struct ---
 		Consensus: &ConsensusConfig{
 			ValidatorUpdateInterval: defaultValidatorUpdateInterval,

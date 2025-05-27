@@ -11,7 +11,7 @@ import (
 // // VerifyPoSRules verifies the PoS rules for the given block
 func (bc *BlockchainImpl) VerifyPoSRules(block types.Block) bool {
 	// Check if the validator had a stake at the time of block creation
-	_, exists := bc.Blockchain.Stakeholders[block.Validator]
+	_, exists := bc.ShardState.Stakeholders[block.Validator]
 	return exists
 }
 
@@ -34,27 +34,27 @@ func contains(slice []string, item string) bool {
 // // // // FIXME: The total supply is not correct, it needs to be improved
 func (bc *BlockchainImpl) GetTotalSupply() int64 {
 	totalSupply := int64(0)
-	for _, balance := range bc.Blockchain.Stakeholders {
+	for _, balance := range bc.ShardState.Stakeholders {
 		totalSupply += balance
 	}
 	return totalSupply
 }
 
 func (bc *BlockchainImpl) Stakeholders() map[string]int64 {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
 
-	return bc.Blockchain.Stakeholders
+	return bc.ShardState.Stakeholders
 }
 
 func (bc *BlockchainImpl) TransferFunds(from, to string, amount int64) error {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
 
 	fromAddr := from
 	if from == "" {
 		// Get public key from genesis account
-		genesisPublicKey := bc.Blockchain.GenesisAccount.PublicKey()
+		genesisPublicKey := bc.ShardState.GenesisAccount.PublicKey()
 
 		// Get address from public key
 		genesisAddr, err := genesisPublicKey.Address()
@@ -67,19 +67,19 @@ func (bc *BlockchainImpl) TransferFunds(from, to string, amount int64) error {
 	}
 
 	// Check if the sender has enough funds
-	if bc.Blockchain.Stakeholders[fromAddr] < amount {
+	if bc.ShardState.Stakeholders[fromAddr] < amount {
 		return fmt.Errorf("insufficient funds")
 	}
 
 	// Perform the transfer
-	bc.Blockchain.Stakeholders[fromAddr] -= amount
-	bc.Blockchain.Stakeholders[to] += amount
+	bc.ShardState.Stakeholders[fromAddr] -= amount
+	bc.ShardState.Stakeholders[to] += amount
 
 	return nil
 }
 
 func (bc *BlockchainImpl) GetStakeholders() map[string]int64 {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
-	return bc.Blockchain.Stakeholders
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
+	return bc.ShardState.Stakeholders
 }

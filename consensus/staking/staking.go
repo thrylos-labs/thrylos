@@ -15,7 +15,7 @@ type StakingService struct {
 	mu         sync.RWMutex
 	pool       *types.StakingPool
 	stakes     map[string]*types.Stake
-	blockchain *types.Blockchain
+	blockchain *types.ChainState
 }
 
 func (s *StakingService) GetPool() *types.StakingPool {
@@ -24,7 +24,7 @@ func (s *StakingService) GetPool() *types.StakingPool {
 	return s.pool
 }
 
-func NewStakingService(blockchain *types.Blockchain) *StakingService {
+func NewStakingService(chainState *types.ChainState) *StakingService { // CHANGED: parameter name and type
 	return &StakingService{
 		pool: &types.StakingPool{
 			MinStakeAmount:    config.MinimumStakeAmount, // From constants.go
@@ -35,7 +35,7 @@ func NewStakingService(blockchain *types.Blockchain) *StakingService {
 			TotalDelegated:    0,
 		},
 		stakes:     make(map[string]*types.Stake),
-		blockchain: blockchain,
+		blockchain: chainState, // CHANGED: assign the passed 'chainState' to the 'blockchain' field
 	}
 }
 

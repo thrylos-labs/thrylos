@@ -23,7 +23,7 @@ type TransactionProcessorImpl struct {
 	*types.TransactionPropagator
 	txStatusMap        sync.Map
 	balanceUpdateQueue *balance.BalanceUpdateQueue
-	blockchain         *types.Blockchain       // Add reference to blockchain
+	ChainState         *types.ChainState       // This should be updated to point to the current ChainState
 	database           types.Store             // Add reference to database
 	stakingService     *staking.StakingService // Add reference to staking service
 }
@@ -44,14 +44,14 @@ type TransactionStatus struct {
 func NewTransactionProcessorImpl(
 	propagator *types.TransactionPropagator,
 	updateQueue *balance.BalanceUpdateQueue,
-	blockchain *types.Blockchain,
+	chainState *types.ChainState,
 	database types.Store,
 	stakingService *staking.StakingService) *TransactionProcessorImpl {
 
 	return &TransactionProcessorImpl{
 		TransactionPropagator: propagator,
 		balanceUpdateQueue:    updateQueue,
-		blockchain:            blockchain,
+		ChainState:            chainState, // Assign the chainState
 		database:              database,
 		stakingService:        stakingService,
 	}
@@ -205,8 +205,15 @@ func (tp *TransactionProcessorImpl) CollectInputsForTransaction(amount int64, se
 	var collectedAmount int64
 	var collectedInputs []types.UTXO
 
+	// Get totalNumShards from the ChainState associated with this processor
+	if tp.ChainState == nil {
+		return nil, 0, fmt.Errorf("transaction processor ChainState is not initialized")
+	}
+	totalNumShards := tp.ChainState.TotalNumShards
+
 	// Use the database instead of blockchain
-	utxos, err := tp.database.GetUTXOsForAddress(senderAddress)
+	// Pass the totalNumShards as the second argument
+	utxos, err := tp.database.GetUTXOsForAddress(senderAddress, totalNumShards) // FIXED: Added totalNumShards
 	if err != nil {
 		return nil, 0, err
 	}
@@ -379,7 +386,7 @@ const (
 
 func (tp *TransactionProcessorImpl) GetPendingTransactions() []*thrylos.Transaction {
 	// Use tp.TransactionPropagator or database to get pending transactions
-	return tp.blockchain.PendingTransactions
+	return tp.ChainState.PendingTransactions
 }
 
 func calculateTotalAmount(outputs []*thrylos.UTXO) int64 {

@@ -18,39 +18,44 @@ func (bc *BlockchainImpl) CreateInitialWalletUTXO(address string, initialBalance
 		Index:         0, // Use 0 for initial UTXO
 	}
 
-	return bc.Blockchain.Database.AddUTXO(utxo)
+	return bc.ShardState.Database.AddUTXO(utxo)
 }
 
 func (bc *BlockchainImpl) GetUTXOsForAddress(address string) ([]types.UTXO, error) {
-	log.Printf("Fetching UTXOs for address: %s", address)
-	utxos, err := bc.Blockchain.Database.GetUTXOsForAddress(address)
+	log.Printf("Fetching UTXOs for address: %s (Shard: %d)", address, bc.ShardState.ShardID)
+
+	// Get the total number of shards from the AppConfig or ChainState
+	totalNumShards := bc.AppConfig.NumShards // Or bc.ShardState.TotalNumShards
+
+	// Pass the totalNumShards as the second argument to the database call
+	utxos, err := bc.ShardState.Database.GetUTXOsForAddress(address, totalNumShards) // FIXED: Added totalNumShards
 	if err != nil {
-		log.Printf("Failed to fetch UTXOs from database: %s", err)
+		log.Printf("Failed to fetch UTXOs from database for address %s (Shard: %d): %s", address, bc.ShardState.ShardID, err)
 		return nil, err
 	}
-	log.Printf("Retrieved %d UTXOs for address %s", len(utxos), address)
+	log.Printf("Retrieved %d UTXOs for address %s (Shard: %d)", len(utxos), address, bc.ShardState.ShardID)
 	return utxos, nil
 }
 
 func (bc *BlockchainImpl) GetAllUTXOs() (map[string][]types.UTXO, error) {
-	return bc.Blockchain.Database.GetAllUTXOs()
+	return bc.ShardState.Database.GetAllUTXOs()
 }
 
 func (bc *BlockchainImpl) GetUTXOsForUser(address string) ([]types.UTXO, error) {
-	return bc.Blockchain.Database.GetUTXOsForUser(address)
+	return bc.ShardState.Database.GetUTXOsForUser(address)
 }
 
 // // Always deals with nanoTHRYLOS as int64
 func (bc *BlockchainImpl) GetBalance(address string) (amount.Amount, error) {
-	bc.Blockchain.Mu.RLock() // Lock for reading the UTXOs map
-	defer bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock() // Lock for reading the UTXOs map
+	defer bc.ShardState.Mu.RUnlock()
 
-	log.Printf("DEBUG: [GetBalance] Calculating balance for %s from in-memory UTXO map (%d entries)", address, len(bc.Blockchain.UTXOs))
+	log.Printf("DEBUG: [GetBalance] Calculating balance for %s from in-memory UTXO map (%d entries)", address, len(bc.ShardState.UTXOs))
 	balance := amount.Amount(0)
 
 	// Iterate through the in-memory UTXO map (map[string][]*thrylos.UTXO)
 	// This requires checking the OwnerAddress field of the stored *thrylos.UTXO objects
-	for key, utxoSlice := range bc.Blockchain.UTXOs {
+	for key, utxoSlice := range bc.ShardState.UTXOs {
 		// The key itself might not contain the address if using "txid-index" format.
 		// We need to check the UTXOs within the slice.
 		for _, protoUtxo := range utxoSlice {

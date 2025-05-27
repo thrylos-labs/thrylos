@@ -22,11 +22,11 @@ const (
 var ErrInvalidKeySize = errors.New("invalid key size")
 
 func (bc *BlockchainImpl) RegisterPublicKey(pubKey crypto.PublicKey) error {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
 
 	// Save to database
-	if err := bc.Blockchain.Database.SavePublicKey(pubKey); err != nil {
+	if err := bc.ShardState.Database.SavePublicKey(pubKey); err != nil {
 		return err
 	}
 
@@ -36,14 +36,14 @@ func (bc *BlockchainImpl) RegisterPublicKey(pubKey crypto.PublicKey) error {
 		return fmt.Errorf("failed to get address from public key: %v", err)
 	}
 
-	bc.Blockchain.PublicKeyMap[addr.String()] = &pubKey
+	bc.ShardState.PublicKeyMap[addr.String()] = &pubKey
 	return nil
 }
 
 // // // In blockchain.go, within your Blockchain struct definition
 func (bc *BlockchainImpl) RetrievePublicKey(validator string) ([]byte, error) {
-	bc.Blockchain.Mu.RLock()
-	defer bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock()
+	defer bc.ShardState.Mu.RUnlock()
 
 	formattedAddress, err := shared.SanitizeAndFormatAddress(validator)
 	if err != nil {
@@ -53,7 +53,7 @@ func (bc *BlockchainImpl) RetrievePublicKey(validator string) ([]byte, error) {
 	log.Printf("Attempting to retrieve public key for address: %s", formattedAddress)
 
 	// First, check if we already have a public key in memory
-	if pubKeyPtr, ok := bc.Blockchain.PublicKeyMap[formattedAddress]; ok {
+	if pubKeyPtr, ok := bc.ShardState.PublicKeyMap[formattedAddress]; ok {
 		log.Printf("Public key found in memory for address: %s", formattedAddress)
 		// Dereference the pointer before calling Marshal()
 		pubKeyBytes, err := (*pubKeyPtr).Marshal()
@@ -70,14 +70,14 @@ func (bc *BlockchainImpl) RetrievePublicKey(validator string) ([]byte, error) {
 	}
 
 	// Use the store's GetPublicKey method
-	pubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+	pubKey, err := bc.ShardState.Database.GetPublicKey(*addr)
 	if err != nil {
 		log.Printf("Failed to retrieve public key from database: %v", err)
 		return nil, err
 	}
 
 	// Cache the result in memory for future use
-	bc.Blockchain.PublicKeyMap[formattedAddress] = &pubKey
+	bc.ShardState.PublicKeyMap[formattedAddress] = &pubKey
 
 	// Marshal the public key to bytes
 	pubKeyBytes, err := pubKey.Marshal()
@@ -92,8 +92,8 @@ func (bc *BlockchainImpl) RetrievePublicKey(validator string) ([]byte, error) {
 // // // // In Blockchain
 func (bc *BlockchainImpl) InsertOrUpdatePublicKey(address string, publicKeyBytes []byte, keyType string) error {
 	log.Printf("InsertOrUpdatePublicKey called with address: %s, keyType: %s", address, keyType)
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
 
 	if len(publicKeyBytes) == 0 {
 		return fmt.Errorf("empty public key bytes provided")
@@ -114,13 +114,13 @@ func (bc *BlockchainImpl) InsertOrUpdatePublicKey(address string, publicKeyBytes
 		pubKey := crypto.NewPublicKey(mldsaPubKey)
 
 		// Save to database using the standard method
-		if err := bc.Blockchain.Database.SavePublicKey(pubKey); err != nil {
+		if err := bc.ShardState.Database.SavePublicKey(pubKey); err != nil {
 			log.Printf("Failed to store public key for address %s: %v", address, err)
 			return fmt.Errorf("failed to store public key: %v", err)
 		}
 
 		// Update in-memory cache
-		bc.Blockchain.PublicKeyMap[address] = &pubKey
+		bc.ShardState.PublicKeyMap[address] = &pubKey
 
 		log.Printf("Successfully stored public key for address %s", address)
 		return nil
@@ -157,10 +157,10 @@ func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {
 	log.Println("Checking validator key consistency")
 
 	// Use stakeholders map instead of getting all validators from database
-	bc.Blockchain.Mu.RLock()
-	stakeholders := bc.Blockchain.Stakeholders
-	activeValidators := bc.Blockchain.ActiveValidators
-	bc.Blockchain.Mu.RUnlock()
+	bc.ShardState.Mu.RLock()
+	stakeholders := bc.ShardState.Stakeholders
+	activeValidators := bc.ShardState.ActiveValidators
+	bc.ShardState.Mu.RUnlock()
 
 	log.Printf("Total stakeholders: %d", len(stakeholders))
 	log.Printf("Total active validators: %d", len(activeValidators))
@@ -177,7 +177,7 @@ func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {
 		}
 
 		// Get public key from database
-		storedPubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+		storedPubKey, err := bc.ShardState.Database.GetPublicKey(*addr)
 		if err != nil {
 			log.Printf("Failed to retrieve public key for stakeholder %s: %v", addressStr, err)
 			continue
@@ -238,7 +238,7 @@ func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {
 			return fmt.Errorf("invalid active validator address format: %v", err)
 		}
 
-		_, err = bc.Blockchain.Database.GetPublicKey(*addr)
+		_, err = bc.ShardState.Database.GetPublicKey(*addr)
 		if err != nil {
 			log.Printf("Active validator %s does not have a stored public key", activeAddress)
 			return fmt.Errorf("active validator %s does not have a stored public key", activeAddress)
@@ -251,12 +251,12 @@ func (bc *BlockchainImpl) CheckValidatorKeyConsistency() error {
 
 // Load all Validator public keys into Memory
 func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
-	bc.Blockchain.Mu.Lock()
-	defer bc.Blockchain.Mu.Unlock()
+	bc.ShardState.Mu.Lock()
+	defer bc.ShardState.Mu.Unlock()
 
 	log.Println("Loading all validator public keys")
 
-	for addressStr := range bc.Blockchain.Stakeholders {
+	for addressStr := range bc.ShardState.Stakeholders {
 		log.Printf("Attempting to load public key for stakeholder: %s", addressStr)
 
 		// Parse address using the correct package
@@ -267,18 +267,18 @@ func (bc *BlockchainImpl) LoadAllValidatorPublicKeys() error {
 		}
 
 		// Get public key using standard method
-		pubKey, err := bc.Blockchain.Database.GetPublicKey(*addr)
+		pubKey, err := bc.ShardState.Database.GetPublicKey(*addr)
 		if err != nil {
 			log.Printf("Failed to load public key for stakeholder %s: %v", addressStr, err)
 			continue
 		}
 
 		// Store in memory cache
-		bc.Blockchain.PublicKeyMap[addressStr] = &pubKey
+		bc.ShardState.PublicKeyMap[addressStr] = &pubKey
 		log.Printf("Loaded public key for validator: %s", addressStr)
 	}
 
-	log.Printf("Loaded public keys for %d validators", len(bc.Blockchain.PublicKeyMap))
+	log.Printf("Loaded public keys for %d validators", len(bc.ShardState.PublicKeyMap))
 	return nil
 }
 
@@ -287,8 +287,8 @@ func (bc *BlockchainImpl) GetValidatorPrivateKey(validatorAddress string) (crypt
 
 	// --- 1. Determine Genesis Address ---
 	var genesisAddrStr string
-	if bc.Blockchain.GenesisAccount != nil && bc.Blockchain.GenesisAccount.PublicKey() != nil {
-		addr, err := bc.Blockchain.GenesisAccount.PublicKey().Address()
+	if bc.ShardState.GenesisAccount != nil && bc.ShardState.GenesisAccount.PublicKey() != nil {
+		addr, err := bc.ShardState.GenesisAccount.PublicKey().Address()
 		if err != nil {
 			// Log critical error but allow continuation; fallback might still be possible if address matches somehow,
 			// but it's unlikely and indicates a setup problem.
@@ -324,19 +324,19 @@ func (bc *BlockchainImpl) GetValidatorPrivateKey(validatorAddress string) (crypt
 
 	// --- 3. Retrieve Key from Keystore ---
 	// Check if the ValidatorKeys store itself exists
-	if bc.Blockchain.ValidatorKeys == nil {
+	if bc.ShardState.ValidatorKeys == nil {
 		log.Println("ERROR: ValidatorKeys store (bc.Blockchain.ValidatorKeys) is nil.")
 		// If the store doesn't exist, only fallback to Genesis is possible
-		if isGenesis && bc.Blockchain.GenesisAccount != nil {
+		if isGenesis && bc.ShardState.GenesisAccount != nil {
 			log.Printf("DEBUG: ValidatorKeys store nil, falling back to GenesisAccount for %s.", validatorAddress)
-			return bc.Blockchain.GenesisAccount, genesisAddrStr, nil
+			return bc.ShardState.GenesisAccount, genesisAddrStr, nil
 		}
 		// Otherwise, we cannot retrieve the key
 		return nil, "", fmt.Errorf("ValidatorKeys store is not initialized, cannot retrieve key for %s", validatorAddress)
 	}
 
 	// Attempt to get the key *pointer* from the store
-	privateKeyPtr, exists := bc.Blockchain.ValidatorKeys.GetKey(validatorAddress)
+	privateKeyPtr, exists := bc.ShardState.ValidatorKeys.GetKey(validatorAddress)
 
 	keyFoundInStore := false
 	var cryptoPrivKey crypto.PrivateKey
@@ -390,10 +390,10 @@ func (bc *BlockchainImpl) GetValidatorPrivateKey(validatorAddress string) (crypt
 
 	// --- 5. Fallback to Genesis Account ---
 	// This section is reached only if the key was NOT found/verified in the keystore
-	if isGenesis && bc.Blockchain.GenesisAccount != nil {
+	if isGenesis && bc.ShardState.GenesisAccount != nil {
 		log.Printf("DEBUG: Key for %s not found/verified in keystore, falling back to GenesisAccount.", validatorAddress)
 		// Use the main GenesisAccount private key
-		genesisPrivKey := bc.Blockchain.GenesisAccount
+		genesisPrivKey := bc.ShardState.GenesisAccount
 		// Return the genesis key and the previously determined genesis address string
 		return genesisPrivKey, genesisAddrStr, nil
 	}
