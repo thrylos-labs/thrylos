@@ -19,6 +19,7 @@ type Validator interface {
 
 // ValidatorKeyStore defines the interface for validator key operations
 type ValidatorKeyStore interface {
+	SaveValidatorKey(privKey crypto.PrivateKey) error // CHANGED/NEW method name and signature
 	StoreKey(address string, key *crypto.PrivateKey) error
 	GetKey(address string) (*crypto.PrivateKey, bool)
 	RemoveKey(address string) error

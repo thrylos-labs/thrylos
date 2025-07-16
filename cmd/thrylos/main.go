@@ -280,17 +280,19 @@ func main() {
 	}
 
 	log.Println("Attempting to generate 4 additional validators...")
-	for i := 0; i < 4; i++ {
-		log.Printf("Generating validator %d...", i+1)
-		// This method in chain.BlockchainImpl needs to be shard-aware if keys are shard-specific
-		newAddr, err := currentChainImpl.GenerateAndStoreValidatorKey()
-		if err != nil {
-			log.Printf("ERROR: Failed to generate validator %d: %v", i+1, err)
-		} else {
-			log.Printf("Successfully generated validator %d: %s", i+1, newAddr)
-		}
+
+	// Use the corrected method that generates keys properly
+	generatedAddresses, err := currentChainImpl.GenerateAndStoreValidatorKeys(4)
+	if err != nil {
+		log.Fatalf("Failed to generate validators: %v", err)
 	}
-	log.Println("Finished attempting validator generation.")
+
+	log.Printf("Successfully generated %d validators:", len(generatedAddresses))
+	for i, addr := range generatedAddresses {
+		log.Printf("  Validator %d: %s", i+1, addr)
+	}
+
+	log.Println("Finished validator generation.")
 
 	// Instantiate the Node here, passing all necessary configuration
 	mainNode := node.NewNode(

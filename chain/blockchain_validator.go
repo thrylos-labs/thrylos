@@ -163,12 +163,11 @@ func (bc *BlockchainImpl) StoreValidatorPrivateKey(address string, privKeyBytes 
 	return nil
 }
 
-// // For generating multiple Validator Keys if necessary
 func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, error) {
 	log.Printf("Starting to generate and store %d validator keys", count)
-	generatedAddresses := make([]string, 0, count) // Changed name for clarity
+	generatedAddresses := make([]string, 0, count)
 
-	bc.ShardState.Mu.Lock() // Lock access to PublicKeyMap
+	bc.ShardState.Mu.Lock()
 	defer bc.ShardState.Mu.Unlock()
 
 	for i := 0; i < count; i++ {
@@ -186,23 +185,20 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, er
 		cryptoPubKey := crypto.NewPublicKey(pubKey)
 
 		// --- Step 3: Derive Address from the generated Public Key ---
-		derivedAddr, err := cryptoPubKey.Address() // Returns address.Address type
+		derivedAddr, err := cryptoPubKey.Address()
 		if err != nil {
 			log.Printf("Failed to derive address from generated public key: %v", err)
 			return generatedAddresses, fmt.Errorf("failed to derive address from generated public key: %w", err)
 		}
-		// Get the canonical string representation (e.g., bech32)
 		derivedAddressString := derivedAddr.String()
 		log.Printf("DEBUG: Generated key pair, derived address: %s", derivedAddressString)
 
-		// --- Step 4: Store Private Key using derived address string ---
-		var privKeyInterface crypto.PrivateKey = cryptoPrivKey
-		err = bc.ShardState.ValidatorKeys.StoreKey(derivedAddressString, &privKeyInterface)
+		// --- Step 4: Store Private Key using SaveValidatorKey (which uses derived address) ---
+		err = bc.ShardState.ValidatorKeys.SaveValidatorKey(cryptoPrivKey)
 		if err != nil {
 			log.Printf("Failed to store validator private key for derived address %s: %v", derivedAddressString, err)
 			return generatedAddresses, fmt.Errorf("failed to store validator private key for %s: %w", derivedAddressString, err)
 		}
-		// StoreKey now logs success and cache update internally
 
 		// --- Step 5: Store Public Key ---
 		err = bc.ShardState.Database.SavePublicKey(cryptoPubKey)
@@ -210,40 +206,83 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKeys(count int) ([]string, er
 			log.Printf("Failed to store validator public key for derived address %s: %v", derivedAddressString, err)
 			return generatedAddresses, fmt.Errorf("failed to store validator public key for %s: %w", derivedAddressString, err)
 		}
-		log.Printf("DEBUG: Successfully stored public key in database for derived address %s", derivedAddressString)
 
-		// --- Step 6: Store Public Key in In-Memory Map (using derived address string) ---
+		// --- Step 6: Store Public Key in In-Memory Map ---
 		var pubKeyInterface crypto.PublicKey = cryptoPubKey
 		bc.ShardState.PublicKeyMap[derivedAddressString] = &pubKeyInterface
-		log.Printf("DEBUG: Stored public key in PublicKeyMap cache for derived address %s", derivedAddressString)
 
-		// --- Step 7: Verification (Optional but Recommended) ---
+		// --- Step 7: Add to Stakeholders with minimum stake ---
+		minStake := bc.ShardState.MinStakeForValidator.Int64()
+		bc.ShardState.Stakeholders[derivedAddressString] = minStake
+		log.Printf("Added validator %s to stakeholders with minimum stake: %d", derivedAddressString, minStake)
+
+		// --- Step 8: Verification ---
 		retrievedPrivKeyPtr, exists := bc.ShardState.ValidatorKeys.GetKey(derivedAddressString)
 		if !exists || retrievedPrivKeyPtr == nil || *retrievedPrivKeyPtr == nil {
 			log.Printf("CRITICAL: Failed to retrieve private key %s from cache immediately after storing", derivedAddressString)
 			return generatedAddresses, fmt.Errorf("failed to verify private key storage in cache for %s", derivedAddressString)
 		}
 
-		retrievedAddr, addrErr := (*retrievedPrivKeyPtr).PublicKey().Address()
-		if addrErr != nil {
-			log.Printf("CRITICAL: Failed to derive address from retrieved private key %s: %v", derivedAddressString, addrErr)
-			return generatedAddresses, fmt.Errorf("failed to derive address from cached private key for %s: %w", derivedAddressString, addrErr)
-		}
-
-		// <<< FIX IS HERE: Compare using .String() method >>>
-		if derivedAddr.String() != retrievedAddr.String() { // Compare canonical string representations
-			log.Printf("CRITICAL: Address mismatch after retrieving key from cache! Expected %s, Got %s", derivedAddressString, retrievedAddr.String())
-			return generatedAddresses, fmt.Errorf("address mismatch in cached key for %s", derivedAddressString)
-		}
-		log.Printf("DEBUG: Verified private key for %s exists in ValidatorKeyStore cache and derives correct address.", derivedAddressString)
-
-		// --- Step 8: Record generated address ---
+		// --- Step 9: Record generated address ---
 		log.Printf("Successfully generated and stored validator key %d: %s", i+1, derivedAddressString)
 		generatedAddresses = append(generatedAddresses, derivedAddressString)
-	} // End loop
+	}
 
 	log.Printf("Finished generating and storing %d validator keys", len(generatedAddresses))
 	return generatedAddresses, nil
+}
+
+// ADDITIONAL FIX: Add a method to debug and fix any existing validator key mismatches
+func (bc *BlockchainImpl) DebugAndFixValidatorKeys() error {
+	log.Printf("=== DEBUGGING VALIDATOR KEYS ===")
+
+	// Get all stored keys
+	storedKeys := bc.ShardState.ValidatorKeys.GetAllAddresses()
+	log.Printf("Stored private keys: %d", len(storedKeys))
+	for _, addr := range storedKeys {
+		log.Printf("  - %s", addr)
+	}
+
+	// Get active validators
+	activeValidators := bc.GetActiveValidators()
+	log.Printf("Active validators: %d", len(activeValidators))
+
+	missingKeys := []string{}
+	for i, addr := range activeValidators {
+		log.Printf("  %d: %s", i+1, addr)
+
+		// Check if we have the private key
+		if _, exists := bc.ShardState.ValidatorKeys.GetKey(addr); exists {
+			log.Printf("    ✓ Private key found")
+		} else {
+			log.Printf("    ✗ Private key NOT found")
+			missingKeys = append(missingKeys, addr)
+		}
+	}
+
+	// If there are missing keys, try to regenerate them
+	if len(missingKeys) > 0 {
+		log.Printf("FIXING: Found %d active validators without private keys", len(missingKeys))
+
+		// Clear the active validators list temporarily
+		bc.ShardState.Mu.Lock()
+		bc.ShardState.ActiveValidators = []string{}
+		bc.ShardState.Mu.Unlock()
+
+		// Generate new validator keys
+		newValidators, err := bc.GenerateAndStoreValidatorKeys(len(missingKeys))
+		if err != nil {
+			return fmt.Errorf("failed to regenerate validator keys: %v", err)
+		}
+
+		log.Printf("Generated %d new validator keys to replace missing ones", len(newValidators))
+
+		// Update active validators with the new ones
+		bc.UpdateActiveValidators(5) // Update with your desired count
+	}
+
+	log.Printf("=== END VALIDATOR KEY DEBUG ===")
+	return nil
 }
 
 func (bc *BlockchainImpl) GetValidatorPublicKey(validatorAddress string) (*mldsa44.PublicKey, error) {
@@ -533,7 +572,7 @@ func (bc *BlockchainImpl) GenerateAndStoreValidatorKey() (string, error) {
 	}
 
 	// Store the private key
-	err = bc.ShardState.ValidatorKeys.StoreKey(address, &cryptoPrivKey)
+	err = bc.ShardState.ValidatorKeys.SaveValidatorKey(cryptoPrivKey) // New call
 	if err != nil {
 		return "", fmt.Errorf("failed to store validator private key: %v", err)
 	}

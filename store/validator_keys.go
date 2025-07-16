@@ -25,6 +25,44 @@ func (s *store) SaveValidator(v *types.Validator) error {
 	return s.db.Set(key, data)
 }
 
+func (vks *ValidatorKeyStoreImpl) SaveValidatorKey(privKey crypto.PrivateKey) error { // CHANGED signature
+	if privKey == nil {
+		return fmt.Errorf("attempted to store nil private key")
+	}
+
+	// --- CRITICAL: Derive address consistently from the key being stored ---
+	addr, err := privKey.PublicKey().Address()
+	if err != nil {
+		return fmt.Errorf("failed to derive address from private key before saving: %w", err)
+	}
+	addrStr := addr.String() // This is the canonical address string for this key
+	// --- END CRITICAL ---
+
+	vks.mu.Lock()
+	defer vks.mu.Unlock()
+
+	keyBytes, err := privKey.Marshal() // Use `privKey` directly
+	if err != nil {
+		return fmt.Errorf("failed to marshal private key for %s: %w", addrStr, err)
+	}
+
+	finalBytesToStore := keyBytes // Placeholder for optional encryption
+
+	// Use the derived canonical address string for the DB key
+	dbKey := []byte(PrivateKeyPrifx + addrStr) // Key MUST be "pk-<canonical_address>"
+
+	if err := vks.db.Set(dbKey, finalBytesToStore); err != nil {
+		return fmt.Errorf("failed to save private key to DB for %s: %w", addrStr, err)
+	}
+	log.Printf("DEBUG: Successfully saved private key bytes to DB for %s using key %s", addrStr, string(dbKey))
+
+	// Store in in-memory map using the derived canonical address string
+	vks.keys[addrStr] = &privKey // Store a pointer to the interface value
+	log.Printf("INFO: Stored private key for %s in DB and updated in-memory cache.", addrStr)
+
+	return nil
+}
+
 func (s *store) GetValidator(addr address.Address) (*types.Validator, error) {
 	var validatorData []byte
 	db := s.db.GetDB() // Assuming s.db is your *Database type which has GetDB()
