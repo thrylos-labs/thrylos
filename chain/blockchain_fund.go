@@ -46,8 +46,6 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 		return
 	}
 
-	totalNumShards := bc.AppConfig.NumShards
-
 	// --- FIX for AddressString undefined ---
 	var genesisAddr *address.Address // Variable for the address object
 	var genesisAddrStr string        // Variable for the address string
@@ -79,7 +77,6 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	// --- END FIX ---
 
 	// --- Use Database Transaction for Atomicity ---
-	// NOTE: Adding DB transaction logic here as it's essential for the *next* step (UTXO creation)
 	var dbTxContext types.TransactionContext
 	dbTxContext, err = bc.ShardState.Database.BeginTransaction()
 	if err != nil {
@@ -100,6 +97,7 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	defer bc.ShardState.Mu.Unlock()
 
 	// --- Check Genesis Balance & Update In-Memory Stakeholders ---
+	log.Printf("DEBUG: Began new DB transaction.")
 	log.Printf("All addresses in stakeholders map before funding:")
 	for addr, bal := range bc.ShardState.Stakeholders {
 		log.Printf("  %s: %d", addr, bal)
@@ -131,16 +129,23 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	log.Printf("Credited %d tokens (in-memory) to address %s, new balance: %d",
 		amountValue, req.Address, bc.ShardState.Stakeholders[req.Address])
 
-	// --- Create Funding UTXO --- <<< ADDED LOGIC >>>
+	// --- Create Funding UTXO --- <<< FIXED VERSION >>>
 	fundingTxID := fmt.Sprintf("funding-%s-%d", req.Address, time.Now().UnixNano())
+
+	// CRITICAL FIX: Create UTXO key with current shard ID
+	fundingUtxoKey := fmt.Sprintf("ux-%d-%s-0", bc.ShardState.ShardID, fundingTxID)
+
+	// Create UTXO without ShardID field (since it doesn't exist in your struct)
 	fundingUtxo := types.UTXO{
+		ID:            fundingUtxoKey, // Set the ID with correct shard
 		TransactionID: fundingTxID,
 		Index:         0,
 		OwnerAddress:  req.Address,
 		Amount:        req.Amount, // Use original amount.Amount type
 		IsSpent:       false,
 	}
-	fundingUtxoKey := fundingUtxo.Key() // Or fmt.Sprintf("%s-%d", fundingTxID, 0)
+
+	log.Printf("DEBUG: Created funding UTXO with key: %s (shard %d)", fundingUtxoKey, bc.ShardState.ShardID)
 
 	// --- Add Funding UTXO to In-Memory Map --- <<< ADDED LOGIC >>>
 	protoUtxo := convertTypesUTXOToProtoUTXO(fundingUtxo) // Convert to map value type (*thrylos.UTXO)
@@ -151,38 +156,42 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 	log.Printf("DEBUG: Persisting balance/UTXO updates to DB...")
 
 	// 1. Update Genesis Balance in DB
-	err = bc.ShardState.Database.UpdateBalance(genesisAddrStr, bc.ShardState.Stakeholders[genesisAddrStr]) // Use dbTxContext if required?
+	err = bc.ShardState.Database.UpdateBalance(genesisAddrStr, bc.ShardState.Stakeholders[genesisAddrStr])
 	if err != nil {
 		finalErr = fmt.Errorf("failed to update genesis balance in DB: %v", err)
 		log.Printf("ERROR: %v", finalErr)
 		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
+	log.Printf("DEBUG: Updating balance for address %s to %d nanoTHRYLOS", genesisAddrStr, bc.ShardState.Stakeholders[genesisAddrStr])
+	log.Printf("SUCCESS: Updated balance for %s to %d nanoTHRYLOS", genesisAddrStr, bc.ShardState.Stakeholders[genesisAddrStr])
 	log.Printf("SUCCESS: Updated genesis balance for %s in DB", genesisAddrStr)
 
 	// 2. Update Recipient Balance in DB
-	err = bc.ShardState.Database.UpdateBalance(req.Address, bc.ShardState.Stakeholders[req.Address]) // Use dbTxContext if required?
+	err = bc.ShardState.Database.UpdateBalance(req.Address, bc.ShardState.Stakeholders[req.Address])
 	if err != nil {
 		finalErr = fmt.Errorf("failed to update recipient %s balance in DB: %v", req.Address, err)
 		log.Printf("ERROR: %v", finalErr)
 		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
+	log.Printf("DEBUG: Updating balance for address %s to %d nanoTHRYLOS", req.Address, bc.ShardState.Stakeholders[req.Address])
+	log.Printf("SUCCESS: Updated balance for %s to %d nanoTHRYLOS", req.Address, bc.ShardState.Stakeholders[req.Address])
 	log.Printf("SUCCESS: Updated recipient balance for %s in DB", req.Address)
 
-	// 3. Add New Funding UTXO to DB --- <<< ADDED LOGIC >>>
-	err = bc.ShardState.Database.AddNewUTXO(dbTxContext, fundingUtxo, totalNumShards) // FIXED: Added totalNumShards
+	// 3. Add New Funding UTXO to DB --- <<< FIXED VERSION >>>
+	err = bc.ShardState.Database.AddNewUTXO(dbTxContext, fundingUtxo, int(bc.ShardState.ShardID))
 	if err != nil {
 		finalErr = fmt.Errorf("failed to persist funding UTXO %s to DB: %v", fundingUtxoKey, err)
 		log.Printf("ERROR: %v", finalErr)
-		// Assuming msg.ResponseCh and return are part of this function's signature
-		// msg.ResponseCh <- types.Response{Error: finalErr}
-		return // Ensure the function correctly handles returning after error
+		msg.ResponseCh <- types.Response{Error: finalErr}
+		return
 	}
+	log.Printf("DEBUG: [AddNewUTXO TX] Setting UTXO key: %s", fundingUtxoKey)
 	log.Printf("SUCCESS: Persisted funding UTXO %s to DB", fundingUtxoKey)
 
 	// --- Commit DB Transaction ---
-	// If we got here, all DB ops conceptually succeeded. Commit now.
+	log.Printf("DEBUG: Committing DB transaction.")
 	commitErr := bc.ShardState.Database.CommitTransaction(dbTxContext)
 	if commitErr != nil {
 		finalErr = fmt.Errorf("failed to commit funding DB transaction for %s: %v", req.Address, commitErr)
@@ -191,6 +200,7 @@ func (bc *BlockchainImpl) HandleFundNewAddress(msg types.Message) {
 		msg.ResponseCh <- types.Response{Error: finalErr}
 		return
 	}
+	log.Printf("DEBUG: DB transaction committed successfully.")
 	dbTxContext = nil // Prevent rollback by defer if commit was successful
 
 	// --- Success ---

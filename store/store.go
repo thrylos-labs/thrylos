@@ -294,7 +294,9 @@ func (s *store) updateUTXOsInTxn(txn *badger.Txn, inputs []types.UTXO, outputs [
 	return nil
 }
 
-func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO, totalNumShards int) error { // Added totalNumShards
+// FIXED VERSION: Replace your AddNewUTXO method with this:
+
+func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO, shardID int) error {
 	if utxo.TransactionID == "" {
 		return fmt.Errorf("cannot add UTXO without TransactionID")
 	}
@@ -303,9 +305,8 @@ func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO, totalN
 		return fmt.Errorf("invalid transaction context: nil badger transaction")
 	}
 
-	// Use standard key format
-	shardID := CalculateShardID(utxo.OwnerAddress, totalNumShards) // Use utxo.OwnerAddress for UTXO shard ID
-	keyString := string(GetShardedKey(UTXOPrefix, shardID, utxo.Key()))
+	// CRITICAL FIX: Convert int to types.ShardID
+	keyString := string(GetShardedKey(UTXOPrefix, types.ShardID(shardID), utxo.Key()))
 	keyBytes := []byte(keyString)
 
 	// Use CBOR Marshal
@@ -321,12 +322,11 @@ func (s *store) AddNewUTXO(ctx types.TransactionContext, utxo types.UTXO, totalN
 	}
 
 	ctx.SetModified(keyString) // Track modified key
-	// Updating context's UTXO map might be complex/redundant if context is short-lived
-	// log.Printf("DEBUG: AddNewUTXO - Successfully added UTXO %s to transaction context", keyString)
 	return nil
 }
 
-func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO, totalNumShards int) error { // Added totalNumShards
+// ALSO FIX: MarkUTXOAsSpent method to use passed shard ID
+func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO, shardID int) error {
 	if utxo.TransactionID == "" {
 		return fmt.Errorf("transaction ID is required")
 	}
@@ -336,21 +336,19 @@ func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO, t
 		return fmt.Errorf("invalid transaction context: nil badger transaction")
 	}
 
-	// Use standard key format from the UTXO object passed in
-	shardID := CalculateShardID(utxo.OwnerAddress, totalNumShards) // Use utxo.OwnerAddress
-	keyString := string(GetShardedKey(UTXOPrefix, shardID, utxo.Key()))
+	// CRITICAL FIX: Convert int to types.ShardID
+	keyString := string(GetShardedKey(UTXOPrefix, types.ShardID(shardID), utxo.Key()))
 	keyBytes := []byte(keyString)
 	log.Printf("DEBUG: [MarkUTXOAsSpent TX] Marking UTXO key: %s", keyString)
 
 	item, err := badgerTxn.Get(keyBytes)
 	if err != nil {
-		return fmt.Errorf("failed to get UTXO %s: %w", keyString, err) // Error includes KeyNotFound
+		return fmt.Errorf("failed to get UTXO %s: %w", keyString, err)
 	}
 
 	var existingUTXO types.UTXO
 
 	err = item.Value(func(val []byte) error {
-		// Use CBOR Unmarshal
 		return existingUTXO.Unmarshal(val)
 	})
 	if err != nil {
@@ -363,7 +361,6 @@ func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO, t
 
 	existingUTXO.IsSpent = true
 
-	// Use CBOR Marshal
 	updatedValue, err := existingUTXO.Marshal()
 	if err != nil {
 		return fmt.Errorf("error marshaling updated UTXO %s: %w", keyString, err)
@@ -379,14 +376,15 @@ func (s *store) MarkUTXOAsSpent(ctx types.TransactionContext, utxo types.UTXO, t
 	return nil
 }
 
-func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string, ownerAddress string, totalNumShards int) (amount int64, err error) { // Added ownerAddress, totalNumShards
+// ALSO FIX: SpendUTXO method to use passed shard ID
+func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string, ownerAddress string, shardID int) (amount int64, err error) {
 	badgerTxn := ctx.GetBadgerTxn()
 	if badgerTxn == nil {
 		return 0, fmt.Errorf("invalid transaction context")
 	}
 
-	// Assume utxoKey is in the format "txid-index" as per utxo.Key()
-	keyString := fmt.Sprintf("%s%s", UTXOPrefix, utxoKey) // Add prefix
+	// CRITICAL FIX: Convert int to types.ShardID
+	keyString := string(GetShardedKey(UTXOPrefix, types.ShardID(shardID), utxoKey))
 	keyBytes := []byte(keyString)
 	log.Printf("DEBUG: [SpendUTXO TX] Spending UTXO key: %s", keyString)
 
@@ -400,7 +398,6 @@ func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string, ownerAdd
 
 	var existingUTXO types.UTXO
 	err = item.Value(func(val []byte) error {
-		// Use CBOR Unmarshal
 		return existingUTXO.Unmarshal(val)
 	})
 	if err != nil {
@@ -412,7 +409,7 @@ func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string, ownerAdd
 	}
 
 	existingUTXO.IsSpent = true
-	updatedValue, err := existingUTXO.Marshal() // Use CBOR Marshal
+	updatedValue, err := existingUTXO.Marshal()
 	if err != nil {
 		return 0, fmt.Errorf("error marshaling updated UTXO %s: %w", keyString, err)
 	}
@@ -423,7 +420,7 @@ func (s *store) SpendUTXO(ctx types.TransactionContext, utxoKey string, ownerAdd
 
 	ctx.SetModified(keyString)
 	log.Printf("DEBUG: [SpendUTXO TX] Marked UTXO %s as spent.", keyString)
-	return int64(existingUTXO.Amount), nil // Return amount
+	return int64(existingUTXO.Amount), nil
 }
 
 // Uses standardized key prefix and CBOR.

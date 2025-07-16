@@ -249,7 +249,6 @@ func (bc *BlockchainImpl) AddBlockToChain(block *types.Block) error {
 func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionContext, block *types.Block) error {
 	log.Printf("DEBUG: [DB Persist] Persisting state changes for Block %d on Shard %d", block.Index, bc.ShardState.ShardID)
 	appConfig := bc.AppConfig
-	totalNumShards := bc.AppConfig.NumShards // Get totalNumShards from config
 
 	for _, tx := range block.Transactions {
 		// For simplicity, this assumes transactions within a block belong to THIS shard.
@@ -294,17 +293,22 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 
 			// Get the shard ID for the owner of this UTXO
 			// This is critical: the UTXO's owner's address determines its shard
-			inputOwnerShardID := store.CalculateShardID(input.OwnerAddress, bc.AppConfig.NumShards)
-
-			// Ensure the UTXO is on this shard before marking as spent
-			if inputOwnerShardID != bc.ShardState.ShardID {
-				return fmt.Errorf("attempt to spend UTXO %s from shard %d on current shard %d for tx %s (cross-shard tx not fully supported here)",
-					utxoKey, inputOwnerShardID, bc.ShardState.ShardID, tx.ID)
+			// REPLACE the problematic validation with this:
+			if bc.ShardState.ShardID == types.ShardID(-1) {
+				// Beacon chain can process UTXOs from any shard
+				log.Printf("DEBUG: [DB Persist] Beacon chain processing UTXO %s from any shard", utxoKey)
+			} else {
+				// For regular shards, validate same-shard ownership
+				inputOwnerShardID := store.CalculateShardID(input.OwnerAddress, bc.AppConfig.NumShards)
+				if inputOwnerShardID != bc.ShardState.ShardID {
+					return fmt.Errorf("attempt to spend UTXO %s from shard %d on current shard %d for tx %s (cross-shard tx not fully supported here)",
+						utxoKey, inputOwnerShardID, bc.ShardState.ShardID, tx.ID)
+				}
 			}
 
 			// SpendUTXO needs to be updated to pass ShardID, or its internal implementation will use it
 			// Assuming SpendUTXO uses the UTXO's owner address internally to get the shard key.
-			amount, err := bc.ShardState.Database.SpendUTXO(dbTxContext, utxoKey, input.OwnerAddress, totalNumShards) // FIXED: Added ownerAddress and totalNumShards
+			amount, err := bc.ShardState.Database.SpendUTXO(dbTxContext, utxoKey, input.OwnerAddress, int(bc.ShardState.ShardID))
 			if err != nil {
 				log.Printf("ERROR: [DB Persist] Failed to spend input UTXO %s in DB for tx %s on shard %d: %v", utxoKey, tx.ID, bc.ShardState.ShardID, err)
 				return fmt.Errorf("failed to spend input UTXO %s in DB for tx %s on shard %d: %w", utxoKey, tx.ID, bc.ShardState.ShardID, err)
@@ -321,7 +325,8 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 			// Only process outputs for this shard's database
 			if outputOwnerShardID == bc.ShardState.ShardID {
 				// AddNewUTXO needs to be updated to pass ShardID, or its internal implementation will use it
-				err := bc.ShardState.Database.AddNewUTXO(dbTxContext, output, totalNumShards) // Requires store implementation
+				err := bc.ShardState.Database.AddNewUTXO(dbTxContext, output, int(bc.ShardState.ShardID))
+
 				if err != nil {
 					log.Printf("ERROR: [DB Persist] Failed to add output UTXO %s to DB for tx %s on shard %d: %v", output.Key(), tx.ID, bc.ShardState.ShardID, err)
 					return fmt.Errorf("failed to add output UTXO %s to DB for tx %s on shard %d: %w", output.Key(), tx.ID, bc.ShardState.ShardID, err)
@@ -332,7 +337,7 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 				totalOutputAmount += outputAmount
 
 				// AddToBalance needs to be updated to pass ShardID
-				err = bc.ShardState.Database.AddToBalance(dbTxContext, output.OwnerAddress, outputAmount, totalNumShards) // Requires store implementation
+				err = bc.ShardState.Database.AddToBalance(dbTxContext, output.OwnerAddress, outputAmount, int(bc.ShardState.ShardID))
 				if err != nil {
 					log.Printf("ERROR: [DB Persist] Failed to update recipient %s balance in DB for tx %s output %d on shard %d: %v", output.OwnerAddress, tx.ID, i, bc.ShardState.ShardID, err)
 					return fmt.Errorf("failed to update recipient %s balance in DB for tx %s output %d on shard %d: %w", output.OwnerAddress, tx.ID, i, bc.ShardState.ShardID, err)
@@ -381,7 +386,7 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 
 				if netDebit > 0 {
 					// AddToBalance needs to be updated to pass ShardID
-					err := bc.ShardState.Database.AddToBalance(dbTxContext, senderAddress, -netDebit, totalNumShards) // FIXED: Added totalNumShards
+					err := bc.ShardState.Database.AddToBalance(dbTxContext, senderAddress, -netDebit, int(bc.ShardState.ShardID))
 					if err != nil {
 						if strings.Contains(err.Error(), "insufficient balance") {
 							log.Printf("ERROR: [DB Persist] Insufficient balance reported by DB for sender %s during Tx %s NET debit attempt (Debit: %d). Validation failed?", senderAddress, tx.ID, netDebit)
@@ -449,16 +454,23 @@ func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
 		// 1. Process Inputs (Remove spent UTXOs from map, Calculate Input Total from map state)
 		for _, input := range tx.Inputs {
 			utxoKey := input.Key()
-			mapKey := utxoKey
+			mapKey := fmt.Sprintf("ux-%d-%s", bc.ShardState.ShardID, utxoKey)
 
 			log.Printf("DEBUG: [State Update] Processing Input UTXO Map Key: %s for Tx %s on Shard %d", mapKey, tx.ID, bc.ShardState.ShardID)
 
 			// Check if this UTXO belongs to this shard before modifying local state
-			inputOwnerShardID := store.CalculateShardID(input.OwnerAddress, bc.AppConfig.NumShards)
-			if inputOwnerShardID != bc.ShardState.ShardID {
-				log.Printf("WARN: [State Update] Skipping in-memory update for input UTXO %s (owner shard %d) as it's not for current shard %d.",
-					mapKey, inputOwnerShardID, bc.ShardState.ShardID)
-				continue // Skip, it's not for our shard's in-memory state
+			// REPLACE with:
+			if bc.ShardState.ShardID == types.ShardID(-1) {
+				// Beacon chain can process UTXOs from any shard
+				log.Printf("DEBUG: [State Update] Beacon chain processing UTXO %s from any shard", mapKey)
+			} else {
+				// For regular shards, validate same-shard ownership
+				inputOwnerShardID := store.CalculateShardID(input.OwnerAddress, bc.AppConfig.NumShards)
+				if inputOwnerShardID != bc.ShardState.ShardID {
+					log.Printf("WARN: [State Update] Skipping in-memory update for input UTXO %s (owner shard %d) as it's not for current shard %d.",
+						mapKey, inputOwnerShardID, bc.ShardState.ShardID)
+					continue // Skip, it's not for our shard's in-memory state
+				}
 			}
 
 			utxoSlice, sliceExists := bc.ShardState.UTXOs[mapKey] // Access ShardState's UTXOs
