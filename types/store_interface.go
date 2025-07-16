@@ -52,7 +52,7 @@ type Store interface {
 	//Validator
 	// GetValidator(addr address.Address) (*Validator, error)
 	// SaveValidator(v *Validator) error
-
+	GetStakeholderBalance(address string, totalNumShards int) (int64, error)
 	//PublicKey
 	GetPublicKey(addr address.Address) (crypto.PublicKey, error)
 	SavePublicKey(pubKey crypto.PublicKey) error

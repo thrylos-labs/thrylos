@@ -318,12 +318,13 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 		}
 
 		// --- 2. Persist Output creation, calculate totalOutputAmount & update recipient balances ---
+		// --- 2. Persist Output creation, calculate totalOutputAmount & update recipient balances ---
 		for i, output := range tx.Outputs {
 			// Get the shard ID for the owner of this new UTXO
 			outputOwnerShardID := store.CalculateShardID(output.OwnerAddress, bc.AppConfig.NumShards)
 
 			// Only process outputs for this shard's database
-			if outputOwnerShardID == bc.ShardState.ShardID {
+			if bc.ShardState.ShardID == types.ShardID(-1) || outputOwnerShardID == bc.ShardState.ShardID {
 				// AddNewUTXO needs to be updated to pass ShardID, or its internal implementation will use it
 				err := bc.ShardState.Database.AddNewUTXO(dbTxContext, output, int(bc.ShardState.ShardID))
 
@@ -336,18 +337,20 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 				outputAmount := int64(output.Amount)
 				totalOutputAmount += outputAmount
 
-				// AddToBalance needs to be updated to pass ShardID
-				err = bc.ShardState.Database.AddToBalance(dbTxContext, output.OwnerAddress, outputAmount, int(bc.ShardState.ShardID))
-				if err != nil {
-					log.Printf("ERROR: [DB Persist] Failed to update recipient %s balance in DB for tx %s output %d on shard %d: %v", output.OwnerAddress, tx.ID, i, bc.ShardState.ShardID, err)
-					return fmt.Errorf("failed to update recipient %s balance in DB for tx %s output %d on shard %d: %w", output.OwnerAddress, tx.ID, i, bc.ShardState.ShardID, err)
+				// ✅ FIX: Only add balance credit if recipient is NOT the sender (avoid double-counting change)
+				if output.OwnerAddress != senderAddress {
+					err = bc.ShardState.Database.AddToBalance(dbTxContext, output.OwnerAddress, outputAmount, int(bc.ShardState.ShardID))
+					if err != nil {
+						log.Printf("ERROR: [DB Persist] Failed to update recipient %s balance in DB for tx %s output %d on shard %d: %v", output.OwnerAddress, tx.ID, i, bc.ShardState.ShardID, err)
+						return fmt.Errorf("failed to update recipient %s balance in DB for tx %s output %d on shard %d: %w", output.OwnerAddress, tx.ID, i, bc.ShardState.ShardID, err)
+					}
+					log.Printf("DEBUG: [DB Persist] Balance update initiated for %s (+%d) (Tx %s Output %d) on shard %d", output.OwnerAddress, outputAmount, tx.ID, i, bc.ShardState.ShardID)
+				} else {
+					log.Printf("DEBUG: [DB Persist] Skipping balance credit for change output to sender %s (Amount: %d) (Tx %s Output %d) on shard %d", output.OwnerAddress, outputAmount, tx.ID, i, bc.ShardState.ShardID)
 				}
-				log.Printf("DEBUG: [DB Persist] Balance update initiated for %s (+%d) (Tx %s Output %d) on shard %d", output.OwnerAddress, outputAmount, tx.ID, i, bc.ShardState.ShardID)
 			} else {
 				log.Printf("WARN: [DB Persist] Skipping DB persistence for output to %s (shard %d) as it's not for current shard %d.",
 					output.OwnerAddress, outputOwnerShardID, bc.ShardState.ShardID)
-				// This is where cross-shard transaction outputs would be recorded as "receipts"
-				// on the beacon chain or as messages for the target shard.
 			}
 		}
 
@@ -355,12 +358,13 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 		if senderAddress != "" {
 			// Check if senderAddress belongs to this shard.
 			senderShardID := store.CalculateShardID(senderAddress, bc.AppConfig.NumShards)
-			if senderShardID != bc.ShardState.ShardID {
-				log.Printf("WARN: [DB Persist] Skipping sender balance update for %s (shard %d) as it's not for current shard %d. This implies a cross-shard transaction.",
-					senderAddress, senderShardID, bc.ShardState.ShardID)
-				// This is where cross-shard transaction logic would handle debits on source shard
-				// and credits on destination shard. For now, only single-shard txs fully processed.
-			} else {
+
+			// UPDATED CONDITION: Beacon chain processes all sender balance updates, regular shards only process their own
+			if bc.ShardState.ShardID == types.ShardID(-1) || senderShardID == bc.ShardState.ShardID {
+				if bc.ShardState.ShardID == types.ShardID(-1) {
+					log.Printf("DEBUG: [DB Persist] Beacon chain processing sender balance update for %s from any shard", senderAddress)
+				}
+
 				fee := totalInputAmount - totalOutputAmount
 				if fee < 0 {
 					log.Printf("CRITICAL ERROR: [DB Persist] Negative fee calculated for Tx %s! Input: %d, Output: %d", tx.ID, totalInputAmount, totalOutputAmount)
@@ -385,7 +389,6 @@ func (bc *BlockchainImpl) persistStateChangesToDB(dbTxContext types.TransactionC
 				}
 
 				if netDebit > 0 {
-					// AddToBalance needs to be updated to pass ShardID
 					err := bc.ShardState.Database.AddToBalance(dbTxContext, senderAddress, -netDebit, int(bc.ShardState.ShardID))
 					if err != nil {
 						if strings.Contains(err.Error(), "insufficient balance") {
@@ -499,7 +502,16 @@ func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
 
 			// Check if this new UTXO belongs to this shard
 			outputOwnerShardID := store.CalculateShardID(output.OwnerAddress, bc.AppConfig.NumShards)
-			if outputOwnerShardID == bc.ShardState.ShardID {
+
+			// UPDATED CONDITION: Beacon chain processes all outputs, regular shards only process their own
+			if bc.ShardState.ShardID == types.ShardID(-1) || outputOwnerShardID == bc.ShardState.ShardID {
+
+				// For beacon chain, use the correct shard-specific key format
+				if bc.ShardState.ShardID == types.ShardID(-1) {
+					log.Printf("DEBUG: [State Update] Beacon chain processing output UTXO %s from any shard", newUtxoKey)
+					mapKey = fmt.Sprintf("ux-%d-%s", bc.ShardState.ShardID, newUtxoKey)
+				}
+
 				protoUtxo := convertTypesUTXOToProtoUTXO(output) // Helper func needed (defined below)
 				if protoUtxo == nil {
 					log.Printf("ERROR: [State Update] Failed convert output %d for Tx %s to proto UTXO.", i, tx.ID)
@@ -527,12 +539,16 @@ func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
 		}
 
 		// 3. Update SENDER BALANCE
+		// 3. Update SENDER BALANCE
 		if senderAddress != "" {
 			senderShardID := store.CalculateShardID(senderAddress, bc.AppConfig.NumShards)
-			if senderShardID != bc.ShardState.ShardID {
-				log.Printf("WARN: [State Update] Skipping sender balance correction for %s (shard %d) as it's not for current shard %d.",
-					senderAddress, senderShardID, bc.ShardState.ShardID)
-			} else {
+
+			// UPDATED CONDITION: Beacon chain processes all sender balance updates, regular shards only process their own
+			if bc.ShardState.ShardID == types.ShardID(-1) || senderShardID == bc.ShardState.ShardID {
+				if bc.ShardState.ShardID == types.ShardID(-1) {
+					log.Printf("DEBUG: [State Update] Beacon chain processing sender balance correction for %s from any shard", senderAddress)
+				}
+
 				fee := totalInputAmount - totalOutputAmount
 				if fee < 0 {
 					log.Printf("ERROR: [State Update] Negative fee calculated for Tx %s (Input: %d, Output: %d)! Halting block processing.", tx.ID, totalInputAmount, totalOutputAmount)
@@ -561,6 +577,9 @@ func (bc *BlockchainImpl) updateStateForBlock(block *types.Block) error {
 
 				bc.ShardState.Stakeholders[senderAddress] = finalSenderBalance // Modify ShardState's Stakeholders
 				log.Printf("DEBUG: [State Update] Corrected Stakeholders balance for SENDER %s on Shard %d: %d (Post-Sec2) -> %d (Final) (Inputs: %d, Change: %d, Fee: %d)", senderAddress, bc.ShardState.ShardID, senderBalanceBeforeTx, finalSenderBalance, totalInputAmount, changeAmount, fee)
+			} else {
+				log.Printf("WARN: [State Update] Skipping sender balance correction for %s (shard %d) as it's not for current shard %d.",
+					senderAddress, senderShardID, bc.ShardState.ShardID)
 			}
 		} else {
 			log.Printf("DEBUG: [State Update] Skipping Section 3 sender balance correction for Tx %s because sender address is unknown.", tx.ID)
@@ -698,6 +717,16 @@ func NewBlockchain(setupConfig *types.BlockchainConfig, appConfig *config.Config
 		AppConfig:     appConfig,     // Global app config
 		Libp2pManager: libp2pManager, // Global Libp2pManager (needs shard awareness)
 	}
+
+	// *** ADD THIS SECTION HERE ***
+	// Initialize blockchain (including genesis balance migration/setup)
+	log.Printf("Initializing blockchain for shard %d...", shardID)
+	if err := temp.InitializeBlockchain(); err != nil {
+		storeInstance.Close()
+		return nil, nil, fmt.Errorf("failed to initialize blockchain for shard %d: %w", shardID, err)
+	}
+	log.Printf("Blockchain initialization completed successfully for shard %d", shardID)
+	// *** END OF ADDITION ***
 
 	// NOTE: txPool and other components must now operate on temp.ShardState
 	temp.TransactionPropagator = &types.TransactionPropagator{
