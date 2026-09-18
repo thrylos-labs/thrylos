@@ -10,3 +10,8 @@ description = "Remote signer, slash protection"
 workspace = true
 
 [dependencies]
+blst.workspace = true
+chain-types = { path = "../chain-types", version = "0.1.0" }
+
+[dev-dependencies]
+proptest.workspace = true

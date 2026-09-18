@@ -486,6 +486,11 @@ version = "0.1.0"
 [[package]]
 name = "chain-signer"
 version = "0.1.0"
+dependencies = [
+ "blst",
+ "chain-types",
+ "proptest",
+]
 
 [[package]]
 name = "chain-state"
