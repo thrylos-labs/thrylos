@@ -52,10 +52,12 @@ pub enum RejectionReason {
     /// Expired, or scheduled further ahead than
     /// `chain_types::transaction::MAX_EXPIRY_HORIZON`.
     InvalidExpiry,
-    /// A check that needs chain state failed: sequence-number ordering,
-    /// balance, or a declared-access violation caught during execution.
-    /// The specific reason is owned by whichever crate performs the
-    /// check, not enumerated here.
+    /// A check that needs chain state failed: sequence-number ordering
+    /// or balance. The specific reason is owned by whichever crate
+    /// performs the check, not enumerated here. A failure *while
+    /// executing* a transaction that passed these checks — including a
+    /// declared-access violation — is not a rejection: it's an
+    /// [`crate::AbortReason`], and the block stands.
     Rejected,
     /// The block itself is malformed independent of any one
     /// transaction — over a [`BlockLimits`] ceiling, for instance.
@@ -221,6 +223,9 @@ mod tests {
                 // and never models a real flat state, so there is
                 // nothing for a diff to report.
                 state_diff: chain_state::StateDiff::empty(),
+                // Nothing here can abort: every transaction that passes
+                // the chain-ID/signature checks above "succeeds".
+                outcomes: vec![crate::TransactionOutcome::Success; block.transactions.len()],
             })
         }
 

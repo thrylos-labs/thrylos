@@ -64,6 +64,39 @@ impl Decode for Block {
     }
 }
 
+/// Why a transaction that was valid to include in a block still failed
+/// while executing. `docs/spec.md`, "Execution": "Aborts consume gas
+/// and roll back the transaction's effects, but never abort the block."
+/// Distinct from [`crate::RejectionReason`]: a rejection means the
+/// transaction should never have been in the block at all and takes
+/// the whole block with it; an abort is an ordinary, expected outcome
+/// of a transaction that was allowed to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortReason {
+    /// The call names a module/function the executor doesn't have.
+    UnknownFunction,
+    /// The call's arguments don't match what the function takes.
+    InvalidArguments,
+    /// The call touches an object its `declared_inputs` don't list —
+    /// `docs/spec.md`, "Execution": "A transaction touching an object
+    /// it did not declare aborts rather than being resolved
+    /// dynamically."
+    UndeclaredObjectAccess,
+    /// The VM itself failed the call: a Move `abort`, or an arithmetic
+    /// overflow ("arithmetic aborts rather than wrapping").
+    ExecutionFailed,
+}
+
+/// What happened to one transaction that made it into an executed
+/// block. Either way the sender was charged gas and their sequence
+/// number advanced; only a [`Self::Success`] applied the call's own
+/// effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionOutcome {
+    Success,
+    Aborted(AbortReason),
+}
+
 /// The deterministic result of executing a [`Block`] on top of a given
 /// parent state root. Not wire-encoded: unlike `Block`, this never
 /// crosses the network — every validator computes its own by calling
@@ -73,11 +106,16 @@ impl Decode for Block {
 /// `state_diff` is what actually changed, not the whole resulting
 /// state — see `chain_state::StateDiff`'s doc comment for why this
 /// exists (`chain-db` needs something incremental to persist).
+///
+/// `outcomes` has exactly one entry per transaction in the block, in
+/// block order — the only way a caller can tell an aborted transaction
+/// from a successful one, since both are included and both are charged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutedBlock {
     pub state_root: StateRoot,
     pub gas_used: u64,
     pub state_diff: StateDiff,
+    pub outcomes: Vec<TransactionOutcome>,
 }
 
 #[cfg(test)]

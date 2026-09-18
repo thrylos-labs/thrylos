@@ -8,7 +8,7 @@
 pub mod block;
 pub mod engine;
 
-pub use block::{Block, ExecutedBlock};
+pub use block::{AbortReason, Block, ExecutedBlock, TransactionOutcome};
 pub use engine::{
     BlockLimits, BlockRejected, Engine, FinaliseError, FinaliseErrorReason, RejectionReason,
     GENESIS_MAX_BLOCK_GAS, MAX_BLOCK_SIZE_BYTES,

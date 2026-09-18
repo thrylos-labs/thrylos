@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use chain_engine_api::{
-    Block, BlockLimits, BlockRejected, Engine, ExecutedBlock, FinaliseError, FinaliseErrorReason,
-    RejectionReason,
+    AbortReason, Block, BlockLimits, BlockRejected, Engine, ExecutedBlock, FinaliseError,
+    FinaliseErrorReason, RejectionReason, TransactionOutcome,
 };
 use chain_state::{compute_root, StateKey, StateRoot, StateValue};
 use chain_types::codec::CodecError;
@@ -45,6 +45,41 @@ impl core::fmt::Display for ExecutorError {
 }
 
 impl std::error::Error for ExecutorError {}
+
+/// What a call would change, held back rather than applied: handlers
+/// read state and return one of these, and only the caller decides
+/// whether it ever reaches `state`. That is what makes an abort's
+/// rollback structural instead of something each handler has to
+/// remember to undo.
+struct CallEffects {
+    writes: Vec<(StateKey, StateValue)>,
+    gas_used: u64,
+}
+
+/// Why a call produced no [`CallEffects`].
+enum CallError {
+    /// The transaction's own doing: it was valid to run, and running it
+    /// failed. Becomes an aborted [`TransactionOutcome`].
+    Abort(AbortReason),
+    /// Not the transaction's doing — the executor itself couldn't do
+    /// what it should always be able to (build its VM from constants,
+    /// read back a state invariant genesis established, unpack a value
+    /// its own module just returned). Nothing a transaction can
+    /// trigger, so charging its sender for it would be wrong; the block
+    /// is rejected instead, the same way a corrupt account read is.
+    Internal,
+}
+
+impl From<AbortReason> for CallError {
+    fn from(reason: AbortReason) -> Self {
+        Self::Abort(reason)
+    }
+}
+
+struct AppliedTransaction {
+    gas_used: u64,
+    outcome: TransactionOutcome,
+}
 
 pub struct Executor {
     chain_id: ChainId,
@@ -117,38 +152,44 @@ impl Executor {
         Ok(())
     }
 
-    /// Apply every transaction in `block` to `state` in order, rejecting
-    /// the whole block on the first structurally invalid transaction
+    /// Apply every transaction in `block` to `state` in order. A
+    /// structurally invalid transaction rejects the whole block
     /// (`docs/spec.md`, "Execution": "Invalid transaction in a proposed
-    /// block rejects the block. There is no skip-and-continue path").
-    /// Returns the total gas used.
+    /// block rejects the block. There is no skip-and-continue path");
+    /// a valid one that fails *while executing* is aborted and the
+    /// block carries on ("Aborts consume gas and roll back the
+    /// transaction's effects, but never abort the block"). Returns the
+    /// total gas used and one outcome per transaction.
     fn apply_block(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
         block: &Block,
-    ) -> Result<u64, BlockRejected> {
+    ) -> Result<(u64, Vec<TransactionOutcome>), BlockRejected> {
         let mut gas_used: u64 = 0;
+        let mut outcomes = Vec::with_capacity(block.transactions.len());
         for (index, tx) in block.transactions.iter().enumerate() {
-            let used = self.apply_transaction(state, tx, index)?;
-            gas_used = gas_used.saturating_add(used);
+            let applied = self.apply_transaction(state, tx, index)?;
+            gas_used = gas_used.saturating_add(applied.gas_used);
+            outcomes.push(applied.outcome);
         }
-        Ok(gas_used)
+        Ok((gas_used, outcomes))
     }
 
-    /// Dispatch to this pass's one of two supported call shapes: the
-    /// fixed `calculator::add` (plain `u64` arguments) or `counter::bump`
-    /// (one `Counter` object, declared as this transaction's one input,
-    /// mutated by reference). Every transaction that reaches dispatch
-    /// has already passed every account-state-independent check
-    /// (chain ID, signature) and every account-state check (sequence
-    /// number, balance) — `docs/spec.md`'s "Transaction validity"
-    /// table in full, not just the parts that don't need chain state.
+    /// One transaction, in two distinct phases with distinct failure
+    /// modes. First, validity (`docs/spec.md`'s "Transaction validity"
+    /// table in full): chain ID, signature, then sequence number and
+    /// balance against the sender's account. Failing any of those is a
+    /// rejection — the transaction should never have been in this block.
+    /// Second, execution of the call itself, which can only abort:
+    /// the sender is still charged and their sequence number still
+    /// advances (they were allowed to run, and a replay must stay
+    /// impossible), but the call's own writes are never applied.
     fn apply_transaction(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
         tx: &Transaction,
         tx_index: usize,
-    ) -> Result<u64, BlockRejected> {
+    ) -> Result<AppliedTransaction, BlockRejected> {
         let transaction_index = u32::try_from(tx_index).ok();
         let reject = move |reason: RejectionReason| BlockRejected {
             transaction_index,
@@ -172,52 +213,83 @@ impl Executor {
             )
             .map_err(|_| reject(RejectionReason::Rejected))?;
 
-        let call = &tx.body.call;
-        let gas_used = if call.module_address
-            == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())
-            && call.module_name == SYSTEM_MODULE_NAME.as_bytes()
-            && call.function_name == SYSTEM_FUNCTION_NAME.as_bytes()
-        {
-            self.apply_calculator_add(state, tx, reject)?
-        } else if call.module_address == Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes())
-            && call.module_name == COUNTER_MODULE_NAME.as_bytes()
-            && call.function_name == COUNTER_BUMP_FUNCTION.as_bytes()
-        {
-            self.apply_counter_bump(state, tx, reject)?
-        } else {
-            return Err(reject(RejectionReason::Rejected));
+        let (outcome, gas_used) = match self.execute_call(state, tx) {
+            Ok(effects) => {
+                // The only place a call's writes ever reach `state`:
+                // an abort returns before this, so rollback is
+                // structural — there is nothing to undo.
+                for (key, value) in effects.writes {
+                    state.insert(key, value);
+                }
+                (TransactionOutcome::Success, effects.gas_used)
+            }
+            // Unmetered for this pass — see `crate`'s doc comment.
+            // Charging the declared gas limit for an abort, same as for
+            // a success, is the conservative stand-in: an abort that
+            // cost nothing would be free spam. The account was already
+            // checked to afford exactly this much.
+            Err(CallError::Abort(reason)) => {
+                (TransactionOutcome::Aborted(reason), tx.body.gas_limit.0)
+            }
+            Err(CallError::Internal) => return Err(reject(RejectionReason::Rejected)),
         };
 
         let updated_account =
             account.apply_transaction(GasAmount(gas_used), tx.body.max_fee_per_gas);
         chain_state::account::write_account(state, sender, updated_account);
 
-        Ok(gas_used)
+        Ok(AppliedTransaction { gas_used, outcome })
     }
 
-    fn apply_calculator_add(
+    /// Dispatch to this pass's one of two supported call shapes: the
+    /// fixed `calculator::add` (plain `u64` arguments) or `counter::bump`
+    /// (one `Counter` object, declared as one of this transaction's
+    /// inputs, mutated by reference). Reads `state` but never writes
+    /// it: whatever the call would change comes back as
+    /// [`CallEffects`] for the caller to apply or discard.
+    fn execute_call(
         &self,
-        state: &mut BTreeMap<StateKey, StateValue>,
+        state: &BTreeMap<StateKey, StateValue>,
         tx: &Transaction,
-        reject: impl Fn(RejectionReason) -> BlockRejected,
-    ) -> Result<u64, BlockRejected> {
+    ) -> Result<CallEffects, CallError> {
+        let call = &tx.body.call;
+        if call.module_address == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())
+            && call.module_name == SYSTEM_MODULE_NAME.as_bytes()
+            && call.function_name == SYSTEM_FUNCTION_NAME.as_bytes()
+        {
+            self.call_calculator_add(state, tx)
+        } else if call.module_address == Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes())
+            && call.module_name == COUNTER_MODULE_NAME.as_bytes()
+            && call.function_name == COUNTER_BUMP_FUNCTION.as_bytes()
+        {
+            self.call_counter_bump(state, tx)
+        } else {
+            Err(AbortReason::UnknownFunction.into())
+        }
+    }
+
+    fn call_calculator_add(
+        &self,
+        state: &BTreeMap<StateKey, StateValue>,
+        tx: &Transaction,
+    ) -> Result<CallEffects, CallError> {
         let call = &tx.body.call;
         let [arg_a, arg_b] = call.arguments.as_slice() else {
-            return Err(reject(RejectionReason::Rejected));
+            return Err(AbortReason::InvalidArguments.into());
         };
-        let a = decode_u64_arg(arg_a).ok_or_else(|| reject(RejectionReason::Rejected))?;
-        let b = decode_u64_arg(arg_b).ok_or_else(|| reject(RejectionReason::Rejected))?;
+        let a = decode_u64_arg(arg_a).ok_or(AbortReason::InvalidArguments)?;
+        let b = decode_u64_arg(arg_b).ok_or(AbortReason::InvalidArguments)?;
 
         let module_id = ModuleId::new(
             SYSTEM_PACKAGE_ADDRESS,
-            Identifier::new(SYSTEM_MODULE_NAME).map_err(|_| reject(RejectionReason::Rejected))?,
+            Identifier::new(SYSTEM_MODULE_NAME).map_err(|_| CallError::Internal)?,
         );
         let function_name =
-            Identifier::new(SYSTEM_FUNCTION_NAME).map_err(|_| reject(RejectionReason::Rejected))?;
+            Identifier::new(SYSTEM_FUNCTION_NAME).map_err(|_| CallError::Internal)?;
 
         let mut vm = self
             .make_vm(state, SYSTEM_PACKAGE_ADDRESS)
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| CallError::Internal)?;
         let mut returned = vm
             .execute_function_bypass_visibility(
                 &module_id,
@@ -227,74 +299,76 @@ impl Executor {
                 &mut UnmeteredGasMeter,
                 None,
             )
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| AbortReason::ExecutionFailed)?;
         drop(vm);
 
         if returned.len() != 1 {
-            return Err(reject(RejectionReason::Rejected));
+            return Err(CallError::Internal);
         }
         let sum: u64 = returned
             .remove(0)
             .value_as()
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| CallError::Internal)?;
 
-        state.insert(
-            calculator_result_key(account_address(&tx.sender_address())),
-            StateValue::new(sum.to_le_bytes().to_vec()),
-        );
-
-        // Unmetered for this pass — see `crate`'s doc comment. Charging
-        // the declared gas limit as a stand-in keeps `gas_used`
-        // meaningful without pretending it's a calibrated cost.
-        Ok(tx.body.gas_limit.0)
+        Ok(CallEffects {
+            writes: vec![(
+                calculator_result_key(account_address(&tx.sender_address())),
+                StateValue::new(sum.to_le_bytes().to_vec()),
+            )],
+            // Unmetered for this pass — see `crate`'s doc comment.
+            // Charging the declared gas limit as a stand-in keeps
+            // `gas_used` meaningful without pretending it's a
+            // calibrated cost.
+            gas_used: tx.body.gas_limit.0,
+        })
     }
 
     /// `docs/spec.md`, "Execution": "Transactions declare the objects
-    /// they access before execution." This is where that's enforced —
-    /// structurally, not as a separate check: the only `Counter` this
-    /// function can hand to `bump` is the one at `declared_inputs[0]`,
-    /// because that's the only way this code ever constructs one. A
-    /// transaction that omits the counter's address, or names a
-    /// different address, gets nothing to mutate and is rejected before
-    /// the VM is even asked to run anything.
-    fn apply_counter_bump(
+    /// they access before execution ... A transaction touching an
+    /// object it did not declare aborts rather than being resolved
+    /// dynamically." Enforced twice over: as an explicit abort here
+    /// when the counter's address isn't among `declared_inputs`, and
+    /// structurally underneath it — Sui's Move has no ambient lookup
+    /// by address, so `bump` can only touch the `Counter` this function
+    /// itself constructs and passes in, and it only ever does that for
+    /// the one declared address.
+    fn call_counter_bump(
         &self,
-        state: &mut BTreeMap<StateKey, StateValue>,
+        state: &BTreeMap<StateKey, StateValue>,
         tx: &Transaction,
-        reject: impl Fn(RejectionReason) -> BlockRejected,
-    ) -> Result<u64, BlockRejected> {
-        let [object_address] = tx.body.declared_inputs.as_slice() else {
-            return Err(reject(RejectionReason::Rejected));
-        };
-        if *object_address != Address::from_bytes(INITIAL_COUNTER_ADDRESS.into_bytes()) {
-            return Err(reject(RejectionReason::Rejected));
+    ) -> Result<CallEffects, CallError> {
+        let counter_address = Address::from_bytes(INITIAL_COUNTER_ADDRESS.into_bytes());
+        if !tx.body.declared_inputs.contains(&counter_address) {
+            return Err(AbortReason::UndeclaredObjectAccess.into());
         }
 
         let [amount_bytes] = tx.body.call.arguments.as_slice() else {
-            return Err(reject(RejectionReason::Rejected));
+            return Err(AbortReason::InvalidArguments.into());
         };
-        let amount =
-            decode_u64_arg(amount_bytes).ok_or_else(|| reject(RejectionReason::Rejected))?;
+        let amount = decode_u64_arg(amount_bytes).ok_or(AbortReason::InvalidArguments)?;
 
-        let current = read_u64(state, &object_key(INITIAL_COUNTER_ADDRESS))
-            .ok_or_else(|| reject(RejectionReason::Rejected))?;
+        // A declared counter that isn't in state, or isn't 8 bytes, is
+        // a broken state invariant (genesis seeds it and only this
+        // function writes it), not something the transaction did.
+        let current =
+            read_u64(state, &object_key(INITIAL_COUNTER_ADDRESS)).ok_or(CallError::Internal)?;
 
         let module_id = ModuleId::new(
             COUNTER_PACKAGE_ADDRESS,
-            Identifier::new(COUNTER_MODULE_NAME).map_err(|_| reject(RejectionReason::Rejected))?,
+            Identifier::new(COUNTER_MODULE_NAME).map_err(|_| CallError::Internal)?,
         );
-        let function_name = Identifier::new(COUNTER_BUMP_FUNCTION)
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+        let function_name =
+            Identifier::new(COUNTER_BUMP_FUNCTION).map_err(|_| CallError::Internal)?;
 
         let mut heap = BaseHeap::new();
         let counter_value = Value::struct_(Struct::pack(vec![Value::u64(current)]));
         let (heap_id, counter_ref) = heap
             .allocate_and_borrow_loc(counter_value)
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| CallError::Internal)?;
 
         let mut vm = self
             .make_vm(state, COUNTER_PACKAGE_ADDRESS)
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| CallError::Internal)?;
         let returned = vm
             .execute_function_bypass_visibility(
                 &module_id,
@@ -304,32 +378,29 @@ impl Executor {
                 &mut UnmeteredGasMeter,
                 None,
             )
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| AbortReason::ExecutionFailed)?;
         drop(vm);
 
         if !returned.is_empty() {
-            return Err(reject(RejectionReason::Rejected));
+            return Err(CallError::Internal);
         }
 
-        let mutated = heap
-            .take_loc(heap_id)
-            .map_err(|_| reject(RejectionReason::Rejected))?;
-        let mutated_struct: Struct = mutated
-            .value_as()
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+        let mutated = heap.take_loc(heap_id).map_err(|_| CallError::Internal)?;
+        let mutated_struct: Struct = mutated.value_as().map_err(|_| CallError::Internal)?;
         let new_value: u64 = mutated_struct
             .unpack()
             .next()
-            .ok_or_else(|| reject(RejectionReason::Rejected))?
+            .ok_or(CallError::Internal)?
             .value_as()
-            .map_err(|_| reject(RejectionReason::Rejected))?;
+            .map_err(|_| CallError::Internal)?;
 
-        state.insert(
-            object_key(INITIAL_COUNTER_ADDRESS),
-            StateValue::new(new_value.to_le_bytes().to_vec()),
-        );
-
-        Ok(tx.body.gas_limit.0)
+        Ok(CallEffects {
+            writes: vec![(
+                object_key(INITIAL_COUNTER_ADDRESS),
+                StateValue::new(new_value.to_le_bytes().to_vec()),
+            )],
+            gas_used: tx.body.gas_limit.0,
+        })
     }
 
     fn make_vm<'extensions>(
@@ -404,11 +475,12 @@ impl Engine for Executor {
         }
 
         let mut scratch = self.state.clone();
-        let gas_used = self.apply_block(&mut scratch, block)?;
+        let (gas_used, outcomes) = self.apply_block(&mut scratch, block)?;
         Ok(ExecutedBlock {
             state_root: compute_root(&scratch),
             gas_used,
             state_diff: chain_state::diff(&self.state, &scratch),
+            outcomes,
         })
     }
 
@@ -428,16 +500,17 @@ impl Engine for Executor {
         // execution of `block` on top of this executor's own state —
         // treated the same as a root mismatch, since both mean the
         // caller handed us something inconsistent.
-        let gas_used = self
-            .apply_block(&mut scratch, block)
-            .map_err(|_| FinaliseError {
-                reason: FinaliseErrorReason::StateRootMismatch,
-            })?;
+        let (gas_used, outcomes) =
+            self.apply_block(&mut scratch, block)
+                .map_err(|_| FinaliseError {
+                    reason: FinaliseErrorReason::StateRootMismatch,
+                })?;
         let recomputed_root = compute_root(&scratch);
         let recomputed_diff = chain_state::diff(&self.state, &scratch);
         if recomputed_root != executed.state_root
             || gas_used != executed.gas_used
             || recomputed_diff != executed.state_diff
+            || outcomes != executed.outcomes
         {
             return Err(FinaliseError {
                 reason: FinaliseErrorReason::StateRootMismatch,

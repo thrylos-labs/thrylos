@@ -4,7 +4,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use chain_engine_api::{BlockLimits, Engine, FinaliseErrorReason, RejectionReason};
+use chain_engine_api::{
+    AbortReason, BlockLimits, Engine, ExecutedBlock, FinaliseErrorReason, RejectionReason,
+    TransactionOutcome,
+};
 use chain_exec::genesis::{
     COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME, COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS,
     SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME, SYSTEM_PACKAGE_ADDRESS,
@@ -85,6 +88,29 @@ fn signed_transaction_full(
     }
 }
 
+/// Proposes, executes and finalises `transactions` as the next block on
+/// top of the executor's current tip, returning what execution produced.
+fn execute_and_finalise(executor: &mut Executor, transactions: Vec<Transaction>) -> ExecutedBlock {
+    let parent_root = executor.state_root();
+    let block = executor.propose_block(
+        executor.tip_block_hash(),
+        parent_root,
+        BlockHeight(1),
+        1_700_000_000_000,
+        transactions,
+        default_limits(),
+    );
+    let executed = executor.execute_block(parent_root, &block).unwrap();
+    executor.finalise_block(&block, &executed).unwrap();
+    executed
+}
+
+fn fund(executor: &mut Executor, tx: &Transaction) {
+    executor
+        .credit_account(tx.sender_address(), 1_000_000)
+        .unwrap();
+}
+
 fn default_limits() -> BlockLimits {
     BlockLimits {
         max_gas: 60_000_000,
@@ -163,26 +189,25 @@ fn execute_rejects_a_transaction_with_a_bad_signature() {
 }
 
 #[test]
-fn execute_rejects_a_call_to_a_different_function() {
+fn an_unknown_function_aborts_the_transaction_but_not_the_block() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
 
     let mut call = calculator_call(1, 1);
     call.function_name = b"subtract".to_vec();
     let tx = signed_transaction(3, 1, call);
-    executor
-        .credit_account(tx.sender_address(), 1_000_000)
-        .unwrap();
-    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+    let sender = tx.sender_address();
+    fund(&mut executor, &tx);
 
-    let block = chain_engine_api::Block {
-        parent_block_hash: genesis_hash,
-        height: BlockHeight(1),
-        timestamp_millis: 1_700_000_000_000,
-        transactions: vec![tx],
-    };
+    let executed = execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(
+        executed.outcomes,
+        vec![TransactionOutcome::Aborted(AbortReason::UnknownFunction)]
+    );
 
-    let result = executor.execute_block(genesis_root, &block);
-    assert_eq!(result.unwrap_err().reason, RejectionReason::Rejected);
+    // Included, so charged and sequenced — even though it did nothing.
+    let account = executor.read_account(sender).unwrap();
+    assert_eq!(account.balance, 1_000_000 - 1_000);
+    assert_eq!(account.next_sequence_number, SequenceNumber(1));
 }
 
 #[test]
@@ -216,6 +241,7 @@ fn finalise_rejects_a_block_that_does_not_extend_the_current_tip() {
         state_root: executor.state_root(),
         gas_used: 0,
         state_diff: chain_state::StateDiff::empty(),
+        outcomes: Vec::new(),
     };
 
     let result = executor.finalise_block(&block, &fabricated);
@@ -320,52 +346,199 @@ fn bump_accumulates_across_multiple_transactions_in_the_same_block() {
 }
 
 #[test]
-fn bump_rejects_without_declaring_the_counter_as_an_input() {
-    // `docs/spec.md`, "Execution": "Transactions declare the objects
-    // they access before execution" — omitting the declaration must be
-    // rejected, not silently resolved anyway.
+fn bump_without_declaring_the_counter_aborts_and_leaves_it_untouched() {
+    // `docs/spec.md`, "Execution": "A transaction touching an object it
+    // did not declare aborts rather than being resolved dynamically" —
+    // an abort, not a block rejection, and not silently resolved anyway.
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
     let tx = signed_transaction_with_inputs(13, 1, Vec::new(), bump_call(5));
-    executor
-        .credit_account(tx.sender_address(), 1_000_000)
-        .unwrap();
-    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+    let sender = tx.sender_address();
+    fund(&mut executor, &tx);
 
-    let block = chain_engine_api::Block {
-        parent_block_hash: genesis_hash,
-        height: BlockHeight(1),
-        timestamp_millis: 1_700_000_000_000,
-        transactions: vec![tx],
-    };
-
-    let result = executor.execute_block(genesis_root, &block);
-    assert_eq!(result.unwrap_err().reason, RejectionReason::Rejected);
+    let executed = execute_and_finalise(&mut executor, vec![tx]);
     assert_eq!(
-        executor.read_counter(),
-        Some(0),
-        "a rejected block must not mutate anything"
+        executed.outcomes,
+        vec![TransactionOutcome::Aborted(
+            AbortReason::UndeclaredObjectAccess
+        )]
+    );
+    assert_eq!(executor.read_counter(), Some(0), "an abort must not write");
+    assert_eq!(
+        executor.read_account(sender).unwrap().next_sequence_number,
+        SequenceNumber(1)
     );
 }
 
 #[test]
-fn bump_rejects_a_declared_input_that_is_not_the_counter() {
+fn bump_declaring_a_different_object_aborts_as_undeclared_access() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
     let wrong_address = Address::from_bytes([0xAAu8; 32]);
     let tx = signed_transaction_with_inputs(14, 1, vec![wrong_address], bump_call(5));
-    executor
-        .credit_account(tx.sender_address(), 1_000_000)
-        .unwrap();
-    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+    fund(&mut executor, &tx);
 
-    let block = chain_engine_api::Block {
-        parent_block_hash: genesis_hash,
-        height: BlockHeight(1),
-        timestamp_millis: 1_700_000_000_000,
+    let executed = execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(
+        executed.outcomes,
+        vec![TransactionOutcome::Aborted(
+            AbortReason::UndeclaredObjectAccess
+        )]
+    );
+    assert_eq!(executor.read_counter(), Some(0));
+}
+
+#[test]
+fn bump_may_declare_more_objects_than_it_touches() {
+    // "Every object touched is listed" is a superset rule: declaring
+    // extra inputs is fine, only omitting one it touches is not.
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let extra = Address::from_bytes([0xBBu8; 32]);
+    let tx = signed_transaction_with_inputs(24, 1, vec![extra, counter_address()], bump_call(5));
+    fund(&mut executor, &tx);
+
+    let executed = execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(executed.outcomes, vec![TransactionOutcome::Success]);
+    assert_eq!(executor.read_counter(), Some(5));
+}
+
+#[test]
+fn a_call_with_the_wrong_arguments_aborts_as_invalid_arguments() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+
+    let mut no_amount = bump_call(0);
+    no_amount.arguments = Vec::new();
+    let bump = signed_transaction_with_inputs(25, 1, vec![counter_address()], no_amount);
+
+    let mut short_arg = calculator_call(1, 1);
+    short_arg.arguments = vec![vec![1, 2, 3], 1u64.to_le_bytes().to_vec()]; // 3 bytes, not 8
+    let add = signed_transaction(26, 1, short_arg);
+
+    fund(&mut executor, &bump);
+    fund(&mut executor, &add);
+    let executed = execute_and_finalise(&mut executor, vec![bump, add]);
+    assert_eq!(
+        executed.outcomes,
+        vec![
+            TransactionOutcome::Aborted(AbortReason::InvalidArguments),
+            TransactionOutcome::Aborted(AbortReason::InvalidArguments),
+        ]
+    );
+}
+
+#[test]
+fn a_move_abort_charges_gas_and_rolls_back_but_the_block_carries_on() {
+    // u64::MAX + 1 aborts inside Move ("arithmetic aborts rather than
+    // wrapping"). The transaction after it in the same block must still
+    // run: aborts "never abort the block".
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let overflowing = signed_transaction(30, 1, calculator_call(u64::MAX, 1));
+    let fine = signed_transaction(31, 1, calculator_call(2, 40));
+    let (overflowing_sender, fine_sender) = (overflowing.sender_address(), fine.sender_address());
+    fund(&mut executor, &overflowing);
+    fund(&mut executor, &fine);
+
+    let executed = execute_and_finalise(&mut executor, vec![overflowing, fine]);
+    assert_eq!(
+        executed.outcomes,
+        vec![
+            TransactionOutcome::Aborted(AbortReason::ExecutionFailed),
+            TransactionOutcome::Success,
+        ]
+    );
+    // Both were charged the same stand-in gas.
+    assert_eq!(executed.gas_used, 2_000);
+
+    assert_eq!(
+        executor.read_result(&overflowing_sender),
+        None,
+        "the aborted call's write must have been rolled back"
+    );
+    assert_eq!(executor.read_result(&fine_sender), Some(42));
+
+    let charged = executor.read_account(overflowing_sender).unwrap();
+    assert_eq!(charged.balance, 1_000_000 - 1_000);
+    assert_eq!(charged.next_sequence_number, SequenceNumber(1));
+}
+
+#[test]
+fn an_aborted_transaction_cannot_be_replayed() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = signed_transaction(32, 1, calculator_call(u64::MAX, 1));
+    fund(&mut executor, &tx);
+    execute_and_finalise(&mut executor, vec![tx.clone()]);
+
+    // Aborting used up sequence number 0, so this is now a replay — a
+    // validity failure, which does reject the block.
+    let replay_block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(2),
+        timestamp_millis: 1_700_000_000_001,
         transactions: vec![tx],
     };
-
-    let result = executor.execute_block(genesis_root, &block);
+    let result = executor.execute_block(executor.state_root(), &replay_block);
     assert_eq!(result.unwrap_err().reason, RejectionReason::Rejected);
+}
+
+#[test]
+fn an_invalid_transaction_still_rejects_the_whole_block_even_after_an_abort() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let aborting = signed_transaction(33, 1, calculator_call(u64::MAX, 1));
+    let gap = signed_transaction_full(34, 1, 5, Vec::new(), calculator_call(1, 1)); // skips ahead
+    fund(&mut executor, &aborting);
+    fund(&mut executor, &gap);
+
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: 1_700_000_000_000,
+        transactions: vec![aborting, gap],
+    };
+    let rejected = executor
+        .execute_block(executor.state_root(), &block)
+        .unwrap_err();
+    assert_eq!(rejected.reason, RejectionReason::Rejected);
+    assert_eq!(
+        rejected.transaction_index,
+        Some(1),
+        "the abort at index 0 is fine; the gap at index 1 is what rejects"
+    );
+}
+
+#[test]
+fn an_aborted_transactions_diff_is_only_the_senders_account() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = signed_transaction_with_inputs(35, 1, Vec::new(), bump_call(5)); // undeclared: aborts
+    fund(&mut executor, &tx);
+
+    let executed = execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(
+        executed.state_diff.len(),
+        1,
+        "gas and sequence number are the only effects of an abort"
+    );
+}
+
+#[test]
+fn finalise_rejects_tampered_outcomes() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = signed_transaction(36, 1, calculator_call(2, 40));
+    fund(&mut executor, &tx);
+    let parent_root = executor.state_root();
+    let block = executor.propose_block(
+        executor.tip_block_hash(),
+        parent_root,
+        BlockHeight(1),
+        1_700_000_000_000,
+        vec![tx],
+        default_limits(),
+    );
+    let mut executed = executor.execute_block(parent_root, &block).unwrap();
+    executed.outcomes = vec![TransactionOutcome::Aborted(AbortReason::ExecutionFailed)];
+
+    let result = executor.finalise_block(&block, &executed);
+    assert_eq!(
+        result.unwrap_err().reason,
+        FinaliseErrorReason::StateRootMismatch
+    );
 }
 
 #[test]
