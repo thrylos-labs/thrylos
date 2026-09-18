@@ -1,10 +1,13 @@
 //! Chain-state key conventions for this crate. `chain-state`'s
-//! `StateKey` is fully opaque (see its own doc comment — the "account
-//! model" is deliberately undecided there), so this crate must pick and
-//! keep straight its own namespacing: module bytecode, object data, and
-//! this pass's one scratch result all share one flat key space, and
-//! nothing stops two of them colliding unless every key is tagged by
-//! what it is.
+//! `StateKey` is fully opaque (see its own doc comment) and now shared
+//! with `chain-state`'s own account model (`chain_state::account`,
+//! reserving tag [`chain_state::account::KEY_TAG`]): module bytecode,
+//! object data, and this pass's one scratch result all share the same
+//! flat key space account balances live in, and nothing stops two
+//! tagged users of that space colliding unless they coordinate their
+//! tag bytes. This crate's tags start right after the account model's
+//! reservation, computed from that constant rather than hardcoded, so
+//! a future change to it can't silently reopen the collision.
 
 use chain_state::StateKey;
 use move_core_types::account_address::AccountAddress;
@@ -12,9 +15,9 @@ use move_core_types::account_address::AccountAddress;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum KeyTag {
-    ModuleBytecode = 0,
-    ObjectData = 1,
-    CalculatorResult = 2,
+    ModuleBytecode = chain_state::account::KEY_TAG + 1,
+    ObjectData = chain_state::account::KEY_TAG + 2,
+    CalculatorResult = chain_state::account::KEY_TAG + 3,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -51,5 +54,16 @@ mod tests {
         assert_ne!(module_key(addr), object_key(addr));
         assert_ne!(module_key(addr), calculator_result_key(addr));
         assert_ne!(object_key(addr), calculator_result_key(addr));
+    }
+
+    #[test]
+    fn none_of_this_crate_s_tags_reuse_the_account_model_s_reserved_tag() {
+        for tag in [
+            KeyTag::ModuleBytecode as u8,
+            KeyTag::ObjectData as u8,
+            KeyTag::CalculatorResult as u8,
+        ] {
+            assert_ne!(tag, chain_state::account::KEY_TAG);
+        }
     }
 }

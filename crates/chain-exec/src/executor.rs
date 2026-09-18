@@ -9,7 +9,8 @@ use chain_engine_api::{
     RejectionReason,
 };
 use chain_state::{compute_root, StateKey, StateRoot, StateValue};
-use chain_types::{Address, BlockHeight, Hash, Transaction};
+use chain_types::codec::CodecError;
+use chain_types::{Address, BlockHeight, ChainId, GasAmount, Hash, Transaction};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_vm_config::runtime::VMConfig;
@@ -46,6 +47,7 @@ impl core::fmt::Display for ExecutorError {
 impl std::error::Error for ExecutorError {}
 
 pub struct Executor {
+    chain_id: ChainId,
     state: BTreeMap<StateKey, StateValue>,
     tip_block_hash: Hash,
     runtime: MoveRuntime,
@@ -54,8 +56,10 @@ pub struct Executor {
 impl Executor {
     /// A freshly initialised executor with the fixed system packages
     /// published, including one seeded `Counter` object (see
-    /// `crate::genesis`).
-    pub fn genesis() -> Result<Self, ExecutorError> {
+    /// `crate::genesis`), checking every transaction against
+    /// `chain_id` (`docs/spec.md`, "Transaction validity": "Chain ID
+    /// ... checked against the node's own").
+    pub fn genesis(chain_id: ChainId) -> Result<Self, ExecutorError> {
         let state = genesis_state().map_err(ExecutorError::Genesis)?;
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
@@ -67,6 +71,7 @@ impl Executor {
         let vm_config = VMConfig::new_for_test(false, None);
         let runtime = MoveRuntime::new(natives, vm_config);
         Ok(Self {
+            chain_id,
             state,
             tip_block_hash: Hash::from_bytes([0u8; 32]),
             runtime,
@@ -94,6 +99,24 @@ impl Executor {
         read_u64(&self.state, &object_key(INITIAL_COUNTER_ADDRESS))
     }
 
+    /// `address`'s account (balance and next sequence number) as of
+    /// the currently committed state.
+    pub fn read_account(&self, address: Address) -> Result<chain_state::Account, CodecError> {
+        chain_state::account::read_account(&self.state, address)
+    }
+
+    /// Credits `address`'s account by `amount`. `docs/spec.md` doesn't
+    /// specify a genesis allocation table yet (only that fixed system
+    /// state exists at genesis — see `crate::genesis`), so this is the
+    /// explicit, auditable stand-in tests use to fund a sender rather
+    /// than transactions succeeding against an implicit balance.
+    pub fn credit_account(&mut self, address: Address, amount: u128) -> Result<(), CodecError> {
+        let mut account = chain_state::account::read_account(&self.state, address)?;
+        account.balance = account.balance.saturating_add(amount);
+        chain_state::account::write_account(&mut self.state, address, account);
+        Ok(())
+    }
+
     /// Apply every transaction in `block` to `state` in order, rejecting
     /// the whole block on the first structurally invalid transaction
     /// (`docs/spec.md`, "Execution": "Invalid transaction in a proposed
@@ -115,7 +138,11 @@ impl Executor {
     /// Dispatch to this pass's one of two supported call shapes: the
     /// fixed `calculator::add` (plain `u64` arguments) or `counter::bump`
     /// (one `Counter` object, declared as this transaction's one input,
-    /// mutated by reference).
+    /// mutated by reference). Every transaction that reaches dispatch
+    /// has already passed every account-state-independent check
+    /// (chain ID, signature) and every account-state check (sequence
+    /// number, balance) — `docs/spec.md`'s "Transaction validity"
+    /// table in full, not just the parts that don't need chain state.
     fn apply_transaction(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
@@ -128,25 +155,44 @@ impl Executor {
             reason,
         };
 
+        if tx.body.chain_id != self.chain_id {
+            return Err(reject(RejectionReason::WrongChainId));
+        }
         tx.verify_signature()
             .map_err(|_| reject(RejectionReason::InvalidSignature))?;
 
+        let sender = tx.sender_address();
+        let account = chain_state::account::read_account(state, sender)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+        account
+            .check(
+                tx.body.sequence_number,
+                tx.body.gas_limit,
+                tx.body.max_fee_per_gas,
+            )
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+
         let call = &tx.body.call;
-        if call.module_address == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())
+        let gas_used = if call.module_address
+            == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())
             && call.module_name == SYSTEM_MODULE_NAME.as_bytes()
             && call.function_name == SYSTEM_FUNCTION_NAME.as_bytes()
         {
-            return self.apply_calculator_add(state, tx, reject);
-        }
-
-        if call.module_address == Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes())
+            self.apply_calculator_add(state, tx, reject)?
+        } else if call.module_address == Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes())
             && call.module_name == COUNTER_MODULE_NAME.as_bytes()
             && call.function_name == COUNTER_BUMP_FUNCTION.as_bytes()
         {
-            return self.apply_counter_bump(state, tx, reject);
-        }
+            self.apply_counter_bump(state, tx, reject)?
+        } else {
+            return Err(reject(RejectionReason::Rejected));
+        };
 
-        Err(reject(RejectionReason::Rejected))
+        let updated_account =
+            account.apply_transaction(GasAmount(gas_used), tx.body.max_fee_per_gas);
+        chain_state::account::write_account(state, sender, updated_account);
+
+        Ok(gas_used)
     }
 
     fn apply_calculator_add(

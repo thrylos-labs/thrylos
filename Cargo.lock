@@ -1283,6 +1283,7 @@ dependencies = [
 name = "chain-mempool"
 version = "0.1.0"
 dependencies = [
+ "chain-state",
  "chain-types",
  "ed25519-dalek",
 ]
