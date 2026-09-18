@@ -1,0 +1,175 @@
+//! An MDBX-backed flat key-value store: blocks, the state they
+//! produced, and per-height state roots, each committed atomically.
+//! See `crate`'s doc comment for what this pass covers and defers.
+
+use std::path::Path;
+
+use chain_engine_api::Block;
+use chain_state::{StateDiff, StateKey, StateValue};
+use chain_types::codec::{decode_exact, Encode};
+use chain_types::{BlockHeight, Hash};
+use libmdbx::{
+    DatabaseFlags, Environment, EnvironmentFlags, Geometry, MdbxError, Mode, SyncMode, WriteFlags,
+};
+
+use crate::error::DbError;
+use crate::schema::{
+    height_from_bytes, height_key, BLOCKS_TABLE, META_TABLE, ROOTS_TABLE, STATE_TABLE,
+    TIP_HEIGHT_KEY,
+};
+
+/// Upper bound on the memory-mapped address range MDBX reserves for
+/// this environment. MDBX only allocates disk pages as they're
+/// actually written, so this is a ceiling on growth, not a
+/// pre-allocation — sized generously for this pass rather than
+/// measured against real state growth (`docs/spec.md`'s "State growth
+/// is priced" fee work, not yet built, is what would eventually bound
+/// this for real).
+const MAX_SIZE_BYTES: usize = 64 * 1024 * 1024 * 1024; // 64 GiB
+
+pub struct Db {
+    env: Environment,
+}
+
+impl Db {
+    /// Opens (creating if absent) an MDBX environment at `path`.
+    ///
+    /// Fsync policy: [`SyncMode::Durable`] — MDBX's default, and its
+    /// only mode that "guarantees the integrity of the database in the
+    /// event of a crash at any time" (this crate's own dependency doc
+    /// comment on the type). Every [`Db::commit_block`] flushes both
+    /// the written data *and* the meta-page before returning, which is
+    /// exactly `docs/spec.md`'s "State, storage and sync" requirement:
+    /// "Writes are batched per block and committed atomically with the
+    /// block header. A crash mid-write leaves the node at block N or
+    /// N+1, never between." Set explicitly (it also happens to be the
+    /// default) rather than left implicit, since the faster modes
+    /// (`NoMetaSync`/`SafeNoSync`/`UtterlyNoSync`) trade away exactly
+    /// this guarantee for throughput — a choice this crate is not
+    /// making silently.
+    pub fn open(path: &Path) -> Result<Self, DbError> {
+        let mut builder = Environment::builder();
+        builder
+            .set_max_dbs(4)
+            .set_flags(EnvironmentFlags {
+                mode: Mode::ReadWrite {
+                    sync_mode: SyncMode::Durable,
+                },
+                ..Default::default()
+            })
+            .set_geometry(Geometry {
+                size: Some(0..MAX_SIZE_BYTES),
+                ..Default::default()
+            });
+        let env = builder.open(path)?;
+        Ok(Self { env })
+    }
+
+    /// Persists `block`, the state root it produced, and `diff` — the
+    /// keys its execution actually wrote — as one MDBX write
+    /// transaction. Nothing here is visible to a reader, and nothing
+    /// is durable, until this returns `Ok`; a crash any time before
+    /// that leaves the store exactly as it was before the call, since
+    /// the transaction was never committed. There is no partially-
+    /// applied state in between (`docs/spec.md`'s "block N or N+1,
+    /// never between") — see `tests/crash_durability.rs`, which kills
+    /// a process mid-write and confirms the tip doesn't move.
+    pub fn commit_block(
+        &self,
+        block: &Block,
+        state_root: Hash,
+        diff: &StateDiff,
+    ) -> Result<(), DbError> {
+        let txn = self.env.begin_rw_sync()?;
+
+        let blocks_db = txn.create_db(Some(BLOCKS_TABLE), DatabaseFlags::empty())?;
+        let roots_db = txn.create_db(Some(ROOTS_TABLE), DatabaseFlags::empty())?;
+        let state_db = txn.create_db(Some(STATE_TABLE), DatabaseFlags::empty())?;
+        let meta_db = txn.create_db(Some(META_TABLE), DatabaseFlags::empty())?;
+
+        let mut block_bytes = Vec::new();
+        block.encode(&mut block_bytes);
+        txn.put(
+            blocks_db,
+            height_key(block.height),
+            block_bytes,
+            WriteFlags::UPSERT,
+        )?;
+        txn.put(
+            roots_db,
+            height_key(block.height),
+            state_root.as_bytes(),
+            WriteFlags::UPSERT,
+        )?;
+        for (key, value) in diff.iter() {
+            txn.put(
+                state_db,
+                key.as_bytes(),
+                value.as_bytes(),
+                WriteFlags::UPSERT,
+            )?;
+        }
+        txn.put(
+            meta_db,
+            TIP_HEIGHT_KEY,
+            height_key(block.height),
+            WriteFlags::UPSERT,
+        )?;
+
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn get_block(&self, height: BlockHeight) -> Result<Option<Block>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(BLOCKS_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), &height_key(height))?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        Ok(Some(decode_exact(&bytes)?))
+    }
+
+    pub fn get_state_value(&self, key: &StateKey) -> Result<Option<StateValue>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(STATE_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), key.as_bytes())?;
+        Ok(bytes.map(StateValue::new))
+    }
+
+    pub fn get_root(&self, height: BlockHeight) -> Result<Option<Hash>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(ROOTS_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), &height_key(height))?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let array: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| DbError::Mdbx(MdbxError::BadValSize))?;
+        Ok(Some(Hash::from_bytes(array)))
+    }
+
+    pub fn tip_height(&self) -> Result<Option<BlockHeight>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(META_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), TIP_HEIGHT_KEY)?;
+        Ok(bytes.and_then(|b| height_from_bytes(&b)))
+    }
+}

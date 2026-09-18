@@ -13,15 +13,21 @@
 //! integration decisions not yet made, so [`StateKey`] stays a fully
 //! opaque byte string rather than guessing a structure.
 //!
-//! Also out of scope here: the actual persistent, incremental storage
-//! backend (`chain-db`'s job — "Storage, pruning, snapshots"), and
-//! inclusion/exclusion proofs, which `docs/spec.md` explicitly puts out
-//! of scope for v1 ("light-client proofs").
+//! [`StateDiff`] is the one exception to "pure function over a flat
+//! map": it recovers which keys one block's execution actually wrote,
+//! so `chain-db` has something incremental to persist without needing
+//! `chain-exec` to change how it executes. Still out of scope here: the
+//! actual persistent storage backend (`chain-db`'s job — "Storage,
+//! pruning, snapshots"), and inclusion/exclusion proofs, which
+//! `docs/spec.md` explicitly puts out of scope for v1 ("light-client
+//! proofs").
 
 #![forbid(unsafe_code)]
 
+pub mod diff;
 pub mod key_value;
 pub mod trie;
 
+pub use diff::{apply, diff, StateDiff};
 pub use key_value::{StateKey, StateValue};
 pub use trie::{compute_root, empty_root, StateRoot};

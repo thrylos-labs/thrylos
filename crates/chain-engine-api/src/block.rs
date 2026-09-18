@@ -7,7 +7,7 @@
 //! run the transactions (`docs/spec.md`, "Execution": "Block execution
 //! is a pure function with no I/O of its own").
 
-use chain_state::StateRoot;
+use chain_state::{StateDiff, StateRoot};
 use chain_types::codec::{decode_field, CodecError, Decode, Encode};
 use chain_types::hash::{hash_with_domain, DomainTag};
 use chain_types::{BlockHeight, Hash, Transaction};
@@ -69,10 +69,15 @@ impl Decode for Block {
 /// crosses the network — every validator computes its own by calling
 /// [`crate::Engine::execute_block`], rather than receiving one from a
 /// peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `state_diff` is what actually changed, not the whole resulting
+/// state — see `chain_state::StateDiff`'s doc comment for why this
+/// exists (`chain-db` needs something incremental to persist).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutedBlock {
     pub state_root: StateRoot,
     pub gas_used: u64,
+    pub state_diff: StateDiff,
 }
 
 #[cfg(test)]

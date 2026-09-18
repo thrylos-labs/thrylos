@@ -217,6 +217,10 @@ mod tests {
             Ok(ExecutedBlock {
                 state_root,
                 gas_used,
+                // `MockEngine` hashes parent+block as a stand-in root
+                // and never models a real flat state, so there is
+                // nothing for a diff to report.
+                state_diff: chain_state::StateDiff::empty(),
             })
         }
 

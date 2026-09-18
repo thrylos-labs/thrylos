@@ -362,6 +362,7 @@ impl Engine for Executor {
         Ok(ExecutedBlock {
             state_root: compute_root(&scratch),
             gas_used,
+            state_diff: chain_state::diff(&self.state, &scratch),
         })
     }
 
@@ -387,7 +388,11 @@ impl Engine for Executor {
                 reason: FinaliseErrorReason::StateRootMismatch,
             })?;
         let recomputed_root = compute_root(&scratch);
-        if recomputed_root != executed.state_root || gas_used != executed.gas_used {
+        let recomputed_diff = chain_state::diff(&self.state, &scratch);
+        if recomputed_root != executed.state_root
+            || gas_used != executed.gas_used
+            || recomputed_diff != executed.state_diff
+        {
             return Err(FinaliseError {
                 reason: FinaliseErrorReason::StateRootMismatch,
             });

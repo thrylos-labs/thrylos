@@ -201,6 +201,7 @@ fn finalise_rejects_a_block_that_does_not_extend_the_current_tip() {
     let fabricated = chain_engine_api::ExecutedBlock {
         state_root: executor.state_root(),
         gas_used: 0,
+        state_diff: chain_state::StateDiff::empty(),
     };
 
     let result = executor.finalise_block(&block, &fabricated);
@@ -255,6 +256,11 @@ fn bump_mutates_the_counter_object_and_the_write_is_readable_back() {
         default_limits(),
     );
     let executed = executor.execute_block(genesis_root, &block).unwrap();
+    // Exactly one key changed: the counter object's bumped value. The
+    // diff is what `chain-db` would persist instead of the whole
+    // state, so it has to reflect the real write, not the genesis
+    // state's other untouched keys.
+    assert_eq!(executed.state_diff.len(), 1);
     executor.finalise_block(&block, &executed).unwrap();
 
     assert_eq!(executor.read_counter(), Some(5));

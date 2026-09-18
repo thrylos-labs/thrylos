@@ -1245,6 +1245,14 @@ dependencies = [
 [[package]]
 name = "chain-db"
 version = "0.1.0"
+dependencies = [
+ "chain-engine-api",
+ "chain-state",
+ "chain-types",
+ "ed25519-dalek",
+ "signet-libmdbx",
+ "tempfile",
+]
 
 [[package]]
 name = "chain-engine-api"
@@ -1728,7 +1736,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -4806,8 +4814,8 @@ version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
- "heck 0.4.1",
- "itertools 0.10.5",
+ "heck 0.5.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -4827,7 +4835,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4840,7 +4848,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5763,6 +5771,30 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "signet-libmdbx"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd334ebaa7603e0ba8c9d701c883b3d264232e539860b6ff751c94aa959f6f0d"
+dependencies = [
+ "bitflags 2.13.2",
+ "byteorder",
+ "parking_lot 0.12.5",
+ "signet-mdbx-sys",
+ "smallvec",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "signet-mdbx-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1edd9fd6e430ce6243327fed2d343da022c4737c158874a632bd00f4cbd1f5f7"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

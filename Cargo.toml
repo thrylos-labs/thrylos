@@ -17,7 +17,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.92"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -65,6 +65,17 @@ malachite-core-types = { version = "0.8.0", package = "arc-malachitebft-core-typ
 malachite-core-driver = { version = "0.8.0", package = "arc-malachitebft-core-driver", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 malachite-metrics = { version = "0.8.0", package = "arc-malachitebft-metrics", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
 malachite-test = { version = "0.8.0", package = "arc-malachitebft-test", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+
+# MDBX bindings for chain-db's flat key-value store (`docs/spec.md`,
+# "State, storage and sync": "a flat key-value store (MDBX or redb)").
+# `signet-libmdbx` (init4tech/mdbx) rather than the older `libmdbx`
+# crate (vorot93/libmdbx-rs, MPL-2.0 — not in this workspace's license
+# allowlist): it's a fork of reth's own libmdbx-rs, dual MIT/Apache-2.0,
+# and more recently maintained. Vendors libmdbx itself, which relicensed
+# to Apache-2.0 as of v0.13 (May 2024) — confirmed by reading the
+# vendored LICENSE file at this fork's pinned submodule commit, not
+# assumed from the wrapper crate's own license field.
+libmdbx = { package = "signet-libmdbx", version = "0.8.3" }
 
 # Tier A lints: crates whose output must be byte-identical on every machine.
 # Opt in per crate with `[lints] workspace = true`. Tier B/C crates omit it.
