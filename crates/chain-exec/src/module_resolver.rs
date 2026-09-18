@@ -23,11 +23,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::resolver::{ModuleResolver, SerializedPackage};
 use move_vm_runtime::dev_utils::storage::StoredPackage;
 
-/// The chain-state key a package's module bytecode is stored under.
-/// Only single-module packages are supported in this pass.
-pub fn module_state_key(address: AccountAddress) -> StateKey {
-    StateKey::new(address.to_vec())
-}
+use crate::keys::module_key;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolverError;
@@ -53,7 +49,7 @@ impl<'a> ChainStateModuleResolver<'a> {
         &self,
         address: AccountAddress,
     ) -> Result<Option<SerializedPackage>, ResolverError> {
-        let Some(value) = self.state.get(&module_state_key(address)) else {
+        let Some(value) = self.state.get(&module_key(address)) else {
             return Ok(None);
         };
         let module = CompiledModule::deserialize_with_defaults(value.as_bytes())

@@ -5,7 +5,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use chain_engine_api::{BlockLimits, Engine, FinaliseErrorReason, RejectionReason};
-use chain_exec::genesis::{SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME, SYSTEM_PACKAGE_ADDRESS};
+use chain_exec::genesis::{
+    COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME, COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS,
+    SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME, SYSTEM_PACKAGE_ADDRESS,
+};
 use chain_exec::Executor;
 use chain_types::{
     Address, BlockHeight, ChainId, Encode, GasAmount, GasPrice, Hash, MoveCall, PublicKey,
@@ -27,7 +30,30 @@ fn calculator_call(a: u64, b: u64) -> MoveCall {
     }
 }
 
+fn bump_call(amount: u64) -> MoveCall {
+    MoveCall {
+        module_address: Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes()),
+        module_name: COUNTER_MODULE_NAME.as_bytes().to_vec(),
+        function_name: COUNTER_BUMP_FUNCTION.as_bytes().to_vec(),
+        type_arguments: Vec::new(),
+        arguments: vec![amount.to_le_bytes().to_vec()],
+    }
+}
+
+fn counter_address() -> Address {
+    Address::from_bytes(INITIAL_COUNTER_ADDRESS.into_bytes())
+}
+
 fn signed_transaction(seed: u8, chain_id: u64, call: MoveCall) -> Transaction {
+    signed_transaction_with_inputs(seed, chain_id, Vec::new(), call)
+}
+
+fn signed_transaction_with_inputs(
+    seed: u8,
+    chain_id: u64,
+    declared_inputs: Vec<Address>,
+    call: MoveCall,
+) -> Transaction {
     let signing_key = SigningKey::from_bytes(&[seed; 32]);
     let sender = PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes()).unwrap();
     let body = TransactionBody {
@@ -37,7 +63,7 @@ fn signed_transaction(seed: u8, chain_id: u64, call: MoveCall) -> Transaction {
         expiry: BlockHeight(1_000),
         gas_limit: GasAmount(1_000),
         max_fee_per_gas: GasPrice(1),
-        declared_inputs: Vec::new(),
+        declared_inputs,
         call,
     };
     let mut signing_bytes = Vec::new();
@@ -206,4 +232,99 @@ fn finalise_rejects_a_tampered_executed_block() {
         result.unwrap_err().reason,
         FinaliseErrorReason::StateRootMismatch
     );
+}
+
+#[test]
+fn genesis_counter_starts_at_zero() {
+    let executor = Executor::genesis().unwrap();
+    assert_eq!(executor.read_counter(), Some(0));
+}
+
+#[test]
+fn bump_mutates_the_counter_object_and_the_write_is_readable_back() {
+    let mut executor = Executor::genesis().unwrap();
+    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+
+    let tx = signed_transaction_with_inputs(10, 1, vec![counter_address()], bump_call(5));
+    let block = executor.propose_block(
+        genesis_hash,
+        genesis_root,
+        BlockHeight(1),
+        1_700_000_000_000,
+        vec![tx],
+        default_limits(),
+    );
+    let executed = executor.execute_block(genesis_root, &block).unwrap();
+    executor.finalise_block(&block, &executed).unwrap();
+
+    assert_eq!(executor.read_counter(), Some(5));
+    assert_eq!(executor.state_root(), executed.state_root);
+}
+
+#[test]
+fn bump_accumulates_across_multiple_transactions_in_the_same_block() {
+    let mut executor = Executor::genesis().unwrap();
+    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+
+    let first = signed_transaction_with_inputs(11, 1, vec![counter_address()], bump_call(3));
+    let second = signed_transaction_with_inputs(12, 1, vec![counter_address()], bump_call(4));
+    let block = executor.propose_block(
+        genesis_hash,
+        genesis_root,
+        BlockHeight(1),
+        1_700_000_000_000,
+        vec![first, second],
+        default_limits(),
+    );
+    assert_eq!(block.transactions.len(), 2);
+
+    let executed = executor.execute_block(genesis_root, &block).unwrap();
+    executor.finalise_block(&block, &executed).unwrap();
+
+    // The second bump must see the first bump's write within the same
+    // block, not a stale pre-block value.
+    assert_eq!(executor.read_counter(), Some(7));
+}
+
+#[test]
+fn bump_rejects_without_declaring_the_counter_as_an_input() {
+    // `docs/spec.md`, "Execution": "Transactions declare the objects
+    // they access before execution" — omitting the declaration must be
+    // rejected, not silently resolved anyway.
+    let executor = Executor::genesis().unwrap();
+    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+
+    let tx = signed_transaction_with_inputs(13, 1, Vec::new(), bump_call(5));
+    let block = chain_engine_api::Block {
+        parent_block_hash: genesis_hash,
+        height: BlockHeight(1),
+        timestamp_millis: 1_700_000_000_000,
+        transactions: vec![tx],
+    };
+
+    let result = executor.execute_block(genesis_root, &block);
+    assert_eq!(result.unwrap_err().reason, RejectionReason::Rejected);
+    assert_eq!(
+        executor.read_counter(),
+        Some(0),
+        "a rejected block must not mutate anything"
+    );
+}
+
+#[test]
+fn bump_rejects_a_declared_input_that_is_not_the_counter() {
+    let executor = Executor::genesis().unwrap();
+    let (genesis_root, genesis_hash) = genesis_root_and_hash(&executor);
+
+    let wrong_address = Address::from_bytes([0xAAu8; 32]);
+    let tx = signed_transaction_with_inputs(14, 1, vec![wrong_address], bump_call(5));
+    let block = chain_engine_api::Block {
+        parent_block_hash: genesis_hash,
+        height: BlockHeight(1),
+        timestamp_millis: 1_700_000_000_000,
+        transactions: vec![tx],
+    };
+
+    let result = executor.execute_block(genesis_root, &block);
+    assert_eq!(result.unwrap_err().reason, RejectionReason::Rejected);
 }

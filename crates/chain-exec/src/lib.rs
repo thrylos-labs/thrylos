@@ -12,16 +12,19 @@
 //! [`Executor`] is a real, working implementation of
 //! `chain_engine_api::Engine`, deliberately narrow:
 //!
-//! - One fixed system package, published at genesis (`genesis` module) —
-//!   no module-publishing transaction type yet.
-//! - Every transaction calls that one fixed function, with plain `u64`
-//!   arguments only — no object arguments.
-//! - No declared-input resolution. Sui's Move has no ambient lookup by
-//!   address — a function can only touch an object passed to it as an
-//!   argument — so once object arguments exist, declared-input
-//!   enforcement is largely structural rather than a separate runtime
-//!   check. That's still untested here because there are no object
-//!   arguments yet.
+//! - Two fixed system packages, published at genesis (`genesis` module) —
+//!   no module-publishing transaction type yet: a `calculator` module
+//!   (plain `u64` arguments only) and a `counter` module with one
+//!   mutable object type, one instance of which is seeded at genesis.
+//! - Every transaction calls one of those two fixed functions — no
+//!   arbitrary module/function dispatch.
+//! - Declared-input enforcement for the object case is structural, not
+//!   a separate runtime check: Sui's Move has no ambient lookup by
+//!   address, so `bump` can only touch the `Counter` passed to it as a
+//!   `&mut` argument, which the executor only constructs from a
+//!   transaction's own `declared_inputs`. There's still only one object
+//!   *type*, and no way to create a new object at runtime (only the one
+//!   genesis instance exists) — both real follow-up work.
 //! - No real gas metering (`UnmeteredGasMeter`); `gas_used` is stood in
 //!   for by the transaction's declared `gas_limit`, not a calibrated
 //!   cost model tied to a fee schedule (`chain-modules`, not built yet).
@@ -36,6 +39,7 @@
 
 pub mod executor;
 pub mod genesis;
+pub mod keys;
 pub mod module_resolver;
 
 pub use executor::{Executor, ExecutorError};

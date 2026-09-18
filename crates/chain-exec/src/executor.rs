@@ -13,15 +13,19 @@ use chain_types::{Address, BlockHeight, Hash, Transaction};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_vm_config::runtime::VMConfig;
-use move_vm_runtime::execution::values::Value;
+use move_vm_runtime::execution::interpreter::locals::BaseHeap;
+use move_vm_runtime::execution::values::{Struct, Value};
 use move_vm_runtime::natives::functions::NativeFunctions;
 use move_vm_runtime::runtime::MoveRuntime;
 use move_vm_runtime::shared::gas::UnmeteredGasMeter;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
 
 use crate::genesis::{
-    genesis_state, GenesisError, SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME, SYSTEM_PACKAGE_ADDRESS,
+    genesis_state, GenesisError, COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME,
+    COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS, SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME,
+    SYSTEM_PACKAGE_ADDRESS,
 };
+use crate::keys::{calculator_result_key, object_key};
 use crate::module_resolver::ChainStateModuleResolver;
 
 #[derive(Debug)]
@@ -48,8 +52,9 @@ pub struct Executor {
 }
 
 impl Executor {
-    /// A freshly initialised executor with the fixed system package
-    /// published (see `crate::genesis`).
+    /// A freshly initialised executor with the fixed system packages
+    /// published, including one seeded `Counter` object (see
+    /// `crate::genesis`).
     pub fn genesis() -> Result<Self, ExecutorError> {
         let state = genesis_state().map_err(ExecutorError::Genesis)?;
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
@@ -76,15 +81,17 @@ impl Executor {
         self.tip_block_hash
     }
 
-    /// The last computed result for `address`'s calls, if any. The only
-    /// read path this narrow slice needs; a real state-read API belongs
-    /// to `chain-state`, once there's more than one kind of value to
-    /// read.
+    /// The last result of a `calculator::add` call by `address`, if any.
     pub fn read_result(&self, address: &Address) -> Option<u64> {
-        let key = StateKey::new(address.as_bytes().to_vec());
-        let value = self.state.get(&key)?;
-        let bytes: [u8; 8] = value.as_bytes().try_into().ok()?;
-        Some(u64::from_le_bytes(bytes))
+        read_u64(
+            &self.state,
+            &calculator_result_key(account_address(address)),
+        )
+    }
+
+    /// The genesis `Counter` object's current value.
+    pub fn read_counter(&self) -> Option<u64> {
+        read_u64(&self.state, &object_key(INITIAL_COUNTER_ADDRESS))
     }
 
     /// Apply every transaction in `block` to `state` in order, rejecting
@@ -105,10 +112,10 @@ impl Executor {
         Ok(gas_used)
     }
 
-    /// Run this pass's one supported call shape: the fixed system
-    /// function, called with exactly two `u64` arguments, no object
-    /// arguments. Writes the result into `state` under a key derived
-    /// from the sender's address.
+    /// Dispatch to this pass's one of two supported call shapes: the
+    /// fixed `calculator::add` (plain `u64` arguments) or `counter::bump`
+    /// (one `Counter` object, declared as this transaction's one input,
+    /// mutated by reference).
     fn apply_transaction(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
@@ -116,7 +123,7 @@ impl Executor {
         tx_index: usize,
     ) -> Result<u64, BlockRejected> {
         let transaction_index = u32::try_from(tx_index).ok();
-        let reject = |reason: RejectionReason| BlockRejected {
+        let reject = move |reason: RejectionReason| BlockRejected {
             transaction_index,
             reason,
         };
@@ -125,30 +132,35 @@ impl Executor {
             .map_err(|_| reject(RejectionReason::InvalidSignature))?;
 
         let call = &tx.body.call;
-        let expected_module_address = Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes());
-        if call.module_address != expected_module_address
-            || call.module_name != SYSTEM_MODULE_NAME.as_bytes()
-            || call.function_name != SYSTEM_FUNCTION_NAME.as_bytes()
+        if call.module_address == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())
+            && call.module_name == SYSTEM_MODULE_NAME.as_bytes()
+            && call.function_name == SYSTEM_FUNCTION_NAME.as_bytes()
         {
-            return Err(reject(RejectionReason::Rejected));
+            return self.apply_calculator_add(state, tx, reject);
         }
 
+        if call.module_address == Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes())
+            && call.module_name == COUNTER_MODULE_NAME.as_bytes()
+            && call.function_name == COUNTER_BUMP_FUNCTION.as_bytes()
+        {
+            return self.apply_counter_bump(state, tx, reject);
+        }
+
+        Err(reject(RejectionReason::Rejected))
+    }
+
+    fn apply_calculator_add(
+        &self,
+        state: &mut BTreeMap<StateKey, StateValue>,
+        tx: &Transaction,
+        reject: impl Fn(RejectionReason) -> BlockRejected,
+    ) -> Result<u64, BlockRejected> {
+        let call = &tx.body.call;
         let [arg_a, arg_b] = call.arguments.as_slice() else {
             return Err(reject(RejectionReason::Rejected));
         };
         let a = decode_u64_arg(arg_a).ok_or_else(|| reject(RejectionReason::Rejected))?;
         let b = decode_u64_arg(arg_b).ok_or_else(|| reject(RejectionReason::Rejected))?;
-
-        let resolver = ChainStateModuleResolver::new(state);
-        let linkage = LinkageContext::new(BTreeMap::from([(
-            SYSTEM_PACKAGE_ADDRESS,
-            SYSTEM_PACKAGE_ADDRESS,
-        )]))
-        .map_err(|_| reject(RejectionReason::Rejected))?;
-        let mut vm = self
-            .runtime
-            .make_vm(resolver, linkage)
-            .map_err(|_| reject(RejectionReason::Rejected))?;
 
         let module_id = ModuleId::new(
             SYSTEM_PACKAGE_ADDRESS,
@@ -157,6 +169,9 @@ impl Executor {
         let function_name =
             Identifier::new(SYSTEM_FUNCTION_NAME).map_err(|_| reject(RejectionReason::Rejected))?;
 
+        let mut vm = self
+            .make_vm(state, SYSTEM_PACKAGE_ADDRESS)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
         let mut returned = vm
             .execute_function_bypass_visibility(
                 &module_id,
@@ -167,6 +182,7 @@ impl Executor {
                 None,
             )
             .map_err(|_| reject(RejectionReason::Rejected))?;
+        drop(vm);
 
         if returned.len() != 1 {
             return Err(reject(RejectionReason::Rejected));
@@ -176,14 +192,120 @@ impl Executor {
             .value_as()
             .map_err(|_| reject(RejectionReason::Rejected))?;
 
-        let result_key = StateKey::new(tx.sender_address().as_bytes().to_vec());
-        state.insert(result_key, StateValue::new(sum.to_le_bytes().to_vec()));
+        state.insert(
+            calculator_result_key(account_address(&tx.sender_address())),
+            StateValue::new(sum.to_le_bytes().to_vec()),
+        );
 
         // Unmetered for this pass — see `crate`'s doc comment. Charging
         // the declared gas limit as a stand-in keeps `gas_used`
         // meaningful without pretending it's a calibrated cost.
         Ok(tx.body.gas_limit.0)
     }
+
+    /// `docs/spec.md`, "Execution": "Transactions declare the objects
+    /// they access before execution." This is where that's enforced —
+    /// structurally, not as a separate check: the only `Counter` this
+    /// function can hand to `bump` is the one at `declared_inputs[0]`,
+    /// because that's the only way this code ever constructs one. A
+    /// transaction that omits the counter's address, or names a
+    /// different address, gets nothing to mutate and is rejected before
+    /// the VM is even asked to run anything.
+    fn apply_counter_bump(
+        &self,
+        state: &mut BTreeMap<StateKey, StateValue>,
+        tx: &Transaction,
+        reject: impl Fn(RejectionReason) -> BlockRejected,
+    ) -> Result<u64, BlockRejected> {
+        let [object_address] = tx.body.declared_inputs.as_slice() else {
+            return Err(reject(RejectionReason::Rejected));
+        };
+        if *object_address != Address::from_bytes(INITIAL_COUNTER_ADDRESS.into_bytes()) {
+            return Err(reject(RejectionReason::Rejected));
+        }
+
+        let [amount_bytes] = tx.body.call.arguments.as_slice() else {
+            return Err(reject(RejectionReason::Rejected));
+        };
+        let amount =
+            decode_u64_arg(amount_bytes).ok_or_else(|| reject(RejectionReason::Rejected))?;
+
+        let current = read_u64(state, &object_key(INITIAL_COUNTER_ADDRESS))
+            .ok_or_else(|| reject(RejectionReason::Rejected))?;
+
+        let module_id = ModuleId::new(
+            COUNTER_PACKAGE_ADDRESS,
+            Identifier::new(COUNTER_MODULE_NAME).map_err(|_| reject(RejectionReason::Rejected))?,
+        );
+        let function_name = Identifier::new(COUNTER_BUMP_FUNCTION)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+
+        let mut heap = BaseHeap::new();
+        let counter_value = Value::struct_(Struct::pack(vec![Value::u64(current)]));
+        let (heap_id, counter_ref) = heap
+            .allocate_and_borrow_loc(counter_value)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+
+        let mut vm = self
+            .make_vm(state, COUNTER_PACKAGE_ADDRESS)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+        let returned = vm
+            .execute_function_bypass_visibility(
+                &module_id,
+                &function_name,
+                vec![],
+                vec![counter_ref, Value::u64(amount)],
+                &mut UnmeteredGasMeter,
+                None,
+            )
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+        drop(vm);
+
+        if !returned.is_empty() {
+            return Err(reject(RejectionReason::Rejected));
+        }
+
+        let mutated = heap
+            .take_loc(heap_id)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+        let mutated_struct: Struct = mutated
+            .value_as()
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+        let new_value: u64 = mutated_struct
+            .unpack()
+            .next()
+            .ok_or_else(|| reject(RejectionReason::Rejected))?
+            .value_as()
+            .map_err(|_| reject(RejectionReason::Rejected))?;
+
+        state.insert(
+            object_key(INITIAL_COUNTER_ADDRESS),
+            StateValue::new(new_value.to_le_bytes().to_vec()),
+        );
+
+        Ok(tx.body.gas_limit.0)
+    }
+
+    fn make_vm<'extensions>(
+        &self,
+        state: &BTreeMap<StateKey, StateValue>,
+        package_address: move_core_types::account_address::AccountAddress,
+    ) -> Result<move_vm_runtime::execution::vm::MoveVM<'extensions>, ()> {
+        let resolver = ChainStateModuleResolver::new(state);
+        let linkage = LinkageContext::new(BTreeMap::from([(package_address, package_address)]))
+            .map_err(|_| ())?;
+        self.runtime.make_vm(resolver, linkage).map_err(|_| ())
+    }
+}
+
+fn account_address(address: &Address) -> move_core_types::account_address::AccountAddress {
+    move_core_types::account_address::AccountAddress::new(*address.as_bytes())
+}
+
+fn read_u64(state: &BTreeMap<StateKey, StateValue>, key: &StateKey) -> Option<u64> {
+    let value = state.get(key)?;
+    let bytes: [u8; 8] = value.as_bytes().try_into().ok()?;
+    Some(u64::from_le_bytes(bytes))
 }
 
 fn decode_u64_arg(bytes: &[u8]) -> Option<u64> {

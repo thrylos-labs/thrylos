@@ -20,12 +20,27 @@ use move_binary_format::file_format::CompiledModule;
 use move_compiler::Compiler as MoveCompiler;
 use move_core_types::account_address::AccountAddress;
 
-use crate::module_resolver::module_state_key;
+use crate::keys::{module_key, object_key};
 
 pub const SYSTEM_PACKAGE_ADDRESS: AccountAddress =
     AccountAddress::new([1u8; AccountAddress::LENGTH]);
 pub const SYSTEM_MODULE_NAME: &str = "calculator";
 pub const SYSTEM_FUNCTION_NAME: &str = "add";
+
+/// A second, independent single-module package (see `module_resolver`'s
+/// doc comment on why each package gets its own address in this pass)
+/// holding the one object type this pass supports.
+pub const COUNTER_PACKAGE_ADDRESS: AccountAddress =
+    AccountAddress::new([2u8; AccountAddress::LENGTH]);
+pub const COUNTER_MODULE_NAME: &str = "counter";
+pub const COUNTER_STRUCT_NAME: &str = "Counter";
+pub const COUNTER_BUMP_FUNCTION: &str = "bump";
+
+/// The one `Counter` object this pass seeds at genesis, for
+/// transactions to declare and mutate.
+pub const INITIAL_COUNTER_ADDRESS: AccountAddress =
+    AccountAddress::new([3u8; AccountAddress::LENGTH]);
+pub const INITIAL_COUNTER_VALUE: u64 = 0;
 
 #[derive(Debug)]
 pub enum GenesisError {
@@ -54,10 +69,13 @@ impl From<std::io::Error> for GenesisError {
     }
 }
 
-/// Compile the fixed system module and return the initial chain state
-/// with it published.
+/// Compile the fixed system modules and return the initial chain state
+/// with them published — plus one seeded `Counter` object for
+/// transactions to declare and mutate.
 pub fn genesis_state() -> Result<BTreeMap<StateKey, StateValue>, GenesisError> {
-    let source = format!(
+    let mut state = BTreeMap::new();
+
+    let calculator_source = format!(
         r#"
         module 0x{SYSTEM_PACKAGE_ADDRESS}::{SYSTEM_MODULE_NAME} {{
             public fun {SYSTEM_FUNCTION_NAME}(a: u64, b: u64): u64 {{
@@ -66,19 +84,43 @@ pub fn genesis_state() -> Result<BTreeMap<StateKey, StateValue>, GenesisError> {
         }}
         "#
     );
+    publish_module(&mut state, SYSTEM_PACKAGE_ADDRESS, &calculator_source)?;
 
-    let module = compile_single_module(&source)?;
+    let counter_source = format!(
+        r#"
+        module 0x{COUNTER_PACKAGE_ADDRESS}::{COUNTER_MODULE_NAME} {{
+            public struct {COUNTER_STRUCT_NAME} has store, drop {{
+                value: u64,
+            }}
+
+            public fun {COUNTER_BUMP_FUNCTION}(counter: &mut {COUNTER_STRUCT_NAME}, amount: u64) {{
+                counter.value = counter.value + amount;
+            }}
+        }}
+        "#
+    );
+    publish_module(&mut state, COUNTER_PACKAGE_ADDRESS, &counter_source)?;
+
+    state.insert(
+        object_key(INITIAL_COUNTER_ADDRESS),
+        StateValue::new(INITIAL_COUNTER_VALUE.to_le_bytes().to_vec()),
+    );
+
+    Ok(state)
+}
+
+fn publish_module(
+    state: &mut BTreeMap<StateKey, StateValue>,
+    address: AccountAddress,
+    source: &str,
+) -> Result<(), GenesisError> {
+    let module = compile_single_module(source)?;
     let mut bytes = Vec::new();
     module
         .serialize_with_version(module.version, &mut bytes)
         .map_err(|err| GenesisError::Serialization(err.to_string()))?;
-
-    let mut state = BTreeMap::new();
-    state.insert(
-        module_state_key(SYSTEM_PACKAGE_ADDRESS),
-        StateValue::new(bytes),
-    );
-    Ok(state)
+    state.insert(module_key(address), StateValue::new(bytes));
+    Ok(())
 }
 
 fn compile_single_module(source: &str) -> Result<CompiledModule, GenesisError> {
