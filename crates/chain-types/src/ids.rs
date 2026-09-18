@@ -40,3 +40,21 @@ u64_newtype!(
     /// Consensus round within a height.
     Round
 );
+
+u64_newtype!(
+    /// A sender's per-account transaction ordinal. See `docs/spec.md`,
+    /// "Transaction validity": absent strictly-increasing, no-gaps
+    /// enforcement, "same transaction executes twice".
+    SequenceNumber
+);
+
+u64_newtype!(
+    /// Maximum gas units a transaction may consume.
+    GasAmount
+);
+
+u64_newtype!(
+    /// Maximum price, per gas unit, a sender authorises. See
+    /// `docs/spec.md`, "Fees": "EIP-1559 on one dimension: compute".
+    GasPrice
+);

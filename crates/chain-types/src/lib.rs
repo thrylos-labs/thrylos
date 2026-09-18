@@ -12,10 +12,12 @@ pub mod collections;
 pub mod hash;
 pub mod ids;
 pub mod keys;
+pub mod transaction;
 
 pub use address::Address;
 pub use bls::{BlsPublicKey, BlsSignature, BlsSignatureError};
 pub use codec::{decode_exact, CodecError, Decode, Encode};
 pub use hash::{hash_with_domain, DomainTag, Hash};
-pub use ids::{BlockHeight, ChainId, Round};
+pub use ids::{BlockHeight, ChainId, GasAmount, GasPrice, Round, SequenceNumber};
 pub use keys::{PublicKey, Scheme, Signature, SignatureError};
+pub use transaction::{Transaction, TransactionBody, MAX_EXPIRY_HORIZON};
