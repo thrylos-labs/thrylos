@@ -146,27 +146,42 @@ pub struct ConsensusVote {
     pub extension: Option<malachite_core_types::SignedExtension<ThrylosContext>>,
 }
 
-/// Leading discriminant bytes so a vote's canonical encoding can never
-/// collide with a proposal's, even if their field encodings happened to
-/// have matching lengths — the same "domain separation" reasoning as
-/// `chain_types::hash::DomainTag`, applied to what gets BLS-signed.
-const SIGNING_TAG_VOTE: u8 = 0;
+/// Leading discriminant byte of a proposal's signing bytes, so a
+/// proposal's canonical encoding can never collide with a vote's — the
+/// same "domain separation" reasoning as `chain_types::hash::DomainTag`,
+/// applied to what gets BLS-signed. The vote's own tag is
+/// `chain_types::vote::VOTE_SIGNING_TAG`; the two must differ.
 const SIGNING_TAG_PROPOSAL: u8 = 1;
+const _: () = assert!(SIGNING_TAG_PROPOSAL != chain_types::vote::VOTE_SIGNING_TAG);
+
+impl ConsensusVote {
+    /// This vote as `chain-types`' [`chain_types::Vote`], whose
+    /// [`signing_bytes`](chain_types::Vote::signing_bytes) is the single
+    /// definition of what a validator's signature on a vote covers —
+    /// shared with equivocation evidence, so what a validator is
+    /// punished for signing is exactly what this engine had it sign.
+    /// (`extension` is not part of the signed vote: it carries its own
+    /// signature.)
+    pub fn to_vote(&self) -> chain_types::Vote {
+        chain_types::Vote {
+            height: self.height.0,
+            round: chain_types::Round(round_as_u64(self.round)),
+            value: match self.value_id {
+                NilOrVal::Nil => None,
+                NilOrVal::Val(hash) => Some(hash),
+            },
+            kind: match self.vote_type {
+                malachite_core_types::VoteType::Prevote => chain_types::VoteKind::Prevote,
+                malachite_core_types::VoteType::Precommit => chain_types::VoteKind::Precommit,
+            },
+            validator: self.validator_address.0,
+        }
+    }
+}
 
 impl Encode for ConsensusVote {
     fn encode(&self, out: &mut Vec<u8>) {
-        SIGNING_TAG_VOTE.encode(out);
-        self.height.0.encode(out);
-        round_as_u64(self.round).encode(out);
-        match self.value_id {
-            NilOrVal::Nil => false.encode(out),
-            NilOrVal::Val(id) => {
-                true.encode(out);
-                id.encode(out);
-            }
-        }
-        matches!(self.vote_type, malachite_core_types::VoteType::Precommit).encode(out);
-        self.validator_address.0.encode(out);
+        self.to_vote().encode(out);
     }
 }
 
@@ -316,5 +331,55 @@ impl malachite_core_types::SigningScheme for ConsensusSigningScheme {
 
     fn encode_public_key(public_key: &Self::PublicKey) -> Vec<u8> {
         public_key.to_bytes().to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The layout this file wrote by hand before `chain_types::Vote`
+    /// existed. Signatures made under it must stay valid, so it must
+    /// stay byte-for-byte what `ConsensusVote` encodes to.
+    fn legacy_encoding(vote: &ConsensusVote) -> Vec<u8> {
+        let mut out = Vec::new();
+        0u8.encode(&mut out);
+        vote.height.0.encode(&mut out);
+        round_as_u64(vote.round).encode(&mut out);
+        match vote.value_id {
+            NilOrVal::Nil => false.encode(&mut out),
+            NilOrVal::Val(id) => {
+                true.encode(&mut out);
+                id.encode(&mut out);
+            }
+        }
+        matches!(vote.vote_type, malachite_core_types::VoteType::Precommit).encode(&mut out);
+        vote.validator_address.0.encode(&mut out);
+        out
+    }
+
+    #[test]
+    fn a_consensus_vote_encodes_exactly_as_it_did_before_the_shared_type() {
+        for value_id in [NilOrVal::Nil, NilOrVal::Val(Hash::from_bytes([5u8; 32]))] {
+            for vote_type in [
+                malachite_core_types::VoteType::Prevote,
+                malachite_core_types::VoteType::Precommit,
+            ] {
+                for round in [Round::new(0), Round::new(7)] {
+                    let vote = ConsensusVote {
+                        height: ConsensusHeight(BlockHeight(42)),
+                        round,
+                        value_id,
+                        vote_type,
+                        validator_address: ConsensusAddress(ChainAddress::from_bytes([9u8; 32])),
+                        extension: None,
+                    };
+                    let mut encoded = Vec::new();
+                    vote.encode(&mut encoded);
+                    assert_eq!(encoded, legacy_encoding(&vote));
+                    assert_eq!(encoded, vote.to_vote().signing_bytes());
+                }
+            }
+        }
     }
 }

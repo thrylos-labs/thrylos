@@ -35,4 +35,5 @@
 #![forbid(unsafe_code)]
 
 pub mod context;
+pub mod evidence;
 pub mod types;

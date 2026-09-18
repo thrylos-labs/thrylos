@@ -118,6 +118,30 @@ impl StakingPool {
         scaled.checked_div(shares).ok_or(StakingError::Overflow)
     }
 
+    /// Burns up to `amount` of the pool's stake as a slashing penalty and
+    /// returns how much was actually burned. Every share is worth
+    /// proportionally less afterwards and nobody's share count changes —
+    /// the validator and every delegator bear the loss pro rata, which
+    /// is what makes delegating to a validator that later equivocates
+    /// a risk.
+    ///
+    /// Never burns the pool's last unit of stake: a pool with none would
+    /// have a price of zero, and no deposit could be priced against it.
+    /// Deposits into a pool slashed nearly to nothing still work — they
+    /// are priced at the post-slash share price, so the depositor gets
+    /// many shares for little stake and, on withdrawing, gets back what
+    /// they put in (less rounding). That is fair to everyone already in
+    /// the pool, whose loss was booked by the slash, just pointless: a
+    /// tombstoned validator's pool has nothing to offer a new staker.
+    ///
+    /// Shares and stake stay consistent by construction (the price is
+    /// derived from them), so [`Self::assert_invariant`] still holds.
+    pub fn slash(&mut self, amount: u128) -> u128 {
+        let burned = amount.min(self.total_stake.saturating_sub(1));
+        self.total_stake = self.total_stake.saturating_sub(burned);
+        burned
+    }
+
     /// Deposit `stake_amount` on behalf of `staker`, minting shares at
     /// the current price (rounded down). Returns the shares minted.
     pub fn deposit(&mut self, staker: Address, stake_amount: u128) -> Result<u128, StakingError> {
@@ -441,5 +465,71 @@ mod tests {
                 prop_assert!(redeemable <= stake_amount);
             }
         }
+    }
+    #[test]
+    fn slashing_lowers_every_stakers_redeemable_amount_pro_rata() {
+        let mut pool = StakingPool::genesis();
+        pool.deposit(addr(1), 9_000).unwrap();
+        assert_eq!(pool.total_stake(), 10_000);
+
+        // A 10% slash of the pool.
+        assert_eq!(pool.slash(1_000), 1_000);
+        assert_eq!(pool.total_stake(), 9_000);
+        assert_eq!(pool.total_shares(), 10_000, "share counts don't change");
+
+        // 9_000 shares of 10_000, against 9_000 of stake: 8_100 — the
+        // depositor lost 10% of what they put in, as did the dead stake.
+        assert_eq!(pool.withdraw(addr(1), 9_000).unwrap(), 8_100);
+    }
+
+    #[test]
+    fn slashing_keeps_the_pool_invariant() {
+        let mut pool = StakingPool::genesis();
+        pool.deposit(addr(1), 5_000).unwrap();
+        pool.deposit(addr(2), 3_333).unwrap();
+        pool.slash(777);
+        pool.assert_invariant().unwrap();
+        pool.accrue_rewards(50).unwrap();
+        pool.assert_invariant().unwrap();
+    }
+
+    #[test]
+    fn slashing_zero_burns_nothing() {
+        let mut pool = StakingPool::genesis();
+        pool.deposit(addr(1), 1_000).unwrap();
+        let before = pool.clone();
+        assert_eq!(pool.slash(0), 0);
+        assert_eq!(pool, before);
+    }
+
+    #[test]
+    fn slashing_never_burns_the_last_unit_of_stake() {
+        let mut pool = StakingPool::genesis();
+        pool.deposit(addr(1), 4_000).unwrap();
+        let burned = pool.slash(u128::MAX);
+        assert_eq!(burned, 4_999, "everything but one unit");
+        assert_eq!(pool.total_stake(), 1);
+        assert!(pool.price().is_ok());
+        pool.assert_invariant().unwrap();
+    }
+
+    #[test]
+    fn a_deposit_into_a_slashed_out_pool_is_priced_fairly_and_takes_nothing_from_others() {
+        let mut pool = StakingPool::genesis();
+        pool.deposit(addr(1), 4_000).unwrap();
+        pool.slash(u128::MAX); // leaves 1 unit of stake against 5_000 shares
+
+        let minted = pool.deposit(addr(2), 1_000).unwrap();
+        assert!(
+            minted > 1_000_000,
+            "the post-slash price is tiny: {minted} shares"
+        );
+        pool.assert_invariant().unwrap();
+
+        // The new depositor gets back what they put in, not more.
+        let back = pool.withdraw(addr(2), minted).unwrap();
+        assert!((999..=1_000).contains(&back), "got back {back}");
+        // And the original staker gained nothing from it.
+        assert!(pool.withdraw(addr(1), 4_000).unwrap() <= 1);
     }
 }
