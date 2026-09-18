@@ -1299,6 +1299,9 @@ dependencies = [
 [[package]]
 name = "chain-p2p"
 version = "0.1.0"
+dependencies = [
+ "chain-types",
+]
 
 [[package]]
 name = "chain-rpc"

@@ -1,6 +1,13 @@
-# Backs the `disallowed_types` / `disallowed_methods` lints declared in the
-# workspace lint table (Cargo.toml). Applies wherever those lints are enabled,
-# i.e. tier A crates. See docs/spec.md, "Determinism rules".
+# Backs the `disallowed_types` / `disallowed_methods` clippy lints.
+# Unlike the rest of the workspace lint table (Cargo.toml's `[workspace.
+# lints]`), these two are "warn by default whenever this file defines
+# their list" — they apply workspace-wide as soon as any crate is
+# clippy-checked, regardless of that crate's own `[lints]` opt-in. A
+# crate with a legitimate reason to violate one (`chain-p2p` needs
+# `Instant::now()` for rate limiting and peer-score decay, neither of
+# which feeds the deterministic state transition this rule exists to
+# protect) overrides it locally with `#![allow(clippy::disallowed_methods)]`,
+# not by changing this file. See docs/spec.md, "Determinism rules".
 
 disallowed-types = [
     { path = "std::collections::HashMap", reason = "non-deterministic iteration order; use BTreeMap" },

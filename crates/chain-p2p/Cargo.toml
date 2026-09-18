@@ -6,4 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 description = "Gossip, peer scoring, discovery"
 
+# A deliberately narrower lint set than the workspace's tier-A table
+# (`[lints] workspace = true`), not that table itself: this crate's
+# failure mode is "Halt via DoS" (a local crash/hang), not "Fork", so
+# panics still matter (denied below) but the fork-risk-specific
+# arithmetic/float-determinism rules do not apply. (`disallowed_methods`
+# is a separate case — see `clippy.toml`'s comment and `src/lib.rs`'s
+# crate-level `#![allow(clippy::disallowed_methods)]`: that lint fires
+# workspace-wide regardless of this table, so this crate overrides it
+# in source instead.)
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+
 [dependencies]
+chain-types = { path = "../chain-types", version = "0.1.0" }
