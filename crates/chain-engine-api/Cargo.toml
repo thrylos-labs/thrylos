@@ -10,3 +10,7 @@ description = "Typed boundary between consensus and execution"
 workspace = true
 
 [dependencies]
+chain-types = { path = "../chain-types", version = "0.1.0" }
+
+[dev-dependencies]
+ed25519-dalek.workspace = true

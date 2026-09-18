@@ -19,7 +19,7 @@
 //! all need chain state and belong in `chain-state`/`chain-mempool`.
 
 use crate::address::Address;
-use crate::codec::{checked_add, slice_from, CodecError, Decode, Encode};
+use crate::codec::{decode_field, CodecError, Decode, Encode};
 use crate::ids::{BlockHeight, ChainId, GasAmount, GasPrice, SequenceNumber};
 use crate::keys::{PublicKey, Signature, SignatureError};
 
@@ -61,12 +61,12 @@ impl Encode for TransactionBody {
 impl Decode for TransactionBody {
     fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
         let (chain_id, offset) = ChainId::decode(input)?;
-        let (sender, offset) = chain_after(input, offset, PublicKey::decode)?;
-        let (sequence_number, offset) = chain_after(input, offset, SequenceNumber::decode)?;
-        let (expiry, offset) = chain_after(input, offset, BlockHeight::decode)?;
-        let (gas_limit, offset) = chain_after(input, offset, GasAmount::decode)?;
-        let (max_fee_per_gas, offset) = chain_after(input, offset, GasPrice::decode)?;
-        let (declared_inputs, offset) = chain_after(input, offset, Vec::<Address>::decode)?;
+        let (sender, offset) = decode_field::<PublicKey>(input, offset)?;
+        let (sequence_number, offset) = decode_field::<SequenceNumber>(input, offset)?;
+        let (expiry, offset) = decode_field::<BlockHeight>(input, offset)?;
+        let (gas_limit, offset) = decode_field::<GasAmount>(input, offset)?;
+        let (max_fee_per_gas, offset) = decode_field::<GasPrice>(input, offset)?;
+        let (declared_inputs, offset) = decode_field::<Vec<Address>>(input, offset)?;
         Ok((
             Self {
                 chain_id,
@@ -80,19 +80,6 @@ impl Decode for TransactionBody {
             offset,
         ))
     }
-}
-
-/// Decode `T` starting at `offset` into `input`, returning the new total
-/// offset. Small helper so [`TransactionBody::decode`] reads as a flat
-/// sequence of fields instead of manually threading `slice_from`/
-/// `checked_add` through each one.
-fn chain_after<T>(
-    input: &[u8],
-    offset: usize,
-    decode: impl FnOnce(&[u8]) -> Result<(T, usize), CodecError>,
-) -> Result<(T, usize), CodecError> {
-    let (value, used) = decode(slice_from(input, offset)?)?;
-    Ok((value, checked_add(offset, used)?))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +132,7 @@ impl Encode for Transaction {
 impl Decode for Transaction {
     fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
         let (body, offset) = TransactionBody::decode(input)?;
-        let (signature, offset) = chain_after(input, offset, Signature::decode)?;
+        let (signature, offset) = decode_field::<Signature>(input, offset)?;
         Ok((Self { body, signature }, offset))
     }
 }

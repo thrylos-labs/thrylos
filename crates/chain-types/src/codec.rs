@@ -68,12 +68,22 @@ pub fn decode_exact<T: Decode>(input: &[u8]) -> Result<T, CodecError> {
     Ok(value)
 }
 
-pub(crate) fn checked_add(a: usize, b: usize) -> Result<usize, CodecError> {
+pub fn checked_add(a: usize, b: usize) -> Result<usize, CodecError> {
     a.checked_add(b).ok_or(CodecError::LengthTooLarge)
 }
 
-pub(crate) fn slice_from(input: &[u8], offset: usize) -> Result<&[u8], CodecError> {
+pub fn slice_from(input: &[u8], offset: usize) -> Result<&[u8], CodecError> {
     input.get(offset..).ok_or(CodecError::UnexpectedEof)
+}
+
+/// Decode a `T` starting `offset` bytes into `input`, returning the new
+/// total offset. Lets a composite type's `Decode` impl read as a flat
+/// sequence of fields — `let (a, offset) = decode_field(input, 0)?; let
+/// (b, offset) = decode_field(input, offset)?; ...` — instead of every
+/// downstream crate re-threading [`slice_from`]/[`checked_add`] by hand.
+pub fn decode_field<T: Decode>(input: &[u8], offset: usize) -> Result<(T, usize), CodecError> {
+    let (value, used) = T::decode(slice_from(input, offset)?)?;
+    Ok((value, checked_add(offset, used)?))
 }
 
 macro_rules! impl_uint {

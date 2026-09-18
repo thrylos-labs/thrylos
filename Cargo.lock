@@ -102,6 +102,10 @@ version = "0.1.0"
 [[package]]
 name = "chain-engine-api"
 version = "0.1.0"
+dependencies = [
+ "chain-types",
+ "ed25519-dalek",
+]
 
 [[package]]
 name = "chain-exec"
