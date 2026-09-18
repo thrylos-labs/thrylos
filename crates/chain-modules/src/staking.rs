@@ -24,14 +24,12 @@
 //!   block-level invariant that halts block production if violated" —
 //!   [`StakingPool::assert_invariant`].
 //!
-//! Deliberately out of scope for this slice: the per-validator pool
-//! registry, `StakeReceipt`, `ValidatorId`, and the unbonding-period
-//! queue that gates real withdrawals (`docs/spec.md`'s
-//! `unstake(StakeReceipt) -> Coin` is "subject to the unbonding
-//! period" — a scheduling concern layered on top of this arithmetic
-//! core, not part of it). [`StakingPool`] models one pool's accounting
-//! in isolation; wiring many pools together, keyed by validator, is a
-//! follow-up.
+//! [`StakingPool`] models one pool's accounting in isolation. Keying
+//! pools by validator, the unbonding queue that gates real withdrawals
+//! (`docs/spec.md`'s `unstake(StakeReceipt) -> Coin` is "subject to the
+//! unbonding period"), and the wiring to slashing live in
+//! `crate::registry`; `StakeReceipt` as a transferable object is not
+//! built.
 
 use ruint::aliases::U256;
 
@@ -116,6 +114,23 @@ impl StakingPool {
             .checked_shl(PRICE_FRAC_BITS)
             .ok_or(StakingError::Overflow)?;
         scaled.checked_div(shares).ok_or(StakingError::Overflow)
+    }
+
+    /// What `staker`'s shares are worth right now, rounded down (the same
+    /// direction a withdrawal rounds).
+    pub fn redeemable(&self, staker: &Address) -> u128 {
+        stake_for_withdrawal(self.balance_of(staker), self.total_shares, self.total_stake)
+            .unwrap_or(0)
+    }
+
+    /// The pool's stake net of what its dead shares are worth: the stake
+    /// that actually belongs to stakers, and so what counts as this
+    /// validator's bonded weight. The dead shares' own stake backs no one
+    /// and votes for no one.
+    pub fn attributable_stake(&self) -> u128 {
+        let dead =
+            stake_for_withdrawal(DEAD_SHARES, self.total_shares, self.total_stake).unwrap_or(0);
+        self.total_stake.saturating_sub(dead)
     }
 
     /// Burns up to `amount` of the pool's stake as a slashing penalty and
@@ -531,5 +546,31 @@ mod tests {
         assert!((999..=1_000).contains(&back), "got back {back}");
         // And the original staker gained nothing from it.
         assert!(pool.withdraw(addr(1), 4_000).unwrap() <= 1);
+    }
+    #[test]
+    fn redeemable_is_what_a_full_withdrawal_would_pay() {
+        let mut pool = StakingPool::genesis();
+        pool.deposit(addr(1), 4_000).unwrap();
+        pool.slash(500);
+        let expected = pool.redeemable(&addr(1));
+        assert_eq!(pool.withdraw(addr(1), 4_000).unwrap(), expected);
+        assert_eq!(pool.redeemable(&addr(9)), 0, "a stranger holds nothing");
+    }
+
+    #[test]
+    fn attributable_stake_excludes_only_the_dead_shares_worth() {
+        let mut pool = StakingPool::genesis();
+        assert_eq!(
+            pool.attributable_stake(),
+            0,
+            "an empty pool has no one's stake"
+        );
+        pool.deposit(addr(1), 9_000).unwrap();
+        assert_eq!(pool.attributable_stake(), 9_000);
+        // Slashing shrinks the dead shares' stake along with everyone's.
+        pool.slash(1_000);
+        assert_eq!(pool.total_stake(), 9_000);
+        assert_eq!(pool.attributable_stake(), 8_100);
+        assert_eq!(pool.attributable_stake(), pool.redeemable(&addr(1)));
     }
 }

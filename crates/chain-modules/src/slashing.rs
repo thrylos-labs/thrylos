@@ -224,6 +224,15 @@ impl SlashingTracker {
             .unwrap_or(ValidatorStatus::Active)
     }
 
+    /// When `validator`'s equivocation happened, while their record is
+    /// still within the correlation horizon. What a caller needs to work
+    /// out which of the validator's stake was at risk at the time.
+    pub fn infraction_time_ms(&self, validator: &Address) -> Option<u64> {
+        self.records
+            .get(validator)
+            .map(|record| record.infraction_ms)
+    }
+
     /// Everything ordered burned against `validator`'s equivocation so
     /// far, while their record is still within the correlation horizon.
     pub fn total_slashed(&self, validator: &Address) -> Option<u128> {
