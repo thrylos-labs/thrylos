@@ -21,6 +21,15 @@ impl Hash {
     }
 }
 
+impl core::fmt::Display for Hash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 impl Encode for Hash {
     fn encode(&self, out: &mut Vec<u8>) {
         self.0.encode(out);

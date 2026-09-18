@@ -94,6 +94,22 @@ impl Decode for BlsPublicKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlsSignature(BlstSignature);
 
+/// Ordered by compressed byte encoding. `blst`'s own type has no
+/// ordering; this exists only so `BlsSignature` can satisfy trait
+/// bounds (e.g. Malachite's `SigningScheme::Signature: Ord`) that need
+/// *some* total order, not a specific one.
+impl PartialOrd for BlsSignature {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BlsSignature {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.to_bytes().cmp(&other.to_bytes())
+    }
+}
+
 impl BlsSignature {
     /// Parse and validate: on-curve and in the correct subgroup. Does
     /// not reject the identity element here — that's only meaningful for

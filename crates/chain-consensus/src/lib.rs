@@ -10,16 +10,29 @@
 //! higher-level channel/actor-based ones).
 //! `tests/malachite_proof_of_life.rs` proves that dependency actually
 //! drives a round to decision, using Malachite's own `arc-malachitebft-
-//! test` harness (its `TestContext`) — not yet this chain's own types.
+//! test` harness (its `TestContext`) — a dependency proof-of-life, not
+//! this chain's own types.
 //!
-//! No production integration exists here yet. Building one means:
-//! implementing `Context` for this chain's own `Address`/`Height`/
-//! `Value`/`Vote`/etc. (from `chain-types`), a `Host` that answers the
-//! engine's `Effect`s (get validator set, sign votes via `chain-signer`,
-//! get a value to propose via `chain-exec`, ...), and proposer selection
-//! — which the spec wants VRF-based, and no VRF library has been chosen
-//! yet, so a first real integration would start with plain round-robin
-//! selection, explicitly flagged as insecure (`docs/spec.md`,
-//! "Consensus": a deterministic round-robin "is a targeting list").
+//! [`context`] and [`types`] are this chain's real `Context`
+//! implementation, over `chain-types`' own types and real BLS12-381
+//! signing/verification (`chain_types::bls`) rather than test stubs.
+//! `tests/context_proof_of_life.rs` drives a round to commit through
+//! this real `Context`.
+//!
+//! Proposer selection (`context::ThrylosContext::select_proposer`) is
+//! plain round-robin, **not** the spec's VRF-based scheme — no VRF
+//! library has been chosen yet (`docs/spec.md`, "Consensus": a
+//! deterministic round-robin "is a targeting list"). It is explicitly a
+//! placeholder, flagged insecure, swappable later without touching
+//! anything else in this crate.
+//!
+//! Still missing for a full production integration: a `Host` that owns
+//! the engine's I/O loop end-to-end (wiring `chain-signer` for double-
+//! sign-safe signing and `chain-exec` for real value production, rather
+//! than a test's inline effect handler), and VRF-based proposer
+//! selection.
 
 #![forbid(unsafe_code)]
+
+pub mod context;
+pub mod types;

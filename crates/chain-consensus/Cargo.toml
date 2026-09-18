@@ -10,10 +10,12 @@ description = "BFT engine, fork choice, evidence detection"
 workspace = true
 
 [dependencies]
+chain-types = { path = "../chain-types", version = "0.1.0" }
 malachite-core-consensus.workspace = true
 malachite-core-driver.workspace = true
 malachite-core-types.workspace = true
 
 [dev-dependencies]
+blst.workspace = true
 malachite-metrics.workspace = true
 malachite-test.workspace = true

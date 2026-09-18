@@ -1238,6 +1238,8 @@ dependencies = [
  "arc-malachitebft-core-types",
  "arc-malachitebft-metrics",
  "arc-malachitebft-test",
+ "blst",
+ "chain-types",
 ]
 
 [[package]]
