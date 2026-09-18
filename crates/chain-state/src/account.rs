@@ -80,9 +80,11 @@ impl Account {
 
     /// The effect a transaction that was allowed to run has on its
     /// sender, regardless of whether it later aborts: the sequence
-    /// number advances by exactly one, and the real cost (`gas_used`,
-    /// not the declared `gas_limit` this account was checked against)
-    /// is debited. `docs/spec.md`, "Execution": "Aborts consume gas
+    /// number advances by exactly one, and the real cost — `gas_used`
+    /// (not the declared `gas_limit` this account was checked against)
+    /// times `price_per_gas`, the price actually charged (the block's
+    /// base fee, not the sender's `max_fee_per_gas` ceiling) — is
+    /// debited. `docs/spec.md`, "Execution": "Aborts consume gas
     /// and roll back the transaction's effects, but never abort the
     /// block" — this is that consumption, independent of the rollback.
     ///
@@ -90,8 +92,8 @@ impl Account {
     /// account was already checked to afford — `saturating_sub` is
     /// defensive, not a substitute for that check, and never panics
     /// even if a caller violates it.
-    pub fn apply_transaction(&self, gas_used: GasAmount, max_fee_per_gas: GasPrice) -> Self {
-        let fee = u128::from(gas_used.0).saturating_mul(u128::from(max_fee_per_gas.0));
+    pub fn apply_transaction(&self, gas_used: GasAmount, price_per_gas: GasPrice) -> Self {
+        let fee = u128::from(gas_used.0).saturating_mul(u128::from(price_per_gas.0));
         Self {
             balance: self.balance.saturating_sub(fee),
             next_sequence_number: SequenceNumber(self.next_sequence_number.0.saturating_add(1)),

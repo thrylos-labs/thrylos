@@ -6,11 +6,14 @@ use std::collections::BTreeMap;
 
 use chain_engine_api::{
     AbortReason, Block, BlockLimits, BlockRejected, Engine, ExecutedBlock, FinaliseError,
-    FinaliseErrorReason, RejectionReason, TransactionOutcome,
+    FinaliseErrorReason, RejectionReason, TransactionOutcome, GENESIS_MAX_BLOCK_GAS,
+};
+use chain_modules::fees::{
+    next_base_fee, FeeError, FeeParams, GENESIS_BASE_FEE, GENESIS_BASE_FEE_CHANGE_DENOMINATOR,
 };
 use chain_state::{compute_root, StateKey, StateRoot, StateValue};
 use chain_types::codec::CodecError;
-use chain_types::{Address, BlockHeight, ChainId, GasAmount, Hash, Transaction};
+use chain_types::{Address, BlockHeight, ChainId, GasAmount, GasPrice, Hash, Transaction};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_vm_config::runtime::VMConfig;
@@ -26,13 +29,14 @@ use crate::genesis::{
     COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS, SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME,
     SYSTEM_PACKAGE_ADDRESS,
 };
-use crate::keys::{calculator_result_key, object_key};
+use crate::keys::{base_fee_key, calculator_result_key, object_key};
 use crate::module_resolver::ChainStateModuleResolver;
 
 #[derive(Debug)]
 pub enum ExecutorError {
     Genesis(GenesisError),
     Runtime(String),
+    FeeParams(FeeError),
 }
 
 impl core::fmt::Display for ExecutorError {
@@ -40,6 +44,7 @@ impl core::fmt::Display for ExecutorError {
         match self {
             Self::Genesis(err) => write!(f, "genesis failed: {err}"),
             Self::Runtime(msg) => write!(f, "runtime construction failed: {msg}"),
+            Self::FeeParams(err) => write!(f, "invalid genesis fee parameters: {err}"),
         }
     }
 }
@@ -83,6 +88,12 @@ struct AppliedTransaction {
 
 pub struct Executor {
     chain_id: ChainId,
+    /// Fixed at genesis for now. The block gas limit and base fee
+    /// denominator are governance-adjustable in `docs/spec.md`, and
+    /// consensus-critical, so once governance exists they belong in
+    /// state alongside the base fee itself; until then every node
+    /// building from the same genesis agrees on them by construction.
+    fee_params: FeeParams,
     state: BTreeMap<StateKey, StateValue>,
     tip_block_hash: Hash,
     runtime: MoveRuntime,
@@ -95,7 +106,13 @@ impl Executor {
     /// `chain_id` (`docs/spec.md`, "Transaction validity": "Chain ID
     /// ... checked against the node's own").
     pub fn genesis(chain_id: ChainId) -> Result<Self, ExecutorError> {
-        let state = genesis_state().map_err(ExecutorError::Genesis)?;
+        let mut state = genesis_state().map_err(ExecutorError::Genesis)?;
+        let fee_params = FeeParams::new(GENESIS_MAX_BLOCK_GAS, GENESIS_BASE_FEE_CHANGE_DENOMINATOR)
+            .map_err(ExecutorError::FeeParams)?;
+        state.insert(
+            base_fee_key(),
+            StateValue::new(GENESIS_BASE_FEE.to_le_bytes().to_vec()),
+        );
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
         })?;
@@ -107,6 +124,7 @@ impl Executor {
         let runtime = MoveRuntime::new(natives, vm_config);
         Ok(Self {
             chain_id,
+            fee_params,
             state,
             tip_block_hash: Hash::from_bytes([0u8; 32]),
             runtime,
@@ -134,6 +152,13 @@ impl Executor {
         read_u64(&self.state, &object_key(INITIAL_COUNTER_ADDRESS))
     }
 
+    /// The base fee per gas the next block will charge — the price every
+    /// transaction in it pays, and the floor its `max_fee_per_gas` must
+    /// clear. Recomputed from each block's gas usage as it's executed.
+    pub fn base_fee(&self) -> Option<u64> {
+        read_u64(&self.state, &base_fee_key())
+    }
+
     /// `address`'s account (balance and next sequence number) as of
     /// the currently committed state.
     pub fn read_account(&self, address: Address) -> Result<chain_state::Account, CodecError> {
@@ -158,20 +183,50 @@ impl Executor {
     /// block rejects the block. There is no skip-and-continue path");
     /// a valid one that fails *while executing* is aborted and the
     /// block carries on ("Aborts consume gas and roll back the
-    /// transaction's effects, but never abort the block"). Returns the
+    /// transaction's effects, but never abort the block").
+    ///
+    /// Every transaction in the block pays the same price, the base fee
+    /// stored in `state` when the block starts; the block's total gas
+    /// then sets the base fee the *next* block will charge, written back
+    /// into `state` so it lands in the state root and diff. Returns the
     /// total gas used and one outcome per transaction.
     fn apply_block(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
         block: &Block,
     ) -> Result<(u64, Vec<TransactionOutcome>), BlockRejected> {
+        // Missing or malformed, this is a broken state invariant (genesis
+        // seeds it and only this function writes it), not anything a
+        // block did.
+        let base_fee = read_u64(state, &base_fee_key()).ok_or(BlockRejected {
+            transaction_index: None,
+            reason: RejectionReason::Rejected,
+        })?;
+
         let mut gas_used: u64 = 0;
         let mut outcomes = Vec::with_capacity(block.transactions.len());
         for (index, tx) in block.transactions.iter().enumerate() {
-            let applied = self.apply_transaction(state, tx, index)?;
+            let applied = self.apply_transaction(state, tx, index, base_fee)?;
             gas_used = gas_used.saturating_add(applied.gas_used);
+            // Checked as it accumulates rather than after the loop, so an
+            // oversized block is refused without executing the rest of it.
+            // Not any one transaction's fault: the block as a whole is
+            // over the limit `docs/spec.md` gives the base fee its target
+            // from ("Max block gas").
+            if gas_used > self.fee_params.max_block_gas() {
+                return Err(BlockRejected {
+                    transaction_index: None,
+                    reason: RejectionReason::MalformedBlock,
+                });
+            }
             outcomes.push(applied.outcome);
         }
+
+        let next_fee = next_base_fee(&self.fee_params, base_fee, gas_used);
+        state.insert(
+            base_fee_key(),
+            StateValue::new(next_fee.to_le_bytes().to_vec()),
+        );
         Ok((gas_used, outcomes))
     }
 
@@ -189,6 +244,7 @@ impl Executor {
         state: &mut BTreeMap<StateKey, StateValue>,
         tx: &Transaction,
         tx_index: usize,
+        base_fee: u64,
     ) -> Result<AppliedTransaction, BlockRejected> {
         let transaction_index = u32::try_from(tx_index).ok();
         let reject = move |reason: RejectionReason| BlockRejected {
@@ -212,6 +268,14 @@ impl Executor {
                 tx.body.max_fee_per_gas,
             )
             .map_err(|_| reject(RejectionReason::Rejected))?;
+        // "Gas budget: covered by sender balance at maximum price" is
+        // only meaningful if that maximum price can actually pay: a
+        // transaction whose ceiling is below this block's base fee could
+        // never be charged what the block owes, so it is invalid here,
+        // not merely cheap. A proposer filters these out.
+        if tx.body.max_fee_per_gas.0 < base_fee {
+            return Err(reject(RejectionReason::Rejected));
+        }
 
         let (outcome, gas_used) = match self.execute_call(state, tx) {
             Ok(effects) => {
@@ -234,8 +298,12 @@ impl Executor {
             Err(CallError::Internal) => return Err(reject(RejectionReason::Rejected)),
         };
 
-        let updated_account =
-            account.apply_transaction(GasAmount(gas_used), tx.body.max_fee_per_gas);
+        // Charged the base fee, not the sender's `max_fee_per_gas`
+        // ceiling: that ceiling was only ever checked, above, to be
+        // enough. The fee is burned — nothing is credited for it — as in
+        // EIP-1559; there is no priority tip to pay a proposer (see
+        // `chain_modules::fees`'s doc comment).
+        let updated_account = account.apply_transaction(GasAmount(gas_used), GasPrice(base_fee));
         chain_state::account::write_account(state, sender, updated_account);
 
         Ok(AppliedTransaction { gas_used, outcome })

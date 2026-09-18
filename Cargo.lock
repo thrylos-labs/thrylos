@@ -1268,6 +1268,7 @@ name = "chain-exec"
 version = "0.1.0"
 dependencies = [
  "chain-engine-api",
+ "chain-modules",
  "chain-state",
  "chain-types",
  "ed25519-dalek",

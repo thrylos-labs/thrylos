@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 chain-engine-api = { path = "../chain-engine-api", version = "0.1.0" }
+chain-modules = { path = "../chain-modules", version = "0.1.0" }
 chain-state = { path = "../chain-state", version = "0.1.0" }
 chain-types = { path = "../chain-types", version = "0.1.0" }
 move-binary-format.workspace = true

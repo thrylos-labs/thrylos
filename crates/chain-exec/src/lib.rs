@@ -40,7 +40,16 @@
 //!   the one genesis instance exists) — both real follow-up work.
 //! - No real gas metering (`UnmeteredGasMeter`); `gas_used` is stood in
 //!   for by the transaction's declared `gas_limit`, not a calibrated
-//!   cost model tied to a fee schedule (`chain-modules`, not built yet).
+//!   per-instruction cost model. What that gas *costs* is real, though:
+//!   every transaction in a block pays the same base fee per gas
+//!   (`chain_modules::fees`, EIP-1559 on the single dimension of
+//!   compute), stored in state so it is part of the state root and diff,
+//!   and recomputed from each block's total gas for the next. A
+//!   transaction whose `max_fee_per_gas` can't cover it is invalid and
+//!   rejects the block, and so does a block over the gas limit. The fee
+//!   is burned, with no priority tip — `TransactionBody` has one price
+//!   field. The gas limit and fee denominator are fixed at genesis; when
+//!   governance can change them they belong in state too.
 //!
 //! Each of those is real, separate follow-up work, not a hidden
 //! shortcut — see `module_resolver` and `genesis`'s own doc comments for

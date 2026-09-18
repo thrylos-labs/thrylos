@@ -18,6 +18,7 @@ enum KeyTag {
     ModuleBytecode = chain_state::account::KEY_TAG + 1,
     ObjectData = chain_state::account::KEY_TAG + 2,
     CalculatorResult = chain_state::account::KEY_TAG + 3,
+    BaseFee = chain_state::account::KEY_TAG + 4,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -36,6 +37,13 @@ pub fn module_key(address: AccountAddress) -> StateKey {
 /// Where a Move object's data lives, keyed by its address.
 pub fn object_key(address: AccountAddress) -> StateKey {
     tagged_key(KeyTag::ObjectData, address)
+}
+
+/// Where the base fee the *next* block will charge is stored. One fixed
+/// key, no address: it is chain-wide state, so it sits in the state
+/// root and diff like everything else consensus must agree on.
+pub fn base_fee_key() -> StateKey {
+    StateKey::new(vec![KeyTag::BaseFee as u8])
 }
 
 /// Where the fixed system `calculator::add` call's result is stored,
@@ -57,11 +65,28 @@ mod tests {
     }
 
     #[test]
+    fn the_base_fee_key_cannot_collide_with_any_address_keyed_entry() {
+        // Address-keyed entries are a tag byte plus 32 address bytes;
+        // this one is a bare tag byte, so its length alone separates it,
+        // and its tag is distinct too.
+        let addr = AccountAddress::new([7u8; AccountAddress::LENGTH]);
+        for other in [
+            module_key(addr),
+            object_key(addr),
+            calculator_result_key(addr),
+        ] {
+            assert_ne!(base_fee_key(), other);
+            assert_ne!(base_fee_key().as_bytes().first(), other.as_bytes().first());
+        }
+    }
+
+    #[test]
     fn none_of_this_crate_s_tags_reuse_the_account_model_s_reserved_tag() {
         for tag in [
             KeyTag::ModuleBytecode as u8,
             KeyTag::ObjectData as u8,
             KeyTag::CalculatorResult as u8,
+            KeyTag::BaseFee as u8,
         ] {
             assert_ne!(tag, chain_state::account::KEY_TAG);
         }

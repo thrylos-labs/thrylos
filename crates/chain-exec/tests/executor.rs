@@ -67,6 +67,28 @@ fn signed_transaction_full(
     declared_inputs: Vec<Address>,
     call: MoveCall,
 ) -> Transaction {
+    signed_transaction_priced(
+        seed,
+        chain_id,
+        sequence_number,
+        1_000,
+        1,
+        declared_inputs,
+        call,
+    )
+}
+
+/// Like [`signed_transaction_full`], with the gas limit and the
+/// `max_fee_per_gas` ceiling under the caller's control.
+fn signed_transaction_priced(
+    seed: u8,
+    chain_id: u64,
+    sequence_number: u64,
+    gas_limit: u64,
+    max_fee_per_gas: u64,
+    declared_inputs: Vec<Address>,
+    call: MoveCall,
+) -> Transaction {
     let signing_key = SigningKey::from_bytes(&[seed; 32]);
     let sender = PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes()).unwrap();
     let body = TransactionBody {
@@ -74,8 +96,8 @@ fn signed_transaction_full(
         sender,
         sequence_number: SequenceNumber(sequence_number),
         expiry: BlockHeight(1_000),
-        gas_limit: GasAmount(1_000),
-        max_fee_per_gas: GasPrice(1),
+        gas_limit: GasAmount(gas_limit),
+        max_fee_per_gas: GasPrice(max_fee_per_gas),
         declared_inputs,
         call,
     };
@@ -659,4 +681,230 @@ fn a_successful_transaction_debits_gas_and_advances_the_sequence_number() {
     let account = executor.read_account(sender).unwrap();
     assert_eq!(account.balance, 1_000_000 - 1_000);
     assert_eq!(account.next_sequence_number, SequenceNumber(1));
+}
+
+/// A block-filling transaction: `gas_limit` gas, which the executor
+/// charges in full as a stand-in for real metering.
+fn heavy_transaction(seed: u8, sequence_number: u64, gas_limit: u64, max_fee: u64) -> Transaction {
+    signed_transaction_priced(
+        seed,
+        1,
+        sequence_number,
+        gas_limit,
+        max_fee,
+        Vec::new(),
+        calculator_call(1, 1),
+    )
+}
+
+const GENESIS_LIMIT: u64 = chain_engine_api::GENESIS_MAX_BLOCK_GAS;
+/// The gas usage at which the base fee holds steady: half the limit.
+const TARGET: u64 = 30_000_000;
+const _: () = assert!(TARGET * 2 == GENESIS_LIMIT);
+
+#[test]
+fn genesis_seeds_the_base_fee_in_state() {
+    let executor = Executor::genesis(ChainId(1)).unwrap();
+    assert_eq!(executor.base_fee(), Some(1));
+}
+
+#[test]
+fn a_transaction_is_charged_the_base_fee_not_its_max_fee() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    // A ceiling of 50 against a base fee of 1: 1_000 gas costs 1_000,
+    // not 50_000.
+    let tx = heavy_transaction(40, 0, 1_000, 50);
+    let sender = tx.sender_address();
+    executor.credit_account(sender, 1_000_000).unwrap();
+
+    execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(
+        executor.read_account(sender).unwrap().balance,
+        1_000_000 - 1_000
+    );
+}
+
+#[test]
+fn a_transaction_whose_ceiling_is_below_the_base_fee_rejects_the_block() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    // Free to check against a balance, but it can never pay the base fee.
+    let tx = heavy_transaction(41, 0, 1_000, 0);
+    fund(&mut executor, &tx);
+
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: 1_700_000_000_000,
+        transactions: vec![tx],
+    };
+    let rejected = executor
+        .execute_block(executor.state_root(), &block)
+        .unwrap_err();
+    assert_eq!(rejected.reason, RejectionReason::Rejected);
+    assert_eq!(rejected.transaction_index, Some(0));
+}
+
+#[test]
+fn a_block_above_target_raises_the_next_base_fee_and_the_new_price_is_charged() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+
+    // 60M gas is a completely full block: 1 + max(1 * 30M / 30M / 8, 1) = 2.
+    let filler = heavy_transaction(42, 0, GENESIS_LIMIT, 1);
+    executor
+        .credit_account(filler.sender_address(), 1_000_000_000)
+        .unwrap();
+    execute_and_finalise(&mut executor, vec![filler]);
+    assert_eq!(executor.base_fee(), Some(2));
+
+    // The next block charges 2, even though this sender's ceiling is 5.
+    let next = heavy_transaction(43, 0, 1_000, 5);
+    let sender = next.sender_address();
+    executor.credit_account(sender, 1_000_000).unwrap();
+    execute_and_finalise(&mut executor, vec![next]);
+    assert_eq!(
+        executor.read_account(sender).unwrap().balance,
+        1_000_000 - 2_000
+    );
+}
+
+#[test]
+fn once_the_base_fee_has_risen_a_lower_ceiling_no_longer_clears_it() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let filler = heavy_transaction(44, 0, GENESIS_LIMIT, 1);
+    executor
+        .credit_account(filler.sender_address(), 1_000_000_000)
+        .unwrap();
+    execute_and_finalise(&mut executor, vec![filler]);
+    assert_eq!(executor.base_fee(), Some(2));
+
+    // Ceiling 1 was enough at genesis and isn't now.
+    let stale = heavy_transaction(45, 0, 1_000, 1);
+    fund(&mut executor, &stale);
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(2),
+        timestamp_millis: 1_700_000_000_001,
+        transactions: vec![stale],
+    };
+    let result = executor.execute_block(executor.state_root(), &block);
+    assert_eq!(result.unwrap_err().reason, RejectionReason::Rejected);
+}
+
+#[test]
+fn a_block_exactly_on_target_leaves_the_base_fee_alone() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = heavy_transaction(46, 0, TARGET, 1);
+    executor
+        .credit_account(tx.sender_address(), 1_000_000_000)
+        .unwrap();
+    execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(executor.base_fee(), Some(1));
+}
+
+#[test]
+fn an_empty_block_does_not_take_the_base_fee_below_its_floor() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let executed = execute_and_finalise(&mut executor, Vec::new());
+    assert_eq!(executor.base_fee(), Some(1));
+    assert!(executed.outcomes.is_empty());
+}
+
+#[test]
+fn sustained_load_raises_the_base_fee_and_idling_lowers_it_again() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    executor
+        .credit_account(
+            heavy_transaction(47, 0, 1, 1).sender_address(),
+            u128::from(u64::MAX),
+        )
+        .unwrap();
+
+    let mut previous = executor.base_fee().unwrap();
+    for sequence in 0..40 {
+        // Ceiling far above any fee reached, so only the base fee moves.
+        let filler = heavy_transaction(47, sequence, GENESIS_LIMIT, 1_000_000);
+        execute_and_finalise(&mut executor, vec![filler]);
+        let fee = executor.base_fee().unwrap();
+        assert!(fee > previous, "block {sequence}: {previous} -> {fee}");
+        previous = fee;
+    }
+    let peak = previous;
+    assert!(
+        peak > 30,
+        "40 full blocks should compound well past +1 each: {peak}"
+    );
+
+    for _ in 0..100 {
+        execute_and_finalise(&mut executor, Vec::new());
+        let fee = executor.base_fee().unwrap();
+        // Lowered whenever the proportional step (fee / 8) is non-zero,
+        // and never raised.
+        if previous >= 8 {
+            assert!(
+                fee < previous,
+                "an idle block must lower it: {previous} -> {fee}"
+            );
+        } else {
+            assert_eq!(fee, previous);
+        }
+        previous = fee;
+    }
+    // Where an idle chain settles: the last value whose 1/8 step still
+    // rounds to zero. See `chain_modules::fees`'s doc comment — the
+    // reference rule's own floor, not `MIN_BASE_FEE`.
+    assert_eq!(previous, 7);
+    assert!(previous < peak);
+}
+
+#[test]
+fn the_base_fee_moves_show_up_in_the_state_diff() {
+    // A fee change is consensus state like any other: if it weren't in
+    // the diff, `chain-db` would never persist it.
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let filler = heavy_transaction(48, 0, GENESIS_LIMIT, 1);
+    executor
+        .credit_account(filler.sender_address(), 1_000_000_000)
+        .unwrap();
+
+    let executed = execute_and_finalise(&mut executor, vec![filler]);
+    // calculator result + the sender's account + the base fee.
+    assert_eq!(executed.state_diff.len(), 3);
+}
+
+#[test]
+fn a_block_over_the_gas_limit_is_rejected_as_malformed() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let first = heavy_transaction(49, 0, 40_000_000, 1);
+    let second = heavy_transaction(50, 0, 40_000_000, 1); // 80M total > 60M
+    executor
+        .credit_account(first.sender_address(), 1_000_000_000)
+        .unwrap();
+    executor
+        .credit_account(second.sender_address(), 1_000_000_000)
+        .unwrap();
+
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: 1_700_000_000_000,
+        transactions: vec![first, second],
+    };
+    let rejected = executor
+        .execute_block(executor.state_root(), &block)
+        .unwrap_err();
+    assert_eq!(rejected.reason, RejectionReason::MalformedBlock);
+    assert_eq!(
+        rejected.transaction_index, None,
+        "the block as a whole is over the limit, not any one transaction"
+    );
+}
+
+#[test]
+fn a_block_exactly_at_the_gas_limit_is_accepted() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = heavy_transaction(51, 0, GENESIS_LIMIT, 1);
+    executor
+        .credit_account(tx.sender_address(), 1_000_000_000)
+        .unwrap();
+    execute_and_finalise(&mut executor, vec![tx]);
 }

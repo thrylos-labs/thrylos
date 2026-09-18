@@ -6,12 +6,15 @@
 //! bump above a floor... Eviction is by effective fee with a per-sender
 //! cap on pending transactions."
 //!
-//! "Effective fee" here is just `max_fee_per_gas`: there is no base-fee
-//! module yet (`chain-modules` has staking only so far), so there is no
-//! priority-fee-over-base-fee to compute. Once a real fee module
-//! exists, ranking should switch to the priority fee; nothing else in
-//! this file assumes one specific fee formula, only that higher is
-//! better.
+//! "Effective fee" here is just `max_fee_per_gas`. The chain does have a
+//! base fee now (`chain_modules::fees`), but every transaction in a
+//! block pays exactly that, with no priority tip on top —
+//! `chain_types::TransactionBody` has only the one price field — so
+//! there is no priority fee to rank by, and `max_fee_per_gas` remains
+//! the only signal of how much a sender is willing to pay. Its one
+//! consequence for this file is [`Mempool::candidate_transactions`]:
+//! a transaction whose ceiling is below the current base fee cannot be
+//! included, and offering one would make the proposed block invalid.
 
 use std::collections::BinaryHeap;
 
@@ -233,12 +236,21 @@ impl<A: AccountView> Mempool<A> {
     /// `n + 1` is only ever offered once its `n` has been. This is the
     /// "already ordered and selected" input `chain_engine_api::Engine::
     /// propose_block` expects.
-    pub fn candidate_transactions(&self, limit: usize) -> Vec<Transaction> {
+    ///
+    /// `base_fee` is the price the block being built will charge. A
+    /// transaction whose `max_fee_per_gas` is below it is never
+    /// offered — the executor rejects the whole block for including
+    /// one — and, because a sender's transactions must run in order,
+    /// neither is anything of that sender's queued behind it.
+    pub fn candidate_transactions(&self, limit: usize, base_fee: u64) -> Vec<Transaction> {
         let mut ready: BinaryHeap<RankedSlot> = self
             .pending
             .iter()
             .filter_map(|(sender, by_sequence)| {
                 let (sequence_number, tx) = by_sequence.iter().next()?;
+                if tx.body.max_fee_per_gas.0 < base_fee {
+                    return None;
+                }
                 Some(RankedSlot {
                     fee: tx.body.max_fee_per_gas.0,
                     sender: *sender,
@@ -260,11 +272,13 @@ impl<A: AccountView> Mempool<A> {
 
             if let Some(next_sequence) = by_sequence.keys().find(|s| **s > slot.sequence_number) {
                 if let Some(next_tx) = by_sequence.get(next_sequence) {
-                    ready.push(RankedSlot {
-                        fee: next_tx.body.max_fee_per_gas.0,
-                        sender: slot.sender,
-                        sequence_number: *next_sequence,
-                    });
+                    if next_tx.body.max_fee_per_gas.0 >= base_fee {
+                        ready.push(RankedSlot {
+                            fee: next_tx.body.max_fee_per_gas.0,
+                            sender: slot.sender,
+                            sequence_number: *next_sequence,
+                        });
+                    }
                 }
             }
         }
@@ -540,7 +554,7 @@ mod tests {
         pool.admit(sender_a_tx1, BlockHeight(0)).unwrap();
         pool.admit(sender_b_tx0, BlockHeight(0)).unwrap();
 
-        let candidates = pool.candidate_transactions(10);
+        let candidates = pool.candidate_transactions(10, 1);
         assert_eq!(candidates.len(), 3);
         // sender_b's single tx (fee 50) beats sender_a's *ready* tx
         // (sequence 0, fee 1) even though sender_a has a higher-fee tx
@@ -567,8 +581,76 @@ mod tests {
         pool.admit(tx_a, BlockHeight(0)).unwrap();
         pool.admit(tx_b, BlockHeight(0)).unwrap();
 
-        let candidates = pool.candidate_transactions(1);
+        let candidates = pool.candidate_transactions(1, 1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].sender_address(), sender_b);
+    }
+    #[test]
+    fn a_transaction_below_the_base_fee_is_never_offered() {
+        let chain_id = ChainId(1);
+        let cheap = signed_tx(60, chain_id, 0, 3);
+        let fine = signed_tx(61, chain_id, 0, 10);
+        let (cheap_sender, fine_sender) = (cheap.sender_address(), fine.sender_address());
+        let accounts = MockAccounts::new()
+            .with_balance(cheap_sender, u128::MAX)
+            .with_balance(fine_sender, u128::MAX);
+        let mut pool = Mempool::new(config(chain_id), accounts);
+        pool.admit(cheap, BlockHeight(0)).unwrap();
+        pool.admit(fine, BlockHeight(0)).unwrap();
+
+        let candidates = pool.candidate_transactions(10, 5);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].sender_address(), fine_sender);
+    }
+
+    #[test]
+    fn a_transaction_exactly_at_the_base_fee_is_offered() {
+        let chain_id = ChainId(1);
+        let tx = signed_tx(62, chain_id, 0, 5);
+        let sender = tx.sender_address();
+        let mut pool = Mempool::new(
+            config(chain_id),
+            MockAccounts::new().with_balance(sender, u128::MAX),
+        );
+        pool.admit(tx, BlockHeight(0)).unwrap();
+
+        assert_eq!(pool.candidate_transactions(10, 5).len(), 1);
+        assert!(pool.candidate_transactions(10, 6).is_empty());
+    }
+
+    #[test]
+    fn an_unaffordable_first_transaction_also_holds_back_the_ones_queued_behind_it() {
+        let chain_id = ChainId(1);
+        // Sequence 0 can't pay the base fee, so sequence 1 — which could —
+        // must wait: the executor runs a sender's transactions in order.
+        let blocked = signed_tx(63, chain_id, 0, 2);
+        let behind = signed_tx(63, chain_id, 1, 100);
+        let sender = blocked.sender_address();
+        let mut pool = Mempool::new(
+            config(chain_id),
+            MockAccounts::new().with_balance(sender, u128::MAX),
+        );
+        pool.admit(blocked, BlockHeight(0)).unwrap();
+        pool.admit(behind, BlockHeight(0)).unwrap();
+
+        assert!(pool.candidate_transactions(10, 5).is_empty());
+    }
+
+    #[test]
+    fn a_later_transaction_below_the_base_fee_is_left_out_but_earlier_ones_are_offered() {
+        let chain_id = ChainId(1);
+        let first = signed_tx(64, chain_id, 0, 100);
+        let second = signed_tx(64, chain_id, 1, 2); // below the base fee of 5
+        let sender = first.sender_address();
+        let mut pool = Mempool::new(
+            config(chain_id),
+            MockAccounts::new().with_balance(sender, u128::MAX),
+        );
+        pool.admit(first, BlockHeight(0)).unwrap();
+        pool.admit(second, BlockHeight(0)).unwrap();
+
+        let candidates = pool.candidate_transactions(10, 5);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].body.sequence_number, SequenceNumber(0));
     }
 }
