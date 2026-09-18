@@ -58,7 +58,14 @@ jobs:
           set -euo pipefail
           for crate in chain-types chain-state chain-modules \
                        chain-consensus chain-engine-api chain-signer; do
-            if cargo tree -p "$crate" -i rand --edges normal 2>/dev/null | grep -q .; then
+            # Not `cargo tree -i rand`: once the lockfile has more than
+            # one `rand` version anywhere (true today), `-i rand` alone
+            # is ambiguous and errors out — and with stderr redirected
+            # away, that error previously looked identical to "no rand
+            # found", silently passing regardless of the real answer.
+            # Listing normal deps and grepping for the name textually
+            # doesn't have that failure mode.
+            if cargo tree -p "$crate" -e normal 2>&1 | grep -qi 'rand'; then
               echo "::error::$crate depends on rand (tier A must be deterministic)"
               exit 1
             fi

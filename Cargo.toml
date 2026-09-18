@@ -43,6 +43,29 @@ move-binary-format = { version = "0.0.3", git = "https://github.com/MystenLabs/s
 move-compiler = { version = "0.0.1", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 move-vm-config = { version = "0.1.0", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 
+# Malachite's BFT consensus engine, pinned to a specific circlefin/malachite
+# commit. `docs/spec.md`, "Consensus": "Use an existing engine (Malachite
+# or a CometBFT-class Rust implementation) rather than a new protocol."
+# The canonical repo moved when Informal Systems' Malachite team joined
+# Circle to build "Arc" — circlefin/malachite is now the actively
+# maintained one (informalsystems/malachite is the comparatively stale
+# fork). It's alpha, unaudited software ("provided as is... use at your
+# own risk", per the project itself) — a disclosed, accepted risk, since
+# there's no more mature Rust BFT alternative to reuse instead.
+#
+# Depending on the low-level "core consensus" crates specifically (not
+# the higher-level channel-based or actor-based integration layers,
+# which pull in tokio/libp2p and an actor runtime): the core library is
+# explicitly "pure ... does not perform any input/output nor result in
+# side effects ... stateless", matching this workspace's own
+# architecture far better than the higher-level options would.
+# Package names carry an "arc-" prefix upstream; aliased here to drop it.
+malachite-core-consensus = { version = "0.8.0", package = "arc-malachitebft-core-consensus", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachite-core-types = { version = "0.8.0", package = "arc-malachitebft-core-types", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachite-core-driver = { version = "0.8.0", package = "arc-malachitebft-core-driver", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachite-metrics = { version = "0.8.0", package = "arc-malachitebft-metrics", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+malachite-test = { version = "0.8.0", package = "arc-malachitebft-test", git = "https://github.com/circlefin/malachite", rev = "72143f6c99a98452b587e1c392bdb80944eb2232" }
+
 # Tier A lints: crates whose output must be byte-identical on every machine.
 # Opt in per crate with `[lints] workspace = true`. Tier B/C crates omit it.
 [workspace.lints.rust]

@@ -10,7 +10,8 @@
 # seeding rather than anything that affects Move bytecode's deterministic
 # output — Sui runs this exact VM in production consensus. This is a
 # sanctioned exception for the pinned MoveVM dependency, not a loosening
-# of the rule for first-party code.
+# of the rule for first-party code. chain-consensus carries the same
+# kind of exception for the pinned Malachite dependency — see below.
 
 [graph]
 all-features = false
@@ -25,6 +26,17 @@ ignore = [
     "RUSTSEC-2024-0384", # `instant` unmaintained, via parking_lot v0.11.2 (move-vm-runtime)
     "RUSTSEC-2024-0320", # `yaml-rust` unmaintained, via serde_yaml (move-compiler toolchain)
     "RUSTSEC-2026-0097", # `rand` 0.7.3 unsound only with a custom logger touching thread_rng from inside it, which nothing here does
+    # `hickory-proto`'s two DNS-response-parsing vulnerabilities and
+    # `paste`'s unmaintained status all come from `arc-malachitebft-test`
+    # (a chain-consensus dev-dependency only, pulled in for the Malachite
+    # proof-of-life test — see tests/malachite_proof_of_life.rs) via
+    # libp2p's DNS-based peer discovery. This proof-of-life does no
+    # networking at all, so the vulnerable DNS-parsing code is compiled
+    # into the test binary but never executed. Revisit if chain-consensus
+    # ever exercises real networking through this dependency.
+    "RUSTSEC-2026-0118", # hickory-proto: NSEC3 unbounded loop
+    "RUSTSEC-2026-0119", # hickory-proto: O(n^2) name compression CPU exhaustion
+    "RUSTSEC-2024-0436", # `paste` unmaintained
 ]
 
 [licenses]
@@ -32,6 +44,7 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "MIT",
+    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
@@ -45,4 +58,4 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/MystenLabs/sui"]
+allow-git = ["https://github.com/MystenLabs/sui", "https://github.com/circlefin/malachite"]
