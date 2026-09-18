@@ -1293,6 +1293,7 @@ dependencies = [
 name = "chain-modules"
 version = "0.1.0"
 dependencies = [
+ "chain-signer",
  "chain-types",
  "proptest",
  "ruint",

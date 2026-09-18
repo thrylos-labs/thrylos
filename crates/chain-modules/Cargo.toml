@@ -14,4 +14,5 @@ chain-types = { path = "../chain-types", version = "0.1.0" }
 ruint = "1"
 
 [dev-dependencies]
+chain-signer = { path = "../chain-signer", version = "0.1.0" }
 proptest.workspace = true
