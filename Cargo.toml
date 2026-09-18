@@ -41,6 +41,7 @@ move-vm-runtime = { version = "0.1.0", git = "https://github.com/MystenLabs/sui"
 move-core-types = { version = "0.0.4", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 move-binary-format = { version = "0.0.3", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 move-compiler = { version = "0.0.1", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
+move-vm-config = { version = "0.1.0", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 
 # Tier A lints: crates whose output must be byte-identical on every machine.
 # Opt in per crate with `[lints] workspace = true`. Tier B/C crates omit it.

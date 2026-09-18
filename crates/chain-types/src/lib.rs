@@ -20,4 +20,4 @@ pub use codec::{decode_exact, CodecError, Decode, Encode};
 pub use hash::{hash_with_domain, DomainTag, Hash};
 pub use ids::{BlockHeight, ChainId, GasAmount, GasPrice, Round, SequenceNumber};
 pub use keys::{PublicKey, Scheme, Signature, SignatureError};
-pub use transaction::{Transaction, TransactionBody, MAX_EXPIRY_HORIZON};
+pub use transaction::{MoveCall, Transaction, TransactionBody, MAX_EXPIRY_HORIZON};

@@ -242,6 +242,13 @@ mod tests {
             gas_limit: GasAmount(gas_limit),
             max_fee_per_gas: GasPrice(1),
             declared_inputs: Vec::new(),
+            call: chain_types::MoveCall {
+                module_address: chain_types::Address::from_bytes([0u8; 32]),
+                module_name: Vec::new(),
+                function_name: Vec::new(),
+                type_arguments: Vec::new(),
+                arguments: Vec::new(),
+            },
         };
         let mut signing_bytes = Vec::new();
         body.encode(&mut signing_bytes);

@@ -28,7 +28,15 @@ ignore = [
 ]
 
 [licenses]
-allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
 
 [bans]
 multiple-versions = "warn"

@@ -28,6 +28,59 @@ use crate::keys::{PublicKey, Signature, SignatureError};
 /// until a stated block height, max 7,200 ahead".
 pub const MAX_EXPIRY_HORIZON: u64 = 7_200;
 
+/// A Move entry-function call: which package/module/function, and its
+/// arguments. Kept fully opaque to Move's own types: `chain-types` must
+/// not depend on the MoveVM dependency (a large git dependency that only
+/// `chain-exec` needs — see the workspace root `Cargo.toml`), so
+/// `chain-exec` is the one that decodes these bytes against
+/// `move-core-types`, not this crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveCall {
+    /// The Move package's address.
+    pub module_address: Address,
+    /// UTF-8 module name within that package.
+    pub module_name: Vec<u8>,
+    /// UTF-8 function name.
+    pub function_name: Vec<u8>,
+    /// A BCS-encoded `Vec<TypeTag>` as `move-core-types` defines it —
+    /// opaque here, decoded by `chain-exec`.
+    pub type_arguments: Vec<u8>,
+    /// One entry per parameter, each already encoded exactly as that
+    /// parameter's Move type expects (e.g. a `u64` parameter as 8
+    /// little-endian bytes) — opaque here, decoded by `chain-exec`.
+    pub arguments: Vec<Vec<u8>>,
+}
+
+impl Encode for MoveCall {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.module_address.encode(out);
+        self.module_name.encode(out);
+        self.function_name.encode(out);
+        self.type_arguments.encode(out);
+        self.arguments.encode(out);
+    }
+}
+
+impl Decode for MoveCall {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (module_address, offset) = Address::decode(input)?;
+        let (module_name, offset) = decode_field::<Vec<u8>>(input, offset)?;
+        let (function_name, offset) = decode_field::<Vec<u8>>(input, offset)?;
+        let (type_arguments, offset) = decode_field::<Vec<u8>>(input, offset)?;
+        let (arguments, offset) = decode_field::<Vec<Vec<u8>>>(input, offset)?;
+        Ok((
+            Self {
+                module_address,
+                module_name,
+                function_name,
+                type_arguments,
+                arguments,
+            },
+            offset,
+        ))
+    }
+}
+
 /// Everything a transaction commits to except its own signature. Kept
 /// separate from [`Transaction`] so "the bytes that get signed" has
 /// exactly one definition, instead of the signing code and the codec
@@ -44,6 +97,7 @@ pub struct TransactionBody {
     /// "Transaction validity": absent it, "dynamic resolution, and the
     /// parallelism path closes".
     pub declared_inputs: Vec<Address>,
+    pub call: MoveCall,
 }
 
 impl Encode for TransactionBody {
@@ -55,6 +109,7 @@ impl Encode for TransactionBody {
         self.gas_limit.encode(out);
         self.max_fee_per_gas.encode(out);
         self.declared_inputs.encode(out);
+        self.call.encode(out);
     }
 }
 
@@ -67,6 +122,7 @@ impl Decode for TransactionBody {
         let (gas_limit, offset) = decode_field::<GasAmount>(input, offset)?;
         let (max_fee_per_gas, offset) = decode_field::<GasPrice>(input, offset)?;
         let (declared_inputs, offset) = decode_field::<Vec<Address>>(input, offset)?;
+        let (call, offset) = decode_field::<MoveCall>(input, offset)?;
         Ok((
             Self {
                 chain_id,
@@ -76,6 +132,7 @@ impl Decode for TransactionBody {
                 gas_limit,
                 max_fee_per_gas,
                 declared_inputs,
+                call,
             },
             offset,
         ))
@@ -146,6 +203,16 @@ mod tests {
     use crate::keys::Signature;
     use ed25519_dalek::{Signer, SigningKey};
 
+    fn test_call() -> MoveCall {
+        MoveCall {
+            module_address: Address::from_bytes([9u8; 32]),
+            module_name: b"calculator".to_vec(),
+            function_name: b"add".to_vec(),
+            type_arguments: Vec::new(),
+            arguments: vec![2u64.to_le_bytes().to_vec(), 40u64.to_le_bytes().to_vec()],
+        }
+    }
+
     fn signed_transaction(seed: u8, declared_inputs: Vec<Address>) -> Transaction {
         let signing_key = SigningKey::from_bytes(&[seed; 32]);
         let sender = PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes()).unwrap();
@@ -157,6 +224,7 @@ mod tests {
             gas_limit: GasAmount(100_000),
             max_fee_per_gas: GasPrice(5),
             declared_inputs,
+            call: test_call(),
         };
         let mut signing_bytes = Vec::new();
         body.encode(&mut signing_bytes);

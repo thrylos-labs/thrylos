@@ -609,9 +609,14 @@ dependencies = [
 name = "chain-exec"
 version = "0.1.0"
 dependencies = [
+ "chain-engine-api",
+ "chain-state",
+ "chain-types",
+ "ed25519-dalek",
  "move-binary-format",
  "move-compiler",
  "move-core-types",
+ "move-vm-config",
  "move-vm-runtime",
  "tempfile",
 ]
