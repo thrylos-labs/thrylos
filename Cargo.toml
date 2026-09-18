@@ -20,6 +20,11 @@ edition = "2021"
 rust-version = "1.91"
 license = "Apache-2.0"
 
+[workspace.dependencies]
+blake3 = "1"
+ed25519-dalek = "2"
+proptest = "1"
+
 # Tier A lints: crates whose output must be byte-identical on every machine.
 # Opt in per crate with `[lints] workspace = true`. Tier B/C crates omit it.
 [workspace.lints.rust]

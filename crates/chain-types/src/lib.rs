@@ -4,3 +4,16 @@
 //! See `docs/spec.md`, "Crate layout and trust tiers".
 
 #![forbid(unsafe_code)]
+
+pub mod address;
+pub mod codec;
+pub mod collections;
+pub mod hash;
+pub mod ids;
+pub mod keys;
+
+pub use address::Address;
+pub use codec::{decode_exact, CodecError, Decode, Encode};
+pub use hash::{hash_with_domain, DomainTag, Hash};
+pub use ids::{BlockHeight, ChainId, Round};
+pub use keys::{PublicKey, Scheme, Signature, SignatureError};
