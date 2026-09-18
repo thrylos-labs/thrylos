@@ -7,13 +7,19 @@
 //! run the transactions (`docs/spec.md`, "Execution": "Block execution
 //! is a pure function with no I/O of its own").
 
+use chain_state::StateRoot;
 use chain_types::codec::{decode_field, CodecError, Decode, Encode};
 use chain_types::hash::{hash_with_domain, DomainTag};
 use chain_types::{BlockHeight, Hash, Transaction};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    pub parent_hash: Hash,
+    /// The previous block's hash — chain linkage. Distinct from the
+    /// parent *state root*, which flows separately through
+    /// `Engine::execute_block`'s own `parent_state_root` argument and
+    /// [`ExecutedBlock::state_root`]: a block hash and a state root are
+    /// different things and must not be typed the same way.
+    pub parent_block_hash: Hash,
     pub height: BlockHeight,
     /// Milliseconds since the Unix epoch, taken from consensus — never
     /// read from a system clock during execution (`docs/spec.md`,
@@ -33,7 +39,7 @@ impl Block {
 
 impl Encode for Block {
     fn encode(&self, out: &mut Vec<u8>) {
-        self.parent_hash.encode(out);
+        self.parent_block_hash.encode(out);
         self.height.encode(out);
         self.timestamp_millis.encode(out);
         self.transactions.encode(out);
@@ -42,13 +48,13 @@ impl Encode for Block {
 
 impl Decode for Block {
     fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
-        let (parent_hash, offset) = Hash::decode(input)?;
+        let (parent_block_hash, offset) = Hash::decode(input)?;
         let (height, offset) = decode_field::<BlockHeight>(input, offset)?;
         let (timestamp_millis, offset) = decode_field::<u64>(input, offset)?;
         let (transactions, offset) = decode_field::<Vec<Transaction>>(input, offset)?;
         Ok((
             Self {
-                parent_hash,
+                parent_block_hash,
                 height,
                 timestamp_millis,
                 transactions,
@@ -65,7 +71,7 @@ impl Decode for Block {
 /// peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutedBlock {
-    pub state_root: Hash,
+    pub state_root: StateRoot,
     pub gas_used: u64,
 }
 
@@ -78,7 +84,7 @@ mod tests {
 
     fn empty_block() -> Block {
         Block {
-            parent_hash: Hash::from_bytes([0u8; 32]),
+            parent_block_hash: Hash::from_bytes([0u8; 32]),
             height: BlockHeight(1),
             timestamp_millis: 1_700_000_000_000,
             transactions: Vec::new(),

@@ -46,6 +46,10 @@ pub enum DomainTag {
     BlockHeaderV1 = 2,
     TransactionV1 = 3,
     AddressV1 = 4,
+    /// Hashing a state key down to its 256-bit trie routing path —
+    /// distinct from `TrieLeafV1`, which hashes a key *and* its value as
+    /// the content stored at that path.
+    TrieKeyPathV1 = 5,
 }
 
 /// Hash `payload` under `tag`'s domain-separation prefix.

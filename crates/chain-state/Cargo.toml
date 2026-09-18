@@ -10,3 +10,7 @@ description = "Merkle state trie, account model"
 workspace = true
 
 [dependencies]
+chain-types = { path = "../chain-types", version = "0.1.0" }
+
+[dev-dependencies]
+proptest.workspace = true

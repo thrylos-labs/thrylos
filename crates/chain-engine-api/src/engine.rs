@@ -10,6 +10,7 @@
 //! MoveVM, no storage. An implementation belongs to `chain-exec`
 //! (execution) and is driven by `chain-consensus`.
 
+use chain_state::StateRoot;
 use chain_types::{BlockHeight, Hash, Transaction};
 
 use crate::block::{Block, ExecutedBlock};
@@ -91,15 +92,17 @@ pub struct FinaliseError {
 /// crossing it is owned, not borrowed, so an implementation on one side
 /// can never hold a reference into the other's memory.
 pub trait Engine {
-    /// Assemble a candidate block from `candidate_transactions` (already
-    /// ordered and selected — e.g. by the mempool — for this round) on
-    /// top of `parent_state_root`, greedily packing transactions in the
-    /// given order until `limits` would be exceeded. Pure assembly: does
-    /// not execute the transactions or compute a state root. Called only
-    /// by this round's proposer.
+    /// Assemble a candidate block extending `parent_block_hash` /
+    /// `parent_state_root` from `candidate_transactions` (already
+    /// ordered and selected — e.g. by the mempool — for this round),
+    /// greedily packing transactions in the given order until `limits`
+    /// would be exceeded. Pure assembly: does not execute the
+    /// transactions or compute a state root. Called only by this
+    /// round's proposer.
     fn propose_block(
         &self,
-        parent_state_root: Hash,
+        parent_block_hash: Hash,
+        parent_state_root: StateRoot,
         height: BlockHeight,
         timestamp_millis: u64,
         candidate_transactions: Vec<Transaction>,
@@ -111,10 +114,12 @@ pub trait Engine {
     /// every block, whether self-proposed or received over gossip, to
     /// compute (and so implicitly verify) the resulting state before
     /// voting. `docs/spec.md`, "Execution": "Block execution is a pure
-    /// function with no I/O of its own."
+    /// function with no I/O of its own." Does not itself check that
+    /// `block.parent_block_hash` is the caller's actual chain tip —
+    /// that's the caller's responsibility, not this crate's.
     fn execute_block(
         &self,
-        parent_state_root: Hash,
+        parent_state_root: StateRoot,
         block: &Block,
     ) -> Result<ExecutedBlock, BlockRejected>;
 
@@ -144,17 +149,20 @@ mod tests {
     /// bad signature, otherwise hashes parent + block together as a
     /// stand-in state root and sums declared gas limits as gas used.
     /// Enough to prove the trait's signatures actually compose with real
-    /// `chain-types` values — not a model of real execution.
+    /// `chain-types`/`chain-state` values — not a model of real
+    /// execution.
     struct MockEngine {
         chain_id: ChainId,
-        tip_state_root: Hash,
+        tip_block_hash: Hash,
+        tip_state_root: StateRoot,
     }
 
     impl MockEngine {
         fn genesis(chain_id: ChainId) -> Self {
             Self {
                 chain_id,
-                tip_state_root: Hash::from_bytes([0u8; 32]),
+                tip_block_hash: Hash::from_bytes([0u8; 32]),
+                tip_state_root: chain_state::empty_root(),
             }
         }
     }
@@ -162,14 +170,15 @@ mod tests {
     impl Engine for MockEngine {
         fn propose_block(
             &self,
-            parent_state_root: Hash,
+            parent_block_hash: Hash,
+            _parent_state_root: StateRoot,
             height: BlockHeight,
             timestamp_millis: u64,
             candidate_transactions: Vec<Transaction>,
             _limits: BlockLimits,
         ) -> Block {
             Block {
-                parent_hash: parent_state_root,
+                parent_block_hash,
                 height,
                 timestamp_millis,
                 transactions: candidate_transactions,
@@ -178,7 +187,7 @@ mod tests {
 
         fn execute_block(
             &self,
-            parent_state_root: Hash,
+            parent_state_root: StateRoot,
             block: &Block,
         ) -> Result<ExecutedBlock, BlockRejected> {
             for (index, tx) in block.transactions.iter().enumerate() {
@@ -197,9 +206,9 @@ mod tests {
                 }
             }
             let mut bytes = Vec::new();
-            parent_state_root.encode(&mut bytes);
+            parent_state_root.as_hash().encode(&mut bytes);
             block.encode(&mut bytes);
-            let state_root = hash_with_domain(DomainTag::TrieLeafV1, &bytes);
+            let state_root = StateRoot::from_hash(hash_with_domain(DomainTag::TrieLeafV1, &bytes));
             let gas_used = block
                 .transactions
                 .iter()
@@ -213,9 +222,10 @@ mod tests {
 
         fn finalise_block(
             &mut self,
-            _block: &Block,
+            block: &Block,
             executed: &ExecutedBlock,
         ) -> Result<(), FinaliseError> {
+            self.tip_block_hash = block.hash();
             self.tip_state_root = executed.state_root;
             Ok(())
         }
@@ -246,6 +256,7 @@ mod tests {
     fn propose_execute_finalise_round_trip() {
         let chain_id = ChainId(7);
         let mut engine = MockEngine::genesis(chain_id);
+        let genesis_block_hash = engine.tip_block_hash;
         let genesis_root = engine.tip_state_root;
         let limits = BlockLimits {
             max_gas: GENESIS_MAX_BLOCK_GAS,
@@ -254,6 +265,7 @@ mod tests {
 
         let tx = test_transaction(1, chain_id, 21_000);
         let block = engine.propose_block(
+            genesis_block_hash,
             genesis_root,
             BlockHeight(1),
             1_700_000_000_000,
@@ -261,12 +273,16 @@ mod tests {
             limits,
         );
         assert_eq!(block.transactions.len(), 1);
+        // Block linkage and the state it executes on top of are
+        // different things, carried separately — not the same value.
+        assert_eq!(block.parent_block_hash, genesis_block_hash);
 
         let executed = engine.execute_block(genesis_root, &block).unwrap();
         assert_eq!(executed.gas_used, 21_000);
 
         assert!(engine.finalise_block(&block, &executed).is_ok());
         assert_eq!(engine.tip_state_root, executed.state_root);
+        assert_eq!(engine.tip_block_hash, block.hash());
     }
 
     #[test]
@@ -277,7 +293,7 @@ mod tests {
 
         let wrong_chain_tx = test_transaction(2, ChainId(999), 21_000);
         let block = Block {
-            parent_hash: genesis_root,
+            parent_block_hash: engine.tip_block_hash,
             height: BlockHeight(1),
             timestamp_millis: 1_700_000_000_000,
             transactions: vec![wrong_chain_tx],
@@ -302,7 +318,7 @@ mod tests {
         let mut tampered = test_transaction(3, chain_id, 21_000);
         tampered.body.sequence_number = SequenceNumber(1); // signed over seq 0
         let block = Block {
-            parent_hash: genesis_root,
+            parent_block_hash: engine.tip_block_hash,
             height: BlockHeight(1),
             timestamp_millis: 1_700_000_000_000,
             transactions: vec![tampered],

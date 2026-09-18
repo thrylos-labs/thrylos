@@ -103,6 +103,7 @@ version = "0.1.0"
 name = "chain-engine-api"
 version = "0.1.0"
 dependencies = [
+ "chain-state",
  "chain-types",
  "ed25519-dalek",
 ]
@@ -134,6 +135,10 @@ version = "0.1.0"
 [[package]]
 name = "chain-state"
 version = "0.1.0"
+dependencies = [
+ "chain-types",
+ "proptest",
+]
 
 [[package]]
 name = "chain-types"
