@@ -4,16 +4,31 @@
 # "banned only for tier A crates". The determinism table's "no rand in tier A
 # dependency tree" rule is checked per-crate in CI instead
 # (see .github/workflows/ci.yml, job `tier-a-deps`) with
-# `cargo tree -p <tier-A-crate> -i rand`.
+# `cargo tree -p <tier-A-crate> -i rand`. chain-exec is deliberately
+# excluded from that check: `move-vm-runtime` itself (not a dev-dependency)
+# pulls in `rand` transitively, almost certainly for internal hash-table
+# seeding rather than anything that affects Move bytecode's deterministic
+# output — Sui runs this exact VM in production consensus. This is a
+# sanctioned exception for the pinned MoveVM dependency, not a loosening
+# of the rule for first-party code.
 
 [graph]
 all-features = false
 
 [advisories]
 yanked = "deny"
+# Transitive advisories inside the pinned MoveVM dependency tree
+# (move-vm-runtime et al., see Cargo.toml), not first-party and not
+# something patchable without forking. Revisit when the pinned rev is
+# deliberately bumped.
+ignore = [
+    "RUSTSEC-2024-0384", # `instant` unmaintained, via parking_lot v0.11.2 (move-vm-runtime)
+    "RUSTSEC-2024-0320", # `yaml-rust` unmaintained, via serde_yaml (move-compiler toolchain)
+    "RUSTSEC-2026-0097", # `rand` 0.7.3 unsound only with a custom logger touching thread_rng from inside it, which nothing here does
+]
 
 [licenses]
-allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "ISC", "Unicode-3.0"]
+allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
 
 [bans]
 multiple-versions = "warn"
@@ -22,3 +37,4 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/MystenLabs/sui"]

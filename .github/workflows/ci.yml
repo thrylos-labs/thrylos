@@ -43,6 +43,11 @@ jobs:
   # Tier A crates must not pull in a source of nondeterminism. cargo-deny
   # bans are workspace-wide, so the per-crate "no rand in tier A" rule from
   # docs/spec.md's determinism table is checked here instead.
+  #
+  # chain-exec is deliberately excluded: `move-vm-runtime` itself (not a
+  # dev-dependency) pulls in `rand` transitively — see deny.toml's comment
+  # on [sources]. This checks first-party code doesn't introduce its own
+  # randomness; it isn't a guarantee about the pinned MoveVM's internals.
   tier-a-deps:
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +56,7 @@ jobs:
       - name: No rand in tier A dependency trees
         run: |
           set -euo pipefail
-          for crate in chain-types chain-state chain-exec chain-modules \
+          for crate in chain-types chain-state chain-modules \
                        chain-consensus chain-engine-api chain-signer; do
             if cargo tree -p "$crate" -i rand --edges normal 2>/dev/null | grep -q .; then
               echo "::error::$crate depends on rand (tier A must be deterministic)"

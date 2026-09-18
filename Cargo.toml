@@ -25,6 +25,22 @@ blake3 = "1"
 blst = "0.3"
 ed25519-dalek = "2"
 proptest = "1"
+tempfile = "3"
+
+# MoveVM, pinned to a specific MystenLabs/sui commit (tag testnet-v1.80.0).
+# `docs/spec.md`, "Execution": "MoveVM at a pinned version, adopted
+# unmodified." There is no actively-maintained, crates.io-published
+# vendor-neutral Move VM any more (the original move-language/move repo
+# was archived May 2024); this is a git dependency into Sui's production
+# monorepo, scoped to `external-crates/move`, which is its own nested
+# Cargo workspace (excluded from Sui's top-level one) and carries the
+# same tier-A-style clippy discipline (forbid unsafe, deny unwrap/panic/
+# arithmetic-side-effects) this workspace already enforces on itself.
+# Bump the rev deliberately, not automatically.
+move-vm-runtime = { version = "0.1.0", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
+move-core-types = { version = "0.0.4", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
+move-binary-format = { version = "0.0.3", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
+move-compiler = { version = "0.0.1", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 
 # Tier A lints: crates whose output must be byte-identical on every machine.
 # Opt in per crate with `[lints] workspace = true`. Tier B/C crates omit it.
