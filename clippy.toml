@@ -1,0 +1,13 @@
+# Backs the `disallowed_types` / `disallowed_methods` lints declared in the
+# workspace lint table (Cargo.toml). Applies wherever those lints are enabled,
+# i.e. tier A crates. See docs/spec.md, "Determinism rules".
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "non-deterministic iteration order; use BTreeMap" },
+    { path = "std::collections::HashSet", reason = "non-deterministic iteration order; use BTreeSet" },
+]
+
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "block time comes from the header, not the wall clock" },
+    { path = "std::time::Instant::now", reason = "block time comes from the header, not the wall clock" },
+]

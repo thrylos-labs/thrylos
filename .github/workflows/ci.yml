@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Tier A crates must not pull in a source of nondeterminism. cargo-deny
+  # bans are workspace-wide, so the per-crate "no rand in tier A" rule from
+  # docs/spec.md's determinism table is checked here instead.
+  tier-a-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: No rand in tier A dependency trees
+        run: |
+          set -euo pipefail
+          for crate in chain-types chain-state chain-exec chain-modules \
+                       chain-consensus chain-engine-api chain-signer; do
+            if cargo tree -p "$crate" -i rand --edges normal 2>/dev/null | grep -q .; then
+              echo "::error::$crate depends on rand (tier A must be deterministic)"
+              exit 1
+            fi
+          done

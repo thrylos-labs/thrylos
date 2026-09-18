@@ -1,0 +1,12 @@
+[package]
+name = "chain-signer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Remote signer, slash protection"
+
+[lints]
+workspace = true
+
+[dependencies]

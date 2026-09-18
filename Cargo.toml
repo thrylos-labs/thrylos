@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/chain-types",
+    "crates/chain-state",
+    "crates/chain-exec",
+    "crates/chain-modules",
+    "crates/chain-consensus",
+    "crates/chain-engine-api",
+    "crates/chain-signer",
+    "crates/chain-db",
+    "crates/chain-p2p",
+    "crates/chain-mempool",
+    "crates/chain-rpc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "Apache-2.0"
+
+# Tier A lints: crates whose output must be byte-identical on every machine.
+# Opt in per crate with `[lints] workspace = true`. Tier B/C crates omit it.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+integer_division = "deny"
+float_arithmetic = "deny"
+arithmetic_side_effects = "deny"
+disallowed_types = "deny"
+disallowed_methods = "deny"
+
+[profile.release]
+overflow-checks = true

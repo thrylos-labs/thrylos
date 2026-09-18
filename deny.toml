@@ -1,0 +1,24 @@
+# cargo-deny config. Run with `cargo deny check`.
+#
+# Note: cargo-deny bans apply workspace-wide; it has no native concept of
+# "banned only for tier A crates". The determinism table's "no rand in tier A
+# dependency tree" rule is checked per-crate in CI instead
+# (see .github/workflows/ci.yml, job `tier-a-deps`) with
+# `cargo tree -p <tier-A-crate> -i rand`.
+
+[graph]
+all-features = false
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "ISC", "Unicode-3.0"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

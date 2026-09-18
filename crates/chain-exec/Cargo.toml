@@ -1,0 +1,12 @@
+[package]
+name = "chain-exec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Block executor wrapping MoveVM"
+
+[lints]
+workspace = true
+
+[dependencies]
