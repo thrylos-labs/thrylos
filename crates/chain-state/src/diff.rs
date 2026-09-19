@@ -1,4 +1,4 @@
-//! The set of flat-state writes one block's execution produced.
+//! The set of flat-state changes one block's execution produced.
 //!
 //! `chain_engine_api::Engine::execute_block` currently computes a fresh
 //! [`crate::StateRoot`] from a full clone of the flat state (see
@@ -8,22 +8,31 @@
 //! `chain-db`) can persist and later replay just what changed, without
 //! `chain-exec` itself needing to change how it executes.
 //!
-//! Deletion is not represented: nothing in this codebase removes a
-//! state key today (`chain-exec`'s `Executor` only ever calls
-//! `BTreeMap::insert`), so a diff that could express "this key is now
-//! absent" would be untested, dead surface. Add that variant when
-//! something actually produces a deletion.
+//! A change is either a write or a deletion. Deletion arrived with the
+//! native modules: an unbonding entry that has matured, or a share
+//! balance withdrawn to nothing, must leave the state, or it would grow
+//! without bound and stay in the state root forever.
 
 use crate::key_value::{StateKey, StateValue};
 use chain_types::collections::BTreeMap;
 
-/// Every `(key, value)` written by one block, relative to the state it
-/// was executed on top of: keys that are new, or whose value changed.
-/// Unchanged keys are not included, even though `chain-exec`'s current
-/// executor happens to touch its whole state as a clone internally —
-/// this diff reflects logical writes, not incidental copying.
+/// What one block did to one key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateChange {
+    /// The key now holds this value (new, or changed).
+    Put(StateValue),
+    /// The key is now absent.
+    Delete,
+}
+
+/// Every key one block wrote or removed, relative to the state it was
+/// executed on top of. Unchanged keys are not included, even though
+/// `chain-exec`'s current executor happens to touch its whole state as a
+/// clone internally — this diff reflects logical changes, not incidental
+/// copying. A key that was created and removed again within the block
+/// is absent from the diff, since relative to the start nothing happened.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StateDiff(BTreeMap<StateKey, StateValue>);
+pub struct StateDiff(BTreeMap<StateKey, StateChange>);
 
 impl StateDiff {
     pub const fn empty() -> Self {
@@ -38,13 +47,15 @@ impl StateDiff {
         self.0.len()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&StateKey, &StateValue)> {
+    /// Every change, in key order.
+    pub fn iter(&self) -> impl Iterator<Item = (&StateKey, &StateChange)> {
         self.0.iter()
     }
 }
 
-/// Every key in `new` whose value differs from (or is absent from)
-/// `old`. Deterministic and order-independent: both inputs are
+/// Every difference between `old` and `new`: keys in `new` whose value
+/// differs from (or is absent from) `old`, and keys in `old` that `new`
+/// no longer has. Deterministic and order-independent: both inputs are
 /// `BTreeMap`s, walked once each in sorted-key order.
 pub fn diff(
     old: &BTreeMap<StateKey, StateValue>,
@@ -53,19 +64,30 @@ pub fn diff(
     let mut changed = BTreeMap::new();
     for (key, new_value) in new {
         if old.get(key) != Some(new_value) {
-            changed.insert(key.clone(), new_value.clone());
+            changed.insert(key.clone(), StateChange::Put(new_value.clone()));
+        }
+    }
+    for key in old.keys() {
+        if !new.contains_key(key) {
+            changed.insert(key.clone(), StateChange::Delete);
         }
     }
     StateDiff(changed)
 }
 
-/// Replay `diff` on top of `base` in place: every entry in `diff`
-/// overwrites (or inserts) the same key in `base`. The inverse
-/// operation this module doesn't need yet — nothing removes a key
-/// (see this module's doc comment), so there's nothing to un-apply.
+/// Replay `diff` on top of `base` in place: every put overwrites (or
+/// inserts) its key, every deletion removes it. Applying
+/// `diff(old, new)` to `old` yields `new`.
 pub fn apply(base: &mut BTreeMap<StateKey, StateValue>, diff: &StateDiff) {
-    for (key, value) in &diff.0 {
-        base.insert(key.clone(), value.clone());
+    for (key, change) in &diff.0 {
+        match change {
+            StateChange::Put(value) => {
+                base.insert(key.clone(), value.clone());
+            }
+            StateChange::Delete => {
+                base.remove(key);
+            }
+        }
     }
 }
 
@@ -99,7 +121,10 @@ mod tests {
 
         let changed = diff(&old, &new);
         assert_eq!(changed.len(), 1);
-        assert_eq!(changed.iter().next(), Some((&k2, &v2)));
+        assert_eq!(
+            changed.iter().next(),
+            Some((&k2, &StateChange::Put(v2.clone())))
+        );
     }
 
     #[test]
@@ -113,7 +138,10 @@ mod tests {
 
         let changed = diff(&old, &new);
         assert_eq!(changed.len(), 1);
-        assert_eq!(changed.iter().next(), Some((&k, &v_new)));
+        assert_eq!(
+            changed.iter().next(),
+            Some((&k, &StateChange::Put(v_new.clone())))
+        );
     }
 
     #[test]
@@ -129,5 +157,82 @@ mod tests {
         let changed = diff(&old, &new);
         apply(&mut old, &changed);
         assert_eq!(old, new);
+    }
+
+    #[test]
+    fn a_removed_key_is_a_deletion_in_the_diff() {
+        let (k1, v1) = kv(1);
+        let (k2, v2) = kv(2);
+        let mut old = BTreeMap::new();
+        old.insert(k1.clone(), v1);
+        old.insert(k2.clone(), v2);
+        let mut new = old.clone();
+        new.remove(&k1);
+
+        let changed = diff(&old, &new);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed.iter().next(), Some((&k1, &StateChange::Delete)));
+    }
+
+    #[test]
+    fn apply_replays_deletions_too() {
+        let (k1, v1) = kv(1);
+        let (k2, v2) = kv(2);
+        let (k3, v3) = kv(3);
+        let mut old = BTreeMap::new();
+        old.insert(k1.clone(), v1);
+        old.insert(k2.clone(), v2);
+
+        // One key removed, one added, one changed.
+        let mut new = BTreeMap::new();
+        new.insert(k2.clone(), StateValue::new(vec![7]));
+        new.insert(k3, v3);
+
+        let changed = diff(&old, &new);
+        assert_eq!(changed.len(), 3);
+        apply(&mut old, &changed);
+        assert_eq!(old, new);
+    }
+
+    #[test]
+    fn a_key_added_and_removed_within_one_block_leaves_no_trace() {
+        let (k1, v1) = kv(1);
+        let (k2, v2) = kv(2);
+        let mut old = BTreeMap::new();
+        old.insert(k1, v1);
+        let mut new = old.clone();
+        new.insert(k2.clone(), v2);
+        new.remove(&k2);
+
+        assert!(diff(&old, &new).is_empty());
+    }
+
+    fn arbitrary_state() -> impl proptest::strategy::Strategy<Value = BTreeMap<StateKey, StateValue>>
+    {
+        use proptest::prelude::*;
+        proptest::collection::btree_map(
+            proptest::collection::vec(0u8..8, 1..3),
+            proptest::collection::vec(any::<u8>(), 0..3),
+            0..12,
+        )
+        .prop_map(|raw| {
+            raw.into_iter()
+                .map(|(key, value)| (StateKey::new(key), StateValue::new(value)))
+                .collect()
+        })
+    }
+
+    proptest::proptest! {
+        /// Replaying `diff(old, new)` onto `old` gives `new`, for any two
+        /// states — deletions, additions and changes alike.
+        #[test]
+        fn diff_then_apply_reproduces_the_new_state_for_arbitrary_states(
+            old in arbitrary_state(),
+            new in arbitrary_state(),
+        ) {
+            let mut replayed = old.clone();
+            apply(&mut replayed, &diff(&old, &new));
+            proptest::prop_assert_eq!(replayed, new);
+        }
     }
 }

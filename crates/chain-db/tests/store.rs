@@ -120,3 +120,66 @@ fn reopening_the_same_path_sees_everything_already_committed() {
         Some(StateValue::new(vec![50]))
     );
 }
+
+/// A diff that deletes the keys named by `keys`, recovered the same way
+/// [`diff_with`] recovers one: by diffing a state that has them against
+/// one that doesn't.
+fn deleting(keys: &[u8]) -> StateDiff {
+    let mut before = chain_types::collections::BTreeMap::new();
+    for key_byte in keys {
+        before.insert(StateKey::new(vec![*key_byte]), StateValue::new(vec![0]));
+    }
+    chain_state::diff(&before, &chain_types::collections::BTreeMap::new())
+}
+
+#[test]
+fn a_diff_that_deletes_a_key_removes_it_and_leaves_the_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let root = Hash::from_bytes([1u8; 32]);
+    db.commit_block(&block_at(1), root, &diff_with(&[(1, 10), (2, 20), (3, 30)]))
+        .unwrap();
+
+    db.commit_block(&block_at(2), root, &deleting(&[2]))
+        .unwrap();
+
+    let get = |byte: u8| db.get_state_value(&StateKey::new(vec![byte])).unwrap();
+    assert_eq!(get(1), Some(StateValue::new(vec![10])));
+    assert_eq!(get(2), None, "deleted");
+    assert_eq!(get(3), Some(StateValue::new(vec![30])));
+}
+
+#[test]
+fn deleting_a_key_the_store_never_held_is_not_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let root = Hash::from_bytes([1u8; 32]);
+    db.commit_block(&block_at(1), root, &diff_with(&[(1, 10)]))
+        .unwrap();
+
+    db.commit_block(&block_at(2), root, &deleting(&[9]))
+        .unwrap();
+
+    assert_eq!(db.tip_height().unwrap(), Some(BlockHeight(2)));
+    assert_eq!(
+        db.get_state_value(&StateKey::new(vec![1])).unwrap(),
+        Some(StateValue::new(vec![10]))
+    );
+}
+
+#[test]
+fn a_deleted_key_can_be_written_again_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let root = Hash::from_bytes([1u8; 32]);
+    db.commit_block(&block_at(1), root, &diff_with(&[(4, 40)]))
+        .unwrap();
+    db.commit_block(&block_at(2), root, &deleting(&[4]))
+        .unwrap();
+    db.commit_block(&block_at(3), root, &diff_with(&[(4, 41)]))
+        .unwrap();
+    assert_eq!(
+        db.get_state_value(&StateKey::new(vec![4])).unwrap(),
+        Some(StateValue::new(vec![41]))
+    );
+}

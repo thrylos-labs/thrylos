@@ -1267,6 +1267,7 @@ dependencies = [
 name = "chain-exec"
 version = "0.1.0"
 dependencies = [
+ "blst",
  "chain-engine-api",
  "chain-modules",
  "chain-state",

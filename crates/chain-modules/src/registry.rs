@@ -10,6 +10,41 @@
 //! else was passing in as arguments — a validator's stake, the total
 //! bonded, the weights consensus votes with.
 //!
+//! # Storage
+//!
+//! All state lives in a [`Store`], one entry per entity, so an operation
+//! touches a handful of keys however many validators and stakers exist,
+//! and the chain's per-block diff is exactly what changed:
+//!
+//! | key | value |
+//! |---|---|
+//! | `VALIDATOR ‖ id` | operator, consensus key, pool totals |
+//! | `SHARES ‖ id ‖ staker` | the staker's shares in that pool (absent: none) |
+//! | `CONSENSUS_KEY ‖ key` | the validator that registered it |
+//! | `UNBONDING ‖ seq` | one unbonding entry |
+//! | `UNBONDING_BY_MATURITY ‖ matures_ms ‖ seq` | index: what is due, oldest first |
+//! | `UNBONDING_BY_VALIDATOR ‖ id ‖ seq` | index: what a slash can reach |
+//! | `UNBONDING_PAIR_COUNT ‖ staker ‖ id` | open entries, for the per-pair cap |
+//! | `REGISTRY_META` | the next unbonding sequence number |
+//!
+//! plus what [`crate::slashing`] keeps for the same validators. Numbers in
+//! keys are big-endian so byte order is numeric order.
+//!
+//! Every mutating method runs on an [`Overlay`] and reaches the store
+//! only if it returns `Ok`, so a refusal — or a corrupt record found
+//! halfway — leaves nothing behind. The chain's own executor does the
+//! same one level up, discarding an aborted transaction's writes.
+//!
+//! Some reads are scans and cost as much as their subject is large:
+//! [`StakingRegistry::active_set`] and the totals read every validator,
+//! and a slash reads every unbonding entry of the offender. None of that
+//! is per-transaction: the active set is read when consensus needs it and
+//! a slash follows evidence. But a slash's cost grows with the number of
+//! open entries against one validator, which a delegator can raise by
+//! opening entries of one unit each (bounded per staker, not in total);
+//! a minimum unstake amount, or slashing entries lazily, would bound it.
+//! Neither is built.
+//!
 //! # Unbonding stays slashable
 //!
 //! `docs/spec.md` requires unbonding (21 days) to exceed max evidence age
@@ -69,14 +104,17 @@
 use ruint::aliases::U256;
 
 use chain_types::bls::BlsSignature;
-use chain_types::collections::BTreeMap;
+use chain_types::codec::{decode_field, CodecError, Decode, Encode};
 use chain_types::{Address, BlsPublicKey, DuplicateVoteEvidence};
 
 use crate::params::GovernedParams;
 use crate::slashing::{
-    EvidenceRejection, JailError, SlashingTracker, UnjailError, ValidatorStatus,
+    status_in, EvidenceRejection, JailError, SlashingTracker, UnjailError, ValidatorStatus,
 };
 use crate::staking::{StakingError, StakingPool};
+use crate::store::{
+    apply_changes, be64, load, prefix_end, read_be64, save, tag, Corrupt, Overlay, Store,
+};
 
 /// `docs/spec.md`, "Consensus": "Active validator set: 128, by stake".
 pub const MAX_ACTIVE_VALIDATORS: usize = 128;
@@ -92,7 +130,20 @@ pub const MAX_MATURING_PER_CALL: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidatorId(pub Address);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl Encode for ValidatorId {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
+impl Decode for ValidatorId {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (address, used) = Address::decode(input)?;
+        Ok((Self(address), used))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Validator {
     /// Owns the validator's self-stake and answers for it: the account
     /// whose remaining stake decides whether the validator may be active.
@@ -101,10 +152,28 @@ struct Validator {
     pool: StakingPool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct UnbondingKey {
-    matures_at_ms: u64,
-    seq: u64,
+impl Encode for Validator {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.operator.encode(out);
+        self.consensus_key.encode(out);
+        self.pool.encode(out);
+    }
+}
+
+impl Decode for Validator {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (operator, offset) = Address::decode(input)?;
+        let (consensus_key, offset) = decode_field::<BlsPublicKey>(input, offset)?;
+        let (pool, offset) = decode_field::<StakingPool>(input, offset)?;
+        Ok((
+            Self {
+                operator,
+                consensus_key,
+                pool,
+            },
+            offset,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +183,39 @@ struct UnbondingEntry {
     /// What is still owed: reduced if a slash reaches this entry.
     amount: u128,
     started_at_ms: u64,
+    /// Fixed when the entry was made: a later change to the unbonding
+    /// period does not move it.
+    matures_at_ms: u64,
+}
+
+impl Encode for UnbondingEntry {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.staker.encode(out);
+        self.validator.encode(out);
+        self.amount.encode(out);
+        self.started_at_ms.encode(out);
+        self.matures_at_ms.encode(out);
+    }
+}
+
+impl Decode for UnbondingEntry {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (staker, offset) = Address::decode(input)?;
+        let (validator, offset) = decode_field::<ValidatorId>(input, offset)?;
+        let (amount, offset) = decode_field::<u128>(input, offset)?;
+        let (started_at_ms, offset) = decode_field::<u64>(input, offset)?;
+        let (matures_at_ms, offset) = decode_field::<u64>(input, offset)?;
+        Ok((
+            Self {
+                staker,
+                validator,
+                amount,
+                started_at_ms,
+                matures_at_ms,
+            },
+            offset,
+        ))
+    }
 }
 
 /// Stake that finished unbonding and is now the staker's to be paid
@@ -170,11 +272,21 @@ pub enum RegistryError {
     /// The operator's remaining stake is below the minimum self-stake,
     /// so the validator may not rejoin the active set.
     SelfStakeTooLowToUnjail,
+    /// A stored record no longer decodes, or the store's indexes
+    /// disagree with each other. Nothing about a transaction can cause
+    /// this; it means the state itself is damaged.
+    CorruptState,
 }
 
 impl From<StakingError> for RegistryError {
     fn from(err: StakingError) -> Self {
         Self::Staking(err)
+    }
+}
+
+impl From<Corrupt> for RegistryError {
+    fn from(_: Corrupt) -> Self {
+        Self::CorruptState
     }
 }
 
@@ -212,101 +324,231 @@ fn scale_to_u64(stakes: &[u128]) -> Vec<u64> {
         .collect()
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StakingRegistry {
-    validators: BTreeMap<ValidatorId, Validator>,
-    /// Which validator registered each consensus key, so no key is ever
-    /// shared. Kept for tombstoned validators too: their key stays spent.
-    keys_in_use: BTreeMap<[u8; chain_types::bls::BLS_PUBLIC_KEY_LEN], ValidatorId>,
-    unbonding: BTreeMap<UnbondingKey, UnbondingEntry>,
-    /// Open entries per (staker, validator), for the per-pair cap.
-    pair_counts: BTreeMap<(Address, ValidatorId), usize>,
-    next_seq: u64,
-    slashing: SlashingTracker,
+// ---- keys ------------------------------------------------------------
+
+fn keyed(tag: u8, parts: &[&[u8]]) -> Vec<u8> {
+    let mut key = vec![tag];
+    for part in parts {
+        key.extend_from_slice(part);
+    }
+    key
 }
 
-impl StakingRegistry {
-    pub fn new() -> Self {
-        Self::default()
+fn validator_key(id: &ValidatorId) -> Vec<u8> {
+    keyed(tag::VALIDATOR, &[id.0.as_bytes()])
+}
+
+fn shares_key(id: &ValidatorId, staker: &Address) -> Vec<u8> {
+    keyed(tag::SHARES, &[id.0.as_bytes(), staker.as_bytes()])
+}
+
+fn shares_prefix(id: &ValidatorId) -> Vec<u8> {
+    keyed(tag::SHARES, &[id.0.as_bytes()])
+}
+
+fn consensus_key_key(key: &BlsPublicKey) -> Vec<u8> {
+    keyed(tag::CONSENSUS_KEY, &[&key.to_bytes()])
+}
+
+fn unbonding_key(seq: u64) -> Vec<u8> {
+    keyed(tag::UNBONDING, &[&be64(seq)])
+}
+
+fn by_maturity_key(matures_at_ms: u64, seq: u64) -> Vec<u8> {
+    keyed(
+        tag::UNBONDING_BY_MATURITY,
+        &[&be64(matures_at_ms), &be64(seq)],
+    )
+}
+
+fn by_validator_key(id: &ValidatorId, seq: u64) -> Vec<u8> {
+    keyed(tag::UNBONDING_BY_VALIDATOR, &[id.0.as_bytes(), &be64(seq)])
+}
+
+fn by_validator_prefix(id: &ValidatorId) -> Vec<u8> {
+    keyed(tag::UNBONDING_BY_VALIDATOR, &[id.0.as_bytes()])
+}
+
+fn pair_count_key(staker: &Address, id: &ValidatorId) -> Vec<u8> {
+    keyed(
+        tag::UNBONDING_PAIR_COUNT,
+        &[staker.as_bytes(), id.0.as_bytes()],
+    )
+}
+
+fn next_seq_key() -> Vec<u8> {
+    vec![tag::REGISTRY_META, 0]
+}
+
+/// The registry, over a [`Store`]. See the module docs for what it keeps
+/// there and how operations are made atomic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StakingRegistry<S> {
+    store: S,
+}
+
+impl<S: Store> StakingRegistry<S> {
+    pub const fn new(store: S) -> Self {
+        Self { store }
+    }
+
+    pub const fn store(&self) -> &S {
+        &self.store
+    }
+
+    pub fn into_store(self) -> S {
+        self.store
+    }
+
+    /// Runs `op` against an overlay of the store and applies what it
+    /// wrote only if it returns `Ok`.
+    fn atomic<T>(
+        &mut self,
+        op: impl FnOnce(&mut StakingRegistry<&mut Overlay<'_, S>>) -> Result<T, RegistryError>,
+    ) -> Result<T, RegistryError> {
+        let mut overlay = Overlay::new(&self.store);
+        let result = op(&mut StakingRegistry::new(&mut overlay));
+        if result.is_ok() {
+            let changes = overlay.into_changes();
+            apply_changes(&mut self.store, changes);
+        }
+        result
     }
 
     // ---- reads ---------------------------------------------------------
 
+    fn validator(&self, id: &ValidatorId) -> Result<Option<Validator>, Corrupt> {
+        load(&self.store, &validator_key(id))
+    }
+
+    fn entry(&self, seq: u64) -> Result<Option<UnbondingEntry>, Corrupt> {
+        load(&self.store, &unbonding_key(seq))
+    }
+
+    /// How many validators are registered. A scan; see the module docs.
     pub fn validator_count(&self) -> usize {
-        self.validators.len()
+        self.store.scan_prefix(&[tag::VALIDATOR], usize::MAX).len()
     }
 
     pub fn is_registered(&self, id: &ValidatorId) -> bool {
-        self.validators.contains_key(id)
+        self.store.get(&validator_key(id)).is_some()
     }
 
-    pub fn operator_of(&self, id: &ValidatorId) -> Option<Address> {
-        self.validators.get(id).map(|v| v.operator)
+    pub fn operator_of(&self, id: &ValidatorId) -> Result<Option<Address>, RegistryError> {
+        Ok(self.validator(id)?.map(|v| v.operator))
     }
 
-    pub fn consensus_key_of(&self, id: &ValidatorId) -> Option<BlsPublicKey> {
-        self.validators.get(id).map(|v| v.consensus_key)
+    pub fn consensus_key_of(
+        &self,
+        id: &ValidatorId,
+    ) -> Result<Option<BlsPublicKey>, RegistryError> {
+        Ok(self.validator(id)?.map(|v| v.consensus_key))
     }
 
-    pub fn pool(&self, id: &ValidatorId) -> Option<&StakingPool> {
-        self.validators.get(id).map(|v| &v.pool)
+    /// The validator's pool totals.
+    pub fn pool(&self, id: &ValidatorId) -> Result<Option<StakingPool>, RegistryError> {
+        Ok(self.validator(id)?.map(|v| v.pool))
     }
 
-    pub fn status(&self, id: &ValidatorId) -> ValidatorStatus {
-        self.slashing.status(&id.0)
+    pub fn status(&self, id: &ValidatorId) -> Result<ValidatorStatus, RegistryError> {
+        Ok(status_in(&self.store, &id.0)?)
     }
 
     /// What `staker`'s stake with `id` is worth now.
-    pub fn stake_of(&self, id: &ValidatorId, staker: &Address) -> u128 {
-        self.validators
-            .get(id)
-            .map_or(0, |v| v.pool.redeemable(staker))
+    pub fn stake_of(&self, id: &ValidatorId, staker: &Address) -> Result<u128, RegistryError> {
+        let Some(validator) = self.validator(id)? else {
+            return Ok(0);
+        };
+        Ok(validator.pool.redeemable_for(self.shares_of(id, staker)?))
     }
 
-    pub fn shares_of(&self, id: &ValidatorId, staker: &Address) -> u128 {
-        self.validators
-            .get(id)
-            .map_or(0, |v| v.pool.balance_of(staker))
+    pub fn shares_of(&self, id: &ValidatorId, staker: &Address) -> Result<u128, RegistryError> {
+        Ok(load(&self.store, &shares_key(id, staker))?.unwrap_or(0))
+    }
+
+    /// Every validator, decoded, in id order.
+    fn all_validators(&self) -> Result<Vec<(ValidatorId, Validator)>, Corrupt> {
+        self.store
+            .scan_prefix(&[tag::VALIDATOR], usize::MAX)
+            .into_iter()
+            .map(|(key, bytes)| {
+                let id = key
+                    .get(1..)
+                    .and_then(|rest| chain_types::codec::decode_exact::<Address>(rest).ok())
+                    .map(ValidatorId)
+                    .ok_or(Corrupt)?;
+                let validator = chain_types::codec::decode_exact(&bytes).map_err(|_| Corrupt)?;
+                Ok((id, validator))
+            })
+            .collect()
     }
 
     /// Total stake bonded across every validator, net of dead shares.
-    pub fn total_bonded(&self) -> u128 {
-        self.validators.values().fold(0u128, |sum, v| {
+    /// A scan; see the module docs.
+    pub fn total_bonded(&self) -> Result<u128, RegistryError> {
+        Ok(self.all_validators()?.iter().fold(0u128, |sum, (_, v)| {
             sum.saturating_add(v.pool.attributable_stake())
-        })
+        }))
     }
 
     /// Everything currently in every pool, dead shares' stake included.
-    pub fn total_pooled_stake(&self) -> u128 {
-        self.validators
-            .values()
-            .fold(0u128, |sum, v| sum.saturating_add(v.pool.total_stake()))
+    pub fn total_pooled_stake(&self) -> Result<u128, RegistryError> {
+        Ok(self.all_validators()?.iter().fold(0u128, |sum, (_, v)| {
+            sum.saturating_add(v.pool.total_stake())
+        }))
     }
 
     /// Everything currently on its way out through the unbonding queue.
-    pub fn total_unbonding(&self) -> u128 {
-        self.unbonding
-            .values()
-            .fold(0u128, |sum, e| sum.saturating_add(e.amount))
+    pub fn total_unbonding(&self) -> Result<u128, RegistryError> {
+        let mut total = 0u128;
+        for (_, bytes) in self.store.scan_prefix(&[tag::UNBONDING], usize::MAX) {
+            let entry: UnbondingEntry =
+                chain_types::codec::decode_exact(&bytes).map_err(|_| Corrupt)?;
+            total = total.saturating_add(entry.amount);
+        }
+        Ok(total)
     }
 
     pub fn unbonding_entry_count(&self) -> usize {
-        self.unbonding.len()
+        self.store.scan_prefix(&[tag::UNBONDING], usize::MAX).len()
     }
 
-    /// Checks every pool's ledger and price identity — `docs/spec.md`:
-    /// "a block-level invariant that halts block production if violated"
-    /// — and that the unbonding queue's bookkeeping agrees with itself.
-    pub fn assert_invariants(&self) -> Result<(), StakingError> {
-        for validator in self.validators.values() {
-            validator.pool.assert_invariant()?;
+    /// Checks everything that should always hold, by reading all of it:
+    /// every pool's price identity and that its holders' shares plus the
+    /// dead shares equal its total shares (`docs/spec.md`: "a block-level
+    /// invariant that halts block production if violated"), and that the
+    /// unbonding queue's entries, both indexes and the per-pair counts
+    /// all agree. O(state): for tests and periodic audits, not for every
+    /// transaction.
+    pub fn assert_invariants(&self) -> Result<(), RegistryError> {
+        for (id, validator) in self.all_validators()? {
+            let mut holders = 0u128;
+            for (_, bytes) in self.store.scan_prefix(&shares_prefix(&id), usize::MAX) {
+                let shares: u128 = chain_types::codec::decode_exact(&bytes).map_err(|_| Corrupt)?;
+                holders = holders.checked_add(shares).ok_or(StakingError::Overflow)?;
+            }
+            validator.pool.assert_invariant(holders)?;
         }
-        let counted = self
-            .pair_counts
-            .values()
-            .fold(0usize, |sum, count| sum.saturating_add(*count));
-        if counted != self.unbonding.len() {
-            return Err(StakingError::InvariantViolated);
+
+        let entries = self.store.scan_prefix(&[tag::UNBONDING], usize::MAX).len();
+        let by_maturity = self
+            .store
+            .scan_prefix(&[tag::UNBONDING_BY_MATURITY], usize::MAX)
+            .len();
+        let by_validator = self
+            .store
+            .scan_prefix(&[tag::UNBONDING_BY_VALIDATOR], usize::MAX)
+            .len();
+        let mut counted = 0usize;
+        for (_, bytes) in self
+            .store
+            .scan_prefix(&[tag::UNBONDING_PAIR_COUNT], usize::MAX)
+        {
+            let count: u64 = chain_types::codec::decode_exact(&bytes).map_err(|_| Corrupt)?;
+            counted = counted.saturating_add(usize::try_from(count).map_err(|_| Corrupt)?);
+        }
+        if entries != by_maturity || entries != by_validator || entries != counted {
+            return Err(StakingError::InvariantViolated.into());
         }
         Ok(())
     }
@@ -326,10 +568,31 @@ impl StakingRegistry {
         proof_of_possession: &BlsSignature,
         self_stake: u128,
     ) -> Result<(), RegistryError> {
-        if self.validators.contains_key(&id) {
+        self.atomic(|reg| {
+            reg.do_register(
+                params,
+                id,
+                operator,
+                consensus_key,
+                proof_of_possession,
+                self_stake,
+            )
+        })
+    }
+
+    fn do_register(
+        &mut self,
+        params: &GovernedParams,
+        id: ValidatorId,
+        operator: Address,
+        consensus_key: BlsPublicKey,
+        proof_of_possession: &BlsSignature,
+        self_stake: u128,
+    ) -> Result<(), RegistryError> {
+        if self.is_registered(&id) {
             return Err(RegistryError::AlreadyRegistered);
         }
-        if self.keys_in_use.contains_key(&consensus_key.to_bytes()) {
+        if self.store.get(&consensus_key_key(&consensus_key)).is_some() {
             return Err(RegistryError::ConsensusKeyInUse);
         }
         if self_stake < params.values().min_self_stake {
@@ -340,17 +603,19 @@ impl StakingRegistry {
             .map_err(|_| RegistryError::InvalidProofOfPossession)?;
 
         let mut pool = StakingPool::genesis();
-        pool.deposit(operator, self_stake)?;
+        let minted = pool.deposit(self_stake)?;
 
-        self.keys_in_use.insert(consensus_key.to_bytes(), id);
-        self.validators.insert(
-            id,
-            Validator {
+        save(&mut self.store, consensus_key_key(&consensus_key), &id);
+        save(
+            &mut self.store,
+            validator_key(&id),
+            &Validator {
                 operator,
                 consensus_key,
                 pool,
             },
         );
+        save(&mut self.store, shares_key(&id, &operator), &minted);
         Ok(())
     }
 
@@ -362,25 +627,39 @@ impl StakingRegistry {
         staker: Address,
         amount: u128,
     ) -> Result<u128, RegistryError> {
-        if self.slashing.status(&id.0) == ValidatorStatus::Tombstoned {
+        self.atomic(|reg| reg.do_delegate(id, staker, amount))
+    }
+
+    fn do_delegate(
+        &mut self,
+        id: &ValidatorId,
+        staker: Address,
+        amount: u128,
+    ) -> Result<u128, RegistryError> {
+        if self.status(id)? == ValidatorStatus::Tombstoned {
             return Err(RegistryError::ValidatorTombstoned);
         }
-        let validator = self
-            .validators
-            .get_mut(id)
-            .ok_or(RegistryError::UnknownValidator)?;
-        Ok(validator.pool.deposit(staker, amount)?)
+        let mut validator = self.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
+        let minted = validator.pool.deposit(amount)?;
+        let held = self
+            .shares_of(id, &staker)?
+            .checked_add(minted)
+            .ok_or(StakingError::Overflow)?;
+        save(&mut self.store, shares_key(id, &staker), &held);
+        save(&mut self.store, validator_key(id), &validator);
+        Ok(minted)
     }
 
     /// Credits `amount` of newly minted rewards to `id`'s pool, raising
     /// the share price for everyone in it. Where the amount comes from
     /// (the inflation schedule) is not this module's concern.
     pub fn credit_rewards(&mut self, id: &ValidatorId, amount: u128) -> Result<(), RegistryError> {
-        let validator = self
-            .validators
-            .get_mut(id)
-            .ok_or(RegistryError::UnknownValidator)?;
-        Ok(validator.pool.accrue_rewards(amount)?)
+        self.atomic(|reg| {
+            let mut validator = reg.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
+            validator.pool.accrue_rewards(amount)?;
+            save(&mut reg.store, validator_key(id), &validator);
+            Ok(())
+        })
     }
 
     // ---- unbonding -----------------------------------------------------
@@ -401,84 +680,128 @@ impl StakingRegistry {
         shares: u128,
         now_ms: u64,
     ) -> Result<u128, RegistryError> {
-        if !self.validators.contains_key(id) {
-            return Err(RegistryError::UnknownValidator);
-        }
-        let open = self.pair_counts.get(&(staker, *id)).copied().unwrap_or(0);
-        if open >= MAX_UNBONDING_ENTRIES_PER_PAIR {
+        self.atomic(|reg| reg.do_begin_unstake(params, id, staker, shares, now_ms))
+    }
+
+    fn do_begin_unstake(
+        &mut self,
+        params: &GovernedParams,
+        id: &ValidatorId,
+        staker: Address,
+        shares: u128,
+        now_ms: u64,
+    ) -> Result<u128, RegistryError> {
+        let mut validator = self.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
+        let open = self.open_entries(&staker, id)?;
+        if usize::try_from(open).map_or(true, |open| open >= MAX_UNBONDING_ENTRIES_PER_PAIR) {
             return Err(RegistryError::TooManyUnbondingEntries);
         }
-        let seq = self.next_seq;
-        let next_seq = seq
-            .checked_add(1)
-            .ok_or(RegistryError::UnbondingSequenceExhausted)?;
 
-        let validator = self
-            .validators
-            .get_mut(id)
-            .ok_or(RegistryError::UnknownValidator)?;
-        let amount = validator.pool.withdraw(staker, shares)?;
+        if shares == 0 {
+            return Err(StakingError::ZeroAmount.into());
+        }
+        let held = self.shares_of(id, &staker)?;
+        if shares > held {
+            return Err(StakingError::InsufficientShares.into());
+        }
+        let amount = validator.pool.withdraw(shares)?;
 
-        self.next_seq = next_seq;
+        let remaining = held.saturating_sub(shares);
+        if remaining == 0 {
+            self.store.delete(&shares_key(id, &staker));
+        } else {
+            save(&mut self.store, shares_key(id, &staker), &remaining);
+        }
+        save(&mut self.store, validator_key(id), &validator);
+
         // A withdrawal so small it rounds to no stake leaves nothing to
         // wait for: the shares are gone (rounding goes against the
         // staker) and there is no entry to make.
         if amount > 0 {
-            self.unbonding.insert(
-                UnbondingKey {
-                    matures_at_ms: now_ms.saturating_add(params.values().unbonding_period_ms),
-                    seq,
-                },
-                UnbondingEntry {
+            let seq = load::<u64>(&self.store, &next_seq_key())?.unwrap_or(0);
+            let next_seq = seq
+                .checked_add(1)
+                .ok_or(RegistryError::UnbondingSequenceExhausted)?;
+            save(&mut self.store, next_seq_key(), &next_seq);
+            self.insert_entry(
+                seq,
+                &UnbondingEntry {
                     staker,
                     validator: *id,
                     amount,
                     started_at_ms: now_ms,
+                    matures_at_ms: now_ms.saturating_add(params.values().unbonding_period_ms),
                 },
+                open.saturating_add(1),
             );
-            let count = self.pair_counts.entry((staker, *id)).or_insert(0);
-            *count = count.saturating_add(1);
         }
         Ok(amount)
     }
 
-    fn release_pair_slot(&mut self, staker: Address, validator: ValidatorId) {
-        if let Some(count) = self.pair_counts.get_mut(&(staker, validator)) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                self.pair_counts.remove(&(staker, validator));
-            }
+    fn open_entries(&self, staker: &Address, id: &ValidatorId) -> Result<u64, Corrupt> {
+        Ok(load(&self.store, &pair_count_key(staker, id))?.unwrap_or(0))
+    }
+
+    fn set_open_entries(&mut self, staker: &Address, id: &ValidatorId, count: u64) {
+        if count == 0 {
+            self.store.delete(&pair_count_key(staker, id));
+        } else {
+            save(&mut self.store, pair_count_key(staker, id), &count);
         }
+    }
+
+    /// Writes an entry and both its indexes, and sets its pair's count.
+    fn insert_entry(&mut self, seq: u64, entry: &UnbondingEntry, open_after: u64) {
+        save(&mut self.store, unbonding_key(seq), entry);
+        self.store
+            .put(by_maturity_key(entry.matures_at_ms, seq), Vec::new());
+        self.store
+            .put(by_validator_key(&entry.validator, seq), Vec::new());
+        self.set_open_entries(&entry.staker, &entry.validator, open_after);
+    }
+
+    /// Removes an entry and both its indexes, and frees its pair's slot.
+    fn remove_entry(&mut self, seq: u64, entry: &UnbondingEntry) -> Result<(), Corrupt> {
+        self.store.delete(&unbonding_key(seq));
+        self.store
+            .delete(&by_maturity_key(entry.matures_at_ms, seq));
+        self.store.delete(&by_validator_key(&entry.validator, seq));
+        let open = self.open_entries(&entry.staker, &entry.validator)?;
+        self.set_open_entries(&entry.staker, &entry.validator, open.saturating_sub(1));
+        Ok(())
     }
 
     /// Matures every unbonding entry due by `now_ms`, oldest first, up
     /// to [`MAX_MATURING_PER_CALL`]; anything beyond that waits for the
     /// next call. Returns what to pay out.
-    pub fn process(&mut self, now_ms: u64) -> Vec<Matured> {
-        let due: Vec<UnbondingKey> = self
-            .unbonding
-            .range(
-                ..=UnbondingKey {
-                    matures_at_ms: now_ms,
-                    seq: u64::MAX,
-                },
-            )
-            .map(|(key, _)| *key)
-            .take(MAX_MATURING_PER_CALL)
-            .collect();
+    pub fn process(&mut self, now_ms: u64) -> Result<Vec<Matured>, RegistryError> {
+        self.atomic(|reg| reg.do_process(now_ms))
+    }
+
+    fn do_process(&mut self, now_ms: u64) -> Result<Vec<Matured>, RegistryError> {
+        let start = vec![tag::UNBONDING_BY_MATURITY];
+        // Everything with a maturity up to and including `now_ms`.
+        let end = prefix_end(&keyed(tag::UNBONDING_BY_MATURITY, &[&be64(now_ms)]));
+        let due = self
+            .store
+            .range(&start, end.as_deref(), MAX_MATURING_PER_CALL);
 
         let mut matured = Vec::with_capacity(due.len());
-        for key in due {
-            if let Some(entry) = self.unbonding.remove(&key) {
-                self.release_pair_slot(entry.staker, entry.validator);
-                matured.push(Matured {
-                    staker: entry.staker,
-                    validator: entry.validator,
-                    amount: entry.amount,
-                });
-            }
+        for (index_key, _) in due {
+            // `UNBONDING_BY_MATURITY ‖ matures (8) ‖ seq (8)`
+            let seq = index_key
+                .get(9..)
+                .and_then(read_be64)
+                .ok_or(RegistryError::CorruptState)?;
+            let entry = self.entry(seq)?.ok_or(RegistryError::CorruptState)?;
+            self.remove_entry(seq, &entry)?;
+            matured.push(Matured {
+                staker: entry.staker,
+                validator: entry.validator,
+                amount: entry.amount,
+            });
         }
-        matured
+        Ok(matured)
     }
 
     // ---- the active set ------------------------------------------------
@@ -493,30 +816,32 @@ impl StakingRegistry {
     /// otherwise every stake shifted right by the same amount, the
     /// smallest that makes the total fit. A validator whose stake shifts
     /// to zero has no vote and is left out.
-    pub fn active_set(&self, params: &GovernedParams) -> Vec<ActiveValidator> {
+    ///
+    /// Reads every validator; see the module docs.
+    pub fn active_set(
+        &self,
+        params: &GovernedParams,
+    ) -> Result<Vec<ActiveValidator>, RegistryError> {
         let minimum = params.values().min_self_stake;
-        let mut candidates: Vec<(ValidatorId, BlsPublicKey, u128)> = self
-            .validators
-            .iter()
-            .filter(|(id, validator)| {
-                self.slashing.status(&id.0) == ValidatorStatus::Active
-                    && validator.pool.redeemable(&validator.operator) >= minimum
-            })
-            .map(|(id, validator)| {
-                (
-                    *id,
-                    validator.consensus_key,
-                    validator.pool.attributable_stake(),
-                )
-            })
-            .filter(|(_, _, stake)| *stake > 0)
-            .collect();
+        let mut candidates: Vec<(ValidatorId, BlsPublicKey, u128)> = Vec::new();
+        for (id, validator) in self.all_validators()? {
+            if self.status(&id)? != ValidatorStatus::Active {
+                continue;
+            }
+            let operator_stake = validator
+                .pool
+                .redeemable_for(self.shares_of(&id, &validator.operator)?);
+            let stake = validator.pool.attributable_stake();
+            if operator_stake >= minimum && stake > 0 {
+                candidates.push((id, validator.consensus_key, stake));
+            }
+        }
 
         candidates.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
         candidates.truncate(MAX_ACTIVE_VALIDATORS);
 
         let stakes: Vec<u128> = candidates.iter().map(|(_, _, stake)| *stake).collect();
-        candidates
+        Ok(candidates
             .into_iter()
             .zip(scale_to_u64(&stakes))
             .filter(|(_, power)| *power > 0)
@@ -528,7 +853,7 @@ impl StakingRegistry {
                     voting_power,
                 },
             )
-            .collect()
+            .collect())
     }
 
     // ---- slashing ------------------------------------------------------
@@ -549,39 +874,51 @@ impl StakingRegistry {
         infraction_time_ms: u64,
         now_ms: u64,
     ) -> Result<Vec<SlashApplied>, RegistryError> {
+        self.atomic(|reg| reg.do_submit_evidence(evidence, infraction_time_ms, now_ms))
+    }
+
+    fn do_submit_evidence(
+        &mut self,
+        evidence: &DuplicateVoteEvidence,
+        infraction_time_ms: u64,
+        now_ms: u64,
+    ) -> Result<Vec<SlashApplied>, RegistryError> {
         let id = ValidatorId(evidence.validator());
         let validator = self
-            .validators
-            .get(&id)
+            .validator(&id)?
             .ok_or(RegistryError::UnknownValidator)?;
-        let key = validator.consensus_key;
 
         // The offender's stake back then: what is in the pool plus what
         // began unbonding since — see the module docs for the caveat.
-        let unbonding_at_risk = self.unbonding_at_risk(&id, infraction_time_ms).1;
+        let (_, unbonding_at_risk) = self.unbonding_at_risk(&id, infraction_time_ms)?;
         let stake = validator
             .pool
             .attributable_stake()
             .saturating_add(unbonding_at_risk);
-        let total = self.total_bonded().saturating_add(unbonding_at_risk);
+        let total = self.total_bonded()?.saturating_add(unbonding_at_risk);
 
-        let orders = self
-            .slashing
-            .submit_evidence(evidence, &key, infraction_time_ms, stake, total, now_ms)
+        let orders = SlashingTracker::new(&mut self.store)
+            .submit_evidence(
+                evidence,
+                &validator.consensus_key,
+                infraction_time_ms,
+                stake,
+                total,
+                now_ms,
+            )
             .map_err(RegistryError::Evidence)?;
 
         let mut applied = Vec::with_capacity(orders.len());
         for order in orders {
-            let validator = ValidatorId(order.validator);
+            let target = ValidatorId(order.validator);
             // Each order is priced against *that* validator's own
             // infraction, which for a top-up is not this evidence's.
-            let when = self
-                .slashing
-                .infraction_time_ms(&order.validator)
+            let when = SlashingTracker::new(&mut self.store)
+                .infraction_time_ms(&order.validator)?
                 .unwrap_or(infraction_time_ms);
-            let burned = self.burn(validator, when, order.burn);
+            let burned = self.burn(target, when, order.burn)?;
             applied.push(SlashApplied {
-                validator,
+                validator: target,
                 ordered: order.burn,
                 burned,
             });
@@ -591,25 +928,40 @@ impl StakingRegistry {
 
     /// The unbonding entries of `id` that began at or after
     /// `infraction_ms` — the ones whose stake was bonded at the
-    /// infraction — in queue order, with their total.
-    fn unbonding_at_risk(&self, id: &ValidatorId, infraction_ms: u64) -> (Vec<UnbondingKey>, u128) {
-        let mut keys = Vec::new();
-        let mut total = 0u128;
-        for (key, entry) in &self.unbonding {
-            if entry.validator == *id && entry.started_at_ms >= infraction_ms {
-                keys.push(*key);
-                total = total.saturating_add(entry.amount);
+    /// infraction — in queue order (by maturity, then sequence), with
+    /// their total.
+    fn unbonding_at_risk(
+        &self,
+        id: &ValidatorId,
+        infraction_ms: u64,
+    ) -> Result<(Vec<(u64, UnbondingEntry)>, u128), Corrupt> {
+        let mut entries = Vec::new();
+        for (index_key, _) in self.store.scan_prefix(&by_validator_prefix(id), usize::MAX) {
+            // `UNBONDING_BY_VALIDATOR ‖ id (32) ‖ seq (8)`
+            let seq = index_key.get(33..).and_then(read_be64).ok_or(Corrupt)?;
+            let entry = self.entry(seq)?.ok_or(Corrupt)?;
+            if entry.started_at_ms >= infraction_ms {
+                entries.push((seq, entry));
             }
         }
-        (keys, total)
+        entries.sort_by_key(|(seq, entry)| (entry.matures_at_ms, *seq));
+        let total = entries
+            .iter()
+            .fold(0u128, |sum, (_, entry)| sum.saturating_add(entry.amount));
+        Ok((entries, total))
     }
 
     /// Burns up to `amount` from `id`, split pro rata between its pool
     /// and its at-risk unbonding entries, and returns what was burned.
-    fn burn(&mut self, id: ValidatorId, infraction_ms: u64, amount: u128) -> u128 {
-        let (keys, unbonding_total) = self.unbonding_at_risk(&id, infraction_ms);
-        let Some(validator) = self.validators.get_mut(&id) else {
-            return 0;
+    fn burn(
+        &mut self,
+        id: ValidatorId,
+        infraction_ms: u64,
+        amount: u128,
+    ) -> Result<u128, RegistryError> {
+        let (entries, unbonding_total) = self.unbonding_at_risk(&id, infraction_ms)?;
+        let Some(mut validator) = self.validator(&id)? else {
+            return Ok(0);
         };
 
         let pooled = validator.pool.total_stake();
@@ -620,54 +972,53 @@ impl StakingRegistry {
         );
         let pool_target = amount.saturating_sub(from_unbonding);
         let pool_burned = validator.pool.slash(pool_target);
+        save(&mut self.store, validator_key(&id), &validator);
 
         // A pool that can't cover its share (it never gives up its last
         // unit) passes the shortfall to the unbonding entries.
         let unbonding_target = from_unbonding
             .saturating_add(pool_target.saturating_sub(pool_burned))
             .min(unbonding_total);
-        let unbonding_burned = self.burn_from_entries(&keys, unbonding_total, unbonding_target);
+        let unbonding_burned =
+            self.burn_from_entries(entries, unbonding_total, unbonding_target)?;
 
-        pool_burned.saturating_add(unbonding_burned)
+        Ok(pool_burned.saturating_add(unbonding_burned))
     }
 
     /// Takes `target` (at most `total`, the entries' combined amount) out
-    /// of `keys`' entries: each in proportion to its size, rounded down,
-    /// then any remainder a unit at a time in queue order, so the split
-    /// is fully determined. Entries emptied are removed.
-    fn burn_from_entries(&mut self, keys: &[UnbondingKey], total: u128, target: u128) -> u128 {
+    /// of `entries`: each in proportion to its size, rounded down, then
+    /// any remainder a unit at a time in the order given, so the split is
+    /// fully determined. Entries emptied are removed.
+    fn burn_from_entries(
+        &mut self,
+        mut entries: Vec<(u64, UnbondingEntry)>,
+        total: u128,
+        target: u128,
+    ) -> Result<u128, RegistryError> {
         let mut burned = 0u128;
-        for key in keys {
-            if let Some(entry) = self.unbonding.get_mut(key) {
-                let share = mul_div(target, entry.amount, total).min(entry.amount);
-                entry.amount = entry.amount.saturating_sub(share);
-                burned = burned.saturating_add(share);
-            }
+        for (_, entry) in &mut entries {
+            let share = mul_div(target, entry.amount, total).min(entry.amount);
+            entry.amount = entry.amount.saturating_sub(share);
+            burned = burned.saturating_add(share);
         }
         let mut leftover = target.saturating_sub(burned);
-        for key in keys {
+        for (_, entry) in &mut entries {
             if leftover == 0 {
                 break;
             }
-            if let Some(entry) = self.unbonding.get_mut(key) {
-                let take = leftover.min(entry.amount);
-                entry.amount = entry.amount.saturating_sub(take);
-                burned = burned.saturating_add(take);
-                leftover = leftover.saturating_sub(take);
+            let take = leftover.min(entry.amount);
+            entry.amount = entry.amount.saturating_sub(take);
+            burned = burned.saturating_add(take);
+            leftover = leftover.saturating_sub(take);
+        }
+        for (seq, entry) in &entries {
+            if entry.amount == 0 {
+                self.remove_entry(*seq, entry)?;
+            } else {
+                save(&mut self.store, unbonding_key(*seq), entry);
             }
         }
-        for key in keys {
-            if self
-                .unbonding
-                .get(key)
-                .is_some_and(|entry| entry.amount == 0)
-            {
-                if let Some(entry) = self.unbonding.remove(key) {
-                    self.release_pair_slot(entry.staker, entry.validator);
-                }
-            }
-        }
-        burned
+        Ok(burned)
     }
 
     // ---- jailing -------------------------------------------------------
@@ -679,12 +1030,14 @@ impl StakingRegistry {
         id: &ValidatorId,
         now_ms: u64,
     ) -> Result<(), RegistryError> {
-        if !self.validators.contains_key(id) {
-            return Err(RegistryError::UnknownValidator);
-        }
-        self.slashing
-            .jail_for_downtime(id.0, now_ms)
-            .map_err(RegistryError::Jail)
+        self.atomic(|reg| {
+            if !reg.is_registered(id) {
+                return Err(RegistryError::UnknownValidator);
+            }
+            SlashingTracker::new(&mut reg.store)
+                .jail_for_downtime(id.0, now_ms)
+                .map_err(RegistryError::Jail)
+        })
     }
 
     /// Returns a jailed validator to the active set, once its jail has
@@ -695,16 +1048,18 @@ impl StakingRegistry {
         id: &ValidatorId,
         now_ms: u64,
     ) -> Result<(), RegistryError> {
-        let validator = self
-            .validators
-            .get(id)
-            .ok_or(RegistryError::UnknownValidator)?;
-        if validator.pool.redeemable(&validator.operator) < params.values().min_self_stake {
-            return Err(RegistryError::SelfStakeTooLowToUnjail);
-        }
-        self.slashing
-            .unjail(&id.0, now_ms)
-            .map_err(RegistryError::Unjail)
+        self.atomic(|reg| {
+            let validator = reg.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
+            let operator_stake = validator
+                .pool
+                .redeemable_for(reg.shares_of(id, &validator.operator)?);
+            if operator_stake < params.values().min_self_stake {
+                return Err(RegistryError::SelfStakeTooLowToUnjail);
+            }
+            SlashingTracker::new(&mut reg.store)
+                .unjail(&id.0, now_ms)
+                .map_err(RegistryError::Unjail)
+        })
     }
 }
 
@@ -720,10 +1075,17 @@ mod tests {
     use super::*;
     use crate::params::{ParamValues, DAY_MS, MIN_UNBONDING_PERIOD_MS};
     use crate::slashing::DOWNTIME_JAIL_MS;
+    use crate::store::MemStore;
     use blst::min_pk::SecretKey;
     use chain_types::bls::{DST_PROOF_OF_POSSESSION, DST_VOTE};
     use chain_types::{BlockHeight, Hash, Round, Vote, VoteKind};
     use proptest::prelude::*;
+
+    type Reg = StakingRegistry<MemStore>;
+
+    fn new_registry() -> Reg {
+        StakingRegistry::new(MemStore::new())
+    }
 
     const T0: u64 = 200 * DAY_MS;
     const MIN_SELF_STAKE: u128 = 1_000;
@@ -775,7 +1137,7 @@ mod tests {
     }
 
     /// Registers validator `seed` with `self_stake`.
-    fn register(reg: &mut StakingRegistry, seed: u8, self_stake: u128) {
+    fn register(reg: &mut Reg, seed: u8, self_stake: u128) {
         let sk = secret(seed);
         reg.register_validator(
             &params(),
@@ -814,20 +1176,23 @@ mod tests {
 
     #[test]
     fn a_registered_validator_holds_its_self_stake_under_its_operator() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
 
         assert!(reg.is_registered(&id_of(1)));
-        assert_eq!(reg.operator_of(&id_of(1)), Some(operator_of(1)));
-        assert_eq!(reg.consensus_key_of(&id_of(1)), Some(public(&secret(1))));
-        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)), 5_000);
-        assert_eq!(reg.total_bonded(), 5_000);
+        assert_eq!(reg.operator_of(&id_of(1)).unwrap(), Some(operator_of(1)));
+        assert_eq!(
+            reg.consensus_key_of(&id_of(1)).unwrap(),
+            Some(public(&secret(1)))
+        );
+        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)).unwrap(), 5_000);
+        assert_eq!(reg.total_bonded().unwrap(), 5_000);
         reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn a_proof_of_possession_from_a_different_key_is_refused() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         let result = reg.register_validator(
             &params(),
             id_of(1),
@@ -837,12 +1202,12 @@ mod tests {
             5_000,
         );
         assert_eq!(result, Err(RegistryError::InvalidProofOfPossession));
-        assert_eq!(reg, StakingRegistry::new(), "a refusal must leave no trace");
+        assert_eq!(reg, new_registry(), "a refusal must leave no trace");
     }
 
     #[test]
     fn a_consensus_key_can_only_be_registered_once() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         let sk = secret(1);
         let result = reg.register_validator(
@@ -859,7 +1224,7 @@ mod tests {
 
     #[test]
     fn a_validator_id_can_only_be_registered_once() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         let sk = secret(9);
         let result = reg.register_validator(
@@ -875,9 +1240,9 @@ mod tests {
 
     #[test]
     fn the_governed_minimum_self_stake_is_enforced() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         let sk = secret(1);
-        let register_with = |reg: &mut StakingRegistry, stake| {
+        let register_with = |reg: &mut Reg, stake| {
             reg.register_validator(
                 &params(),
                 id_of(1),
@@ -898,12 +1263,12 @@ mod tests {
 
     #[test]
     fn delegating_mints_shares_and_adds_bonded_stake() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         let shares = reg.delegate(&id_of(1), staker(1), 2_000).unwrap();
         assert_eq!(shares, 2_000);
-        assert_eq!(reg.stake_of(&id_of(1), &staker(1)), 2_000);
-        assert_eq!(reg.total_bonded(), 7_000);
+        assert_eq!(reg.stake_of(&id_of(1), &staker(1)).unwrap(), 2_000);
+        assert_eq!(reg.total_bonded().unwrap(), 7_000);
         assert_eq!(
             reg.delegate(&id_of(9), staker(1), 1),
             Err(RegistryError::UnknownValidator)
@@ -912,7 +1277,7 @@ mod tests {
 
     #[test]
     fn unstaking_takes_the_stake_out_of_the_pool_at_once_and_pays_after_the_period() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 3_000).unwrap();
 
@@ -920,27 +1285,33 @@ mod tests {
             .begin_unstake(&params(), &id_of(1), staker(1), 3_000, T0)
             .unwrap();
         assert_eq!(amount, 3_000);
-        assert_eq!(reg.total_bonded(), 5_000, "no longer bonded");
-        assert_eq!(reg.total_unbonding(), 3_000);
+        assert_eq!(reg.total_bonded().unwrap(), 5_000, "no longer bonded");
+        assert_eq!(reg.total_unbonding().unwrap(), 3_000);
 
         let matures = T0 + MIN_UNBONDING_PERIOD_MS;
-        assert!(reg.process(matures - 1).is_empty(), "not a moment early");
+        assert!(
+            reg.process(matures - 1).unwrap().is_empty(),
+            "not a moment early"
+        );
         assert_eq!(
-            reg.process(matures),
+            reg.process(matures).unwrap(),
             vec![Matured {
                 staker: staker(1),
                 validator: id_of(1),
                 amount: 3_000
             }]
         );
-        assert_eq!(reg.total_unbonding(), 0);
-        assert!(reg.process(matures + DAY_MS).is_empty(), "paid out once");
+        assert_eq!(reg.total_unbonding().unwrap(), 0);
+        assert!(
+            reg.process(matures + DAY_MS).unwrap().is_empty(),
+            "paid out once"
+        );
         reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn a_later_change_to_the_unbonding_period_does_not_move_an_open_entry() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 3_000).unwrap();
         reg.begin_unstake(&params(), &id_of(1), staker(1), 3_000, T0)
@@ -949,12 +1320,12 @@ mod tests {
         // Governance stretches the period afterwards; this entry keeps
         // the maturity it was given.
         let _longer = params_with(60 * DAY_MS);
-        assert_eq!(reg.process(T0 + MIN_UNBONDING_PERIOD_MS).len(), 1);
+        assert_eq!(reg.process(T0 + MIN_UNBONDING_PERIOD_MS).unwrap().len(), 1);
     }
 
     #[test]
     fn unstaking_more_than_owned_or_nothing_is_refused_without_effect() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 1_000).unwrap();
         let before = reg.clone();
@@ -976,7 +1347,7 @@ mod tests {
 
     #[test]
     fn open_unbonding_entries_are_capped_per_staker_and_validator() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 5_000);
         reg.delegate(&id_of(1), staker(1), 100).unwrap();
@@ -996,7 +1367,7 @@ mod tests {
             .is_ok());
 
         // Maturing one frees a slot.
-        reg.process(T0 + MIN_UNBONDING_PERIOD_MS);
+        reg.process(T0 + MIN_UNBONDING_PERIOD_MS).unwrap();
         assert!(reg
             .begin_unstake(
                 &params(),
@@ -1011,7 +1382,7 @@ mod tests {
 
     #[test]
     fn maturing_is_bounded_per_call_and_the_rest_wait() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         // 40 stakers x 7 entries = 280 entries, more than one call's worth.
         for n in 0..40u8 {
@@ -1024,22 +1395,22 @@ mod tests {
         assert_eq!(reg.unbonding_entry_count(), 280);
 
         let due = T0 + MIN_UNBONDING_PERIOD_MS;
-        assert_eq!(reg.process(due).len(), MAX_MATURING_PER_CALL);
-        assert_eq!(reg.process(due).len(), 280 - MAX_MATURING_PER_CALL);
+        assert_eq!(reg.process(due).unwrap().len(), MAX_MATURING_PER_CALL);
+        assert_eq!(reg.process(due).unwrap().len(), 280 - MAX_MATURING_PER_CALL);
         assert_eq!(reg.unbonding_entry_count(), 0);
         reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn a_withdrawal_worth_no_stake_burns_the_shares_and_makes_no_entry() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 5_000);
         reg.delegate(&id_of(1), staker(1), 100).unwrap();
         // Half of all stake equivocating: the penalty is 100%, which
         // leaves each share worth a fraction of a unit.
         reg.submit_evidence(&offence(1), T0, T0).unwrap();
-        assert!(reg.stake_of(&id_of(1), &staker(1)) < 100);
+        assert!(reg.stake_of(&id_of(1), &staker(1)).unwrap() < 100);
 
         let amount = reg
             .begin_unstake(&params(), &id_of(1), staker(1), 1, T0)
@@ -1047,7 +1418,7 @@ mod tests {
         assert_eq!(amount, 0);
         assert_eq!(reg.unbonding_entry_count(), 0, "no entry for nothing");
         assert_eq!(
-            reg.shares_of(&id_of(1), &staker(1)),
+            reg.shares_of(&id_of(1), &staker(1)).unwrap(),
             99,
             "the share is gone"
         );
@@ -1062,40 +1433,43 @@ mod tests {
 
     #[test]
     fn the_active_set_is_ordered_by_stake_then_id() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 3, 2_000);
         register(&mut reg, 1, 9_000);
         register(&mut reg, 2, 2_000); // ties with 3
         assert_eq!(
-            ids(&reg.active_set(&params())),
+            ids(&reg.active_set(&params()).unwrap()),
             vec![id_of(1), id_of(2), id_of(3)]
         );
     }
 
     #[test]
     fn a_delegation_can_change_the_order() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 4_000);
         reg.delegate(&id_of(2), staker(1), 2_000).unwrap();
-        assert_eq!(ids(&reg.active_set(&params())), vec![id_of(2), id_of(1)]);
+        assert_eq!(
+            ids(&reg.active_set(&params()).unwrap()),
+            vec![id_of(2), id_of(1)]
+        );
     }
 
     #[test]
     fn jailed_and_tombstoned_validators_are_not_active() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         for seed in 1..=3 {
             register(&mut reg, seed, 5_000);
         }
         reg.jail_for_downtime(&id_of(2), T0).unwrap();
         reg.submit_evidence(&offence(3), T0, T0).unwrap();
 
-        assert_eq!(ids(&reg.active_set(&params())), vec![id_of(1)]);
+        assert_eq!(ids(&reg.active_set(&params()).unwrap()), vec![id_of(1)]);
     }
 
     #[test]
     fn a_validator_whose_operator_falls_below_the_minimum_self_stake_is_inactive() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 5_000);
         // The operator withdraws until under the minimum; delegates keep
@@ -1103,27 +1477,27 @@ mod tests {
         reg.delegate(&id_of(2), staker(1), 50_000).unwrap();
         reg.begin_unstake(&params(), &id_of(2), operator_of(2), 4_500, T0)
             .unwrap();
-        assert_eq!(reg.stake_of(&id_of(2), &operator_of(2)), 500);
+        assert_eq!(reg.stake_of(&id_of(2), &operator_of(2)).unwrap(), 500);
 
-        assert_eq!(ids(&reg.active_set(&params())), vec![id_of(1)]);
+        assert_eq!(ids(&reg.active_set(&params()).unwrap()), vec![id_of(1)]);
     }
 
     #[test]
     fn a_validator_with_no_bonded_stake_is_not_active() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.begin_unstake(&params(), &id_of(1), operator_of(1), 5_000, T0)
             .unwrap();
-        assert!(reg.active_set(&params()).is_empty());
+        assert!(reg.active_set(&params()).unwrap().is_empty());
     }
 
     #[test]
     fn the_active_set_is_capped_at_128_by_stake() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         for seed in 0..130u8 {
             register(&mut reg, seed, 1_000 + u128::from(seed));
         }
-        let set = reg.active_set(&params());
+        let set = reg.active_set(&params()).unwrap();
         assert_eq!(set.len(), MAX_ACTIVE_VALIDATORS);
         // The two smallest (seeds 0 and 1) missed the cut.
         assert!(!ids(&set).contains(&id_of(0)));
@@ -1133,10 +1507,10 @@ mod tests {
 
     #[test]
     fn voting_power_is_the_stake_when_it_fits_u64() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 3_000);
-        let set = reg.active_set(&params());
+        let set = reg.active_set(&params()).unwrap();
         assert_eq!(
             set.iter().map(|v| v.voting_power).collect::<Vec<_>>(),
             vec![5_000, 3_000]
@@ -1146,12 +1520,12 @@ mod tests {
     #[test]
     fn voting_power_is_scaled_uniformly_when_stake_overflows_u64() {
         let big = u128::from(u64::MAX);
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, big * 4);
         register(&mut reg, 2, big * 2);
         register(&mut reg, 3, big);
 
-        let set = reg.active_set(&params());
+        let set = reg.active_set(&params()).unwrap();
         let powers: Vec<u64> = set.iter().map(|v| v.voting_power).collect();
         let total: u128 = powers.iter().map(|p| u128::from(*p)).sum();
         assert!(
@@ -1186,7 +1560,7 @@ mod tests {
 
     #[test]
     fn evidence_burns_the_pool_pro_rata_and_tombstones_the_validator() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 5_000).unwrap();
         register(&mut reg, 2, 990_000); // ~99% of stake elsewhere
@@ -1203,25 +1577,25 @@ mod tests {
         // share (45), so the two of them together bore 455 (see the module
         // docs) — a hair under 5% each.
         let (delegate, operator) = (
-            reg.stake_of(&id_of(1), &staker(1)),
-            reg.stake_of(&id_of(1), &operator_of(1)),
+            reg.stake_of(&id_of(1), &staker(1)).unwrap(),
+            reg.stake_of(&id_of(1), &operator_of(1)).unwrap(),
         );
         assert_eq!(delegate, operator);
         assert_eq!(delegate, 4_772);
-        assert_eq!(reg.pool(&id_of(1)).unwrap().total_stake(), 10_500);
+        assert_eq!(reg.pool(&id_of(1)).unwrap().unwrap().total_stake(), 10_500);
 
-        assert_eq!(reg.status(&id_of(1)), ValidatorStatus::Tombstoned);
+        assert_eq!(reg.status(&id_of(1)).unwrap(), ValidatorStatus::Tombstoned);
         assert_eq!(
             reg.delegate(&id_of(1), staker(2), 100),
             Err(RegistryError::ValidatorTombstoned)
         );
-        assert!(!ids(&reg.active_set(&params())).contains(&id_of(1)));
+        assert!(!ids(&reg.active_set(&params()).unwrap()).contains(&id_of(1)));
         reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn stake_that_began_unbonding_after_the_infraction_is_slashed_too() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 5_000).unwrap();
         register(&mut reg, 2, 990_000);
@@ -1230,7 +1604,7 @@ mod tests {
         // evidence arrives.
         reg.begin_unstake(&params(), &id_of(1), staker(1), 5_000, T0 + DAY_MS)
             .unwrap();
-        assert_eq!(reg.total_unbonding(), 5_000);
+        assert_eq!(reg.total_unbonding().unwrap(), 5_000);
 
         let applied = reg
             .submit_evidence(&offence(1), T0, T0 + 2 * DAY_MS)
@@ -1239,20 +1613,20 @@ mod tests {
 
         // Half of what was at risk sat in the pool, half in the queue: the
         // burn reaches both, and the leaver did not escape it.
-        let paid = reg.process(T0 + DAY_MS + MIN_UNBONDING_PERIOD_MS);
+        let paid = reg.process(T0 + DAY_MS + MIN_UNBONDING_PERIOD_MS).unwrap();
         assert_eq!(paid.len(), 1);
         assert!(
             paid[0].amount < 5_000,
             "the entry was slashed: {}",
             paid[0].amount
         );
-        assert!(reg.stake_of(&id_of(1), &operator_of(1)) < 5_000);
+        assert!(reg.stake_of(&id_of(1), &operator_of(1)).unwrap() < 5_000);
         reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn stake_that_began_unbonding_before_the_infraction_is_not_touched() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 5_000).unwrap();
         register(&mut reg, 2, 990_000);
@@ -1262,7 +1636,7 @@ mod tests {
             .unwrap();
         reg.submit_evidence(&offence(1), T0, T0).unwrap();
 
-        let paid = reg.process(T0 - DAY_MS + MIN_UNBONDING_PERIOD_MS);
+        let paid = reg.process(T0 - DAY_MS + MIN_UNBONDING_PERIOD_MS).unwrap();
         assert_eq!(paid.len(), 1);
         assert_eq!(paid[0].amount, 5_000, "paid in full");
     }
@@ -1272,14 +1646,14 @@ mod tests {
         // Stake leaving at the very timestamp of the infraction was
         // still bonded for it, so the boundary is inclusive.
         let leaver_paid = |began_at: u64| {
-            let mut reg = StakingRegistry::new();
+            let mut reg = new_registry();
             register(&mut reg, 1, 5_000);
             reg.delegate(&id_of(1), staker(1), 5_000).unwrap();
             register(&mut reg, 2, 990_000);
             reg.begin_unstake(&params(), &id_of(1), staker(1), 5_000, began_at)
                 .unwrap();
             reg.submit_evidence(&offence(1), T0, T0 + DAY_MS).unwrap();
-            reg.process(began_at + MIN_UNBONDING_PERIOD_MS)[0].amount
+            reg.process(began_at + MIN_UNBONDING_PERIOD_MS).unwrap()[0].amount
         };
         assert!(leaver_paid(T0) < 5_000, "at the instant: slashed");
         assert_eq!(
@@ -1291,14 +1665,14 @@ mod tests {
 
     #[test]
     fn a_validator_cannot_escape_slashing_by_unstaking_everything() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 50_000);
         register(&mut reg, 2, 50_000);
 
         // The offender sees the evidence coming and pulls out all of it.
         reg.begin_unstake(&params(), &id_of(1), operator_of(1), 50_000, T0 + DAY_MS)
             .unwrap();
-        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)), 0);
+        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)).unwrap(), 0);
 
         let applied = reg
             .submit_evidence(&offence(1), T0, T0 + 2 * DAY_MS)
@@ -1306,7 +1680,7 @@ mod tests {
         // Half of all bonded stake equivocating: the full penalty, taken
         // out of the queue since the pool has nothing left to give.
         assert!(applied[0].burned > 0, "something must have been burned");
-        let paid = reg.process(T0 + DAY_MS + MIN_UNBONDING_PERIOD_MS);
+        let paid = reg.process(T0 + DAY_MS + MIN_UNBONDING_PERIOD_MS).unwrap();
         assert!(
             paid[0].amount < 50_000,
             "the operator got back less than they put in: {}",
@@ -1317,7 +1691,7 @@ mod tests {
 
     #[test]
     fn a_burn_the_pool_cannot_fully_cover_is_finished_from_the_queue() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 100).unwrap();
         reg.begin_unstake(&params(), &id_of(1), staker(1), 100, T0)
@@ -1325,40 +1699,71 @@ mod tests {
         // 6_000 pooled (5_000 + the dead shares' 1_000), 100 unbonding.
         // The pool never gives up its last unit, so of a 6_099 burn its
         // pro-rata 6_000 falls one short; the queue makes up the unit.
-        let burned = reg.burn(id_of(1), T0, 6_099);
+        let burned = reg.burn(id_of(1), T0, 6_099).unwrap();
         assert_eq!(
             burned, 6_099,
             "nothing is left unburned while stake remains"
         );
-        assert_eq!(reg.total_unbonding(), 0, "the entry was emptied");
+        assert_eq!(reg.total_unbonding().unwrap(), 0, "the entry was emptied");
         assert_eq!(reg.unbonding_entry_count(), 0, "and removed");
-        assert_eq!(reg.pool(&id_of(1)).unwrap().total_stake(), 1);
+        assert_eq!(reg.pool(&id_of(1)).unwrap().unwrap().total_stake(), 1);
         reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn a_burn_from_several_entries_is_exact_and_split_in_queue_order() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         for n in 0..3u8 {
             reg.delegate(&id_of(1), staker(n), 3).unwrap();
             reg.begin_unstake(&params(), &id_of(1), staker(n), 3, T0)
                 .unwrap();
         }
-        let (keys, total) = reg.unbonding_at_risk(&id_of(1), T0);
-        assert_eq!((keys.len(), total), (3, 9));
+        let (entries, total) = reg.unbonding_at_risk(&id_of(1), T0).unwrap();
+        assert_eq!((entries.len(), total), (3, 9));
 
         // 4 of 9 over three equal entries: each rounds down to 1, and the
-        // leftover unit comes off the first in the queue.
-        assert_eq!(reg.burn_from_entries(&keys, 9, 4), 4);
-        let left: Vec<u128> = keys.iter().map(|k| reg.unbonding[k].amount).collect();
+        // leftover unit comes off the first in the queue — sequence 0,
+        // which the entries were made in.
+        assert_eq!(reg.burn_from_entries(entries, 9, 4).unwrap(), 4);
+        let left: Vec<u128> = (0..3u64)
+            .map(|seq| reg.entry(seq).unwrap().unwrap().amount)
+            .collect();
         assert_eq!(left, vec![1, 2, 2]);
         reg.assert_invariants().unwrap();
     }
 
     #[test]
+    fn the_queue_is_ordered_by_maturity_before_sequence() {
+        // The first entry was made under a longer unbonding period, so it
+        // matures *after* the two made later: the queue puts it last.
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        let periods = [
+            params_with(30 * DAY_MS),
+            params_with(MIN_UNBONDING_PERIOD_MS),
+            params_with(MIN_UNBONDING_PERIOD_MS),
+        ];
+        for (n, period) in periods.iter().enumerate() {
+            let staker = staker(u8::try_from(n).unwrap());
+            reg.delegate(&id_of(1), staker, 3).unwrap();
+            reg.begin_unstake(period, &id_of(1), staker, 3, T0).unwrap();
+        }
+        let (entries, _) = reg.unbonding_at_risk(&id_of(1), T0).unwrap();
+        let order: Vec<u64> = entries.iter().map(|(seq, _)| *seq).collect();
+        assert_eq!(order, vec![1, 2, 0]);
+
+        // So the leftover unit of a 4-of-9 burn comes off sequence 1.
+        reg.burn_from_entries(entries, 9, 4).unwrap();
+        let left: Vec<u128> = (0..3u64)
+            .map(|seq| reg.entry(seq).unwrap().unwrap().amount)
+            .collect();
+        assert_eq!(left, vec![2, 1, 2]);
+    }
+
+    #[test]
     fn evidence_against_an_unknown_validator_is_refused() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 2, 5_000);
         assert_eq!(
             reg.submit_evidence(&offence(1), T0, T0),
@@ -1370,7 +1775,7 @@ mod tests {
     fn evidence_is_judged_against_the_registered_key_not_a_submitted_one() {
         // Validator 1's evidence, but re-signed by someone else's key:
         // it must not convict validator 1.
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 5_000);
         let mut forged = offence(2);
@@ -1382,13 +1787,13 @@ mod tests {
             result,
             Err(RegistryError::Evidence(EvidenceRejection::Invalid(_)))
         ));
-        assert_eq!(reg.status(&id_of(1)), ValidatorStatus::Active);
-        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)), 5_000);
+        assert_eq!(reg.status(&id_of(1)).unwrap(), ValidatorStatus::Active);
+        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)).unwrap(), 5_000);
     }
 
     #[test]
     fn a_later_offender_tops_an_earlier_one_up_from_its_own_infraction() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 20_000);
         register(&mut reg, 2, 20_000);
         register(&mut reg, 3, 60_000);
@@ -1410,13 +1815,13 @@ mod tests {
 
     #[test]
     fn jailing_removes_a_validator_and_unjailing_after_the_term_restores_it() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         register(&mut reg, 2, 5_000);
         reg.jail_for_downtime(&id_of(1), T0).unwrap();
-        assert_eq!(ids(&reg.active_set(&params())), vec![id_of(2)]);
+        assert_eq!(ids(&reg.active_set(&params()).unwrap()), vec![id_of(2)]);
         assert_eq!(
-            reg.stake_of(&id_of(1), &operator_of(1)),
+            reg.stake_of(&id_of(1), &operator_of(1)).unwrap(),
             5_000,
             "nothing burned"
         );
@@ -1427,12 +1832,12 @@ mod tests {
         ));
         reg.unjail(&params(), &id_of(1), T0 + DOWNTIME_JAIL_MS)
             .unwrap();
-        assert_eq!(ids(&reg.active_set(&params())).len(), 2);
+        assert_eq!(ids(&reg.active_set(&params()).unwrap()).len(), 2);
     }
 
     #[test]
     fn a_jailed_validator_cannot_rejoin_below_the_minimum_self_stake() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.jail_for_downtime(&id_of(1), T0).unwrap();
         reg.begin_unstake(&params(), &id_of(1), operator_of(1), 4_500, T0)
@@ -1446,7 +1851,7 @@ mod tests {
 
     #[test]
     fn jailing_or_unjailing_an_unknown_validator_is_refused() {
-        let mut reg = StakingRegistry::new();
+        let mut reg = new_registry();
         assert_eq!(
             reg.jail_for_downtime(&id_of(1), T0),
             Err(RegistryError::UnknownValidator)
@@ -1513,7 +1918,7 @@ mod tests {
         fn stake_is_conserved_through_any_sequence_of_operations(
             ops in proptest::collection::vec(op_strategy(), 1..40)
         ) {
-            let mut reg = StakingRegistry::new();
+            let mut reg = new_registry();
             let mut injected = 0u128;
             for seed in 1..=3u8 {
                 register(&mut reg, seed, 5_000);
@@ -1530,7 +1935,7 @@ mod tests {
                         }
                     }
                     Op::Unstake { validator, staker: s, fraction } => {
-                        let owned = reg.shares_of(&id_of(validator + 1), &staker(s));
+                        let owned = reg.shares_of(&id_of(validator + 1), &staker(s)).unwrap();
                         let shares = (owned * u128::from(fraction) / 100).max(u128::from(owned > 0));
                         if shares > 0 {
                             let _ = reg.begin_unstake(&params(), &id_of(validator + 1), staker(s), shares, now);
@@ -1538,7 +1943,7 @@ mod tests {
                     }
                     Op::Advance { days } => {
                         now += days * DAY_MS;
-                        paid += reg.process(now).iter().map(|m| m.amount).sum::<u128>();
+                        paid += reg.process(now).unwrap().iter().map(|m| m.amount).sum::<u128>();
                     }
                     Op::Evidence { validator } => {
                         if let Ok(applied) = reg.submit_evidence(&offence(validator + 1), now, now) {
@@ -1553,10 +1958,298 @@ mod tests {
                 }
                 reg.assert_invariants().unwrap();
                 prop_assert_eq!(
-                    reg.total_pooled_stake() + reg.total_unbonding() + paid + burned,
+                    reg.total_pooled_stake().unwrap() + reg.total_unbonding().unwrap() + paid + burned,
                     injected
                 );
             }
         }
+    }
+
+    // ---- storage -------------------------------------------------------
+
+    /// How many keys differ between two stores: written, changed or
+    /// removed.
+    fn keys_changed(before: &MemStore, after: &MemStore) -> usize {
+        let keys: std::collections::BTreeSet<&Vec<u8>> =
+            before.iter().chain(after.iter()).map(|(k, _)| k).collect();
+        keys.into_iter()
+            .filter(|key| before.get(key) != after.get(key))
+            .count()
+    }
+
+    fn key_count(store: &MemStore, tag: u8) -> usize {
+        store.scan_prefix(&[tag], usize::MAX).len()
+    }
+
+    #[test]
+    fn an_operation_touches_a_handful_of_keys_however_many_validators_and_stakers_exist() {
+        // The point of one entry per entity: cost does not grow with the
+        // size of the state. Measured against a registry with many of both.
+        let mut reg = new_registry();
+        for seed in 0..40u8 {
+            register(&mut reg, seed, 5_000);
+            for n in 0..10u8 {
+                reg.delegate(&id_of(seed), staker(n), 100).unwrap();
+            }
+        }
+
+        let before = reg.store().clone();
+        reg.delegate(&id_of(7), staker(200), 500).unwrap();
+        assert_eq!(
+            keys_changed(&before, reg.store()),
+            2,
+            "a delegation writes the staker's shares and the pool's totals"
+        );
+
+        let before = reg.store().clone();
+        reg.begin_unstake(&params(), &id_of(7), staker(3), 50, T0)
+            .unwrap();
+        // shares, pool totals, the entry, its two indexes, the pair
+        // count, and the sequence counter.
+        assert_eq!(keys_changed(&before, reg.store()), 7);
+
+        let before = reg.store().clone();
+        reg.credit_rewards(&id_of(7), 1_000).unwrap();
+        assert_eq!(
+            keys_changed(&before, reg.store()),
+            1,
+            "only the pool's totals"
+        );
+    }
+
+    #[test]
+    fn a_matured_entry_and_its_indexes_leave_the_state_entirely() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        reg.delegate(&id_of(1), staker(1), 300).unwrap();
+        reg.begin_unstake(&params(), &id_of(1), staker(1), 300, T0)
+            .unwrap();
+        for unbonding_tag in [
+            tag::UNBONDING,
+            tag::UNBONDING_BY_MATURITY,
+            tag::UNBONDING_BY_VALIDATOR,
+            tag::UNBONDING_PAIR_COUNT,
+        ] {
+            assert_eq!(
+                key_count(reg.store(), unbonding_tag),
+                1,
+                "tag {unbonding_tag}"
+            );
+        }
+
+        reg.process(T0 + MIN_UNBONDING_PERIOD_MS).unwrap();
+        for unbonding_tag in [
+            tag::UNBONDING,
+            tag::UNBONDING_BY_MATURITY,
+            tag::UNBONDING_BY_VALIDATOR,
+            tag::UNBONDING_PAIR_COUNT,
+        ] {
+            assert_eq!(
+                key_count(reg.store(), unbonding_tag),
+                0,
+                "tag {unbonding_tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn withdrawing_every_share_removes_the_stakers_balance_entry() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        reg.delegate(&id_of(1), staker(1), 300).unwrap();
+        assert_eq!(
+            key_count(reg.store(), tag::SHARES),
+            2,
+            "operator and delegate"
+        );
+
+        reg.begin_unstake(&params(), &id_of(1), staker(1), 300, T0)
+            .unwrap();
+        assert_eq!(
+            key_count(reg.store(), tag::SHARES),
+            1,
+            "only the operator's"
+        );
+        assert_eq!(reg.shares_of(&id_of(1), &staker(1)).unwrap(), 0);
+    }
+
+    #[test]
+    fn everything_is_in_the_store_so_a_new_registry_over_a_copy_of_it_is_the_same_registry() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        register(&mut reg, 2, 8_000);
+        reg.delegate(&id_of(1), staker(1), 2_000).unwrap();
+        reg.begin_unstake(&params(), &id_of(2), operator_of(2), 1_000, T0)
+            .unwrap();
+        reg.jail_for_downtime(&id_of(2), T0).unwrap();
+        reg.submit_evidence(&offence(1), T0, T0).unwrap();
+
+        let restarted = StakingRegistry::new(reg.store().clone());
+        assert_eq!(restarted, reg);
+        assert_eq!(
+            restarted.active_set(&params()).unwrap(),
+            reg.active_set(&params()).unwrap()
+        );
+        assert_eq!(
+            restarted.total_bonded().unwrap(),
+            reg.total_bonded().unwrap()
+        );
+        assert_eq!(
+            restarted.total_unbonding().unwrap(),
+            reg.total_unbonding().unwrap()
+        );
+        assert_eq!(
+            restarted.status(&id_of(1)).unwrap(),
+            ValidatorStatus::Tombstoned
+        );
+        // And it carries on from where the first left off.
+        let mut restarted = restarted;
+        assert_eq!(
+            restarted
+                .process(T0 + MIN_UNBONDING_PERIOD_MS)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn records_round_trip_through_their_encodings() {
+        let validator = Validator {
+            operator: operator_of(1),
+            consensus_key: public(&secret(1)),
+            pool: {
+                let mut pool = StakingPool::genesis();
+                pool.deposit(4_321).unwrap();
+                pool
+            },
+        };
+        let mut bytes = Vec::new();
+        validator.encode(&mut bytes);
+        assert_eq!(
+            chain_types::codec::decode_exact::<Validator>(&bytes).unwrap(),
+            validator
+        );
+        assert!(chain_types::codec::decode_exact::<Validator>(&bytes[1..]).is_err());
+
+        let entry = UnbondingEntry {
+            staker: staker(3),
+            validator: id_of(1),
+            amount: 77,
+            started_at_ms: 5,
+            matures_at_ms: 9,
+        };
+        let mut bytes = Vec::new();
+        entry.encode(&mut bytes);
+        assert_eq!(
+            chain_types::codec::decode_exact::<UnbondingEntry>(&bytes).unwrap(),
+            entry
+        );
+        bytes.push(0);
+        assert!(chain_types::codec::decode_exact::<UnbondingEntry>(&bytes).is_err());
+    }
+
+    // ---- corruption ----------------------------------------------------
+
+    /// A registry whose store is `reg`'s with `edit` applied to it.
+    fn tampered(reg: Reg, edit: impl FnOnce(&mut MemStore)) -> Reg {
+        let mut store = reg.into_store();
+        edit(&mut store);
+        StakingRegistry::new(store)
+    }
+
+    #[test]
+    fn a_validator_record_that_does_not_decode_is_corruption_not_absence() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        let mut reg = tampered(reg, |store| {
+            store.put(validator_key(&id_of(1)), vec![1, 2, 3]);
+        });
+
+        assert_eq!(reg.operator_of(&id_of(1)), Err(RegistryError::CorruptState));
+        assert_eq!(
+            reg.delegate(&id_of(1), staker(1), 100),
+            Err(RegistryError::CorruptState),
+            "not UnknownValidator: the record is there, and bad"
+        );
+        assert_eq!(reg.total_bonded(), Err(RegistryError::CorruptState));
+        assert!(reg.active_set(&params()).is_err());
+    }
+
+    #[test]
+    fn a_corrupt_record_found_halfway_leaves_nothing_changed() {
+        // Two entries are due; the second is corrupted. `process` must
+        // not pay out or delete the first and then fail.
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        reg.delegate(&id_of(1), staker(1), 100).unwrap();
+        reg.begin_unstake(&params(), &id_of(1), staker(1), 10, T0)
+            .unwrap();
+        reg.begin_unstake(&params(), &id_of(1), staker(1), 10, T0)
+            .unwrap();
+        let mut reg = tampered(reg, |store| {
+            store.put(unbonding_key(1), vec![0xFF]);
+        });
+        let before = reg.store().clone();
+
+        assert_eq!(
+            reg.process(T0 + MIN_UNBONDING_PERIOD_MS),
+            Err(RegistryError::CorruptState)
+        );
+        assert_eq!(
+            reg.store(),
+            &before,
+            "the healthy entry was not removed either"
+        );
+    }
+
+    #[test]
+    fn an_index_entry_without_its_entry_is_corruption() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        reg.delegate(&id_of(1), staker(1), 100).unwrap();
+        reg.begin_unstake(&params(), &id_of(1), staker(1), 10, T0)
+            .unwrap();
+        let mut reg = tampered(reg, |store| store.delete(&unbonding_key(0)));
+
+        assert_eq!(
+            reg.process(T0 + MIN_UNBONDING_PERIOD_MS),
+            Err(RegistryError::CorruptState)
+        );
+    }
+
+    #[test]
+    fn the_invariant_check_notices_a_ledger_or_index_that_no_longer_adds_up() {
+        let build = || {
+            let mut reg = new_registry();
+            register(&mut reg, 1, 5_000);
+            reg.delegate(&id_of(1), staker(1), 100).unwrap();
+            reg.begin_unstake(&params(), &id_of(1), staker(1), 10, T0)
+                .unwrap();
+            reg.assert_invariants().unwrap();
+            reg
+        };
+
+        // A staker's balance changed without the pool's totals following.
+        let reg = tampered(build(), |store| {
+            store.put(shares_key(&id_of(1), &staker(1)), {
+                let mut bytes = Vec::new();
+                999u128.encode(&mut bytes);
+                bytes
+            });
+        });
+        assert_eq!(
+            reg.assert_invariants(),
+            Err(RegistryError::Staking(StakingError::InvariantViolated))
+        );
+
+        // An unbonding entry lost one of its indexes.
+        let reg = tampered(build(), |store| {
+            store.delete(&by_validator_key(&id_of(1), 0));
+        });
+        assert_eq!(
+            reg.assert_invariants(),
+            Err(RegistryError::Staking(StakingError::InvariantViolated))
+        );
     }
 }

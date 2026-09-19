@@ -20,6 +20,7 @@ enum KeyTag {
     CalculatorResult = chain_state::account::KEY_TAG + 3,
     BaseFee = chain_state::account::KEY_TAG + 4,
     ChainHead = chain_state::account::KEY_TAG + 5,
+    ModuleState = chain_state::account::KEY_TAG + 6,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -53,6 +54,15 @@ pub fn base_fee_key() -> StateKey {
 /// node checks a block against the same parent, whatever it has cached.
 pub fn chain_head_key() -> StateKey {
     StateKey::new(vec![KeyTag::ChainHead as u8])
+}
+
+/// The tag byte every native-module key sits under. `chain-modules` builds
+/// its own keys (a validator, a share balance, an unbonding entry) with
+/// its own first byte; the executor's [`crate::module_store::StateStore`]
+/// puts this byte in front of all of them, so the modules' whole keyspace
+/// is one contiguous range of the flat state, clear of every other tag.
+pub const fn module_state_tag() -> u8 {
+    KeyTag::ModuleState as u8
 }
 
 /// Where the fixed system `calculator::add` call's result is stored,
@@ -103,6 +113,7 @@ mod tests {
             KeyTag::CalculatorResult as u8,
             KeyTag::BaseFee as u8,
             KeyTag::ChainHead as u8,
+            KeyTag::ModuleState as u8,
         ] {
             assert_ne!(tag, chain_state::account::KEY_TAG);
         }

@@ -40,6 +40,9 @@
 //!   "not more than 5 seconds ahead of the validating node's clock",
 //!   needs a clock and so is not here: `chain_engine_api::timestamp` has
 //!   it as a pure function for the consensus host to apply before voting.
+//! - The native modules' state lives in this same flat state under its own
+//!   tag, through `module_store::StateStore`, one entry per entity. Nothing
+//!   dispatches to them yet: that is the native module boundary.
 //! - Declared-input enforcement for the object case is an abort when
 //!   the counter isn't declared, and structural underneath that: Sui's
 //!   Move has no ambient lookup by address, so `bump` can only touch the
@@ -72,5 +75,6 @@ pub mod executor;
 pub mod genesis;
 pub mod keys;
 pub mod module_resolver;
+pub mod module_store;
 
 pub use executor::{Executor, ExecutorError};

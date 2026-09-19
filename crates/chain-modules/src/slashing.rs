@@ -14,6 +14,17 @@
 //! stake a validator had, when, and how much is bonded in total are all
 //! passed in from chain state.
 //!
+//! Its own state — who is jailed or tombstoned, and the recent convictions
+//! that later ones correlate with — lives in a [`Store`], one entry per
+//! validator, with the convictions also indexed by infraction time so the
+//! correlation window is a range read rather than a scan of everything:
+//!
+//! | key | value |
+//! |---|---|
+//! | `SLASH_STATUS ‖ validator` | jailed-until or tombstoned; absent means active |
+//! | `SLASH_RECORD ‖ validator` | infraction time, stake at the time, total ordered burned |
+//! | `SLASH_BY_TIME ‖ infraction_ms (BE) ‖ validator` | the validator, ordered by infraction time |
+//!
 //! # The rate
 //!
 //! [`slash_bps`]: a floor of 5%, rising by [`CORRELATION_MULTIPLIER`]
@@ -63,10 +74,12 @@
 
 use ruint::aliases::U256;
 
+use chain_types::codec::{decode_field, CodecError, Decode, Encode};
 use chain_types::collections::BTreeMap;
 use chain_types::{Address, BlsPublicKey, DuplicateVoteEvidence, EvidenceError};
 
 use crate::params::{DAY_MS, MAX_EVIDENCE_AGE_MS};
+use crate::store::{be64, load, prefix_end, save, tag, Corrupt, Store};
 
 /// `docs/spec.md`, "Economic security": "Slashing, double-sign: 5% of
 /// stake" — the rate for an isolated offender.
@@ -156,6 +169,8 @@ pub enum EvidenceRejection {
     NoStakeToSlash,
     /// The validator's stake exceeds the total — inconsistent input.
     StakeExceedsBonded,
+    /// A record this module stored no longer decodes.
+    CorruptState,
 }
 
 /// How much of one validator's stake to burn. A validator can appear
@@ -182,13 +197,19 @@ pub enum ValidatorStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JailError {
     Tombstoned,
+    /// A record this module stored no longer decodes.
+    CorruptState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnjailError {
     NotJailed,
-    StillJailed { until_ms: u64 },
+    StillJailed {
+        until_ms: u64,
+    },
     Tombstoned,
+    /// A record this module stored no longer decodes.
+    CorruptState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,40 +224,139 @@ struct SlashRecord {
     slashed: u128,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SlashingTracker {
-    statuses: BTreeMap<Address, ValidatorStatus>,
-    /// Recent convictions, kept only while they can still correlate with
-    /// a new one. The permanent memory of who was convicted is
-    /// `statuses`.
-    records: BTreeMap<Address, SlashRecord>,
+impl Encode for SlashRecord {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.infraction_ms.encode(out);
+        self.stake.encode(out);
+        self.slashed.encode(out);
+    }
 }
 
-impl SlashingTracker {
-    pub fn new() -> Self {
-        Self::default()
+impl Decode for SlashRecord {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (infraction_ms, offset) = u64::decode(input)?;
+        let (stake, offset) = decode_field::<u128>(input, offset)?;
+        let (slashed, offset) = decode_field::<u128>(input, offset)?;
+        Ok((
+            Self {
+                infraction_ms,
+                stake,
+                slashed,
+            },
+            offset,
+        ))
+    }
+}
+
+/// [`ValidatorStatus::Active`] is never stored — absence means active —
+/// but encodes anyway so the encoding is total.
+impl Encode for ValidatorStatus {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Active => 0u8.encode(out),
+            Self::Jailed { until_ms } => {
+                1u8.encode(out);
+                until_ms.encode(out);
+            }
+            Self::Tombstoned => 2u8.encode(out),
+        }
+    }
+}
+
+impl Decode for ValidatorStatus {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (kind, offset) = u8::decode(input)?;
+        match kind {
+            0 => Ok((Self::Active, offset)),
+            1 => {
+                let (until_ms, offset) = decode_field::<u64>(input, offset)?;
+                Ok((Self::Jailed { until_ms }, offset))
+            }
+            2 => Ok((Self::Tombstoned, offset)),
+            _ => Err(CodecError::InvalidValue),
+        }
+    }
+}
+
+fn keyed(tag: u8, validator: &Address) -> Vec<u8> {
+    let mut key = vec![tag];
+    key.extend_from_slice(validator.as_bytes());
+    key
+}
+
+fn status_key(validator: &Address) -> Vec<u8> {
+    keyed(tag::SLASH_STATUS, validator)
+}
+
+fn record_key(validator: &Address) -> Vec<u8> {
+    keyed(tag::SLASH_RECORD, validator)
+}
+
+/// `SLASH_BY_TIME ‖ infraction_ms ‖ validator`; big-endian time, so byte
+/// order is time order.
+fn by_time_key(infraction_ms: u64, validator: &Address) -> Vec<u8> {
+    let mut key = vec![tag::SLASH_BY_TIME];
+    key.extend_from_slice(&be64(infraction_ms));
+    key.extend_from_slice(validator.as_bytes());
+    key
+}
+
+/// The start of the time index at `infraction_ms`: every key for a
+/// validator whose infraction was at exactly that time starts with this.
+fn time_prefix(infraction_ms: u64) -> Vec<u8> {
+    let mut key = vec![tag::SLASH_BY_TIME];
+    key.extend_from_slice(&be64(infraction_ms));
+    key
+}
+
+/// `validator`'s status as `store` records it, without needing a tracker
+/// (and so without needing the store mutably). Absent means active.
+pub fn status_in(
+    store: &(impl Store + ?Sized),
+    validator: &Address,
+) -> Result<ValidatorStatus, Corrupt> {
+    Ok(load(store, &status_key(validator))?.unwrap_or(ValidatorStatus::Active))
+}
+
+/// Evidence admission and jailing, over a [`Store`]. See the module docs
+/// for what it keeps there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlashingTracker<S> {
+    store: S,
+}
+
+impl<S: Store> SlashingTracker<S> {
+    pub const fn new(store: S) -> Self {
+        Self { store }
     }
 
-    pub fn status(&self, validator: &Address) -> ValidatorStatus {
-        self.statuses
-            .get(validator)
-            .copied()
-            .unwrap_or(ValidatorStatus::Active)
+    pub const fn store(&self) -> &S {
+        &self.store
+    }
+
+    pub fn into_store(self) -> S {
+        self.store
+    }
+
+    pub fn status(&self, validator: &Address) -> Result<ValidatorStatus, Corrupt> {
+        status_in(&self.store, validator)
+    }
+
+    fn record(&self, validator: &Address) -> Result<Option<SlashRecord>, Corrupt> {
+        load(&self.store, &record_key(validator))
     }
 
     /// When `validator`'s equivocation happened, while their record is
     /// still within the correlation horizon. What a caller needs to work
     /// out which of the validator's stake was at risk at the time.
-    pub fn infraction_time_ms(&self, validator: &Address) -> Option<u64> {
-        self.records
-            .get(validator)
-            .map(|record| record.infraction_ms)
+    pub fn infraction_time_ms(&self, validator: &Address) -> Result<Option<u64>, Corrupt> {
+        Ok(self.record(validator)?.map(|record| record.infraction_ms))
     }
 
     /// Everything ordered burned against `validator`'s equivocation so
     /// far, while their record is still within the correlation horizon.
-    pub fn total_slashed(&self, validator: &Address) -> Option<u128> {
-        self.records.get(validator).map(|record| record.slashed)
+    pub fn total_slashed(&self, validator: &Address) -> Result<Option<u128>, Corrupt> {
+        Ok(self.record(validator)?.map(|record| record.slashed))
     }
 
     /// Admits `evidence` and returns what to burn, or says why not.
@@ -246,7 +366,8 @@ impl SlashingTracker {
     /// evidence or its submitter: `infraction_time_ms` is the timestamp of
     /// the block at `evidence.height()`, `validator_stake` the validator's
     /// stake at that height, and `total_bonded_stake` the total bonded
-    /// stake now. Nothing is changed unless the evidence is admitted.
+    /// stake now. Nothing is changed unless the evidence is admitted, and
+    /// everything is read before anything is written.
     ///
     /// The returned orders are in validator-address order.
     pub fn submit_evidence(
@@ -259,9 +380,10 @@ impl SlashingTracker {
         now_ms: u64,
     ) -> Result<Vec<SlashOrder>, EvidenceRejection> {
         let validator = evidence.validator();
+        let corrupt = |_: Corrupt| EvidenceRejection::CorruptState;
 
         // Cheapest checks first; the signature check is last.
-        if self.status(&validator) == ValidatorStatus::Tombstoned {
+        if self.status(&validator).map_err(corrupt)? == ValidatorStatus::Tombstoned {
             return Err(EvidenceRejection::AlreadySlashed);
         }
         if infraction_time_ms > now_ms {
@@ -283,11 +405,32 @@ impl SlashingTracker {
             .verify(public_key)
             .map_err(EvidenceRejection::Invalid)?;
 
-        // Admitted. From here on the state changes.
+        // Admitted. Read what the new conviction correlates with, and
+        // what has aged out, before changing anything.
         let horizon = CORRELATION_WINDOW_MS.saturating_mul(2);
-        self.records
-            .retain(|_, record| now_ms.saturating_sub(record.infraction_ms) <= horizon);
-        self.records.insert(
+        let keep_from = now_ms.saturating_sub(horizon);
+        let stale = self
+            .indexed_between(0, keep_from.checked_sub(1))
+            .map_err(corrupt)?;
+
+        // Everything within twice the window of the new infraction is
+        // enough: an earlier record is only re-priced if within one
+        // window of it, and what it correlates with is within one more.
+        let lo = infraction_time_ms.saturating_sub(horizon);
+        let hi = infraction_time_ms.saturating_add(horizon);
+        let mut records: BTreeMap<Address, SlashRecord> = BTreeMap::new();
+        for (other, _) in self.indexed_between(lo, Some(hi)).map_err(corrupt)? {
+            if let Some(record) = self.record(&other).map_err(corrupt)? {
+                if record.infraction_ms >= keep_from {
+                    records.insert(other, record);
+                }
+            }
+        }
+        let before: BTreeMap<Address, u128> = records
+            .iter()
+            .map(|(validator, record)| (*validator, record.slashed))
+            .collect();
+        records.insert(
             validator,
             SlashRecord {
                 infraction_ms: infraction_time_ms,
@@ -295,52 +438,63 @@ impl SlashingTracker {
                 slashed: 0,
             },
         );
-        self.statuses.insert(validator, ValidatorStatus::Tombstoned);
 
-        self.reprice_around(infraction_time_ms, total_bonded_stake)
-    }
+        let orders = reprice_around(&mut records, infraction_time_ms, total_bonded_stake)?;
 
-    /// Re-prices every record within the correlation window of
-    /// `around_ms` — the new record and everyone it now correlates with
-    /// — and returns what each is now owed beyond what was already
-    /// ordered.
-    fn reprice_around(
-        &mut self,
-        around_ms: u64,
-        total_bonded_stake: u128,
-    ) -> Result<Vec<SlashOrder>, EvidenceRejection> {
-        let affected: Vec<Address> = self
-            .records
-            .iter()
-            .filter(|(_, record)| record.infraction_ms.abs_diff(around_ms) <= CORRELATION_WINDOW_MS)
-            .map(|(validator, _)| *validator)
-            .collect();
-
-        let mut orders = Vec::new();
-        for validator in affected {
-            let Some(record) = self.records.get(&validator).copied() else {
-                continue;
-            };
-            let correlated = self
-                .records
-                .values()
-                .filter(|other| {
-                    other.infraction_ms.abs_diff(record.infraction_ms) <= CORRELATION_WINDOW_MS
-                })
-                .fold(0u128, |total, other| total.saturating_add(other.stake));
-            let bps = slash_bps(correlated, total_bonded_stake)
-                .map_err(|_| EvidenceRejection::NoBondedStake)?;
-
-            let owed = penalty(record.stake, bps);
-            let burn = owed.saturating_sub(record.slashed);
-            if burn > 0 {
-                if let Some(entry) = self.records.get_mut(&validator) {
-                    entry.slashed = owed;
-                }
-                orders.push(SlashOrder { validator, burn });
+        // Nothing can fail from here: write it all.
+        for (old, infraction_ms) in &stale {
+            self.store.delete(&by_time_key(*infraction_ms, old));
+            self.store.delete(&record_key(old));
+        }
+        for (other, record) in &records {
+            let is_new = *other == validator;
+            if is_new || before.get(other) != Some(&record.slashed) {
+                save(&mut self.store, record_key(other), record);
+            }
+            if is_new {
+                save(
+                    &mut self.store,
+                    by_time_key(record.infraction_ms, other),
+                    other,
+                );
             }
         }
+        save(
+            &mut self.store,
+            status_key(&validator),
+            &ValidatorStatus::Tombstoned,
+        );
         Ok(orders)
+    }
+
+    /// The validators with a record whose infraction time is in
+    /// `from_ms..=to_ms` (`to_ms` of `None` is an empty range), in time
+    /// order, each with its time.
+    fn indexed_between(
+        &self,
+        from_ms: u64,
+        to_ms: Option<u64>,
+    ) -> Result<Vec<(Address, u64)>, Corrupt> {
+        let Some(to_ms) = to_ms else {
+            return Ok(Vec::new());
+        };
+        let start = time_prefix(from_ms);
+        let Some(end) = prefix_end(&time_prefix(to_ms)) else {
+            return Ok(Vec::new());
+        };
+        self.store
+            .range(&start, Some(&end), usize::MAX)
+            .into_iter()
+            .map(|(key, value)| {
+                let validator =
+                    chain_types::codec::decode_exact::<Address>(&value).map_err(|_| Corrupt)?;
+                let time = key
+                    .get(1..)
+                    .and_then(crate::store::read_be64)
+                    .ok_or(Corrupt)?;
+                Ok((validator, time))
+            })
+            .collect()
     }
 
     /// Jails `validator` for downtime — no burn, just removal from the
@@ -348,40 +502,85 @@ impl SlashingTracker {
     /// existing jail.
     pub fn jail_for_downtime(&mut self, validator: Address, now_ms: u64) -> Result<(), JailError> {
         let until_ms = now_ms.saturating_add(DOWNTIME_JAIL_MS);
-        match self.status(&validator) {
-            ValidatorStatus::Tombstoned => Err(JailError::Tombstoned),
-            ValidatorStatus::Jailed { until_ms: existing } => {
-                self.statuses.insert(
-                    validator,
-                    ValidatorStatus::Jailed {
-                        until_ms: existing.max(until_ms),
-                    },
-                );
-                Ok(())
-            }
-            ValidatorStatus::Active => {
-                self.statuses
-                    .insert(validator, ValidatorStatus::Jailed { until_ms });
-                Ok(())
-            }
-        }
+        let status = self
+            .status(&validator)
+            .map_err(|_| JailError::CorruptState)?;
+        let jailed_until = match status {
+            ValidatorStatus::Tombstoned => return Err(JailError::Tombstoned),
+            ValidatorStatus::Jailed { until_ms: existing } => existing.max(until_ms),
+            ValidatorStatus::Active => until_ms,
+        };
+        save(
+            &mut self.store,
+            status_key(&validator),
+            &ValidatorStatus::Jailed {
+                until_ms: jailed_until,
+            },
+        );
+        Ok(())
     }
 
     /// Returns a jailed validator to the active set, once their jail has
     /// run its course. A tombstoned validator can never return.
     pub fn unjail(&mut self, validator: &Address, now_ms: u64) -> Result<(), UnjailError> {
-        match self.status(validator) {
+        match self
+            .status(validator)
+            .map_err(|_| UnjailError::CorruptState)?
+        {
             ValidatorStatus::Tombstoned => Err(UnjailError::Tombstoned),
             ValidatorStatus::Active => Err(UnjailError::NotJailed),
             ValidatorStatus::Jailed { until_ms } if now_ms < until_ms => {
                 Err(UnjailError::StillJailed { until_ms })
             }
             ValidatorStatus::Jailed { .. } => {
-                self.statuses.remove(validator);
+                self.store.delete(&status_key(validator));
                 Ok(())
             }
         }
     }
+}
+
+/// Re-prices every record within the correlation window of `around_ms` —
+/// the new record and everyone it now correlates with — and returns what
+/// each is now owed beyond what was already ordered, updating each
+/// record's `slashed` to match. Pure: `records` is the whole neighbourhood
+/// (everything within twice the window of `around_ms`), so what a record
+/// correlates with is all in it.
+fn reprice_around(
+    records: &mut BTreeMap<Address, SlashRecord>,
+    around_ms: u64,
+    total_bonded_stake: u128,
+) -> Result<Vec<SlashOrder>, EvidenceRejection> {
+    let affected: Vec<Address> = records
+        .iter()
+        .filter(|(_, record)| record.infraction_ms.abs_diff(around_ms) <= CORRELATION_WINDOW_MS)
+        .map(|(validator, _)| *validator)
+        .collect();
+
+    let mut orders = Vec::new();
+    for validator in affected {
+        let Some(record) = records.get(&validator).copied() else {
+            continue;
+        };
+        let correlated = records
+            .values()
+            .filter(|other| {
+                other.infraction_ms.abs_diff(record.infraction_ms) <= CORRELATION_WINDOW_MS
+            })
+            .fold(0u128, |total, other| total.saturating_add(other.stake));
+        let bps = slash_bps(correlated, total_bonded_stake)
+            .map_err(|_| EvidenceRejection::NoBondedStake)?;
+
+        let owed = penalty(record.stake, bps);
+        let burn = owed.saturating_sub(record.slashed);
+        if burn > 0 {
+            if let Some(entry) = records.get_mut(&validator) {
+                entry.slashed = owed;
+            }
+            orders.push(SlashOrder { validator, burn });
+        }
+    }
+    Ok(orders)
 }
 
 #[cfg(test)]
@@ -395,10 +594,17 @@ mod tests {
 
     use super::*;
     use crate::staking::StakingPool;
+    use crate::store::MemStore;
     use blst::min_pk::SecretKey;
     use chain_types::bls::{BlsSignature, DST_VOTE};
     use chain_types::{BlockHeight, Hash, Round, Vote, VoteKind};
     use proptest::prelude::*;
+
+    type Tracker = SlashingTracker<MemStore>;
+
+    fn new_tracker() -> Tracker {
+        SlashingTracker::new(MemStore::new())
+    }
 
     const NOW: u64 = 100 * DAY_MS;
 
@@ -435,7 +641,7 @@ mod tests {
     /// Submits `seed`'s offence, dated `NOW - age_ms`, staked `stake` of
     /// `total` bonded.
     fn submit(
-        tracker: &mut SlashingTracker,
+        tracker: &mut Tracker,
         seed: u8,
         age_ms: u64,
         stake: u128,
@@ -543,7 +749,7 @@ mod tests {
 
     #[test]
     fn an_isolated_offender_is_burned_five_percent_and_tombstoned() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let orders = submit(&mut tracker, 1, DAY_MS, 100, 10_000).unwrap();
 
         assert_eq!(
@@ -553,13 +759,16 @@ mod tests {
                 burn: 5
             }]
         );
-        assert_eq!(tracker.status(&addr_of(1)), ValidatorStatus::Tombstoned);
-        assert_eq!(tracker.total_slashed(&addr_of(1)), Some(5));
+        assert_eq!(
+            tracker.status(&addr_of(1)).unwrap(),
+            ValidatorStatus::Tombstoned
+        );
+        assert_eq!(tracker.total_slashed(&addr_of(1)).unwrap(), Some(5));
     }
 
     #[test]
     fn evidence_checked_against_the_wrong_key_changes_nothing() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let (evidence, _) = offence(1);
         let (_, someone_elses_key) = offence(2);
 
@@ -568,40 +777,36 @@ mod tests {
             result,
             Err(EvidenceRejection::Invalid(EvidenceError::InvalidSignature))
         );
-        assert_eq!(
-            tracker,
-            SlashingTracker::new(),
-            "a rejection must leave no trace"
-        );
+        assert_eq!(tracker, new_tracker(), "a rejection must leave no trace");
     }
 
     #[test]
     fn evidence_from_the_future_is_refused() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let (evidence, pk) = offence(1);
         assert_eq!(
             tracker.submit_evidence(&evidence, &pk, NOW + 1, 100, 1_000, NOW),
             Err(EvidenceRejection::FromTheFuture)
         );
-        assert_eq!(tracker, SlashingTracker::new());
+        assert_eq!(tracker, new_tracker());
     }
 
     #[test]
     fn evidence_is_admissible_up_to_exactly_the_max_age_and_not_a_moment_past() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         assert!(submit(&mut tracker, 1, MAX_EVIDENCE_AGE_MS, 100, 1_000).is_ok());
 
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         assert_eq!(
             submit(&mut tracker, 1, MAX_EVIDENCE_AGE_MS + 1, 100, 1_000),
             Err(EvidenceRejection::TooOld)
         );
-        assert_eq!(tracker, SlashingTracker::new());
+        assert_eq!(tracker, new_tracker());
     }
 
     #[test]
     fn inconsistent_stake_figures_are_refused_without_effect() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         assert_eq!(
             submit(&mut tracker, 1, 0, 100, 0),
             Err(EvidenceRejection::NoBondedStake)
@@ -614,12 +819,12 @@ mod tests {
             submit(&mut tracker, 1, 0, 2_000, 1_000),
             Err(EvidenceRejection::StakeExceedsBonded)
         );
-        assert_eq!(tracker, SlashingTracker::new());
+        assert_eq!(tracker, new_tracker());
     }
 
     #[test]
     fn a_validator_is_convicted_only_once() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         submit(&mut tracker, 1, 0, 100, 10_000).unwrap();
         let after_first = tracker.clone();
 
@@ -636,7 +841,7 @@ mod tests {
     fn correlated_offenders_top_each_other_up_as_evidence_arrives() {
         // Three validators each holding 5% of 100_000 bonded stake, all
         // offending together.
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
 
         // Alone, 5% of the stake equivocating: 3 x 5% = 15% of 5_000.
         let first = submit(&mut tracker, 1, 0, 5_000, 100_000).unwrap();
@@ -660,14 +865,14 @@ mod tests {
         assert_eq!(burned(&third, 2), 750);
 
         for seed in [1, 2, 3] {
-            assert_eq!(tracker.total_slashed(&addr_of(seed)), Some(2_250));
+            assert_eq!(tracker.total_slashed(&addr_of(seed)).unwrap(), Some(2_250));
         }
     }
 
     #[test]
     fn a_large_validator_offending_alone_already_pays_more_than_the_floor() {
         // 10% of the bonded stake, entirely on their own: 3 x 10% = 30%.
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let orders = submit(&mut tracker, 1, 0, 100, 1_000).unwrap();
         assert_eq!(
             orders,
@@ -682,14 +887,14 @@ mod tests {
     fn a_coordinated_attack_cannot_hide_behind_arriving_one_at_a_time() {
         // A third of the stake equivocating, evidence trickling in one
         // validator at a time: everyone must still end up paying 100%.
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         for seed in 1..=4u8 {
             submit(&mut tracker, seed, 0, 250, 3_000).unwrap();
         }
         // 4 * 250 = 1000 of 3000 = exactly a third.
         for seed in 1..=4u8 {
             assert_eq!(
-                tracker.total_slashed(&addr_of(seed)),
+                tracker.total_slashed(&addr_of(seed)).unwrap(),
                 Some(250),
                 "validator {seed} pays in full"
             );
@@ -698,7 +903,7 @@ mod tests {
 
     #[test]
     fn offences_exactly_one_window_apart_still_correlate() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         // Infraction at NOW: 5% of the stake, alone, is 15% of 500 = 75.
         submit(&mut tracker, 1, 0, 500, 10_000).unwrap();
 
@@ -714,7 +919,7 @@ mod tests {
         // Two infractions can only be more than a window apart if the
         // earlier one was reported while it was still admissible. Submit
         // the old one, then a fresh one a window and a millisecond later.
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let (evidence, pk) = offence(1);
         let old = 10 * DAY_MS;
         tracker
@@ -735,7 +940,7 @@ mod tests {
             }]
         );
         assert_eq!(
-            tracker.total_slashed(&addr_of(1)),
+            tracker.total_slashed(&addr_of(1)).unwrap(),
             Some(5),
             "the earlier one is not touched"
         );
@@ -743,12 +948,12 @@ mod tests {
 
     #[test]
     fn old_records_are_forgotten_but_their_tombstones_are_not() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let (evidence, pk) = offence(1);
         tracker
             .submit_evidence(&evidence, &pk, 0, 100, 1_000, DAY_MS)
             .unwrap();
-        assert!(tracker.total_slashed(&addr_of(1)).is_some());
+        assert!(tracker.total_slashed(&addr_of(1)).unwrap().is_some());
 
         // A much later conviction prunes the old record...
         let much_later = 3 * CORRELATION_WINDOW_MS;
@@ -756,9 +961,12 @@ mod tests {
         tracker
             .submit_evidence(&evidence, &pk, much_later, 100, 1_000, much_later)
             .unwrap();
-        assert_eq!(tracker.total_slashed(&addr_of(1)), None);
+        assert_eq!(tracker.total_slashed(&addr_of(1)).unwrap(), None);
         // ...but the first validator is still tombstoned.
-        assert_eq!(tracker.status(&addr_of(1)), ValidatorStatus::Tombstoned);
+        assert_eq!(
+            tracker.status(&addr_of(1)).unwrap(),
+            ValidatorStatus::Tombstoned
+        );
     }
 
     proptest! {
@@ -771,7 +979,7 @@ mod tests {
         ) {
             let total = 2_000u128;
             let run = |order: &[usize]| {
-                let mut tracker = SlashingTracker::new();
+                let mut tracker = new_tracker();
                 for &i in order {
                     let (stake, offset) = offenders[i];
                     let seed = u8::try_from(i + 1).unwrap();
@@ -781,7 +989,7 @@ mod tests {
                         .unwrap();
                 }
                 (0..offenders.len())
-                    .map(|i| tracker.total_slashed(&addr_of(u8::try_from(i + 1).unwrap())).unwrap())
+                    .map(|i| tracker.total_slashed(&addr_of(u8::try_from(i + 1).unwrap())).unwrap().unwrap())
                     .collect::<Vec<_>>()
             };
 
@@ -807,28 +1015,28 @@ mod tests {
     #[test]
     fn slashing_orders_apply_to_a_staking_pool() {
         let mut pool = StakingPool::genesis();
-        pool.deposit(addr_of(200), 9_000).unwrap();
+        let delegator_shares = pool.deposit(9_000).unwrap();
         let stake = pool.total_stake();
         assert_eq!(stake, 10_000);
 
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         let orders = submit(&mut tracker, 1, 0, stake, 1_000_000).unwrap();
         assert_eq!(orders.len(), 1);
         let order = orders[0];
         assert_eq!(order.burn, 500, "5% of 10_000");
 
         assert_eq!(pool.slash(order.burn), 500);
-        pool.assert_invariant().unwrap();
+        pool.assert_invariant(delegator_shares).unwrap();
         // The delegator bears the loss pro rata: 9_000 of 10_000 shares,
         // against 9_500 of stake.
-        assert_eq!(pool.withdraw(addr_of(200), 9_000).unwrap(), 8_550);
+        assert_eq!(pool.withdraw(delegator_shares).unwrap(), 8_550);
     }
 
     #[test]
     fn a_topped_up_slash_burns_only_the_difference() {
         let mut pool = StakingPool::genesis();
-        pool.deposit(addr_of(200), 9_000).unwrap();
-        let mut tracker = SlashingTracker::new();
+        pool.deposit(9_000).unwrap();
+        let mut tracker = new_tracker();
 
         let first = submit(&mut tracker, 1, 0, 10_000, 100_000).unwrap();
         let mut total_burned = pool.slash(burned(&first, 1));
@@ -838,7 +1046,10 @@ mod tests {
         let second = submit(&mut tracker, 2, 0, 10_000, 100_000).unwrap();
         total_burned += pool.slash(burned(&second, 1));
 
-        assert_eq!(total_burned, tracker.total_slashed(&addr_of(1)).unwrap());
+        assert_eq!(
+            total_burned,
+            tracker.total_slashed(&addr_of(1)).unwrap().unwrap()
+        );
         assert_eq!(
             total_burned,
             penalty(10_000, slash_bps(20_000, 100_000).unwrap())
@@ -849,16 +1060,16 @@ mod tests {
 
     #[test]
     fn downtime_jails_without_burning_and_can_be_undone_after_the_term() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         tracker.jail_for_downtime(addr_of(1), NOW).unwrap();
         assert_eq!(
-            tracker.status(&addr_of(1)),
+            tracker.status(&addr_of(1)).unwrap(),
             ValidatorStatus::Jailed {
                 until_ms: NOW + DOWNTIME_JAIL_MS
             }
         );
         assert_eq!(
-            tracker.total_slashed(&addr_of(1)),
+            tracker.total_slashed(&addr_of(1)).unwrap(),
             None,
             "downtime burns nothing"
         );
@@ -870,12 +1081,15 @@ mod tests {
             })
         );
         assert_eq!(tracker.unjail(&addr_of(1), NOW + DOWNTIME_JAIL_MS), Ok(()));
-        assert_eq!(tracker.status(&addr_of(1)), ValidatorStatus::Active);
+        assert_eq!(
+            tracker.status(&addr_of(1)).unwrap(),
+            ValidatorStatus::Active
+        );
     }
 
     #[test]
     fn unjailing_someone_who_is_not_jailed_is_an_error() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         assert_eq!(
             tracker.unjail(&addr_of(1), NOW),
             Err(UnjailError::NotJailed)
@@ -884,11 +1098,11 @@ mod tests {
 
     #[test]
     fn a_second_downtime_never_shortens_the_jail() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         tracker.jail_for_downtime(addr_of(1), NOW + DAY_MS).unwrap();
         tracker.jail_for_downtime(addr_of(1), NOW).unwrap(); // an earlier "now"
         assert_eq!(
-            tracker.status(&addr_of(1)),
+            tracker.status(&addr_of(1)).unwrap(),
             ValidatorStatus::Jailed {
                 until_ms: NOW + 2 * DAY_MS
             }
@@ -897,11 +1111,14 @@ mod tests {
 
     #[test]
     fn a_jailed_validator_can_still_be_convicted_and_then_never_returns() {
-        let mut tracker = SlashingTracker::new();
+        let mut tracker = new_tracker();
         tracker.jail_for_downtime(addr_of(1), NOW).unwrap();
 
         submit(&mut tracker, 1, 0, 100, 10_000).unwrap();
-        assert_eq!(tracker.status(&addr_of(1)), ValidatorStatus::Tombstoned);
+        assert_eq!(
+            tracker.status(&addr_of(1)).unwrap(),
+            ValidatorStatus::Tombstoned
+        );
         assert_eq!(
             tracker.unjail(&addr_of(1), NOW + 365 * DAY_MS),
             Err(UnjailError::Tombstoned)
@@ -909,6 +1126,277 @@ mod tests {
         assert_eq!(
             tracker.jail_for_downtime(addr_of(1), NOW),
             Err(JailError::Tombstoned)
+        );
+    }
+
+    // ---- storage -------------------------------------------------------
+
+    fn count(store: &MemStore, tag: u8) -> usize {
+        store.scan_prefix(&[tag], usize::MAX).len()
+    }
+
+    #[test]
+    fn a_conviction_writes_a_status_a_record_and_a_time_index_entry() {
+        let mut tracker = new_tracker();
+        submit(&mut tracker, 1, 0, 100, 10_000).unwrap();
+        let store = tracker.store();
+        assert_eq!(count(store, tag::SLASH_STATUS), 1);
+        assert_eq!(count(store, tag::SLASH_RECORD), 1);
+        assert_eq!(count(store, tag::SLASH_BY_TIME), 1);
+        assert_eq!(store.len(), 3, "and nothing else");
+    }
+
+    #[test]
+    fn jailing_writes_one_entry_and_unjailing_removes_it() {
+        let mut tracker = new_tracker();
+        tracker.jail_for_downtime(addr_of(1), NOW).unwrap();
+        assert_eq!(tracker.store().len(), 1);
+        tracker.unjail(&addr_of(1), NOW + DOWNTIME_JAIL_MS).unwrap();
+        assert!(
+            tracker.store().is_empty(),
+            "an active validator has no entry"
+        );
+    }
+
+    #[test]
+    fn an_aged_out_record_and_its_index_entry_leave_the_store_but_the_tombstone_stays() {
+        let mut tracker = new_tracker();
+        submit(&mut tracker, 1, 0, 100, 10_000).unwrap();
+
+        // Long after the horizon, another conviction sweeps the old record.
+        let much_later = NOW + 3 * CORRELATION_WINDOW_MS;
+        let (evidence, pk) = offence(2);
+        tracker
+            .submit_evidence(&evidence, &pk, much_later, 100, 10_000, much_later)
+            .unwrap();
+
+        let store = tracker.store();
+        assert_eq!(count(store, tag::SLASH_RECORD), 1, "only the new one");
+        assert_eq!(count(store, tag::SLASH_BY_TIME), 1);
+        assert_eq!(count(store, tag::SLASH_STATUS), 2, "both stay convicted");
+        assert_eq!(tracker.total_slashed(&addr_of(1)).unwrap(), None);
+        assert_eq!(
+            tracker.status(&addr_of(1)).unwrap(),
+            ValidatorStatus::Tombstoned
+        );
+    }
+
+    #[test]
+    fn a_new_tracker_over_a_copy_of_the_store_remembers_everything() {
+        let mut tracker = new_tracker();
+        submit(&mut tracker, 1, 0, 5_000, 100_000).unwrap();
+        tracker.jail_for_downtime(addr_of(9), NOW).unwrap();
+
+        let mut restarted = SlashingTracker::new(tracker.store().clone());
+        assert_eq!(restarted, tracker);
+        assert_eq!(
+            restarted.status(&addr_of(1)).unwrap(),
+            ValidatorStatus::Tombstoned
+        );
+        // A correlated offender arriving after the restart still tops up
+        // the one convicted before it.
+        let orders = submit(&mut restarted, 2, 0, 5_000, 100_000).unwrap();
+        assert!(orders.iter().any(|o| o.validator == addr_of(1)));
+    }
+
+    #[test]
+    fn a_status_that_does_not_decode_is_corruption_never_active() {
+        let mut store = MemStore::new();
+        store.put(status_key(&addr_of(1)), vec![9, 9, 9]);
+        let mut tracker = SlashingTracker::new(store);
+
+        assert!(tracker.status(&addr_of(1)).is_err());
+        assert_eq!(
+            tracker.jail_for_downtime(addr_of(1), NOW),
+            Err(JailError::CorruptState)
+        );
+        assert_eq!(
+            tracker.unjail(&addr_of(1), NOW),
+            Err(UnjailError::CorruptState)
+        );
+        assert_eq!(
+            submit(&mut tracker, 1, 0, 100, 1_000),
+            Err(EvidenceRejection::CorruptState)
+        );
+    }
+
+    #[test]
+    fn a_corrupt_record_in_the_window_refuses_the_evidence_and_changes_nothing() {
+        let mut tracker = new_tracker();
+        submit(&mut tracker, 1, 0, 100, 10_000).unwrap();
+        let mut store = tracker.into_store();
+        store.put(record_key(&addr_of(1)), vec![1]);
+        let before = store.clone();
+        let mut tracker = SlashingTracker::new(store);
+
+        assert_eq!(
+            submit(&mut tracker, 2, 0, 100, 10_000),
+            Err(EvidenceRejection::CorruptState)
+        );
+        assert_eq!(tracker.store(), &before);
+    }
+
+    #[test]
+    fn statuses_round_trip_and_an_unknown_kind_is_invalid() {
+        use chain_types::codec::decode_exact;
+        for status in [
+            ValidatorStatus::Active,
+            ValidatorStatus::Jailed { until_ms: 123_456 },
+            ValidatorStatus::Tombstoned,
+        ] {
+            let mut bytes = Vec::new();
+            status.encode(&mut bytes);
+            assert_eq!(decode_exact::<ValidatorStatus>(&bytes).unwrap(), status);
+        }
+        assert!(decode_exact::<ValidatorStatus>(&[7]).is_err());
+        assert!(
+            decode_exact::<ValidatorStatus>(&[1, 0, 0]).is_err(),
+            "truncated"
+        );
+        assert!(
+            decode_exact::<ValidatorStatus>(&[2, 0]).is_err(),
+            "trailing"
+        );
+    }
+
+    #[test]
+    fn records_round_trip() {
+        use chain_types::codec::decode_exact;
+        let record = SlashRecord {
+            infraction_ms: 42,
+            stake: 1_000_000,
+            slashed: 50_000,
+        };
+        let mut bytes = Vec::new();
+        record.encode(&mut bytes);
+        assert_eq!(decode_exact::<SlashRecord>(&bytes).unwrap(), record);
+    }
+
+    #[test]
+    fn the_time_index_orders_by_infraction_time() {
+        // Big-endian time in the key is what makes a range read a window.
+        let mut tracker = new_tracker();
+        for (seed, age) in [(1u8, 3 * DAY_MS), (2, DAY_MS), (3, 2 * DAY_MS)] {
+            submit(&mut tracker, seed, age, 10, 100_000).unwrap();
+        }
+        let times: Vec<u64> = tracker
+            .indexed_between(0, Some(u64::MAX))
+            .unwrap()
+            .into_iter()
+            .map(|(_, time)| time)
+            .collect();
+        assert_eq!(
+            times,
+            vec![NOW - 3 * DAY_MS, NOW - 2 * DAY_MS, NOW - DAY_MS]
+        );
+    }
+
+    /// Convicts `seed` for an infraction at `infraction_ms`, reported at
+    /// `now_ms`, with `stake` of `total` bonded.
+    fn convict(
+        tracker: &mut Tracker,
+        seed: u8,
+        infraction_ms: u64,
+        now_ms: u64,
+        stake: u128,
+        total: u128,
+    ) -> Vec<SlashOrder> {
+        let (evidence, pk) = offence(seed);
+        tracker
+            .submit_evidence(&evidence, &pk, infraction_ms, stake, total, now_ms)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_record_is_kept_for_exactly_twice_the_window_and_swept_a_moment_after() {
+        let horizon = 2 * CORRELATION_WINDOW_MS;
+        let (stake, total) = (5_000, 100_000);
+        for (extra, kept) in [(0, true), (1, false)] {
+            let mut tracker = new_tracker();
+            let first = NOW - horizon - extra;
+            convict(&mut tracker, 1, first, first, stake, total);
+            // Another conviction, exactly `horizon + extra` later.
+            convict(&mut tracker, 2, NOW, NOW, stake, total);
+
+            assert_eq!(
+                tracker.total_slashed(&addr_of(1)).unwrap().is_some(),
+                kept,
+                "{extra} ms past the horizon"
+            );
+            assert_eq!(
+                tracker.status(&addr_of(1)).unwrap(),
+                ValidatorStatus::Tombstoned,
+                "the conviction itself is permanent"
+            );
+        }
+    }
+
+    #[test]
+    fn correlation_chains_through_a_record_more_than_one_window_from_the_newest() {
+        // A and B are a window apart, B and C are a window apart, A and C
+        // are two windows apart. C's arrival re-prices B — and B's rate
+        // counts A, which is beyond C's own window but not B's.
+        let w = CORRELATION_WINDOW_MS;
+        let t0 = NOW - 2 * w;
+        let (stake, total) = (5_000u128, 100_000u128);
+        let mut tracker = new_tracker();
+
+        convict(&mut tracker, 1, t0, t0, stake, total); // A
+        convict(&mut tracker, 2, t0 + w, t0 + w, stake, total); // B
+        let owed_a = penalty(stake, slash_bps(2 * stake, total).unwrap());
+        assert_eq!(tracker.total_slashed(&addr_of(1)).unwrap(), Some(owed_a));
+
+        let orders = convict(&mut tracker, 3, t0 + 2 * w, t0 + 2 * w, stake, total); // C
+
+        let owed_b = penalty(stake, slash_bps(3 * stake, total).unwrap());
+        assert_eq!(
+            tracker.total_slashed(&addr_of(2)).unwrap(),
+            Some(owed_b),
+            "B is priced against A, B and C together"
+        );
+        assert_eq!(
+            tracker.total_slashed(&addr_of(1)).unwrap(),
+            Some(owed_a),
+            "A is more than a window from C, so C does not re-price it"
+        );
+        assert!(
+            orders.iter().any(|o| o.validator == addr_of(2)),
+            "B topped up"
+        );
+        assert!(orders.iter().all(|o| o.validator != addr_of(1)));
+        // A, at exactly twice the window, is still on record.
+        assert!(tracker.total_slashed(&addr_of(1)).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_record_that_has_aged_out_no_longer_counts_toward_anyones_rate() {
+        // D and A are one millisecond apart, so they were correlated when
+        // D was convicted. By the time C arrives A is a millisecond past
+        // the horizon and is swept, so D is priced against D and C alone
+        // — which is what it already owed — and nothing more is taken.
+        let w = CORRELATION_WINDOW_MS;
+        let (stake, total) = (5_000u128, 100_000u128);
+        let a = NOW - 2 * w - 1;
+        let d = NOW - 2 * w;
+        let c = NOW - w;
+        let mut tracker = new_tracker();
+
+        convict(&mut tracker, 1, a, a, stake, total);
+        convict(&mut tracker, 2, d, d, stake, total);
+        let owed_d = penalty(stake, slash_bps(2 * stake, total).unwrap());
+        assert_eq!(tracker.total_slashed(&addr_of(2)).unwrap(), Some(owed_d));
+
+        let orders = convict(&mut tracker, 3, c, NOW, stake, total);
+
+        assert_eq!(
+            tracker.total_slashed(&addr_of(1)).unwrap(),
+            None,
+            "A was swept"
+        );
+        assert_eq!(
+            orders.iter().map(|o| o.validator).collect::<Vec<_>>(),
+            vec![addr_of(3)],
+            "D was not topped up on account of a record that no longer counts"
         );
     }
 }

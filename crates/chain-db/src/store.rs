@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use chain_engine_api::Block;
-use chain_state::{StateDiff, StateKey, StateValue};
+use chain_state::{StateChange, StateDiff, StateKey, StateValue};
 use chain_types::codec::{decode_exact, Encode};
 use chain_types::{BlockHeight, Hash};
 use libmdbx::{
@@ -101,13 +101,22 @@ impl Db {
             state_root.as_bytes(),
             WriteFlags::UPSERT,
         )?;
-        for (key, value) in diff.iter() {
-            txn.put(
-                state_db,
-                key.as_bytes(),
-                value.as_bytes(),
-                WriteFlags::UPSERT,
-            )?;
+        for (key, change) in diff.iter() {
+            match change {
+                StateChange::Put(value) => {
+                    txn.put(
+                        state_db,
+                        key.as_bytes(),
+                        value.as_bytes(),
+                        WriteFlags::UPSERT,
+                    )?;
+                }
+                // Deleting a key MDBX doesn't hold is not an error: the
+                // diff says the key is absent afterwards, and it is.
+                StateChange::Delete => {
+                    txn.del(state_db, key.as_bytes(), None)?;
+                }
+            }
         }
         txn.put(
             meta_db,
