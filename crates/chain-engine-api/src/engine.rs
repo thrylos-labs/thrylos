@@ -1,10 +1,8 @@
 //! The `Engine` trait: the entire boundary between consensus and
-//! execution, three calls wide. `docs/spec.md`, "Scope and non-goals":
-//! "The consensus/execution boundary is a typed engine API with three
-//! calls: `propose_block`, `execute_block`, `finalise_block`. Neither
-//! side shares memory with the other, so each can be differentially
-//! fuzzed against a reference in isolation, and consensus can be
-//! replaced later without touching execution."
+//! execution, three mutating calls wide. `docs/spec.md`, "Scope and
+//! non-goals" keeps this v1 boundary in-process and adds [`crate::ChainView`]
+//! for deterministic reads. Every input is explicit and the interface can be
+//! differentially fuzzed against a reference in isolation.
 //!
 //! This crate defines the contract only: no selection algorithm, no
 //! MoveVM, no storage. An implementation belongs to `chain-exec`
@@ -29,6 +27,18 @@ pub struct BlockLimits {
 
 /// The block size ceiling — fixed, never governance-adjustable.
 pub const MAX_BLOCK_SIZE_BYTES: u32 = 4 * 1024 * 1024;
+
+/// A transaction may reserve at most one quarter of the active block gas
+/// limit. This keeps one transaction from monopolising block execution and
+/// leaves the proposer no discretion over the limit.
+pub const MAX_TRANSACTION_GAS_DIVISOR: u64 = 4;
+
+pub const fn max_transaction_gas(block_gas_limit: u64) -> u64 {
+    match block_gas_limit.checked_div(MAX_TRANSACTION_GAS_DIVISOR) {
+        Some(limit) => limit,
+        None => 0,
+    }
+}
 
 /// The genesis default for [`BlockLimits::max_gas`]. Governance may move
 /// this within its clamp (10M–120M); this constant is only the starting
@@ -71,6 +81,10 @@ pub enum RejectionReason {
     /// clock" half needs a clock, and is the consensus host's to check —
     /// see [`crate::timestamp`].
     InvalidBlockTimestamp,
+    /// The transaction asks for more than one quarter of the active block
+    /// gas limit. This is a transaction-level validity failure even when the
+    /// block total remains below its limit.
+    TransactionGasLimitExceeded,
     /// After applying the block, the total of every balance, every staked
     /// unit and every unbonding entry no longer equals the supply the
     /// chain has recorded: value was created or lost somewhere. Not
@@ -110,9 +124,9 @@ pub struct FinaliseError {
     pub reason: FinaliseErrorReason,
 }
 
-/// The entire boundary between consensus and execution. Every value
-/// crossing it is owned, not borrowed, so an implementation on one side
-/// can never hold a reference into the other's memory.
+/// The entire mutating boundary between consensus and execution. It exposes
+/// no untyped shared state: blocks, roots, limits and results cross through
+/// explicit values.
 pub trait Engine {
     /// Assemble a candidate block extending `parent_block_hash` /
     /// `parent_state_root` from `candidate_transactions` (already

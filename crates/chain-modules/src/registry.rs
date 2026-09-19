@@ -256,7 +256,7 @@ pub enum RegistryError {
     ConsensusKeyInUse,
     /// The proof of possession does not verify: registering a key needs
     /// a signature by that key over itself, which defeats rogue-key
-    /// attacks on the aggregate signatures.
+    /// substitution in BLS protocols.
     InvalidProofOfPossession,
     SelfStakeBelowMinimum,
     UnknownValidator,

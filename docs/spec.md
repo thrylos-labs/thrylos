@@ -1,6 +1,11 @@
 # Thrylos — technical spec
 
-2026-09-17
+Last amended 2026-09-19
+
+Implementation status and evidence are tracked separately in
+[`spec-conformance.md`](spec-conformance.md). This document defines the
+intended protocol; the ledger records where the repository does and does not
+yet implement it.
 
 ## Requirements
 
@@ -55,8 +60,10 @@ The workspace splits on one line: crates whose output must be byte-identical on 
 | `chain-mempool` | Tx admission, eviction, replacement | B | DoS, censorship |
 | `chain-rpc` | JSON-RPC, tracing | C | Local only |
 | `chain-signer` | Remote signer, slash protection | A | Stake burn |
+| `chain-node` | Runtime assembly and durable host storage | B | Halt, local corruption |
+| `chain-genesis` | Genesis file parsing and inspection CLI | C | Operator error before launch |
 
-The consensus/execution boundary is a typed engine API with three calls: `propose_block`, `execute_block`, `finalise_block`. Neither side shares memory with the other, so each can be differentially fuzzed against a reference in isolation, and consensus can be replaced later without touching execution.
+The consensus/execution boundary is a typed engine API with three mutating calls: `propose_block`, `execute_block`, `finalise_block`, plus a read-only chain view. The v1 implementation is in-process; process isolation here would add failure modes without removing the need to audit either side. The narrow API keeps inputs explicit, permits differential fuzzing against a reference, and allows a later transport adapter without changing execution semantics.
 
 ## Consensus
 
@@ -76,7 +83,9 @@ BFT proof-of-stake with single-slot deterministic finality: a committed block is
 
 Proposer selection uses a VRF seeded by the previous block's certificate: each validator can verify the winner after the fact, but nobody can compute the schedule ahead of time. A deterministic round-robin over a public validator set is a targeting list, and that is the whole reason for the extra complexity here.
 
-Signatures are BLS12-381 with proof-of-possession, aggregated per round. Every public key is checked for subgroup membership on registration and the aggregate is verified against the canonical participation bitfield, never against a set the message itself supplies.
+Signatures are BLS12-381 with proof-of-possession. A certificate carries one signature and validator identity per participant; entry order has no meaning. Every public key is checked for subgroup membership on registration; verification resolves every identity against the canonical validator set, rejects duplicates and outsiders, verifies each validator-specific signed message, and totals canonical voting power. The certificate never supplies public keys or voting power.
+
+The individual-signature representation is deliberate. It matches Malachite's certificate model and preserves validator identity in the signed bytes, which makes attribution and equivocation evidence direct. Aggregation would require a new address-free signed-message format and participation bitfield. Adopt it only if measurements on the named reference hardware show that individual verification or certificate propagation exceeds its budget; wire compactness alone is not enough reason to add the second representation.
 
 The two properties that need proving, not testing: no two conflicting blocks can both reach 2/3+ at the same height (safety), and a correct proposer's block commits within a bounded number of rounds once the network is synchronous (liveness). Specify these in TLA+ or Quint and model-check the state machine before implementation, not after.
 
@@ -117,7 +126,7 @@ The argument for this chain, stated as the property a developer gets: the most c
 | Missing access control | A runtime check someone forgets | A capability must be passed in, or it does not compile |
 | Lost or duplicated assets | Balance arithmetic, audited by hand | Resources are linear: dropping one is a type error |
 | Silent overflow | Unchecked blocks and wrapping | Arithmetic aborts |
-| Unsafe upgrade | Proxy patterns with storage-layout traps | Module upgrade is a protocol operation with compatibility checked by the VM |
+| Unsafe upgrade | Proxy patterns with storage-layout traps | User modules are immutable in v1; a replacement is a named protocol fork with an explicit state migration |
 
 The three primitives developers build with:
 
@@ -127,7 +136,7 @@ The three primitives developers build with:
 
 What this does not solve, and where audits still go: economic design, oracle dependence, governance capture and protocol-level logic errors. Move removes the mechanical bug classes. It does not remove the ones that require understanding what the protocol is supposed to do, which is where the expensive human review belongs anyway.
 
-The standard library ships unmodified from upstream, with the chain adding only what its native modules require — staking, fees and governance entry points. Every addition is an audit item and a source of divergence from the ecosystem's tooling, so the bar for adding one is high.
+The standard library ships unmodified from upstream. User modules may be published but are immutable in v1. There is no transaction-level module upgrade path and governance cannot replace code; a code or storage-layout change is a named protocol fork with an explicit migration. Staking and governance use the fixed protocol entry points in the native-module-boundary section rather than extending MoveVM. Every additional entry point is an audit item and a source of divergence from ecosystem tooling, so the list is frozen for v1.
 
 ## State, storage and sync
 
@@ -145,7 +154,7 @@ Further rules:
 
 - Writes are batched per block and committed atomically with the block header. A crash mid-write leaves the node at block N or N+1, never between.
 - Pruning never touches anything inside the unbonding window.
-- State growth is priced (see fees) and account creation charges a deposit-like premium, because unpriced state is a permanent tax on every future node operator.
+- Persistent bytes created by an account, object or published module pay a one-time storage deposit at a compiled-in price. This is a bound on permanent state growth, not a second dynamic fee market; compute remains the only EIP-1559 dimension at launch. The deposit is returned only when the corresponding state is provably deleted.
 
 ## Native modules: staking, fees and governance
 
@@ -153,7 +162,7 @@ These modules hold the funds, so they get the invariant-testing budget. Fees and
 
 **Staking and rewards.** Reward distribution is a share-price system and inherits every share-price bug from DeFi: first-depositor inflation, division-before-multiplication dust, and rounding that favours the caller. Mitigations: mint a dead share at genesis so the pool is never empty, fixed-point arithmetic throughout with a single `U256` fixed-point type and no ad-hoc scaling, round *against* the user on every withdrawal path, and assert `sum(shares) * price == total_stake ± 1 wei` as a block-level invariant that halts block production if violated.
 
-**Fees.** EIP-1559 on one dimension: compute. A fixed gas price plus permissionless submission is a spam economy — an attacker fills every block at constant cost and the only remedy is a fork. A base fee that rises under load prices that attack out without a governance vote. State growth and bandwidth stay unpriced at launch and are watched rather than modelled; the three-dimensional version returns only if measurement shows it is needed.
+**Fees.** EIP-1559 on one dynamic dimension: compute. A fixed gas price plus permissionless submission is a spam economy — an attacker fills every block at constant cost and the only remedy is a fork. A base fee that rises under load prices that attack out without a governance vote. Persistent state growth pays the fixed one-time deposit described above; bandwidth has no separate price at launch. Dynamic state and bandwidth fee dimensions return only if measurement shows they are needed.
 
 **Governance, minimal.** Parameter changes only. No arbitrary code execution, no treasury, no upgradable modules. It exists for two reasons the deletion pass exposed: a permissionless, pseudonymous validator set has no other way to coordinate a fork activation, and a mispriced gas-schedule entry would otherwise be a permanent denial of service.
 
@@ -209,7 +218,7 @@ Every rule below is enforced by a lint, a test or a wrapper type in tier A crate
 | No `unsafe` | `#![forbid(unsafe_code)]` in every tier A crate |
 | No panics | `unwrap`, `expect`, `panic!`, slicing and integer division banned by lint; all fallible paths return `Result` |
 | No overflow | `#[deny(arithmetic_overflow)]`, checked arithmetic wrapper types, `overflow-checks = true` in release |
-| No ambient I/O | Tier A crates are `no_std`-compatible and take all inputs as arguments |
+| No ambient I/O | Consensus execution takes all state and block inputs as arguments; a dependency and source scan rejects filesystem, network, process and environment access on the execution path. Literal `no_std` compatibility is not required because the pinned VM and consensus dependencies use `std` |
 | Canonical encoding | Decode is strict; a round-trip property test asserts `encode(decode(x)) == x` byte-for-byte, with fuzzing on malformed inputs |
 | Fixed iteration order | Any iteration feeding the state root walks a sorted structure |
 
@@ -228,7 +237,7 @@ Stated targets, to be measured on reference hardware and re-measured every relea
 - A full block at the gas limit executes in under 200 ms at p99, against a state of at least 100 GB.
 - No single transaction exceeds 25% of the block execution budget.
 - Worst-case measured cost of any opcode is within 3x its average cost. Anything above 3x gets repriced before launch.
-- Signature verification of a full block's worth of aggregate signatures completes in under 20 ms.
+- Verification of a 128-participant certificate completes in at most 200 ms at p99, and its encoded commit record is at most 32 KiB. These ceilings reserve 10% of the 2-second round timeout for certificate verification and less than 1% of the 4 MiB block cap for finality proof data. The release measurement uses the exact production verifier and encoder.
 
 Reference hardware is named explicitly in the spec (core count, disk class, memory) and is deliberately modest, because the validator set decentralises only as far as the cheapest machine that can keep up.
 
@@ -265,7 +274,7 @@ Rules every transaction is checked against before it enters a block. Each exists
 | Gas budget | Covered by sender balance at maximum price | Execution begins on a transaction that cannot pay |
 | Declared inputs | Every object touched is listed | Dynamic resolution, and the parallelism path closes |
 
-Ed25519 is the only scheme accepted at launch, and that byte is the entire concession to cryptographic agility. Ed25519 and BLS12-381 are both broken by a sufficiently large quantum computer, but the migration is not designable yet: FN-DSA remains a draft standard and depends on floating-point Gaussian sampling, which tier A bans outright, and there is no post-quantum equivalent of BLS aggregation — ML-DSA signatures run about 2.4 KB and do not aggregate, so 128 per round would breach the block size cap on signatures alone. Registering unused post-quantum keys now would be provisioning for an algorithm nobody has chosen. The byte costs roughly 20 lines and keeps the format stable until the choice can actually be made.
+Ed25519 is the only account-signature scheme accepted at launch, and that byte is the entire concession to cryptographic agility. Ed25519 and BLS12-381 are both broken by a sufficiently large quantum computer, but the migration is not designable yet: post-quantum standards and implementations are still moving, and there is no compact drop-in replacement for BLS certificates. At roughly 2.4 KB per ML-DSA signature, 128 individual signatures would add about 300 KiB to each full certificate before framing — below the block cap, but a material change to round gossip and verification. Registering unused post-quantum keys now would provision an algorithm nobody has chosen. The scheme byte keeps the account transaction format stable until the choice can be made; changing the consensus-key scheme remains a named fork.
 
 Block timestamps are validated too, because the unbonding and evidence windows are measured in them: strictly greater than the parent's, no more than 5 seconds ahead of the validating node's clock, and a block failing either is rejected rather than clamped. Clamping produces a fork; rejection does not.
 
@@ -280,15 +289,19 @@ Replay-from-genesis alone is not safe. A node syncing from nothing can be fed an
 
 ## Native module boundary
 
-Move contracts reach staking, fees and governance through a frozen list of entry points, specified here and changed only by a fork. This list is the entire surface between the two trust worlds, and "minimal natives" becomes twelve natives exactly by adding one at a time without a rule.
+Signed transactions reach staking and governance through seven frozen protocol calls, dispatched by reserved package and module names and changed only by a fork:
 
-- `stake(Coin, ValidatorId) -> StakeReceipt`
-- `unstake(StakeReceipt) -> Coin` (subject to the unbonding period)
-- `claim_rewards(StakeReceipt) -> Coin`
-- `vote(GovCap, ProposalId, Vote)`
-- `read_validator_set() -> vector<ValidatorInfo>` (read-only)
+- `register_validator(consensus_key, proof_of_possession, self_stake)`
+- `stake(validator, amount)`
+- `unstake(validator, shares)` (begins the unbonding period)
+- `unjail()`
+- `submit_evidence(evidence)`
+- `submit_proposal(proposal)`
+- `vote(proposal_id, vote)`
 
-Each is metered by measurement, not estimate, and each carries its own fuzz target. Nothing else crosses the boundary: no clock, no randomness beyond the VRF output already in the block, no arbitrary native calls.
+These are protocol calls handled at the executor boundary, not custom MoveVM native functions callable from arbitrary bytecode. That smaller boundary avoids representing validator administration, evidence and governance capabilities as a second set of Move resources before there is an application requirement for contract-level composability. Rewards compound into the staking share price and are realised by unstaking, so a separate `claim_rewards` call would duplicate accounting state. Consensus reads the validator set through the read-only engine view rather than a transaction call.
+
+Each state-changing call is metered by measurement and carries its own fuzz target. Nothing else crosses the boundary: no caller-supplied clock, no ambient randomness and no arbitrary native dispatch.
 
 ## Halt recovery
 
@@ -393,4 +406,4 @@ Each of these changes the spec materially and none has a defensible default.
 - [ ] **Emergency powers.** Is there a pause, who holds it, and does it expire? A pause that never expires is a permanent trust assumption; no pause at all means the first live incident is unrecoverable.
 - [ ] **Reference hardware spec.** Names the real decentralisation floor.
 
-The build of this specification at roughly 6,800 lines of first-party Rust: minimal implementation.
+Repository line count is not a protocol requirement. Audit scope is tracked by trust tier, dependency revision, frozen boundary size, enforced bounds and verification evidence in the conformance ledger. A small first-party wrapper does not make the upstream VM, consensus engine or storage dependency disappear from the audit surface.

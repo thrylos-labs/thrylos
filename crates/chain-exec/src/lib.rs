@@ -67,10 +67,9 @@
 //!   next block. Last of all the block is checked to have neither created
 //!   nor destroyed value; one that did is rejected as
 //!   `RejectionReason::InvariantViolated`, halting the chain at it.
-//! - Native calls are not metered — like every call here they are charged
-//!   their declared gas limit — and some do work that grows with the state
-//!   (see [`native`]). Metering them by measurement is required before
-//!   this carries real value.
+//! - Native protocol calls are not metered — they are charged their declared
+//!   gas limit — and some do work that grows with the state (see [`native`]).
+//!   Metering them by measurement is required before this carries real value.
 //! - Declared-input enforcement for the object case is an abort when
 //!   the counter isn't declared, and structural underneath that: Sui's
 //!   Move has no ambient lookup by address, so `bump` can only touch the
@@ -78,10 +77,12 @@
 //!   only constructs for a declared address. There's still only one
 //!   object *type*, and no way to create a new object at runtime (only
 //!   the one genesis instance exists) — both real follow-up work.
-//! - No real gas metering (`UnmeteredGasMeter`); `gas_used` is stood in
-//!   for by the transaction's declared `gas_limit`, not a calibrated
-//!   per-instruction cost model. What that gas *costs* is real, though:
-//!   every transaction in a block pays the same base fee per gas
+//! - Move bytecode runs through the pinned VM's tiered gas meter, which stops
+//!   execution at the signed transaction budget and reports actual units
+//!   consumed on success and abort. The upstream schedule is not calibrated
+//!   to Thrylos reference hardware yet, and the protocol calls described
+//!   above still need measured charges. Every transaction in a block pays the
+//!   same base fee per gas
 //!   (`chain_modules::fees`, EIP-1559 on the single dimension of
 //!   compute), stored in state so it is part of the state root and diff,
 //!   and recomputed from each block's total gas for the next. A

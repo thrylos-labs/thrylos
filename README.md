@@ -2,7 +2,7 @@
 
 A single-client, Move-based proof-of-stake L1 in Rust, optimised for auditability over feature count.
 
-The full technical spec, including the open decisions that still need answers before genesis, is at [docs/spec.md](docs/spec.md). Read the Requirements and Open decisions sections first — most of the parameters in this repo are defaults to be argued with, not settled decisions.
+The full technical spec, including the open decisions that still need answers before genesis, is at [docs/spec.md](docs/spec.md). Its implementation status and evidence are tracked in the [spec-conformance ledger](docs/spec-conformance.md). Read the Requirements and Open decisions sections first — most of the parameters in this repo are defaults to be argued with, not settled decisions.
 
 ## What is working today
 
@@ -14,7 +14,7 @@ Thrylos is pre-genesis. **There is no runnable node yet**: nothing starts a netw
 |---|---|
 | **Types and encoding** (`chain-types`) | Canonical, strict byte encoding with round-trip and malformed-input tests; domain-separated hashing; Ed25519 accounts; BLS12-381 validator keys with proof-of-possession; the randomness beacon used to pick proposers |
 | **State** (`chain-state`) | Account model and state root; the state diff a block produces |
-| **Execution** (`chain-exec`) | Block executor around MoveVM (Mysten's `external-crates/move`, pinned by revision, not patched); transaction validity rules; fee accounting; a per-block supply-conservation check; epoch hooks; genesis configuration and the `chain-genesis` file tool |
+| **Execution** (`chain-exec`) | Block executor around MoveVM (Mysten's `external-crates/move`, pinned by revision, not patched); hard encoded-block and per-transaction gas bounds; metered Move execution; transaction validity rules; fee accounting; a per-block supply-conservation check; epoch hooks; genesis configuration and the `chain-genesis` file tool |
 | **Native modules** (`chain-modules`) | Staking and delegation with share-price rewards, unbonding, double-sign slashing from evidence, fees, and parameter-only governance, all stored in chain state |
 | **Consensus** (`chain-consensus`) | Malachite's pure core integrated end to end: stake-weighted proposer selection from a randomness beacon, certificate verification, block judging before voting, a host that will not sign twice at a position, a write-ahead log with replay after a crash, and verified catch-up from peers for a node that missed a height |
 | **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits, checked by killing a process mid-write; a checksummed, torn-write-tolerant height log; and the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history, the signer's high-water mark), which the crash-restart tests run against |
@@ -67,7 +67,7 @@ Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout a
 | `chain-p2p` | Gossip, peer scoring, discovery | B |
 | `chain-mempool` | Tx admission, eviction, replacement | B |
 | `chain-rpc` | JSON-RPC, tracing | C |
-| `chain-genesis` | Genesis file parsing and the `chain-genesis` checker tool (not in the spec's table) | C |
+| `chain-genesis` | Genesis file parsing and the `chain-genesis` checker tool | C |
 | `chain-node` | The durable storage the consensus host keeps on disk, and where the node binary will be assembled (not in the spec's table) | B |
 
 Tier A crates must build byte-identical output on every machine. They carry `[lints] workspace = true` (see root `Cargo.toml` and `clippy.toml`), which forbids `unsafe`, `unwrap`/`expect`/`panic!`, indexing/slicing, integer division, float arithmetic, and non-deterministic collection types. Tier B/C crates are not held to that bar.

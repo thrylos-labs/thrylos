@@ -67,8 +67,8 @@ impl malachite_core_types::Value for ConsensusValue {
 
 /// A validator: an address plus the BLS public key it signs consensus
 /// messages with (`docs/spec.md`, "Consensus": "Signatures are
-/// BLS12-381 with proof-of-possession, aggregated per round") and its
-/// stake-derived voting power.
+/// BLS12-381 with proof-of-possession") and its stake-derived voting
+/// power.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsensusValidator {
     pub address: ConsensusAddress,

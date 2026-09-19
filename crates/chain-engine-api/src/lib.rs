@@ -16,7 +16,7 @@ pub mod view;
 
 pub use block::{AbortReason, Block, ExecutedBlock, TransactionOutcome};
 pub use engine::{
-    BlockLimits, BlockRejected, Engine, FinaliseError, FinaliseErrorReason, RejectionReason,
-    GENESIS_MAX_BLOCK_GAS, MAX_BLOCK_SIZE_BYTES,
+    max_transaction_gas, BlockLimits, BlockRejected, Engine, FinaliseError, FinaliseErrorReason,
+    RejectionReason, GENESIS_MAX_BLOCK_GAS, MAX_BLOCK_SIZE_BYTES, MAX_TRANSACTION_GAS_DIVISOR,
 };
 pub use view::{ChainView, ChainViewError, Head, ValidatorInfo};

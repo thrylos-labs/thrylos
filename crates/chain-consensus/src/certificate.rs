@@ -7,9 +7,8 @@
 //! votes, and each check is the same in four parts:
 //!
 //! - every signer is in the validator set *the caller supplies* — the
-//!   canonical set for the height, never anything the certificate claims
-//!   (`docs/spec.md`: "verified against the canonical participation
-//!   bitfield, never against a set the message itself supplies");
+//!   canonical set for the height, never keys or power the certificate
+//!   supplies;
 //! - no signer is counted twice;
 //! - every signature verifies, as that validator's vote for exactly the
 //!   height, round and value the certificate is for;
@@ -23,10 +22,10 @@
 //! The signatures are verified one at a time. They cannot be aggregated
 //! into a single check because each covers different bytes (its own
 //! address is in them); at a few hundred microseconds each that is a
-//! known cost — 128 validators is on the order of tens of milliseconds
-//! against the spec's 20 ms aggregate target — and the remedy, signing an
-//! address-free message so one aggregate verifies a whole round, is a
-//! change to what validators sign, not something to fold in here.
+//! known cost. The release budget test measures 128 validators against the
+//! spec's 200 ms p99 ceiling. Signing an address-free message so one
+//! aggregate verifies a whole round remains an option only if that budget
+//! fails; it is a protocol-format change, not an implementation detail.
 
 // `CertificateError` is Malachite's type and is large because it carries whole
 // signed messages. The verifiers return it as it is, matching what Malachite's

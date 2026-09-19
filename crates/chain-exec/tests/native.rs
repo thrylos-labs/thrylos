@@ -656,7 +656,8 @@ fn governed_parameters_govern_execution_a_lowered_gas_limit_refuses_a_block_it_a
         10_000_000
     );
 
-    // A transaction asking for 12M gas would have fit under the old 60M.
+    // A transaction asking for 12M gas would have fit under the old 60M,
+    // but now exceeds one quarter of the governed 10M block limit.
     let heavy = operator.call_with(
         operator.sequence,
         12_000_000,
@@ -681,7 +682,7 @@ fn governed_parameters_govern_execution_a_lowered_gas_limit_refuses_a_block_it_a
     let rejected = chain.executor.execute_block(root, &block).unwrap_err();
     assert_eq!(
         rejected.reason,
-        chain_engine_api::RejectionReason::MalformedBlock
+        chain_engine_api::RejectionReason::TransactionGasLimitExceeded
     );
 }
 

@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 use chain_engine_api::timestamp::is_after_parent;
 use chain_engine_api::{
-    AbortReason, Block, BlockLimits, BlockRejected, ChainView, ChainViewError, Engine,
-    ExecutedBlock, FinaliseError, FinaliseErrorReason, Head, RejectionReason, TransactionOutcome,
-    ValidatorInfo, MAX_BLOCK_SIZE_BYTES,
+    max_transaction_gas, AbortReason, Block, BlockLimits, BlockRejected, ChainView, ChainViewError,
+    Engine, ExecutedBlock, FinaliseError, FinaliseErrorReason, Head, RejectionReason,
+    TransactionOutcome, ValidatorInfo, MAX_BLOCK_SIZE_BYTES,
 };
 use chain_modules::fees::{next_base_fee, GENESIS_BASE_FEE};
 use chain_modules::params::GENESIS_PARAM_VALUES;
@@ -17,16 +17,16 @@ use chain_modules::{
     ValidatorId, DEAD_SHARES,
 };
 use chain_state::{compute_root, StateKey, StateRoot, StateValue};
-use chain_types::codec::CodecError;
+use chain_types::codec::{CodecError, Encode};
 use chain_types::{Address, BlockHeight, ChainId, GasAmount, GasPrice, Hash, Transaction};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_vm_config::runtime::VMConfig;
+use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::execution::values::{Struct, Value};
 use move_vm_runtime::natives::functions::NativeFunctions;
 use move_vm_runtime::runtime::MoveRuntime;
-use move_vm_runtime::shared::gas::UnmeteredGasMeter;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
 
 use crate::accounting::{
@@ -418,6 +418,7 @@ impl Executor {
                 reason: RejectionReason::Rejected,
             })?;
         let fee_params = params.fee_params();
+        let transaction_gas_ceiling = max_transaction_gas(fee_params.max_block_gas());
         let ctx = BlockCtx {
             height: block.height,
             timestamp_ms: block.timestamp_millis,
@@ -428,6 +429,12 @@ impl Executor {
         let mut gas_used: u64 = 0;
         let mut outcomes = Vec::with_capacity(block.transactions.len());
         for (index, tx) in block.transactions.iter().enumerate() {
+            if tx.body.gas_limit.0 > transaction_gas_ceiling {
+                return Err(BlockRejected {
+                    transaction_index: u32::try_from(index).ok(),
+                    reason: RejectionReason::TransactionGasLimitExceeded,
+                });
+            }
             let applied = self.apply_transaction(state, tx, index, &ctx)?;
             gas_used = gas_used.saturating_add(applied.gas_used);
             // Checked as it accumulates rather than after the loop, so an
@@ -541,13 +548,15 @@ impl Executor {
                 }
                 (TransactionOutcome::Success, effects.gas_used)
             }
-            // Unmetered for this pass — see `crate`'s doc comment.
-            // Charging the declared gas limit for an abort, same as for
-            // a success, is the conservative stand-in: an abort that
-            // cost nothing would be free spam. The account was already
-            // checked to afford exactly this much.
+            // Calls outside the Move interpreter do not yet have measured
+            // schedules. Charge their declared ceiling on abort so those
+            // paths cannot become free spam. Metered Move aborts carry the
+            // amount the VM actually consumed in the next arm.
             Err(CallError::Abort(reason)) => {
                 (TransactionOutcome::Aborted(reason), tx.body.gas_limit.0)
+            }
+            Err(CallError::MeteredAbort { reason, gas_used }) => {
+                (TransactionOutcome::Aborted(reason), gas_used)
             }
             Err(CallError::Internal) => return Err(reject(RejectionReason::Rejected)),
         };
@@ -637,16 +646,21 @@ impl Executor {
         let mut vm = self
             .make_vm(state, SYSTEM_PACKAGE_ADDRESS)
             .map_err(|_| CallError::Internal)?;
-        let mut returned = vm
-            .execute_function_bypass_visibility(
-                &module_id,
-                &function_name,
-                vec![],
-                vec![Value::u64(a), Value::u64(b)],
-                &mut UnmeteredGasMeter,
-                None,
-            )
-            .map_err(|_| AbortReason::ExecutionFailed)?;
+        let mut gas_meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(tx.body.gas_limit.0));
+        let execution = vm.execute_function_bypass_visibility(
+            &module_id,
+            &function_name,
+            vec![],
+            vec![Value::u64(a), Value::u64(b)],
+            &mut gas_meter,
+            None,
+        );
+        let remaining: u64 = gas_meter.remaining_gas().into();
+        let gas_used = tx.body.gas_limit.0.saturating_sub(remaining);
+        let mut returned = execution.map_err(|_| CallError::MeteredAbort {
+            reason: AbortReason::ExecutionFailed,
+            gas_used,
+        })?;
         drop(vm);
 
         if returned.len() != 1 {
@@ -656,17 +670,12 @@ impl Executor {
             .remove(0)
             .value_as()
             .map_err(|_| CallError::Internal)?;
-
         Ok(CallEffects {
             changes: vec![(
                 calculator_result_key(account_address(&tx.sender_address())),
                 Some(StateValue::new(sum.to_le_bytes().to_vec())),
             )],
-            // Unmetered for this pass — see `crate`'s doc comment.
-            // Charging the declared gas limit as a stand-in keeps
-            // `gas_used` meaningful without pretending it's a
-            // calibrated cost.
-            gas_used: tx.body.gas_limit.0,
+            gas_used,
         })
     }
 
@@ -716,16 +725,21 @@ impl Executor {
         let mut vm = self
             .make_vm(state, COUNTER_PACKAGE_ADDRESS)
             .map_err(|_| CallError::Internal)?;
-        let returned = vm
-            .execute_function_bypass_visibility(
-                &module_id,
-                &function_name,
-                vec![],
-                vec![counter_ref, Value::u64(amount)],
-                &mut UnmeteredGasMeter,
-                None,
-            )
-            .map_err(|_| AbortReason::ExecutionFailed)?;
+        let mut gas_meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(tx.body.gas_limit.0));
+        let execution = vm.execute_function_bypass_visibility(
+            &module_id,
+            &function_name,
+            vec![],
+            vec![counter_ref, Value::u64(amount)],
+            &mut gas_meter,
+            None,
+        );
+        let remaining: u64 = gas_meter.remaining_gas().into();
+        let gas_used = tx.body.gas_limit.0.saturating_sub(remaining);
+        let returned = execution.map_err(|_| CallError::MeteredAbort {
+            reason: AbortReason::ExecutionFailed,
+            gas_used,
+        })?;
         drop(vm);
 
         if !returned.is_empty() {
@@ -740,13 +754,12 @@ impl Executor {
             .ok_or(CallError::Internal)?
             .value_as()
             .map_err(|_| CallError::Internal)?;
-
         Ok(CallEffects {
             changes: vec![(
                 object_key(INITIAL_COUNTER_ADDRESS),
                 Some(StateValue::new(new_value.to_le_bytes().to_vec())),
             )],
-            gas_used: tx.body.gas_limit.0,
+            gas_used,
         })
     }
 
@@ -850,14 +863,38 @@ impl Engine for Executor {
     ) -> Block {
         let mut transactions = Vec::new();
         let mut gas_so_far: u64 = 0;
+        let transaction_gas_ceiling = max_transaction_gas(limits.max_gas);
+        let max_size =
+            usize::try_from(limits.max_size_bytes.min(MAX_BLOCK_SIZE_BYTES)).unwrap_or(usize::MAX);
+        let empty = Block {
+            parent_block_hash,
+            height,
+            timestamp_millis,
+            transactions: Vec::new(),
+        };
+        let mut encoded_size = empty.encoded_len().unwrap_or(usize::MAX);
         for tx in candidate_transactions {
+            if tx.body.gas_limit.0 > transaction_gas_ceiling {
+                continue;
+            }
             let Some(next_total) = gas_so_far.checked_add(tx.body.gas_limit.0) else {
                 break;
             };
             if next_total > limits.max_gas {
                 break;
             }
+
+            let mut encoded_transaction = Vec::new();
+            tx.encode(&mut encoded_transaction);
+            let Some(next_size) = encoded_size.checked_add(encoded_transaction.len()) else {
+                continue;
+            };
+            if next_size > max_size {
+                continue;
+            }
+
             gas_so_far = next_total;
+            encoded_size = next_size;
             transactions.push(tx);
         }
 
@@ -874,6 +911,13 @@ impl Engine for Executor {
         parent_state_root: StateRoot,
         block: &Block,
     ) -> Result<ExecutedBlock, BlockRejected> {
+        let max_size = usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap_or(usize::MAX);
+        if block.encoded_len().is_none_or(|size| size > max_size) {
+            return Err(BlockRejected {
+                transaction_index: None,
+                reason: RejectionReason::MalformedBlock,
+            });
+        }
         if parent_state_root != self.state_root() || block.parent_block_hash != self.tip_block_hash
         {
             return Err(BlockRejected {
@@ -897,6 +941,12 @@ impl Engine for Executor {
         block: &Block,
         executed: &ExecutedBlock,
     ) -> Result<(), FinaliseError> {
+        let max_size = usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap_or(usize::MAX);
+        if block.encoded_len().is_none_or(|size| size > max_size) {
+            return Err(FinaliseError {
+                reason: FinaliseErrorReason::StateRootMismatch,
+            });
+        }
         if block.parent_block_hash != self.tip_block_hash {
             return Err(FinaliseError {
                 reason: FinaliseErrorReason::NotOnCanonicalChain,

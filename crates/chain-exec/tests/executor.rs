@@ -6,7 +6,7 @@
 
 use chain_engine_api::{
     AbortReason, BlockLimits, Engine, ExecutedBlock, FinaliseErrorReason, RejectionReason,
-    TransactionOutcome,
+    TransactionOutcome, MAX_BLOCK_SIZE_BYTES,
 };
 use chain_exec::genesis::{
     COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME, COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS,
@@ -216,7 +216,7 @@ fn full_pipeline_executes_a_real_transaction_and_commits_the_result() {
     );
 
     let executed = executor.execute_block(genesis_root, &block).unwrap();
-    assert_eq!(executed.gas_used, 1_000);
+    assert_eq!(executed.gas_used, 1);
     // execute_block must not have mutated the executor's committed state.
     assert_eq!(executor.state_root(), genesis_root);
 
@@ -513,8 +513,9 @@ fn a_move_abort_charges_gas_and_rolls_back_but_the_block_carries_on() {
             TransactionOutcome::Success,
         ]
     );
-    // Both were charged the same stand-in gas.
-    assert_eq!(executed.gas_used, 2_000);
+    // Both calls execute one metered instruction: the first aborts and the
+    // second succeeds.
+    assert_eq!(executed.gas_used, 2);
 
     assert_eq!(
         executor.read_result(&overflowing_sender),
@@ -524,8 +525,28 @@ fn a_move_abort_charges_gas_and_rolls_back_but_the_block_carries_on() {
     assert_eq!(executor.read_result(&fine_sender), Some(42));
 
     let charged = executor.read_account(overflowing_sender).unwrap();
-    assert_eq!(charged.balance, 1_000_000 - 1_000);
+    assert_eq!(charged.balance, 1_000_000 - 1);
     assert_eq!(charged.next_sequence_number, SequenceNumber(1));
+}
+
+#[test]
+fn move_execution_stops_when_its_signed_gas_budget_is_exhausted() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = signed_transaction_priced(71, 1, 0, 0, 1, Vec::new(), calculator_call(2, 40));
+    let sender = tx.sender_address();
+    fund(&mut executor, &tx);
+
+    let executed = execute_and_finalise(&mut executor, vec![tx]);
+    assert_eq!(
+        executed.outcomes,
+        vec![TransactionOutcome::Aborted(AbortReason::ExecutionFailed)]
+    );
+    assert_eq!(executed.gas_used, 0);
+    assert_eq!(executor.read_result(&sender), None);
+    assert_eq!(
+        executor.read_account(sender).unwrap().next_sequence_number,
+        SequenceNumber(1)
+    );
 }
 
 #[test]
@@ -727,13 +748,15 @@ fn a_successful_transaction_debits_gas_and_advances_the_sequence_number() {
     executor.finalise_block(&block, &executed).unwrap();
 
     let account = executor.read_account(sender).unwrap();
-    assert_eq!(account.balance, 1_000_000 - 1_000);
+    assert_eq!(account.balance, 1_000_000 - 1);
     assert_eq!(account.next_sequence_number, SequenceNumber(1));
 }
 
-/// A block-filling transaction: `gas_limit` gas, which the executor
-/// charges in full as a stand-in for real metering.
+/// A block-filling transaction. Its deliberately unknown call aborts before
+/// Move execution, so the conservative non-VM rule charges its full budget.
 fn heavy_transaction(seed: u8, sequence_number: u64, gas_limit: u64, max_fee: u64) -> Transaction {
+    let mut call = calculator_call(1, 1);
+    call.function_name = b"charge_declared_budget".to_vec();
     signed_transaction_priced(
         seed,
         1,
@@ -741,14 +764,36 @@ fn heavy_transaction(seed: u8, sequence_number: u64, gas_limit: u64, max_fee: u6
         gas_limit,
         max_fee,
         Vec::new(),
-        calculator_call(1, 1),
+        call,
     )
 }
 
 const GENESIS_LIMIT: u64 = chain_engine_api::GENESIS_MAX_BLOCK_GAS;
+const MAX_TRANSACTION_GAS: u64 = chain_engine_api::max_transaction_gas(GENESIS_LIMIT);
 /// The gas usage at which the base fee holds steady: half the limit.
 const TARGET: u64 = 30_000_000;
 const _: () = assert!(TARGET * 2 == GENESIS_LIMIT);
+
+fn block_filling_transactions(first_seed: u8, sequence: u64, max_fee: u64) -> Vec<Transaction> {
+    (0u8..4)
+        .map(|offset| {
+            heavy_transaction(
+                first_seed.wrapping_add(offset),
+                sequence,
+                MAX_TRANSACTION_GAS,
+                max_fee,
+            )
+        })
+        .collect()
+}
+
+fn fund_transactions(executor: &mut Executor, transactions: &[Transaction], balance: u128) {
+    for transaction in transactions {
+        executor
+            .credit_account(transaction.sender_address(), balance)
+            .unwrap();
+    }
+}
 
 #[test]
 fn genesis_seeds_the_base_fee_in_state() {
@@ -797,15 +842,13 @@ fn a_block_above_target_raises_the_next_base_fee_and_the_new_price_is_charged() 
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
 
     // 60M gas is a completely full block: 1 + max(1 * 30M / 30M / 8, 1) = 2.
-    let filler = heavy_transaction(42, 0, GENESIS_LIMIT, 1);
-    executor
-        .credit_account(filler.sender_address(), 1_000_000_000)
-        .unwrap();
-    execute_and_finalise(&mut executor, vec![filler]);
+    let fillers = block_filling_transactions(42, 0, 1);
+    fund_transactions(&mut executor, &fillers, 1_000_000_000);
+    execute_and_finalise(&mut executor, fillers);
     assert_eq!(executor.base_fee(), Some(2));
 
     // The next block charges 2, even though this sender's ceiling is 5.
-    let next = heavy_transaction(43, 0, 1_000, 5);
+    let next = heavy_transaction(70, 0, 1_000, 5);
     let sender = next.sender_address();
     executor.credit_account(sender, 1_000_000).unwrap();
     execute_and_finalise(&mut executor, vec![next]);
@@ -818,11 +861,9 @@ fn a_block_above_target_raises_the_next_base_fee_and_the_new_price_is_charged() 
 #[test]
 fn once_the_base_fee_has_risen_a_lower_ceiling_no_longer_clears_it() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
-    let filler = heavy_transaction(44, 0, GENESIS_LIMIT, 1);
-    executor
-        .credit_account(filler.sender_address(), 1_000_000_000)
-        .unwrap();
-    execute_and_finalise(&mut executor, vec![filler]);
+    let fillers = block_filling_transactions(44, 0, 1);
+    fund_transactions(&mut executor, &fillers, 1_000_000_000);
+    execute_and_finalise(&mut executor, fillers);
     assert_eq!(executor.base_fee(), Some(2));
 
     // Ceiling 1 was enough at genesis and isn't now.
@@ -841,11 +882,12 @@ fn once_the_base_fee_has_risen_a_lower_ceiling_no_longer_clears_it() {
 #[test]
 fn a_block_exactly_on_target_leaves_the_base_fee_alone() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
-    let tx = heavy_transaction(46, 0, TARGET, 1);
-    executor
-        .credit_account(tx.sender_address(), 1_000_000_000)
-        .unwrap();
-    execute_and_finalise(&mut executor, vec![tx]);
+    let transactions = vec![
+        heavy_transaction(46, 0, MAX_TRANSACTION_GAS, 1),
+        heavy_transaction(47, 0, MAX_TRANSACTION_GAS, 1),
+    ];
+    fund_transactions(&mut executor, &transactions, 1_000_000_000);
+    execute_and_finalise(&mut executor, transactions);
     assert_eq!(executor.base_fee(), Some(1));
 }
 
@@ -860,18 +902,14 @@ fn an_empty_block_does_not_take_the_base_fee_below_its_floor() {
 #[test]
 fn sustained_load_raises_the_base_fee_and_idling_lowers_it_again() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
-    executor
-        .credit_account(
-            heavy_transaction(47, 0, 1, 1).sender_address(),
-            u128::from(u64::MAX),
-        )
-        .unwrap();
+    let accounts = block_filling_transactions(47, 0, 1);
+    fund_transactions(&mut executor, &accounts, u128::from(u64::MAX));
 
     let mut previous = executor.base_fee().unwrap();
     for sequence in 0..40 {
         // Ceiling far above any fee reached, so only the base fee moves.
-        let filler = heavy_transaction(47, sequence, GENESIS_LIMIT, 1_000_000);
-        execute_and_finalise(&mut executor, vec![filler]);
+        let fillers = block_filling_transactions(47, sequence, 1_000_000);
+        execute_and_finalise(&mut executor, fillers);
         let fee = executor.base_fee().unwrap();
         assert!(fee > previous, "block {sequence}: {previous} -> {fee}");
         previous = fee;
@@ -909,34 +947,28 @@ fn the_base_fee_moves_show_up_in_the_state_diff() {
     // A fee change is consensus state like any other: if it weren't in
     // the diff, `chain-db` would never persist it.
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
-    let filler = heavy_transaction(48, 0, GENESIS_LIMIT, 1);
-    executor
-        .credit_account(filler.sender_address(), 1_000_000_000)
-        .unwrap();
+    let fillers = block_filling_transactions(48, 0, 1);
+    fund_transactions(&mut executor, &fillers, 1_000_000_000);
 
-    let executed = execute_and_finalise(&mut executor, vec![filler]);
-    // calculator result + the sender's account + the base fee + the head
-    // + the supply the fee was burned from.
-    assert_eq!(executed.state_diff.len(), 5 + FIRST_BLOCK_BOOKKEEPING);
+    let executed = execute_and_finalise(&mut executor, fillers);
+    // Four sender accounts + the base fee + the head + the supply the fees
+    // were burned from. The deliberately unknown call writes no result.
+    assert_eq!(executed.state_diff.len(), 7 + FIRST_BLOCK_BOOKKEEPING);
 }
 
 #[test]
 fn a_block_over_the_gas_limit_is_rejected_as_malformed() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
-    let first = heavy_transaction(49, 0, 40_000_000, 1);
-    let second = heavy_transaction(50, 0, 40_000_000, 1); // 80M total > 60M
-    executor
-        .credit_account(first.sender_address(), 1_000_000_000)
-        .unwrap();
-    executor
-        .credit_account(second.sender_address(), 1_000_000_000)
-        .unwrap();
+    let transactions: Vec<_> = (49u8..54)
+        .map(|seed| heavy_transaction(seed, 0, MAX_TRANSACTION_GAS, 1))
+        .collect(); // 75M total > 60M, each transaction is individually valid.
+    fund_transactions(&mut executor, &transactions, 1_000_000_000);
 
     let block = chain_engine_api::Block {
         parent_block_hash: executor.tip_block_hash(),
         height: BlockHeight(1),
         timestamp_millis: 1_700_000_000_000,
-        transactions: vec![first, second],
+        transactions,
     };
     let rejected = executor
         .execute_block(executor.state_root(), &block)
@@ -951,11 +983,99 @@ fn a_block_over_the_gas_limit_is_rejected_as_malformed() {
 #[test]
 fn a_block_exactly_at_the_gas_limit_is_accepted() {
     let mut executor = Executor::genesis(ChainId(1)).unwrap();
-    let tx = heavy_transaction(51, 0, GENESIS_LIMIT, 1);
+    let transactions = block_filling_transactions(51, 0, 1);
+    fund_transactions(&mut executor, &transactions, 1_000_000_000);
+    let executed = execute_and_finalise(&mut executor, transactions);
+    assert_eq!(executed.gas_used, GENESIS_LIMIT);
+}
+
+#[test]
+fn a_transaction_cannot_reserve_more_than_one_quarter_of_the_block() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = heavy_transaction(55, 0, MAX_TRANSACTION_GAS + 1, 1);
     executor
-        .credit_account(tx.sender_address(), 1_000_000_000)
+        .credit_account(tx.sender_address(), 100_000_000)
         .unwrap();
-    execute_and_finalise(&mut executor, vec![tx]);
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: FIRST_TIMESTAMP,
+        transactions: vec![tx],
+    };
+
+    let rejected = executor
+        .execute_block(executor.state_root(), &block)
+        .unwrap_err();
+    assert_eq!(
+        rejected.reason,
+        RejectionReason::TransactionGasLimitExceeded
+    );
+    assert_eq!(rejected.transaction_index, Some(0));
+}
+
+#[test]
+fn proposal_skips_a_transaction_over_its_gas_share() {
+    let executor = Executor::genesis(ChainId(1)).unwrap();
+    let oversized = heavy_transaction(56, 0, MAX_TRANSACTION_GAS + 1, 1);
+    let fitting = heavy_transaction(57, 0, MAX_TRANSACTION_GAS, 1);
+    let block = executor.propose_block(
+        executor.tip_block_hash(),
+        executor.state_root(),
+        BlockHeight(1),
+        FIRST_TIMESTAMP,
+        vec![oversized, fitting.clone()],
+        default_limits(),
+    );
+
+    assert_eq!(block.transactions, vec![fitting]);
+}
+
+fn transaction_larger_than_the_block(seed: u8) -> Transaction {
+    let argument = vec![0u8; usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap()];
+    let call = MoveCall {
+        arguments: vec![argument, 1u64.to_le_bytes().to_vec()],
+        ..calculator_call(1, 1)
+    };
+    signed_transaction(seed, 1, call)
+}
+
+#[test]
+fn validation_rejects_an_encoded_block_over_four_mib() {
+    let executor = Executor::genesis(ChainId(1)).unwrap();
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: FIRST_TIMESTAMP,
+        transactions: vec![transaction_larger_than_the_block(58)],
+    };
+
+    assert!(block.encoded_len().unwrap() > usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap());
+    let rejected = executor
+        .execute_block(executor.state_root(), &block)
+        .unwrap_err();
+    assert_eq!(rejected.reason, RejectionReason::MalformedBlock);
+    assert_eq!(rejected.transaction_index, None);
+}
+
+#[test]
+fn proposal_applies_the_hard_size_cap_even_if_the_caller_passes_more() {
+    let executor = Executor::genesis(ChainId(1)).unwrap();
+    let oversized = transaction_larger_than_the_block(59);
+    let fitting = signed_transaction(60, 1, calculator_call(1, 1));
+    let block = executor.propose_block(
+        executor.tip_block_hash(),
+        executor.state_root(),
+        BlockHeight(1),
+        FIRST_TIMESTAMP,
+        vec![oversized, fitting.clone()],
+        BlockLimits {
+            max_gas: GENESIS_LIMIT,
+            max_size_bytes: u32::MAX,
+        },
+    );
+
+    assert_eq!(block.transactions, vec![fitting]);
+    assert!(block.encoded_len().unwrap() <= usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap());
 }
 
 // ---- expiry, height and timestamp ---------------------------------------

@@ -1,6 +1,6 @@
 //! BLS12-381 validator keys and signatures, for consensus (`docs/spec.md`,
-//! "Consensus": "Signatures are BLS12-381 with proof-of-possession,
-//! aggregated per round"). Built on `blst`'s min-pk variant — 48-byte
+//! "Consensus": "Signatures are BLS12-381 with proof-of-possession").
+//! Built on `blst`'s min-pk variant — 48-byte
 //! compressed public keys in G1, 96-byte compressed signatures in G2 —
 //! the convention used by essentially every production BLS-based
 //! consensus implementation, so this is the well-trodden path rather
@@ -172,12 +172,11 @@ fn verify_one(
 }
 
 /// Verify an aggregate signature against a fixed set of already-validated
-/// public keys, all signing the same message. Callers select `signers`
-/// from the canonical, already-registered validator set via the round's
-/// participation bitfield — never from anything the message itself
-/// supplies (`docs/spec.md`, "Consensus": "the aggregate is verified
-/// against the canonical participation bitfield, never against a set the
-/// message itself supplies").
+/// public keys, all signing the same message. Callers are responsible for
+/// selecting `signers` from canonical, already-registered state rather than
+/// accepting keys supplied alongside the signature. Current consensus
+/// certificates contain validator-specific messages and verify them one at a
+/// time; this primitive is also used for single-signature verification.
 pub fn verify_aggregate(
     signers: &[&BlsPublicKey],
     message: &[u8],

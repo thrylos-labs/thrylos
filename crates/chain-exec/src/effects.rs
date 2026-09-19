@@ -24,6 +24,9 @@ pub(crate) enum CallError {
     /// The transaction's own doing: it was valid to run, and running it
     /// failed. Becomes an aborted [`chain_engine_api::TransactionOutcome`].
     Abort(AbortReason),
+    /// A Move call failed after the VM meter charged part or all of its
+    /// budget.
+    MeteredAbort { reason: AbortReason, gas_used: u64 },
     /// Not the transaction's doing — the executor itself couldn't do
     /// what it should always be able to (build its VM from constants,
     /// read back a state invariant genesis established, unpack a value

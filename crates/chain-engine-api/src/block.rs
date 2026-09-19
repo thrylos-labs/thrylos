@@ -35,6 +35,23 @@ impl Block {
         self.encode(&mut bytes);
         hash_with_domain(DomainTag::BlockHeaderV1, &bytes)
     }
+
+    /// Exact canonical encoded length, accumulated one transaction at a
+    /// time. This avoids allocating a second block-sized buffer merely to
+    /// enforce the wire-size limit.
+    pub fn encoded_len(&self) -> Option<usize> {
+        let mut fixed = Vec::new();
+        self.parent_block_hash.encode(&mut fixed);
+        self.height.encode(&mut fixed);
+        self.timestamp_millis.encode(&mut fixed);
+        0u32.encode(&mut fixed);
+
+        self.transactions.iter().try_fold(fixed.len(), |total, tx| {
+            let mut encoded = Vec::new();
+            tx.encode(&mut encoded);
+            total.checked_add(encoded.len())
+        })
+    }
 }
 
 impl Encode for Block {
@@ -156,6 +173,7 @@ mod tests {
         let block = empty_block();
         let mut buf = Vec::new();
         block.encode(&mut buf);
+        assert_eq!(block.encoded_len(), Some(buf.len()));
         let decoded: Block = decode_exact(&buf).unwrap();
         assert_eq!(decoded, block);
     }

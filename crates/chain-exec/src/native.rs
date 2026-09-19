@@ -52,8 +52,8 @@
 //!
 //! # What is not built
 //!
-//! Gas: a native call is charged its declared `gas_limit`, like every call
-//! here, and not metered. Several of these do work that grows with the
+//! Gas: a protocol call is charged its declared `gas_limit` and is not yet
+//! metered. Move bytecode uses the VM meter separately. Several calls here do work that grows with the
 //! state (the proposal snapshot reads the whole active set; a slash reads
 //! every unbonding entry of the offender), so metering them by measurement
 //! — the spec's rule for every native — is required before this carries
