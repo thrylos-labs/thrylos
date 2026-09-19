@@ -71,6 +71,14 @@ pub enum RejectionReason {
     /// clock" half needs a clock, and is the consensus host's to check —
     /// see [`crate::timestamp`].
     InvalidBlockTimestamp,
+    /// After applying the block, the total of every balance, every staked
+    /// unit and every unbonding entry no longer equals the supply the
+    /// chain has recorded: value was created or lost somewhere. Not
+    /// anything a transaction chooses; a bug in a module or the
+    /// executor, and the reason this check exists is that the block
+    /// must not be accepted (`docs/spec.md`: an invariant "that halts
+    /// block production if violated").
+    InvariantViolated,
     /// The block itself is malformed independent of any one
     /// transaction — over a [`BlockLimits`] ceiling, for instance.
     MalformedBlock,

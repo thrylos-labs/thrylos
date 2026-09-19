@@ -21,6 +21,9 @@ enum KeyTag {
     BaseFee = chain_state::account::KEY_TAG + 4,
     ChainHead = chain_state::account::KEY_TAG + 5,
     ModuleState = chain_state::account::KEY_TAG + 6,
+    Supply = chain_state::account::KEY_TAG + 7,
+    TimeCheckpoint = chain_state::account::KEY_TAG + 8,
+    RewardClock = chain_state::account::KEY_TAG + 9,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -56,6 +59,33 @@ pub fn chain_head_key() -> StateKey {
     StateKey::new(vec![KeyTag::ChainHead as u8])
 }
 
+/// Where the total supply is stored: every unit that exists, whether in
+/// an account, staked in a pool, or waiting out unbonding. Chain-wide, so
+/// it sits in the state root; the executor keeps it equal to the sum of
+/// those three (see `crate::accounting`).
+pub fn supply_key() -> StateKey {
+    StateKey::new(vec![KeyTag::Supply as u8])
+}
+
+/// Where the timestamp of the block at `height` is kept, for the heights
+/// that keep one (see `crate::hooks`). Big-endian, so the entries sort by
+/// height.
+pub fn time_checkpoint_key(height: u64) -> StateKey {
+    let mut bytes = vec![KeyTag::TimeCheckpoint as u8];
+    bytes.extend_from_slice(&height.to_be_bytes());
+    StateKey::new(bytes)
+}
+
+/// The first key a time checkpoint can have, and the tag they share.
+pub fn time_checkpoint_tag() -> u8 {
+    KeyTag::TimeCheckpoint as u8
+}
+
+/// Where the timestamp of the last reward distribution is stored.
+pub fn reward_clock_key() -> StateKey {
+    StateKey::new(vec![KeyTag::RewardClock as u8])
+}
+
 /// The tag byte every native-module key sits under. `chain-modules` builds
 /// its own keys (a validator, a share balance, an unbonding entry) with
 /// its own first byte; the executor's [`crate::module_store::StateStore`]
@@ -73,6 +103,8 @@ pub fn calculator_result_key(sender: AccountAddress) -> StateKey {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::indexing_slicing)]
+
     use super::*;
 
     #[test]
@@ -106,6 +138,35 @@ mod tests {
     }
 
     #[test]
+    fn no_two_of_this_crate_s_tags_are_the_same() {
+        let tags = [
+            KeyTag::ModuleBytecode as u8,
+            KeyTag::ObjectData as u8,
+            KeyTag::CalculatorResult as u8,
+            KeyTag::BaseFee as u8,
+            KeyTag::ChainHead as u8,
+            KeyTag::ModuleState as u8,
+            KeyTag::Supply as u8,
+            KeyTag::TimeCheckpoint as u8,
+            KeyTag::RewardClock as u8,
+            chain_state::account::KEY_TAG,
+        ];
+        let distinct: std::collections::BTreeSet<u8> = tags.into_iter().collect();
+        assert_eq!(distinct.len(), tags.len());
+    }
+
+    #[test]
+    fn time_checkpoints_sort_by_height() {
+        let keys: Vec<StateKey> = [0u64, 1, 255, 256, 65_536, u64::MAX]
+            .into_iter()
+            .map(time_checkpoint_key)
+            .collect();
+        for pair in keys.windows(2) {
+            assert!(pair[0] < pair[1]);
+        }
+    }
+
+    #[test]
     fn none_of_this_crate_s_tags_reuse_the_account_model_s_reserved_tag() {
         for tag in [
             KeyTag::ModuleBytecode as u8,
@@ -114,6 +175,9 @@ mod tests {
             KeyTag::BaseFee as u8,
             KeyTag::ChainHead as u8,
             KeyTag::ModuleState as u8,
+            KeyTag::Supply as u8,
+            KeyTag::TimeCheckpoint as u8,
+            KeyTag::RewardClock as u8,
         ] {
             assert_ne!(tag, chain_state::account::KEY_TAG);
         }

@@ -10,7 +10,7 @@ use blst::min_pk::SecretKey;
 use chain_exec::keys::{base_fee_key, module_state_tag};
 use chain_exec::module_store::StateStore;
 use chain_modules::params::{ParamValues, DAY_MS, MIN_UNBONDING_PERIOD_MS};
-use chain_modules::store::{apply_changes, Overlay, Store};
+use chain_modules::store::{apply_changes, Overlay, ReadStore, Store};
 use chain_modules::{GovernedParams, RegistryError, StakingRegistry, ValidatorId};
 use chain_state::{apply, compute_root, diff, StateChange, StateKey, StateValue};
 use chain_types::bls::{BlsSignature, DST_PROOF_OF_POSSESSION};

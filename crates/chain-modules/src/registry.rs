@@ -113,7 +113,7 @@ use crate::slashing::{
 };
 use crate::staking::{StakingError, StakingPool};
 use crate::store::{
-    atomically, be64, load, prefix_end, read_be64, save, tag, Corrupt, Overlay, Store,
+    atomically, be64, load, prefix_end, read_be64, save, tag, Corrupt, Overlay, ReadStore, Store,
 };
 
 /// `docs/spec.md`, "Consensus": "Active validator set: 128, by stake".
@@ -290,6 +290,29 @@ impl From<Corrupt> for RegistryError {
     }
 }
 
+/// How much coin the registry's entry at `module_key` (a key in the
+/// modules' keyspace) holds: a validator's pool holds its total stake, an
+/// unbonding entry the amount it still owes, and everything else holds
+/// none. What the executor sums, over the entries a block changed, to
+/// check the block neither created nor destroyed value. Only the entry
+/// kinds that *hold* coin appear here, so a new one that does must be
+/// added, and the conservation check fails loudly until it is.
+pub fn coin_held_by_entry(module_key: &[u8], value: &[u8]) -> Result<u128, Corrupt> {
+    match module_key.first() {
+        Some(&kind) if kind == tag::VALIDATOR => {
+            let validator: Validator =
+                chain_types::codec::decode_exact(value).map_err(|_| Corrupt)?;
+            Ok(validator.pool.total_stake())
+        }
+        Some(&kind) if kind == tag::UNBONDING => {
+            let entry: UnbondingEntry =
+                chain_types::codec::decode_exact(value).map_err(|_| Corrupt)?;
+            Ok(entry.amount)
+        }
+        _ => Ok(0),
+    }
+}
+
 /// `floor(a * b / c)` in `U256`, so the product cannot overflow. `0` if
 /// `c` is zero or the result doesn't fit `u128` (neither is reachable in
 /// this module: every use has `b <= c`).
@@ -387,7 +410,7 @@ pub struct StakingRegistry<S> {
     store: S,
 }
 
-impl<S: Store> StakingRegistry<S> {
+impl<S> StakingRegistry<S> {
     pub const fn new(store: S) -> Self {
         Self { store }
     }
@@ -399,20 +422,11 @@ impl<S: Store> StakingRegistry<S> {
     pub fn into_store(self) -> S {
         self.store
     }
+}
 
-    /// Runs `op` against an overlay of the store and applies what it
-    /// wrote only if it returns `Ok`.
-    fn atomic<T>(
-        &mut self,
-        op: impl FnOnce(&mut StakingRegistry<&mut Overlay<'_, S>>) -> Result<T, RegistryError>,
-    ) -> Result<T, RegistryError> {
-        atomically(&mut self.store, |overlay| {
-            op(&mut StakingRegistry::new(overlay))
-        })
-    }
-
-    // ---- reads ---------------------------------------------------------
-
+/// Reads. These need only a [`ReadStore`], so they work on a shared view
+/// of the committed state.
+impl<S: ReadStore> StakingRegistry<S> {
     fn validator(&self, id: &ValidatorId) -> Result<Option<Validator>, Corrupt> {
         load(&self.store, &validator_key(id))
     }
@@ -548,6 +562,101 @@ impl<S: Store> StakingRegistry<S> {
         }
         Ok(())
     }
+
+    /// The validators consensus runs on: registered, not jailed or
+    /// tombstoned, whose operator still holds at least the governed
+    /// minimum self-stake, with some bonded stake — the top
+    /// [`MAX_ACTIVE_VALIDATORS`] by stake, ties broken by id, so the
+    /// order is fully determined.
+    ///
+    /// Voting power is the stake itself when the total fits `u64`, and
+    /// otherwise every stake shifted right by the same amount, the
+    /// smallest that makes the total fit. A validator whose stake shifts
+    /// to zero has no vote and is left out.
+    ///
+    /// Reads every validator; see the module docs.
+    pub fn active_set(
+        &self,
+        params: &GovernedParams,
+    ) -> Result<Vec<ActiveValidator>, RegistryError> {
+        let minimum = params.values().min_self_stake;
+        let mut candidates: Vec<(ValidatorId, BlsPublicKey, u128)> = Vec::new();
+        for (id, validator) in self.all_validators()? {
+            if self.status(&id)? != ValidatorStatus::Active {
+                continue;
+            }
+            let operator_stake = validator
+                .pool
+                .redeemable_for(self.shares_of(&id, &validator.operator)?);
+            let stake = validator.pool.attributable_stake();
+            if operator_stake >= minimum && stake > 0 {
+                candidates.push((id, validator.consensus_key, stake));
+            }
+        }
+
+        candidates.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+        candidates.truncate(MAX_ACTIVE_VALIDATORS);
+
+        let stakes: Vec<u128> = candidates.iter().map(|(_, _, stake)| *stake).collect();
+        Ok(candidates
+            .into_iter()
+            .zip(scale_to_u64(&stakes))
+            .filter(|(_, power)| *power > 0)
+            .map(
+                |((id, consensus_key, stake), voting_power)| ActiveValidator {
+                    id,
+                    consensus_key,
+                    stake,
+                    voting_power,
+                },
+            )
+            .collect())
+    }
+
+    /// The unbonding entries of `id` that began at or after
+    /// `infraction_ms` — the ones whose stake was bonded at the
+    /// infraction — in queue order (by maturity, then sequence), with
+    /// their total.
+    fn unbonding_at_risk(
+        &self,
+        id: &ValidatorId,
+        infraction_ms: u64,
+    ) -> Result<(Vec<(u64, UnbondingEntry)>, u128), Corrupt> {
+        let mut entries = Vec::new();
+        for (index_key, _) in self.store.scan_prefix(&by_validator_prefix(id), usize::MAX) {
+            // `UNBONDING_BY_VALIDATOR ‖ id (32) ‖ seq (8)`
+            let seq = index_key.get(33..).and_then(read_be64).ok_or(Corrupt)?;
+            let entry = self.entry(seq)?.ok_or(Corrupt)?;
+            if entry.started_at_ms >= infraction_ms {
+                entries.push((seq, entry));
+            }
+        }
+        entries.sort_by_key(|(seq, entry)| (entry.matures_at_ms, *seq));
+        let total = entries
+            .iter()
+            .fold(0u128, |sum, (_, entry)| sum.saturating_add(entry.amount));
+        Ok((entries, total))
+    }
+
+    fn open_entries(&self, staker: &Address, id: &ValidatorId) -> Result<u64, Corrupt> {
+        Ok(load(&self.store, &pair_count_key(staker, id))?.unwrap_or(0))
+    }
+}
+
+/// Writes: each runs on an overlay and reaches the store only on `Ok`.
+impl<S: Store> StakingRegistry<S> {
+    /// Runs `op` against an overlay of the store and applies what it
+    /// wrote only if it returns `Ok`.
+    fn atomic<T>(
+        &mut self,
+        op: impl FnOnce(&mut StakingRegistry<&mut Overlay<'_, S>>) -> Result<T, RegistryError>,
+    ) -> Result<T, RegistryError> {
+        atomically(&mut self.store, |overlay| {
+            op(&mut StakingRegistry::new(overlay))
+        })
+    }
+
+    // ---- reads ---------------------------------------------------------
 
     // ---- validators ----------------------------------------------------
 
@@ -734,10 +843,6 @@ impl<S: Store> StakingRegistry<S> {
         Ok(amount)
     }
 
-    fn open_entries(&self, staker: &Address, id: &ValidatorId) -> Result<u64, Corrupt> {
-        Ok(load(&self.store, &pair_count_key(staker, id))?.unwrap_or(0))
-    }
-
     fn set_open_entries(&mut self, staker: &Address, id: &ValidatorId, count: u64) {
         if count == 0 {
             self.store.delete(&pair_count_key(staker, id));
@@ -801,56 +906,6 @@ impl<S: Store> StakingRegistry<S> {
     }
 
     // ---- the active set ------------------------------------------------
-
-    /// The validators consensus runs on: registered, not jailed or
-    /// tombstoned, whose operator still holds at least the governed
-    /// minimum self-stake, with some bonded stake — the top
-    /// [`MAX_ACTIVE_VALIDATORS`] by stake, ties broken by id, so the
-    /// order is fully determined.
-    ///
-    /// Voting power is the stake itself when the total fits `u64`, and
-    /// otherwise every stake shifted right by the same amount, the
-    /// smallest that makes the total fit. A validator whose stake shifts
-    /// to zero has no vote and is left out.
-    ///
-    /// Reads every validator; see the module docs.
-    pub fn active_set(
-        &self,
-        params: &GovernedParams,
-    ) -> Result<Vec<ActiveValidator>, RegistryError> {
-        let minimum = params.values().min_self_stake;
-        let mut candidates: Vec<(ValidatorId, BlsPublicKey, u128)> = Vec::new();
-        for (id, validator) in self.all_validators()? {
-            if self.status(&id)? != ValidatorStatus::Active {
-                continue;
-            }
-            let operator_stake = validator
-                .pool
-                .redeemable_for(self.shares_of(&id, &validator.operator)?);
-            let stake = validator.pool.attributable_stake();
-            if operator_stake >= minimum && stake > 0 {
-                candidates.push((id, validator.consensus_key, stake));
-            }
-        }
-
-        candidates.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-        candidates.truncate(MAX_ACTIVE_VALIDATORS);
-
-        let stakes: Vec<u128> = candidates.iter().map(|(_, _, stake)| *stake).collect();
-        Ok(candidates
-            .into_iter()
-            .zip(scale_to_u64(&stakes))
-            .filter(|(_, power)| *power > 0)
-            .map(
-                |((id, consensus_key, stake), voting_power)| ActiveValidator {
-                    id,
-                    consensus_key,
-                    stake,
-                    voting_power,
-                },
-            )
-            .collect())
-    }
 
     // ---- slashing ------------------------------------------------------
 
@@ -920,31 +975,6 @@ impl<S: Store> StakingRegistry<S> {
             });
         }
         Ok(applied)
-    }
-
-    /// The unbonding entries of `id` that began at or after
-    /// `infraction_ms` — the ones whose stake was bonded at the
-    /// infraction — in queue order (by maturity, then sequence), with
-    /// their total.
-    fn unbonding_at_risk(
-        &self,
-        id: &ValidatorId,
-        infraction_ms: u64,
-    ) -> Result<(Vec<(u64, UnbondingEntry)>, u128), Corrupt> {
-        let mut entries = Vec::new();
-        for (index_key, _) in self.store.scan_prefix(&by_validator_prefix(id), usize::MAX) {
-            // `UNBONDING_BY_VALIDATOR ‖ id (32) ‖ seq (8)`
-            let seq = index_key.get(33..).and_then(read_be64).ok_or(Corrupt)?;
-            let entry = self.entry(seq)?.ok_or(Corrupt)?;
-            if entry.started_at_ms >= infraction_ms {
-                entries.push((seq, entry));
-            }
-        }
-        entries.sort_by_key(|(seq, entry)| (entry.matures_at_ms, *seq));
-        let total = entries
-            .iter()
-            .fold(0u128, |sum, (_, entry)| sum.saturating_add(entry.amount));
-        Ok((entries, total))
     }
 
     /// Burns up to `amount` from `id`, split pro rata between its pool

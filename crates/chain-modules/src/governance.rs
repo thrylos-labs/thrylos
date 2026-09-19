@@ -50,10 +50,12 @@
 //! which cost a transaction fee and is capped per proposal
 //! ([`MAX_VOTERS_PER_PROPOSAL`]). Pruning them is a later decision.
 //!
-//! What this is not, yet: nothing routes a transaction to it.
-//! `docs/spec.md`'s frozen `vote(GovCap, ProposalId, Vote)` entry point
-//! is a Move-callable native, and wiring one up is the native-module-
-//! boundary work — this module is the logic that native will call.
+//! `chain-exec` routes transactions to it (`submit_proposal` and `vote`,
+//! with a vote-power snapshot taken when a proposal opens) and calls
+//! [`Governance::process`] from its block hooks. `docs/spec.md`'s frozen
+//! `vote(GovCap, ProposalId, Vote)` is meant to be Move-callable, which
+//! needs capabilities as Move resources and VM natives; this module is
+//! the logic that native will call.
 //!
 //! Numbers the spec gives are used as-is (48-hour timelock, two weeks'
 //! notice for a fork). Numbers it doesn't — the voting period, how many
@@ -62,10 +64,13 @@
 use ruint::aliases::U256;
 
 use chain_types::codec::{decode_exact, decode_field, CodecError, Decode, Encode};
+use chain_types::collections::BTreeMap;
 use chain_types::{Address, BlockHeight};
 
 use crate::params::{GovernedParams, ParamChange, ParamError, DAY_MS, SECOND_MS};
-use crate::store::{atomically, be64, load, read_be64, save, tag, Corrupt, Overlay, Store};
+use crate::store::{
+    atomically, be64, load, read_be64, save, tag, Corrupt, Overlay, ReadStore, Store,
+};
 
 /// `docs/spec.md`: "A 48-hour minimum timelock sits between passage and
 /// application, so a hostile or mistaken proposal can be observed before
@@ -542,6 +547,11 @@ pub enum GovernanceError {
     EmptyParamChange,
     InvalidForkName,
     ProposalIdsExhausted,
+    /// The voter has no voting power in this proposal's snapshot: they
+    /// were not in the set that could vote when it was submitted.
+    NotAVoter,
+    /// The snapshot's powers add up to more than a `u128` holds.
+    SnapshotOverflow,
     /// No parameters are stored: [`Governance::init_genesis`] has not
     /// been called on this store.
     NotInitialised,
@@ -572,6 +582,8 @@ impl core::fmt::Display for GovernanceError {
             Self::EmptyParamChange => "the parameter change changes nothing",
             Self::InvalidForkName => "fork names are 1-32 characters of a-z, 0-9, _ and -",
             Self::ProposalIdsExhausted => "no proposal ids left",
+            Self::NotAVoter => "no voting power in this proposal's snapshot",
+            Self::SnapshotOverflow => "snapshot voting power overflows",
             Self::NotInitialised => "governance has no genesis parameters",
             Self::AlreadyInitialised => "governance already has genesis parameters",
             Self::CorruptState => "stored governance state is damaged",
@@ -615,6 +627,19 @@ fn vote_key(id: ProposalId, voter: &Address) -> Vec<u8> {
     key
 }
 
+fn snapshot_key(id: ProposalId, voter: &Address) -> Vec<u8> {
+    let mut key = vec![tag::GOV_SNAPSHOT];
+    key.extend_from_slice(&be64(id.0));
+    key.extend_from_slice(voter.as_bytes());
+    key
+}
+
+fn snapshot_prefix(id: ProposalId) -> Vec<u8> {
+    let mut key = vec![tag::GOV_SNAPSHOT];
+    key.extend_from_slice(&be64(id.0));
+    key
+}
+
 fn fork_key(fork: &ForkName) -> Vec<u8> {
     let mut key = vec![tag::GOV_FORK];
     key.extend_from_slice(fork.as_str().as_bytes());
@@ -628,7 +653,7 @@ pub struct Governance<S> {
     store: S,
 }
 
-impl<S: Store> Governance<S> {
+impl<S> Governance<S> {
     pub const fn new(store: S) -> Self {
         Self { store }
     }
@@ -640,28 +665,11 @@ impl<S: Store> Governance<S> {
     pub fn into_store(self) -> S {
         self.store
     }
+}
 
-    fn atomic<T>(
-        &mut self,
-        op: impl FnOnce(&mut Governance<&mut Overlay<'_, S>>) -> Result<T, GovernanceError>,
-    ) -> Result<T, GovernanceError> {
-        atomically(&mut self.store, |overlay| op(&mut Governance::new(overlay)))
-    }
-
-    /// Stores the genesis parameters. Done once, when the chain is
-    /// created; a store that already has parameters refuses.
-    pub fn init_genesis(&mut self, params: GovernedParams) -> Result<(), GovernanceError> {
-        self.atomic(|gov| {
-            if gov.store.get(&params_key()).is_some() {
-                return Err(GovernanceError::AlreadyInitialised);
-            }
-            save(&mut gov.store, params_key(), &params);
-            Ok(())
-        })
-    }
-
-    // ---- reads ---------------------------------------------------------
-
+/// Reads. These need only a [`ReadStore`], so they work on a shared view
+/// of the committed state.
+impl<S: ReadStore> Governance<S> {
     /// The parameters as they stand now.
     pub fn params(&self) -> Result<GovernedParams, GovernanceError> {
         load(&self.store, &params_key())?.ok_or(GovernanceError::NotInitialised)
@@ -679,6 +687,16 @@ impl<S: Store> Governance<S> {
     ) -> Result<Option<(VoteChoice, u128)>, GovernanceError> {
         let ballot: Option<Ballot> = load(&self.store, &vote_key(id, voter))?;
         Ok(ballot.map(|ballot| (ballot.choice, ballot.power)))
+    }
+
+    /// `voter`'s voting power in `id`'s snapshot, if the proposal was
+    /// submitted with one and they were in it.
+    pub fn snapshot_power(
+        &self,
+        id: ProposalId,
+        voter: &Address,
+    ) -> Result<Option<u128>, GovernanceError> {
+        Ok(load(&self.store, &snapshot_key(id, voter))?)
     }
 
     /// The unresolved proposals — still being voted on, or passed and
@@ -754,12 +772,50 @@ impl<S: Store> Governance<S> {
             if recount != proposal.tally || recount.cast() > proposal.total_power {
                 return Err(GovernanceError::CorruptState);
             }
+
+            // A proposal submitted with a snapshot has exactly its total
+            // power spread over the snapshot's voters.
+            let snapshot = self.store.scan_prefix(&snapshot_prefix(id), usize::MAX);
+            if !snapshot.is_empty() {
+                let mut sum = 0u128;
+                for (_, power_bytes) in snapshot {
+                    let power: u128 = decode_exact(&power_bytes).map_err(|_| Corrupt)?;
+                    sum = sum.saturating_add(power);
+                }
+                if sum != proposal.total_power {
+                    return Err(GovernanceError::CorruptState);
+                }
+            }
         }
         if open_seen != open.len() {
             return Err(GovernanceError::CorruptState);
         }
         Ok(())
     }
+}
+
+/// Writes: each runs on an overlay and reaches the store only on `Ok`.
+impl<S: Store> Governance<S> {
+    fn atomic<T>(
+        &mut self,
+        op: impl FnOnce(&mut Governance<&mut Overlay<'_, S>>) -> Result<T, GovernanceError>,
+    ) -> Result<T, GovernanceError> {
+        atomically(&mut self.store, |overlay| op(&mut Governance::new(overlay)))
+    }
+
+    /// Stores the genesis parameters. Done once, when the chain is
+    /// created; a store that already has parameters refuses.
+    pub fn init_genesis(&mut self, params: GovernedParams) -> Result<(), GovernanceError> {
+        self.atomic(|gov| {
+            if gov.store.get(&params_key()).is_some() {
+                return Err(GovernanceError::AlreadyInitialised);
+            }
+            save(&mut gov.store, params_key(), &params);
+            Ok(())
+        })
+    }
+
+    // ---- reads ---------------------------------------------------------
 
     // ---- proposals -----------------------------------------------------
 
@@ -811,6 +867,58 @@ impl<S: Store> Governance<S> {
         );
         self.store.put(open_key(id), Vec::new());
         Ok(id)
+    }
+
+    /// Opens a proposal whose voters and their powers are fixed now: the
+    /// total power is the sum of `powers`, and each voter's own power is
+    /// recorded so a later vote needs only who is voting
+    /// ([`Self::vote_snapshotted`]), never a figure the voter supplies.
+    /// This is what transactions use. Zero powers are skipped; a voter
+    /// listed twice has their powers added.
+    pub fn submit_with_snapshot(
+        &mut self,
+        kind: ProposalKind,
+        now_ms: u64,
+        powers: &[(Address, u128)],
+    ) -> Result<ProposalId, GovernanceError> {
+        if powers.len() > MAX_VOTERS_PER_PROPOSAL {
+            return Err(GovernanceError::TooManyVoters);
+        }
+        let mut snapshot: BTreeMap<Address, u128> = BTreeMap::new();
+        let mut total = 0u128;
+        for (voter, power) in powers {
+            total = total
+                .checked_add(*power)
+                .ok_or(GovernanceError::SnapshotOverflow)?;
+            if *power > 0 {
+                let entry = snapshot.entry(*voter).or_insert(0);
+                *entry = entry.saturating_add(*power);
+            }
+        }
+        self.atomic(|gov| {
+            let id = gov.do_submit(kind, now_ms, total)?;
+            for (voter, power) in &snapshot {
+                save(&mut gov.store, snapshot_key(id, voter), power);
+            }
+            Ok(id)
+        })
+    }
+
+    /// Records `voter`'s vote using the power the proposal's snapshot
+    /// gives them; [`GovernanceError::NotAVoter`] if it gives them none.
+    pub fn vote_snapshotted(
+        &mut self,
+        id: ProposalId,
+        voter: Address,
+        choice: VoteChoice,
+        now_ms: u64,
+    ) -> Result<(), GovernanceError> {
+        self.atomic(|gov| {
+            let power = gov
+                .snapshot_power(id, &voter)?
+                .ok_or(GovernanceError::NotAVoter)?;
+            gov.do_vote(id, voter, power, choice, now_ms)
+        })
     }
 
     /// Records `voter`'s vote, replacing any earlier one of theirs on
@@ -2069,5 +2177,142 @@ mod tests {
         vec![0xFFu8, 0xFE].encode(&mut bytes);
         BlockHeight(1).encode(&mut bytes);
         assert!(decode_exact::<ProposalKind>(&bytes).is_err(), "not UTF-8");
+    }
+
+    // ---- snapshots -----------------------------------------------------
+
+    fn powers(entries: &[(u8, u128)]) -> Vec<(Address, u128)> {
+        entries.iter().map(|(who, p)| (voter(*who), *p)).collect()
+    }
+
+    #[test]
+    fn a_snapshot_proposal_fixes_the_total_and_each_voters_power() {
+        let mut gov = new_gov();
+        let id = gov
+            .submit_with_snapshot(inflation_change(500), T0, &powers(&[(1, 600), (2, 300)]))
+            .unwrap();
+        assert_eq!(gov.proposal(id).unwrap().unwrap().total_power(), 900);
+        assert_eq!(gov.snapshot_power(id, &voter(1)).unwrap(), Some(600));
+        assert_eq!(gov.snapshot_power(id, &voter(3)).unwrap(), None);
+
+        gov.vote_snapshotted(id, voter(1), VoteChoice::Yes, T0 + 1)
+            .unwrap();
+        assert_eq!(
+            gov.vote_of(id, &voter(1)).unwrap(),
+            Some((VoteChoice::Yes, 600)),
+            "the power recorded, not one the voter supplied"
+        );
+        gov.assert_invariants().unwrap();
+    }
+
+    #[test]
+    fn someone_outside_the_snapshot_cannot_vote_on_it() {
+        let mut gov = new_gov();
+        let id = gov
+            .submit_with_snapshot(inflation_change(500), T0, &powers(&[(1, 600)]))
+            .unwrap();
+        let before = gov.store().clone();
+        assert_eq!(
+            gov.vote_snapshotted(id, voter(9), VoteChoice::Yes, T0 + 1),
+            Err(GovernanceError::NotAVoter)
+        );
+        assert_eq!(gov.store(), &before);
+    }
+
+    #[test]
+    fn a_snapshot_vote_is_a_vote_and_closes_like_one() {
+        let mut gov = new_gov();
+        let id = gov
+            .submit_with_snapshot(inflation_change(500), T0, &powers(&[(1, 600), (2, 400)]))
+            .unwrap();
+        gov.vote_snapshotted(id, voter(1), VoteChoice::Yes, T0 + 1)
+            .unwrap();
+        assert!(matches!(
+            close_voting(&mut gov, id),
+            ProposalStatus::Passed { .. }
+        ));
+        assert_eq!(
+            gov.vote_snapshotted(id, voter(2), VoteChoice::No, T0 + 1),
+            Err(GovernanceError::VotingClosed)
+        );
+    }
+
+    #[test]
+    fn zero_powers_are_skipped_and_repeated_voters_add_up() {
+        let mut gov = new_gov();
+        let id = gov
+            .submit_with_snapshot(
+                inflation_change(500),
+                T0,
+                &powers(&[(1, 100), (2, 0), (1, 50)]),
+            )
+            .unwrap();
+        assert_eq!(gov.proposal(id).unwrap().unwrap().total_power(), 150);
+        assert_eq!(gov.snapshot_power(id, &voter(1)).unwrap(), Some(150));
+        assert_eq!(gov.snapshot_power(id, &voter(2)).unwrap(), None);
+        gov.assert_invariants().unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_with_no_power_at_all_is_refused_and_leaves_nothing() {
+        let mut gov = new_gov();
+        let before = gov.store().clone();
+        assert_eq!(
+            gov.submit_with_snapshot(inflation_change(500), T0, &powers(&[(1, 0)])),
+            Err(GovernanceError::ZeroTotalPower)
+        );
+        assert_eq!(
+            gov.submit_with_snapshot(inflation_change(500), T0, &[]),
+            Err(GovernanceError::ZeroTotalPower)
+        );
+        // A refusal after the snapshot was worked out — nothing written.
+        assert_eq!(
+            gov.submit_with_snapshot(
+                ProposalKind::ParameterChange(ParamChange::default()),
+                T0,
+                &powers(&[(1, 10)])
+            ),
+            Err(GovernanceError::EmptyParamChange)
+        );
+        assert_eq!(gov.store(), &before);
+    }
+
+    #[test]
+    fn snapshot_powers_that_overflow_or_a_snapshot_too_large_are_refused() {
+        let mut gov = new_gov();
+        assert_eq!(
+            gov.submit_with_snapshot(
+                inflation_change(500),
+                T0,
+                &powers(&[(1, u128::MAX), (2, 1)])
+            ),
+            Err(GovernanceError::SnapshotOverflow)
+        );
+        let too_many: Vec<(Address, u128)> = (0..=MAX_VOTERS_PER_PROPOSAL as u64)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[..8].copy_from_slice(&i.to_le_bytes());
+                (Address::from_bytes(bytes), 1)
+            })
+            .collect();
+        assert_eq!(
+            gov.submit_with_snapshot(inflation_change(500), T0, &too_many),
+            Err(GovernanceError::TooManyVoters)
+        );
+    }
+
+    #[test]
+    fn a_snapshot_that_no_longer_adds_up_to_the_total_is_caught() {
+        let mut gov = new_gov();
+        let id = gov
+            .submit_with_snapshot(inflation_change(500), T0, &powers(&[(1, 600), (2, 300)]))
+            .unwrap();
+        gov.assert_invariants().unwrap();
+        let gov = tampered(gov, |s| {
+            let mut bytes = Vec::new();
+            601u128.encode(&mut bytes);
+            s.put(snapshot_key(id, &voter(1)), bytes);
+        });
+        assert_eq!(gov.assert_invariants(), Err(GovernanceError::CorruptState));
     }
 }

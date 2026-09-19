@@ -65,6 +65,22 @@ pub const MAX_QUORUM_BPS: u16 = 6_700;
 pub const MIN_VETO_THRESHOLD_BPS: u16 = 1_000;
 pub const MAX_VETO_THRESHOLD_BPS: u16 = 5_000;
 
+/// The parameters a chain starts with, unless its genesis says otherwise.
+/// The spec's own numbers where it gives one (60M block gas, base fee
+/// denominator 8, 21-day unbonding, 3-5% inflation, quorum and veto at a
+/// third); **the minimum self-stake is a choice**, since the spec fixes
+/// only that it is positive and there is no token denomination yet to
+/// price it in. All are governance-adjustable within the clamps above.
+pub const GENESIS_PARAM_VALUES: ParamValues = ParamValues {
+    max_block_gas: 60_000_000,
+    base_fee_change_denominator: crate::fees::GENESIS_BASE_FEE_CHANGE_DENOMINATOR,
+    min_self_stake: 1_000_000,
+    inflation_bps: 400,
+    unbonding_period_ms: MIN_UNBONDING_PERIOD_MS,
+    quorum_bps: 3_340,
+    veto_threshold_bps: 3_340,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamError {
     /// The block gas limit or base fee denominator, per

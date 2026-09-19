@@ -21,8 +21,9 @@
 //! the live parameters, proposals and votes all in the store.
 //! [`slashing`] admits equivocation evidence, prices it by how much stake
 //! offended together, and jails for downtime; it returns burn orders,
-//! which the registry applies. Nothing routes a transaction to any of
-//! this until the native module boundary exists.
+//! which the registry applies. `chain-exec` routes transactions to the
+//! registry and governance (its `native` module) and runs their per-block
+//! hooks; none of this crate holds coin, the executor moves it.
 
 #![forbid(unsafe_code)]
 
@@ -38,13 +39,13 @@ pub use fees::{next_base_fee, FeeError, FeeParams, GENESIS_BASE_FEE, MIN_BASE_FE
 pub use governance::{
     ForkName, Governance, GovernanceError, ProposalId, ProposalKind, ProposalStatus, VoteChoice,
 };
-pub use params::{GovernedParams, ParamChange, ParamError, ParamValues};
+pub use params::{GovernedParams, ParamChange, ParamError, ParamValues, GENESIS_PARAM_VALUES};
 pub use registry::{
-    ActiveValidator, Matured, RegistryError, SlashApplied, StakingRegistry, ValidatorId,
-    MAX_ACTIVE_VALIDATORS, MAX_MATURING_PER_CALL, MAX_UNBONDING_ENTRIES_PER_PAIR,
+    coin_held_by_entry, ActiveValidator, Matured, RegistryError, SlashApplied, StakingRegistry,
+    ValidatorId, MAX_ACTIVE_VALIDATORS, MAX_MATURING_PER_CALL, MAX_UNBONDING_ENTRIES_PER_PAIR,
 };
 pub use slashing::{
     slash_bps, EvidenceRejection, SlashOrder, SlashingTracker, ValidatorStatus, BASE_SLASH_BPS,
 };
 pub use staking::{StakingError, StakingPool, DEAD_SHARES, PRICE_FRAC_BITS};
-pub use store::{MemStore, Overlay, Store};
+pub use store::{MemStore, Overlay, ReadStore, Store};

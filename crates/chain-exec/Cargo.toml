@@ -19,6 +19,7 @@ move-compiler.workspace = true
 move-core-types.workspace = true
 move-vm-config.workspace = true
 move-vm-runtime.workspace = true
+ruint = "1"
 tempfile.workspace = true
 
 [dev-dependencies]

@@ -1278,6 +1278,7 @@ dependencies = [
  "move-core-types",
  "move-vm-config",
  "move-vm-runtime",
+ "ruint",
  "tempfile",
 ]
 

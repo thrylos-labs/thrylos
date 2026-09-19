@@ -24,7 +24,7 @@ use chain_types::collections::BTreeMap;
 /// exactly this reason, rather than choosing independently.
 pub const KEY_TAG: u8 = 0;
 
-fn account_key(address: Address) -> StateKey {
+pub fn account_key(address: Address) -> StateKey {
     let mut bytes = vec![KEY_TAG];
     bytes.extend_from_slice(address.as_bytes());
     StateKey::new(bytes)

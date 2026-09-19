@@ -41,15 +41,14 @@ use core::ops::Bound;
 use chain_types::codec::{decode_exact, decode_field, CodecError, Decode, Encode};
 use chain_types::collections::BTreeMap;
 
-/// An ordered byte-keyed store. Every method is deterministic and
-/// order-independent of anything but the store's contents.
-pub trait Store {
+/// The read half of a store: an ordered byte-keyed view. Split from
+/// [`Store`] so that something holding only a shared borrow of the chain's
+/// state — a query against the committed state, or the base an [`Overlay`]
+/// reads through — can serve the modules' reads without being able to
+/// write. Every method is deterministic and depends on nothing but the
+/// store's contents.
+pub trait ReadStore {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
-
-    fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
-
-    /// Removes `key`. Removing a key that is not there is not an error.
-    fn delete(&mut self, key: &[u8]);
 
     /// The entries with `start <= key < end` (no upper bound if `end` is
     /// `None`), in ascending key order, at most `limit` of them.
@@ -63,20 +62,40 @@ pub trait Store {
     }
 }
 
-/// Lets a module borrow a store for one call — `StakingRegistry::new(&mut
-/// overlay)` — without taking ownership of it.
-impl<S: Store + ?Sized> Store for &mut S {
+/// An ordered byte-keyed store that can be written.
+pub trait Store: ReadStore {
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>);
+
+    /// Removes `key`. Removing a key that is not there is not an error.
+    fn delete(&mut self, key: &[u8]);
+}
+
+impl<S: ReadStore + ?Sized> ReadStore for &S {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         (**self).get(key)
     }
+    fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        (**self).range(start, end, limit)
+    }
+}
+
+/// Lets a module borrow a store for one call — `StakingRegistry::new(&mut
+/// overlay)` — without taking ownership of it.
+impl<S: ReadStore + ?Sized> ReadStore for &mut S {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        (**self).get(key)
+    }
+    fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        (**self).range(start, end, limit)
+    }
+}
+
+impl<S: Store + ?Sized> Store for &mut S {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         (**self).put(key, value);
     }
     fn delete(&mut self, key: &[u8]) {
         (**self).delete(key);
-    }
-    fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-        (**self).range(start, end, limit)
     }
 }
 
@@ -113,7 +132,10 @@ pub struct Corrupt;
 
 /// The record at `key`, if any. A present-but-undecodable record is
 /// [`Corrupt`], never silently absent.
-pub fn load<T: Decode>(store: &(impl Store + ?Sized), key: &[u8]) -> Result<Option<T>, Corrupt> {
+pub fn load<T: Decode>(
+    store: &(impl ReadStore + ?Sized),
+    key: &[u8],
+) -> Result<Option<T>, Corrupt> {
     match store.get(key) {
         None => Ok(None),
         Some(bytes) => decode_exact(&bytes).map(Some).map_err(|_| Corrupt),
@@ -203,9 +225,10 @@ pub mod tag {
     pub const GOV_VOTE: u8 = 15;
     pub const GOV_OPEN: u8 = 16;
     pub const GOV_FORK: u8 = 17;
+    pub const GOV_SNAPSHOT: u8 = 18;
 
     /// Every tag above, for the uniqueness test.
-    pub const ALL: [u8; 17] = [
+    pub const ALL: [u8; 18] = [
         VALIDATOR,
         SHARES,
         CONSENSUS_KEY,
@@ -223,6 +246,7 @@ pub mod tag {
         GOV_VOTE,
         GOV_OPEN,
         GOV_FORK,
+        GOV_SNAPSHOT,
     ];
 }
 
@@ -251,16 +275,18 @@ impl MemStore {
 }
 
 impl Store for MemStore {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.entries.get(key).cloned()
-    }
-
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.entries.insert(key, value);
     }
 
     fn delete(&mut self, key: &[u8]) {
         self.entries.remove(key);
+    }
+}
+
+impl ReadStore for MemStore {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.entries.get(key).cloned()
     }
 
     fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -282,13 +308,13 @@ impl Store for MemStore {
 }
 
 /// Buffers writes over a base store. See the module docs.
-pub struct Overlay<'a, B: Store + ?Sized> {
+pub struct Overlay<'a, B: ReadStore + ?Sized> {
     base: &'a B,
     /// `Some` is a write, `None` a deletion of whatever the base holds.
     changes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
-impl<'a, B: Store + ?Sized> Overlay<'a, B> {
+impl<'a, B: ReadStore + ?Sized> Overlay<'a, B> {
     pub fn new(base: &'a B) -> Self {
         Self {
             base,
@@ -320,20 +346,22 @@ pub fn apply_changes(store: &mut (impl Store + ?Sized), changes: Vec<(Vec<u8>, O
     }
 }
 
-impl<B: Store + ?Sized> Store for Overlay<'_, B> {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        match self.changes.get(key) {
-            Some(change) => change.clone(),
-            None => self.base.get(key),
-        }
-    }
-
+impl<B: ReadStore + ?Sized> Store for Overlay<'_, B> {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.changes.insert(key, Some(value));
     }
 
     fn delete(&mut self, key: &[u8]) {
         self.changes.insert(key.to_vec(), None);
+    }
+}
+
+impl<B: ReadStore + ?Sized> ReadStore for Overlay<'_, B> {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        match self.changes.get(key) {
+            Some(change) => change.clone(),
+            None => self.base.get(key),
+        }
     }
 
     fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {

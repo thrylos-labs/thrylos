@@ -41,8 +41,27 @@
 //!   needs a clock and so is not here: `chain_engine_api::timestamp` has
 //!   it as a pure function for the consensus host to apply before voting.
 //! - The native modules' state lives in this same flat state under its own
-//!   tag, through `module_store::StateStore`, one entry per entity. Nothing
-//!   dispatches to them yet: that is the native module boundary.
+//!   tag, through `module_store::StateStore`, one entry per entity, and a
+//!   transaction reaches them through [`native`]: staking (register a
+//!   validator, stake, unstake, unjail, submit equivocation evidence) and
+//!   governance (propose, vote), as calls to two reserved system packages.
+//!   A call that fails aborts and costs its fee, like any other. The
+//!   modules hold no coin; this crate moves it, and keeps the chain's
+//!   total supply in state ([`accounting`]) equal to everything held in
+//!   accounts, staking pools and unbonding entries.
+//! - After a block's transactions the modules' hooks run in a fixed order
+//!   ([`hooks`]): matured unbonding is paid out, an epoch's inflation is
+//!   minted into the validators' pools, governance advances, and the time
+//!   checkpoints that date evidence are kept. The governed parameters
+//!   (block gas limit, fee denominator, ...) are read from state at the
+//!   start of each block, so a change governance applies governs the
+//!   next block. Last of all the block is checked to have neither created
+//!   nor destroyed value; one that did is rejected as
+//!   `RejectionReason::InvariantViolated`, halting the chain at it.
+//! - Native calls are not metered — like every call here they are charged
+//!   their declared gas limit — and some do work that grows with the state
+//!   (see [`native`]). Metering them by measurement is required before
+//!   this carries real value.
 //! - Declared-input enforcement for the object case is an abort when
 //!   the counter isn't declared, and structural underneath that: Sui's
 //!   Move has no ambient lookup by address, so `bump` can only touch the
@@ -71,10 +90,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod accounting;
+mod effects;
 pub mod executor;
 pub mod genesis;
+pub mod hooks;
 pub mod keys;
 pub mod module_resolver;
 pub mod module_store;
+pub mod native;
 
 pub use executor::{Executor, ExecutorError};

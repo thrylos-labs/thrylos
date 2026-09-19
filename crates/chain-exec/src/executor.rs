@@ -7,10 +7,12 @@ use std::collections::BTreeMap;
 use chain_engine_api::timestamp::is_after_parent;
 use chain_engine_api::{
     AbortReason, Block, BlockLimits, BlockRejected, Engine, ExecutedBlock, FinaliseError,
-    FinaliseErrorReason, RejectionReason, TransactionOutcome, GENESIS_MAX_BLOCK_GAS,
+    FinaliseErrorReason, RejectionReason, TransactionOutcome,
 };
-use chain_modules::fees::{
-    next_base_fee, FeeError, FeeParams, GENESIS_BASE_FEE, GENESIS_BASE_FEE_CHANGE_DENOMINATOR,
+use chain_modules::fees::{next_base_fee, GENESIS_BASE_FEE};
+use chain_modules::params::GENESIS_PARAM_VALUES;
+use chain_modules::{
+    ActiveValidator, Governance, GovernedParams, ParamError, ParamValues, StakingRegistry,
 };
 use chain_state::{compute_root, StateKey, StateRoot, StateValue};
 use chain_types::codec::CodecError;
@@ -25,19 +27,31 @@ use move_vm_runtime::runtime::MoveRuntime;
 use move_vm_runtime::shared::gas::UnmeteredGasMeter;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
 
+use crate::accounting::{
+    audit_supply, check_block_conservation, read_supply, write_supply, AccountingError,
+};
+use crate::effects::{BlockCtx, CallEffects, CallError};
 use crate::genesis::{
     genesis_state, GenesisError, COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME,
     COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS, SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME,
     SYSTEM_PACKAGE_ADDRESS,
 };
+use crate::hooks::end_of_block;
 use crate::keys::{base_fee_key, calculator_result_key, chain_head_key, object_key};
 use crate::module_resolver::ChainStateModuleResolver;
+use crate::module_store::{StateStore, StateView};
+use crate::native;
 
 #[derive(Debug)]
 pub enum ExecutorError {
     Genesis(GenesisError),
     Runtime(String),
-    FeeParams(FeeError),
+    /// The genesis parameters are outside their clamps.
+    Params(ParamError),
+    /// A native module could not read or write its own state.
+    Modules(String),
+    /// The state failed an audit.
+    Audit(String),
 }
 
 impl core::fmt::Display for ExecutorError {
@@ -45,42 +59,14 @@ impl core::fmt::Display for ExecutorError {
         match self {
             Self::Genesis(err) => write!(f, "genesis failed: {err}"),
             Self::Runtime(msg) => write!(f, "runtime construction failed: {msg}"),
-            Self::FeeParams(err) => write!(f, "invalid genesis fee parameters: {err}"),
+            Self::Params(err) => write!(f, "invalid genesis parameters: {err}"),
+            Self::Modules(msg) => write!(f, "native module state: {msg}"),
+            Self::Audit(msg) => write!(f, "audit failed: {msg}"),
         }
     }
 }
 
 impl std::error::Error for ExecutorError {}
-
-/// What a call would change, held back rather than applied: handlers
-/// read state and return one of these, and only the caller decides
-/// whether it ever reaches `state`. That is what makes an abort's
-/// rollback structural instead of something each handler has to
-/// remember to undo.
-struct CallEffects {
-    writes: Vec<(StateKey, StateValue)>,
-    gas_used: u64,
-}
-
-/// Why a call produced no [`CallEffects`].
-enum CallError {
-    /// The transaction's own doing: it was valid to run, and running it
-    /// failed. Becomes an aborted [`TransactionOutcome`].
-    Abort(AbortReason),
-    /// Not the transaction's doing — the executor itself couldn't do
-    /// what it should always be able to (build its VM from constants,
-    /// read back a state invariant genesis established, unpack a value
-    /// its own module just returned). Nothing a transaction can
-    /// trigger, so charging its sender for it would be wrong; the block
-    /// is rejected instead, the same way a corrupt account read is.
-    Internal,
-}
-
-impl From<AbortReason> for CallError {
-    fn from(reason: AbortReason) -> Self {
-        Self::Abort(reason)
-    }
-}
 
 struct AppliedTransaction {
     gas_used: u64,
@@ -97,15 +83,14 @@ pub const GENESIS_TIMESTAMP_MILLIS: u64 = 0;
 
 pub struct Executor {
     chain_id: ChainId,
-    /// Fixed at genesis for now. The block gas limit and base fee
-    /// denominator are governance-adjustable in `docs/spec.md`, and
-    /// consensus-critical, so once governance exists they belong in
-    /// state alongside the base fee itself; until then every node
-    /// building from the same genesis agrees on them by construction.
-    fee_params: FeeParams,
     state: BTreeMap<StateKey, StateValue>,
     tip_block_hash: Hash,
     runtime: MoveRuntime,
+    /// Test-only: something to do to the state after the block's hooks,
+    /// standing in for a module that misbehaves, so the check that must
+    /// catch it can be shown to.
+    #[cfg(test)]
+    fault: Option<fn(&mut BTreeMap<StateKey, StateValue>)>,
 }
 
 impl Executor {
@@ -115,14 +100,31 @@ impl Executor {
     /// `chain_id` (`docs/spec.md`, "Transaction validity": "Chain ID
     /// ... checked against the node's own").
     pub fn genesis(chain_id: ChainId) -> Result<Self, ExecutorError> {
+        Self::genesis_with_params(chain_id, GENESIS_PARAM_VALUES)
+    }
+
+    /// Like [`Self::genesis`], starting from `params` instead of the
+    /// defaults. They must be inside the clamps. The parameters are
+    /// stored in state, where governance can change them from then on.
+    ///
+    /// The supply starts at zero and grows only as coin is allocated with
+    /// [`Self::credit_account`]; there are no validators until some
+    /// register. Both are what a genesis file will eventually carry.
+    pub fn genesis_with_params(
+        chain_id: ChainId,
+        params: ParamValues,
+    ) -> Result<Self, ExecutorError> {
+        let params = GovernedParams::new(params).map_err(ExecutorError::Params)?;
         let mut state = genesis_state().map_err(ExecutorError::Genesis)?;
-        let fee_params = FeeParams::new(GENESIS_MAX_BLOCK_GAS, GENESIS_BASE_FEE_CHANGE_DENOMINATOR)
-            .map_err(ExecutorError::FeeParams)?;
         state.insert(
             base_fee_key(),
             StateValue::new(GENESIS_BASE_FEE.to_le_bytes().to_vec()),
         );
         write_head(&mut state, GENESIS_HEIGHT, GENESIS_TIMESTAMP_MILLIS);
+        write_supply(&mut state, 0);
+        Governance::new(StateStore::new(&mut state))
+            .init_genesis(params)
+            .map_err(|err| ExecutorError::Modules(err.to_string()))?;
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
         })?;
@@ -134,10 +136,11 @@ impl Executor {
         let runtime = MoveRuntime::new(natives, vm_config);
         Ok(Self {
             chain_id,
-            fee_params,
             state,
             tip_block_hash: Hash::from_bytes([0u8; 32]),
             runtime,
+            #[cfg(test)]
+            fault: None,
         })
     }
 
@@ -192,11 +195,63 @@ impl Executor {
     /// state exists at genesis — see `crate::genesis`), so this is the
     /// explicit, auditable stand-in tests use to fund a sender rather
     /// than transactions succeeding against an implicit balance.
+    ///
+    /// Coin allocated this way is new supply, and is recorded as such.
     pub fn credit_account(&mut self, address: Address, amount: u128) -> Result<(), CodecError> {
         let mut account = chain_state::account::read_account(&self.state, address)?;
         account.balance = account.balance.saturating_add(amount);
         chain_state::account::write_account(&mut self.state, address, account);
+        let supply = read_supply(&self.state).unwrap_or(0);
+        write_supply(&mut self.state, supply.saturating_add(amount));
         Ok(())
+    }
+
+    /// The total supply: every unit in an account, a staking pool or the
+    /// unbonding queue.
+    pub fn supply(&self) -> Option<u128> {
+        read_supply(&self.state)
+    }
+
+    /// The governed parameters as they stand now.
+    pub fn params(&self) -> Result<GovernedParams, ExecutorError> {
+        Governance::new(StateView::new(&self.state))
+            .params()
+            .map_err(|err| ExecutorError::Modules(err.to_string()))
+    }
+
+    /// The validators consensus should run on, by stake — `docs/spec.md`'s
+    /// `read_validator_set()`, as a Rust call: read-only, from the
+    /// committed state.
+    pub fn validator_set(&self) -> Result<Vec<ActiveValidator>, ExecutorError> {
+        let params = self.params()?;
+        StakingRegistry::new(StateView::new(&self.state))
+            .active_set(&params)
+            .map_err(|err| ExecutorError::Modules(format!("{err:?}")))
+    }
+
+    /// Reads the staking registry as of the committed state.
+    pub fn with_registry<T>(&self, read: impl FnOnce(&StakingRegistry<StateView<'_>>) -> T) -> T {
+        read(&StakingRegistry::new(StateView::new(&self.state)))
+    }
+
+    /// Reads governance as of the committed state.
+    pub fn with_governance<T>(&self, read: impl FnOnce(&Governance<StateView<'_>>) -> T) -> T {
+        read(&Governance::new(StateView::new(&self.state)))
+    }
+
+    /// Checks everything that should always hold, by reading all of it:
+    /// that the supply equals everything held, and each module's own
+    /// invariants (every pool's share ledger, the unbonding queue's
+    /// indexes, governance's tallies). O(state) — for tests and periodic
+    /// audits. What runs on every block is the cheaper change-only check
+    /// (`crate::accounting::check_block_conservation`).
+    pub fn audit(&self) -> Result<(), ExecutorError> {
+        audit_supply(&self.state)
+            .map_err(|err| ExecutorError::Audit(format!("supply: {err:?}")))?;
+        self.with_registry(|registry| registry.assert_invariants())
+            .map_err(|err| ExecutorError::Audit(format!("registry: {err:?}")))?;
+        self.with_governance(|governance| governance.assert_invariants())
+            .map_err(|err| ExecutorError::Audit(format!("governance: {err:?}")))
     }
 
     /// Apply every transaction in `block` to `state` in order. A
@@ -222,6 +277,16 @@ impl Executor {
     /// then sets the base fee the *next* block will charge, written back
     /// into `state` so it lands in the state root and diff. Returns the
     /// total gas used and one outcome per transaction.
+    ///
+    /// The governed parameters — the block gas limit and the fee
+    /// denominator among them — are read from state when the block
+    /// begins, so a change governance applies takes effect from the next
+    /// block. After the transactions the modules' hooks run
+    /// ([`crate::hooks`]), and last of all the block is checked to have
+    /// neither created nor destroyed value
+    /// ([`crate::accounting::check_block_conservation`]); a block that did
+    /// is rejected as [`RejectionReason::InvariantViolated`], which halts
+    /// the chain at it — the spec's "halts block production if violated".
     fn apply_block(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
@@ -252,17 +317,31 @@ impl Executor {
             });
         }
 
+        let params = Governance::new(StateView::new(state))
+            .params()
+            .map_err(|_| BlockRejected {
+                transaction_index: None,
+                reason: RejectionReason::Rejected,
+            })?;
+        let fee_params = params.fee_params();
+        let ctx = BlockCtx {
+            height: block.height,
+            timestamp_ms: block.timestamp_millis,
+            base_fee,
+            params,
+        };
+
         let mut gas_used: u64 = 0;
         let mut outcomes = Vec::with_capacity(block.transactions.len());
         for (index, tx) in block.transactions.iter().enumerate() {
-            let applied = self.apply_transaction(state, tx, index, base_fee, block.height)?;
+            let applied = self.apply_transaction(state, tx, index, &ctx)?;
             gas_used = gas_used.saturating_add(applied.gas_used);
             // Checked as it accumulates rather than after the loop, so an
             // oversized block is refused without executing the rest of it.
             // Not any one transaction's fault: the block as a whole is
             // over the limit `docs/spec.md` gives the base fee its target
             // from ("Max block gas").
-            if gas_used > self.fee_params.max_block_gas() {
+            if gas_used > fee_params.max_block_gas() {
                 return Err(BlockRejected {
                     transaction_index: None,
                     reason: RejectionReason::MalformedBlock,
@@ -271,12 +350,25 @@ impl Executor {
             outcomes.push(applied.outcome);
         }
 
-        let next_fee = next_base_fee(&self.fee_params, base_fee, gas_used);
+        let next_fee = next_base_fee(&fee_params, base_fee, gas_used);
         state.insert(
             base_fee_key(),
             StateValue::new(next_fee.to_le_bytes().to_vec()),
         );
+        end_of_block(state, &ctx).map_err(|_| BlockRejected {
+            transaction_index: None,
+            reason: RejectionReason::Rejected,
+        })?;
         write_head(state, block.height.0, block.timestamp_millis);
+        #[cfg(test)]
+        if let Some(fault) = self.fault {
+            fault(state);
+        }
+
+        check_block_conservation(&self.state, state).map_err(|err| BlockRejected {
+            transaction_index: None,
+            reason: rejection_for(err),
+        })?;
         Ok((gas_used, outcomes))
     }
 
@@ -295,9 +387,9 @@ impl Executor {
         state: &mut BTreeMap<StateKey, StateValue>,
         tx: &Transaction,
         tx_index: usize,
-        base_fee: u64,
-        height: BlockHeight,
+        ctx: &BlockCtx,
     ) -> Result<AppliedTransaction, BlockRejected> {
+        let (base_fee, height) = (ctx.base_fee, ctx.height);
         let transaction_index = u32::try_from(tx_index).ok();
         let reject = move |reason: RejectionReason| BlockRejected {
             transaction_index,
@@ -338,13 +430,20 @@ impl Executor {
             return Err(reject(RejectionReason::Rejected));
         }
 
-        let (outcome, gas_used) = match self.execute_call(state, tx) {
+        let (outcome, gas_used) = match self.execute_call(state, tx, ctx) {
             Ok(effects) => {
-                // The only place a call's writes ever reach `state`:
+                // The only place a call's changes ever reach `state`:
                 // an abort returns before this, so rollback is
                 // structural — there is nothing to undo.
-                for (key, value) in effects.writes {
-                    state.insert(key, value);
+                for (key, change) in effects.changes {
+                    match change {
+                        Some(value) => {
+                            state.insert(key, value);
+                        }
+                        None => {
+                            state.remove(&key);
+                        }
+                    }
                 }
                 (TransactionOutcome::Success, effects.gas_used)
             }
@@ -364,8 +463,27 @@ impl Executor {
         // enough. The fee is burned — nothing is credited for it — as in
         // EIP-1559; there is no priority tip to pay a proposer (see
         // `chain_modules::fees`'s doc comment).
+        //
+        // The sender's account is read again here, not taken from before
+        // the call: a native call may have debited it (staking moves coin
+        // out of the sender's balance), and the fee comes out of what is
+        // left.
+        let account = chain_state::account::read_account(state, sender)
+            .map_err(|_| reject(RejectionReason::Rejected))?;
         let updated_account = account.apply_transaction(GasAmount(gas_used), GasPrice(base_fee));
         chain_state::account::write_account(state, sender, updated_account);
+
+        // A burned fee leaves the supply. What was actually taken, which
+        // is less than gas times price only if the balance ran out, which
+        // the balance check above rules out.
+        let burned = account.balance.saturating_sub(updated_account.balance);
+        if burned > 0 {
+            let supply = read_supply(state).ok_or_else(|| reject(RejectionReason::Rejected))?;
+            let after = supply
+                .checked_sub(burned)
+                .ok_or_else(|| reject(RejectionReason::Rejected))?;
+            write_supply(state, after);
+        }
 
         Ok(AppliedTransaction { gas_used, outcome })
     }
@@ -380,7 +498,13 @@ impl Executor {
         &self,
         state: &BTreeMap<StateKey, StateValue>,
         tx: &Transaction,
+        ctx: &BlockCtx,
     ) -> Result<CallEffects, CallError> {
+        // The native modules first: a call to one of their reserved
+        // packages is theirs, whatever else it looks like.
+        if let Some(result) = native::call(state, tx, ctx) {
+            return result;
+        }
         let call = &tx.body.call;
         if call.module_address == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())
             && call.module_name == SYSTEM_MODULE_NAME.as_bytes()
@@ -440,9 +564,9 @@ impl Executor {
             .map_err(|_| CallError::Internal)?;
 
         Ok(CallEffects {
-            writes: vec![(
+            changes: vec![(
                 calculator_result_key(account_address(&tx.sender_address())),
-                StateValue::new(sum.to_le_bytes().to_vec()),
+                Some(StateValue::new(sum.to_le_bytes().to_vec())),
             )],
             // Unmetered for this pass — see `crate`'s doc comment.
             // Charging the declared gas limit as a stand-in keeps
@@ -524,9 +648,9 @@ impl Executor {
             .map_err(|_| CallError::Internal)?;
 
         Ok(CallEffects {
-            writes: vec![(
+            changes: vec![(
                 object_key(INITIAL_COUNTER_ADDRESS),
-                StateValue::new(new_value.to_le_bytes().to_vec()),
+                Some(StateValue::new(new_value.to_le_bytes().to_vec())),
             )],
             gas_used: tx.body.gas_limit.0,
         })
@@ -541,6 +665,16 @@ impl Executor {
         let linkage = LinkageContext::new(BTreeMap::from([(package_address, package_address)]))
             .map_err(|_| ())?;
         self.runtime.make_vm(resolver, linkage).map_err(|_| ())
+    }
+}
+
+/// How a failed conservation check rejects the block. Value created or
+/// lost is the invariant the spec says halts block production; state the
+/// check cannot read is damaged state, rejected as such.
+fn rejection_for(err: AccountingError) -> RejectionReason {
+    match err {
+        AccountingError::Unbalanced => RejectionReason::InvariantViolated,
+        AccountingError::SupplyUnreadable | AccountingError::Corrupt => RejectionReason::Rejected,
     }
 }
 
@@ -666,5 +800,173 @@ impl Engine for Executor {
         self.state = scratch;
         self.tip_block_hash = block.hash();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
+
+    use super::*;
+
+    #[test]
+    fn value_created_or_lost_is_the_invariant_rejection_and_damage_is_not() {
+        assert_eq!(
+            rejection_for(AccountingError::Unbalanced),
+            RejectionReason::InvariantViolated
+        );
+        assert_eq!(
+            rejection_for(AccountingError::Corrupt),
+            RejectionReason::Rejected
+        );
+        assert_eq!(
+            rejection_for(AccountingError::SupplyUnreadable),
+            RejectionReason::Rejected
+        );
+    }
+
+    #[test]
+    fn the_audit_passes_on_a_fresh_executor_and_notices_value_that_appeared_from_nowhere() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(Address::from_bytes([1; 32]), 1_000)
+            .unwrap();
+        executor.audit().unwrap();
+
+        // Inflate a balance without the supply following.
+        let mut account = executor.read_account(Address::from_bytes([1; 32])).unwrap();
+        account.balance += 1;
+        chain_state::account::write_account(
+            &mut executor.state,
+            Address::from_bytes([1; 32]),
+            account,
+        );
+        assert!(matches!(executor.audit(), Err(ExecutorError::Audit(_))));
+    }
+
+    #[test]
+    fn genesis_parameters_outside_their_clamps_are_refused() {
+        let mut values = GENESIS_PARAM_VALUES;
+        values.inflation_bps = 9_999;
+        assert!(matches!(
+            Executor::genesis_with_params(ChainId(1), values),
+            Err(ExecutorError::Params(_))
+        ));
+    }
+
+    #[test]
+    fn the_genesis_parameters_are_stored_in_state_where_governance_can_change_them() {
+        let executor = Executor::genesis(ChainId(1)).unwrap();
+        assert_eq!(*executor.params().unwrap().values(), GENESIS_PARAM_VALUES);
+        assert_eq!(executor.supply(), Some(0));
+        assert!(executor.validator_set().unwrap().is_empty());
+    }
+
+    /// An executor with `fault` applied to the state at the end of every
+    /// block, and one funded account.
+    fn faulty(fault: fn(&mut BTreeMap<StateKey, StateValue>)) -> Executor {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(Address::from_bytes([1; 32]), 1_000)
+            .unwrap();
+        executor.fault = Some(fault);
+        executor
+    }
+
+    fn empty_block(executor: &Executor) -> Block {
+        Block {
+            parent_block_hash: executor.tip_block_hash(),
+            height: BlockHeight(1),
+            timestamp_millis: 1_000,
+            transactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_block_that_creates_value_is_rejected_and_so_is_one_that_loses_it() {
+        let creates: fn(&mut BTreeMap<StateKey, StateValue>) = |state| {
+            let who = Address::from_bytes([1; 32]);
+            let mut account = chain_state::account::read_account(state, who).unwrap();
+            account.balance += 1;
+            chain_state::account::write_account(state, who, account);
+        };
+        let destroys: fn(&mut BTreeMap<StateKey, StateValue>) = |state| {
+            let who = Address::from_bytes([1; 32]);
+            let mut account = chain_state::account::read_account(state, who).unwrap();
+            account.balance -= 1;
+            chain_state::account::write_account(state, who, account);
+        };
+        let inflates_supply: fn(&mut BTreeMap<StateKey, StateValue>) = |state| {
+            let supply = read_supply(state).unwrap();
+            write_supply(state, supply + 1);
+        };
+
+        for (name, fault) in [
+            ("creates", creates),
+            ("destroys", destroys),
+            ("inflates the supply", inflates_supply),
+        ] {
+            let executor = faulty(fault);
+            let block = empty_block(&executor);
+            let rejected = executor
+                .execute_block(executor.state_root(), &block)
+                .unwrap_err();
+            assert_eq!(
+                rejected.reason,
+                RejectionReason::InvariantViolated,
+                "{name}"
+            );
+            assert_eq!(rejected.transaction_index, None);
+        }
+    }
+
+    #[test]
+    fn a_block_that_moves_value_without_making_or_losing_any_is_accepted() {
+        let executor = faulty(|state| {
+            // A transfer: one account down, another up, supply unchanged.
+            let (a, b) = (Address::from_bytes([1; 32]), Address::from_bytes([2; 32]));
+            let mut from = chain_state::account::read_account(state, a).unwrap();
+            let mut to = chain_state::account::read_account(state, b).unwrap();
+            from.balance -= 100;
+            to.balance += 100;
+            chain_state::account::write_account(state, a, from);
+            chain_state::account::write_account(state, b, to);
+        });
+        let block = empty_block(&executor);
+        assert!(executor
+            .execute_block(executor.state_root(), &block)
+            .is_ok());
+    }
+
+    #[test]
+    fn finalising_refuses_such_a_block_too_so_it_cannot_be_committed() {
+        let mut executor = faulty(|state| {
+            let who = Address::from_bytes([1; 32]);
+            let mut account = chain_state::account::read_account(state, who).unwrap();
+            account.balance += 1;
+            chain_state::account::write_account(state, who, account);
+        });
+        let good = Executor::genesis(ChainId(1)).unwrap();
+        let block = empty_block(&executor);
+        // A result computed by an honest node, offered for this block.
+        let honest = good.execute_block(good.state_root(), &block).unwrap();
+        assert_eq!(
+            executor.finalise_block(&block, &honest).unwrap_err().reason,
+            FinaliseErrorReason::StateRootMismatch
+        );
+        assert_eq!(executor.head_height(), Some(0), "nothing committed");
+    }
+
+    #[test]
+    fn credited_coin_is_recorded_as_supply() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(Address::from_bytes([1; 32]), 700)
+            .unwrap();
+        executor
+            .credit_account(Address::from_bytes([2; 32]), 300)
+            .unwrap();
+        assert_eq!(executor.supply(), Some(1_000));
+        executor.audit().unwrap();
     }
 }

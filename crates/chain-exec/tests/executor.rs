@@ -137,6 +137,10 @@ fn signed_transaction_expiring(
 
 /// The first block's timestamp in these tests, and the step between blocks.
 const FIRST_TIMESTAMP: u64 = 1_700_000_000_000;
+
+/// What the very first block writes that no later one does: the reward
+/// clock is started, and the first time checkpoint is kept.
+const FIRST_BLOCK_BOOKKEEPING: usize = 2;
 const BLOCK_INTERVAL_MS: u64 = 1_000;
 
 /// Height and timestamp for the block after the executor's current head:
@@ -365,13 +369,14 @@ fn bump_mutates_the_counter_object_and_the_write_is_readable_back() {
         default_limits(),
     );
     let executed = executor.execute_block(genesis_root, &block).unwrap();
-    // Three keys changed: the counter object's bumped value, the
-    // sender's account (gas debited, sequence number advanced), and the
-    // chain head (the block's own height and timestamp). The
+    // Keys changed: the counter object's bumped value, the sender's
+    // account (gas debited, sequence number advanced), the supply (the
+    // fee is burned), the chain head (the block's own height and
+    // timestamp), and the first block's bookkeeping. The
     // diff is what `chain-db` would persist instead of the whole
     // state, so it has to reflect the real writes, not the genesis
     // state's other untouched keys.
-    assert_eq!(executed.state_diff.len(), 3);
+    assert_eq!(executed.state_diff.len(), 4 + FIRST_BLOCK_BOOKKEEPING);
     executor.finalise_block(&block, &executed).unwrap();
 
     assert_eq!(executor.read_counter(), Some(5));
@@ -576,9 +581,9 @@ fn an_aborted_transactions_diff_is_only_the_senders_account() {
     let executed = execute_and_finalise(&mut executor, vec![tx]);
     assert_eq!(
         executed.state_diff.len(),
-        2,
-        "the sender's gas and sequence number, and the chain head every block writes: \
-         the only effects of an abort"
+        3 + FIRST_BLOCK_BOOKKEEPING,
+        "the sender's gas and sequence number, the supply the fee came out of, and the \
+         chain head every block writes: the only effects of an abort"
     );
 }
 
@@ -910,8 +915,9 @@ fn the_base_fee_moves_show_up_in_the_state_diff() {
         .unwrap();
 
     let executed = execute_and_finalise(&mut executor, vec![filler]);
-    // calculator result + the sender's account + the base fee + the head.
-    assert_eq!(executed.state_diff.len(), 4);
+    // calculator result + the sender's account + the base fee + the head
+    // + the supply the fee was burned from.
+    assert_eq!(executed.state_diff.len(), 5 + FIRST_BLOCK_BOOKKEEPING);
 }
 
 #[test]
@@ -1188,7 +1194,11 @@ fn the_head_is_committed_in_the_state_root_and_the_diff() {
         executed_at(FIRST_TIMESTAMP + 1),
     );
     assert_ne!(a.state_root, b.state_root);
-    assert_eq!(a.state_diff.len(), 1, "an empty block writes only the head");
+    assert_eq!(
+        a.state_diff.len(),
+        1 + FIRST_BLOCK_BOOKKEEPING,
+        "an empty block writes only the head, and the first one the bookkeeping"
+    );
 }
 
 #[test]

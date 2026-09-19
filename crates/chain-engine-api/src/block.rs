@@ -85,6 +85,23 @@ pub enum AbortReason {
     /// The VM itself failed the call: a Move `abort`, or an arithmetic
     /// overflow ("arithmetic aborts rather than wrapping").
     ExecutionFailed,
+    /// A native call needed to move more coin than the sender had left
+    /// after setting aside the most their fee could come to.
+    InsufficientBalance,
+    /// The staking module refused the call: an unknown validator, a
+    /// tombstoned one, too many open unbonding entries, a stake below the
+    /// minimum, and so on. The module's own error is not carried; the
+    /// state shows what did and did not happen.
+    StakingRefused,
+    /// The governance module refused the call: a closed proposal, a
+    /// voter outside its snapshot, too many open proposals, and so on.
+    GovernanceRefused,
+    /// The evidence was not admitted: not evidence of equivocation by the
+    /// registered key, too old, or against a validator already convicted.
+    EvidenceRefused,
+    /// The caller may not do this: proposing needs a seat in the active
+    /// validator set, unjailing needs the validator's own operator.
+    Unauthorised,
 }
 
 /// What happened to one transaction that made it into an executed

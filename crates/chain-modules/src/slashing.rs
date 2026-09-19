@@ -79,7 +79,7 @@ use chain_types::collections::BTreeMap;
 use chain_types::{Address, BlsPublicKey, DuplicateVoteEvidence, EvidenceError};
 
 use crate::params::{DAY_MS, MAX_EVIDENCE_AGE_MS};
-use crate::store::{be64, load, prefix_end, save, tag, Corrupt, Store};
+use crate::store::{be64, load, prefix_end, save, tag, Corrupt, ReadStore, Store};
 
 /// `docs/spec.md`, "Economic security": "Slashing, double-sign: 5% of
 /// stake" — the rate for an isolated offender.
@@ -312,7 +312,7 @@ fn time_prefix(infraction_ms: u64) -> Vec<u8> {
 /// `validator`'s status as `store` records it, without needing a tracker
 /// (and so without needing the store mutably). Absent means active.
 pub fn status_in(
-    store: &(impl Store + ?Sized),
+    store: &(impl ReadStore + ?Sized),
     validator: &Address,
 ) -> Result<ValidatorStatus, Corrupt> {
     Ok(load(store, &status_key(validator))?.unwrap_or(ValidatorStatus::Active))

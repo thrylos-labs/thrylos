@@ -17,7 +17,7 @@
 
 use core::ops::Bound;
 
-use chain_modules::store::{prefix_end, Store};
+use chain_modules::store::{prefix_end, ReadStore, Store};
 use chain_state::{StateKey, StateValue};
 use chain_types::collections::BTreeMap;
 
@@ -42,13 +42,49 @@ fn state_key(module_key: &[u8]) -> StateKey {
     StateKey::new(bytes)
 }
 
-impl Store for StateStore<'_> {
+/// The modules' keyspace in `state`, as an ordered range read: the shared
+/// implementation behind [`StateStore`] and [`StateView`].
+fn read_range(
+    state: &BTreeMap<StateKey, StateValue>,
+    start: &[u8],
+    end: Option<&[u8]>,
+    limit: usize,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let lower = state_key(start);
+    // No upper bound in the module's keyspace still stops at the end
+    // of the modules' tag, not the end of the whole state.
+    let upper = match end {
+        Some(end) => Some(state_key(end)),
+        None => prefix_end(&[module_state_tag()]).map(StateKey::new),
+    };
+    if upper.as_ref().is_some_and(|upper| lower >= *upper) {
+        return Vec::new();
+    }
+    let upper_bound = upper.as_ref().map_or(Bound::Unbounded, Bound::Excluded);
+    state
+        .range((Bound::Included(&lower), upper_bound))
+        .take(limit)
+        .filter_map(|(key, value)| {
+            // Strip the tag; everything in range has it.
+            let module_key = key.as_bytes().get(1..)?.to_vec();
+            Some((module_key, value.as_bytes().to_vec()))
+        })
+        .collect()
+}
+
+impl ReadStore for StateStore<'_> {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.state
             .get(&state_key(key))
             .map(|value| value.as_bytes().to_vec())
     }
 
+    fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        read_range(self.state, start, end, limit)
+    }
+}
+
+impl Store for StateStore<'_> {
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.state.insert(state_key(&key), StateValue::new(value));
     }
@@ -56,27 +92,43 @@ impl Store for StateStore<'_> {
     fn delete(&mut self, key: &[u8]) {
         self.state.remove(&state_key(key));
     }
+}
+
+/// The same keyspace over a shared borrow of the state: reads only. What a
+/// query against the committed state uses, and what an
+/// [`chain_modules::store::Overlay`] reads through while a transaction's
+/// native call runs — the state itself is untouched until the call's
+/// changes are applied.
+pub struct StateView<'a> {
+    state: &'a BTreeMap<StateKey, StateValue>,
+}
+
+impl<'a> StateView<'a> {
+    pub const fn new(state: &'a BTreeMap<StateKey, StateValue>) -> Self {
+        Self { state }
+    }
+}
+
+impl ReadStore for StateView<'_> {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.state
+            .get(&state_key(key))
+            .map(|value| value.as_bytes().to_vec())
+    }
 
     fn range(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let lower = state_key(start);
-        // No upper bound in the module's keyspace still stops at the end
-        // of the modules' tag, not the end of the whole state.
-        let upper = match end {
-            Some(end) => Some(state_key(end)),
-            None => prefix_end(&[module_state_tag()]).map(StateKey::new),
-        };
-        if upper.as_ref().is_some_and(|upper| lower >= *upper) {
-            return Vec::new();
-        }
-        let upper_bound = upper.as_ref().map_or(Bound::Unbounded, Bound::Excluded);
-        self.state
-            .range((Bound::Included(&lower), upper_bound))
-            .take(limit)
-            .filter_map(|(key, value)| {
-                // Strip the tag; everything in range has it.
-                let module_key = key.as_bytes().get(1..)?.to_vec();
-                Some((module_key, value.as_bytes().to_vec()))
-            })
-            .collect()
+        read_range(self.state, start, end, limit)
     }
+}
+
+/// Turns a change set in the modules' key space — as
+/// [`chain_modules::store::Overlay::into_changes`] returns it — into
+/// changes to the flat state, tag and all.
+pub fn state_changes(
+    changes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+) -> Vec<(StateKey, Option<StateValue>)> {
+    changes
+        .into_iter()
+        .map(|(key, value)| (state_key(&key), value.map(StateValue::new)))
+        .collect()
 }
