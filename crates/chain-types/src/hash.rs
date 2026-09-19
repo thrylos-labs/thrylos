@@ -63,6 +63,12 @@ pub enum DomainTag {
     /// block's parent hash commits to, so two networks that differ in any
     /// allocation, validator or parameter cannot share a block.
     GenesisConfigV1 = 6,
+    /// The randomness beacon's seed, at genesis and after each block
+    /// ([`crate::beacon`]).
+    BeaconSeedV1 = 7,
+    /// The draw that picks a round's proposer from the seed
+    /// (`chain-consensus`).
+    ProposerDrawV1 = 8,
 }
 
 /// Hash `payload` under `tag`'s domain-separation prefix.
@@ -88,6 +94,8 @@ mod tests {
             DomainTag::AddressV1,
             DomainTag::TrieKeyPathV1,
             DomainTag::GenesisConfigV1,
+            DomainTag::BeaconSeedV1,
+            DomainTag::ProposerDrawV1,
         ];
         let hashes: std::collections::BTreeSet<Hash> = tags
             .into_iter()

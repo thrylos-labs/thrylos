@@ -2,16 +2,13 @@
 //! together the wrapper types in `crate::types` and picks a proposer
 //! for each round.
 //!
-//! Proposer selection here is plain round-robin over the validator
-//! set's deterministic order, **not** the spec's VRF-based scheme —
-//! see `crate`'s doc comment. It is a placeholder: predictable well
-//! ahead of time, so it must never be treated as sybil- or
-//! grinding-resistant. Swapping it for VRF-based selection later only
-//! touches `select_proposer`; nothing else in this file depends on how
-//! the proposer is chosen.
+//! Proposer selection is the stake-weighted beacon draw of
+//! [`crate::proposer`], seeded by randomness the previous block fixed
+//! (`chain_types::beacon`) and carried on the validator set for the height.
 
 use malachite_core_types::{LinearTimeouts, NilOrVal, Round};
 
+use crate::proposer::proposer_index;
 use crate::types::{
     round_as_u64, ConsensusAddress, ConsensusProposal, ConsensusProposalPart,
     ConsensusSigningScheme, ConsensusValidator, ConsensusValidatorSet, ConsensusValue,
@@ -31,20 +28,6 @@ impl Default for ThrylosContext {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Round-robin index into a deterministically-sorted validator set.
-/// Falls back to index `0` only when `validator_count` is `0`, which
-/// never happens for a validator set consensus is actually running
-/// against.
-fn round_robin_index(height: u64, round: Round, validator_count: usize) -> usize {
-    let count = u64::try_from(validator_count).unwrap_or(1);
-    let offset = height
-        .checked_add(round_as_u64(round))
-        .unwrap_or(0)
-        .checked_rem(count)
-        .unwrap_or(0);
-    usize::try_from(offset).unwrap_or(0)
 }
 
 impl malachite_core_types::Context for ThrylosContext {
@@ -77,10 +60,17 @@ impl malachite_core_types::Context for ThrylosContext {
             validator_set.count() > 0,
             "select_proposer called with an empty validator set"
         );
-        let index = round_robin_index(height.0 .0, round, validator_set.count());
-        // `index` is `checked_rem`-derived and strictly less than
-        // `validator_set.count()`, which the assertion above just
-        // established is nonzero, so this index is always in range.
+        // `None` only if every validator has no power, which a set consensus
+        // runs against never does; the first validator is then as good a
+        // choice as any and, being a function of the set alone, the same on
+        // every node.
+        let index = proposer_index(
+            validator_set.proposer_seed(),
+            height.0,
+            round_as_u64(round),
+            &validator_set.powers(),
+        )
+        .unwrap_or(0);
         match validator_set.get_by_index(index) {
             Some(validator) => validator,
             None => match validator_set.iter().next() {

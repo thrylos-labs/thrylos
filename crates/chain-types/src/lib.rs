@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod address;
+pub mod beacon;
 pub mod bls;
 pub mod codec;
 pub mod collections;

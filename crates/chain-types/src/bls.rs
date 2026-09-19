@@ -36,6 +36,9 @@ pub const BLS_SIGNATURE_LEN: usize = 96;
 /// changes.
 pub const DST_VOTE: &[u8] = b"THRYLOS-BLS-VOTE-V1";
 pub const DST_PROOF_OF_POSSESSION: &[u8] = b"THRYLOS-BLS-POP-V1";
+/// Signatures that reveal a proposer's share of the randomness beacon
+/// (see [`crate::beacon`]). Never a vote, never slashable.
+pub const DST_BEACON: &[u8] = b"THRYLOS-BLS-BEACON-V1";
 
 /// A verification failure. Deliberately opaque, like
 /// [`crate::keys::SignatureError`].

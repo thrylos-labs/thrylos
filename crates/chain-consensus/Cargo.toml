@@ -10,12 +10,19 @@ description = "BFT engine, fork choice, evidence detection"
 workspace = true
 
 [dependencies]
+chain-engine-api = { path = "../chain-engine-api", version = "0.1.0" }
+chain-signer = { path = "../chain-signer", version = "0.1.0" }
+chain-state = { path = "../chain-state", version = "0.1.0" }
 chain-types = { path = "../chain-types", version = "0.1.0" }
 malachite-core-consensus.workspace = true
 malachite-core-driver.workspace = true
 malachite-core-types.workspace = true
+malachite-metrics.workspace = true
 
 [dev-dependencies]
 blst.workspace = true
-malachite-metrics.workspace = true
+chain-exec = { path = "../chain-exec", version = "0.1.0" }
+chain-modules = { path = "../chain-modules", version = "0.1.0" }
+ed25519-dalek.workspace = true
+proptest.workspace = true
 malachite-test.workspace = true

@@ -1,0 +1,110 @@
+//! What crosses the host's edges: the messages it exchanges with peers, the
+//! commands it gives its runtime, and what it reports having decided.
+
+use std::time::Duration;
+
+use chain_engine_api::{Block, ExecutedBlock};
+use chain_signer::{HighWaterMark, SignerError};
+use chain_types::{Address, BlockHeight, BlsSignature, DuplicateVoteEvidence, Hash};
+use malachite_core_consensus::{LivenessMsg, SignedConsensusMsg};
+use malachite_core_types::{CommitCertificate, Timeout};
+
+use crate::context::ThrylosContext;
+
+/// A block, with what its proposer contributes to the randomness beacon.
+///
+/// Consensus decides on a block's *hash*; the block itself travels on its
+/// own, and this is how. `reveal` is `proposer`'s signature over the
+/// height and seed (`chain_types::beacon`): the host checks it on arrival
+/// and drops the message if it is not the proposer's, so a forged reveal
+/// can never displace a real one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposedBlock {
+    pub proposer: Address,
+    pub block: Block,
+    pub reveal: BlsSignature,
+}
+
+impl ProposedBlock {
+    /// What consensus votes on.
+    pub fn id(&self) -> Hash {
+        self.block.hash()
+    }
+}
+
+/// A message between hosts.
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// A vote or a proposal.
+    Consensus(SignedConsensusMsg<ThrylosContext>),
+    /// A vote or certificate sent to help a peer catch up to a round.
+    Liveness(LivenessMsg<ThrylosContext>),
+    /// A proposed block's contents.
+    Block(ProposedBlock),
+}
+
+/// A timer the runtime should keep for the host. When one fires it calls
+/// `Host::handle_timeout` with the same [`Timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerCommand {
+    Schedule { timeout: Timeout, after: Duration },
+    Cancel(Timeout),
+    CancelAll,
+}
+
+/// A block the chain has committed, with everything needed to persist and
+/// serve it.
+#[derive(Debug, Clone)]
+pub struct Committed {
+    pub height: BlockHeight,
+    pub block: Block,
+    /// What executing the block produced, including its state diff.
+    pub executed: ExecutedBlock,
+    /// The quorum of precommits that decided it.
+    pub certificate: CommitCertificate<ThrylosContext>,
+    /// The proposer's reveal, which the next height's seed is built from.
+    pub reveal: BlsSignature,
+    /// The seed for the *next* height: persist it, since a restarted node
+    /// cannot rederive it from state (`Host::new` takes it as an argument).
+    pub seed_after: Hash,
+}
+
+/// Everything the host wants done, collected as it runs. The runtime
+/// drains it with `Host::take_outbox` after each call.
+#[derive(Debug, Default)]
+pub struct Outbox {
+    /// To send to every peer.
+    pub messages: Vec<Message>,
+    pub timers: Vec<TimerCommand>,
+    /// Blocks committed, in order.
+    pub committed: Vec<Committed>,
+    /// Equivocation this node witnessed, ready to be submitted for slashing
+    /// as a `staking::submit_evidence` transaction.
+    pub evidence: Vec<DuplicateVoteEvidence>,
+}
+
+/// Why the host stopped. Once it has, it does nothing further: a validator
+/// that cannot be sure of its own state must not keep voting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HaltReason {
+    /// The signer refused what it was asked to sign — it had already signed
+    /// at or past that position, or could not record the new one. Voting
+    /// on would risk signing twice.
+    SignerRefused(SignerError),
+    /// Asked to sign something different from what was already signed at
+    /// the same position: an attempt to equivocate, refused.
+    ConflictingSignature(HighWaterMark),
+    /// The committed state could not be read.
+    ChainUnreadable,
+    /// There is no validator to run consensus with.
+    NoValidators,
+    /// Consensus decided a block this node then could not commit — the
+    /// block is missing from its books or fails its own execution — so it
+    /// has fallen out of step with the chain and must sync rather than
+    /// guess.
+    CannotCommit { height: BlockHeight },
+    /// The chain refused a block this node itself had executed.
+    FinaliseFailed { height: BlockHeight },
+    /// The consensus engine reported an error it cannot continue past.
+    Engine(String),
+}

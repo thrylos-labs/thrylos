@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 
 use chain_engine_api::timestamp::is_after_parent;
 use chain_engine_api::{
-    AbortReason, Block, BlockLimits, BlockRejected, Engine, ExecutedBlock, FinaliseError,
-    FinaliseErrorReason, RejectionReason, TransactionOutcome,
+    AbortReason, Block, BlockLimits, BlockRejected, ChainView, ChainViewError, Engine,
+    ExecutedBlock, FinaliseError, FinaliseErrorReason, Head, RejectionReason, TransactionOutcome,
+    ValidatorInfo, MAX_BLOCK_SIZE_BYTES,
 };
 use chain_modules::fees::{next_base_fee, GENESIS_BASE_FEE};
 use chain_modules::params::GENESIS_PARAM_VALUES;
@@ -801,6 +802,40 @@ fn write_head(state: &mut BTreeMap<StateKey, StateValue>, height: u64, timestamp
 fn decode_u64_arg(bytes: &[u8]) -> Option<u64> {
     let array: [u8; 8] = bytes.try_into().ok()?;
     Some(u64::from_le_bytes(array))
+}
+
+impl ChainView for Executor {
+    fn head(&self) -> Result<Head, ChainViewError> {
+        Ok(Head {
+            height: BlockHeight(self.head_height().ok_or(ChainViewError)?),
+            timestamp_ms: self.head_timestamp_millis().ok_or(ChainViewError)?,
+            block_hash: self.tip_block_hash(),
+            state_root: self.state_root(),
+        })
+    }
+
+    fn validator_set(&self) -> Result<Vec<ValidatorInfo>, ChainViewError> {
+        Ok(Executor::validator_set(self)
+            .map_err(|_| ChainViewError)?
+            .into_iter()
+            .map(|validator| ValidatorInfo {
+                address: validator.id.0,
+                consensus_key: validator.consensus_key,
+                voting_power: validator.voting_power,
+            })
+            .collect())
+    }
+
+    fn block_limits(&self) -> Result<BlockLimits, ChainViewError> {
+        Ok(BlockLimits {
+            max_gas: self
+                .params()
+                .map_err(|_| ChainViewError)?
+                .values()
+                .max_block_gas,
+            max_size_bytes: MAX_BLOCK_SIZE_BYTES,
+        })
+    }
 }
 
 impl Engine for Executor {

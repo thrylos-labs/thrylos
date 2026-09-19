@@ -1239,7 +1239,14 @@ dependencies = [
  "arc-malachitebft-metrics",
  "arc-malachitebft-test",
  "blst",
+ "chain-engine-api",
+ "chain-exec",
+ "chain-modules",
+ "chain-signer",
+ "chain-state",
  "chain-types",
+ "ed25519-dalek",
+ "proptest",
 ]
 
 [[package]]

@@ -19,21 +19,28 @@
 //! `tests/context_proof_of_life.rs` drives a round to commit through
 //! this real `Context`.
 //!
-//! Proposer selection (`context::ThrylosContext::select_proposer`) is
-//! plain round-robin, **not** the spec's VRF-based scheme — no VRF
-//! library has been chosen yet (`docs/spec.md`, "Consensus": a
-//! deterministic round-robin "is a targeting list"). It is explicitly a
-//! placeholder, flagged insecure, swappable later without touching
-//! anything else in this crate.
+//! Proposer selection (`context::ThrylosContext::select_proposer`) is the
+//! stake-weighted beacon draw in [`proposer`]: seeded by randomness the
+//! previous block fixed (`chain_types::beacon`), so the schedule cannot be
+//! computed before that block is decided, and every node can check the
+//! result afterwards. [`certificate`] verifies commit, polka and round
+//! certificates against a validator set.
 //!
-//! Still missing for a full production integration: a `Host` that owns
-//! the engine's I/O loop end-to-end (wiring `chain-signer` for double-
-//! sign-safe signing and `chain-exec` for real value production, rather
-//! than a test's inline effect handler), and VRF-based proposer
-//! selection.
+//! [`host`] is the loop around the engine: it owns the engine's I/O,
+//! signing through `chain-signer` (guarded so a restart cannot sign two
+//! things at one position), execution through `chain-exec`'s `Engine`, and
+//! block distribution. `tests/network.rs` runs four of them, each with a
+//! real executor, against a simulated network.
+//!
+//! Not built yet: a write-ahead log, sync for a node that fell behind, the
+//! wire encoding of `host::Message`, and observer (non-validator) nodes —
+//! see the `host` module docs.
 
 #![forbid(unsafe_code)]
 
+pub mod certificate;
 pub mod context;
 pub mod evidence;
+pub mod host;
+pub mod proposer;
 pub mod types;

@@ -83,6 +83,29 @@ impl<S: HighWaterMarkStore> Signer<S> {
         let raw = self.secret_key.sign(message, dst, &[]);
         BlsSignature::from_bytes(raw.to_bytes()).map_err(|_| SignerError::MalformedSignature)
     }
+
+    /// This validator's *reveal* for `height` under `seed`: its share of
+    /// the randomness beacon that picks proposers (`chain_types::beacon`).
+    ///
+    /// Unlike [`Self::sign`] this takes no position and moves no mark, and
+    /// that is safe because of what it cannot be made to sign. The message
+    /// and the domain-separation tag are fixed here, not chosen by the
+    /// caller: it signs only `beacon_message(height, seed)` under
+    /// `DST_BEACON`, so the result can never verify as a vote or a
+    /// proposal and can never be evidence of anything slashable. BLS
+    /// signatures are unique, so asking twice gives the same bytes — there
+    /// is nothing here to equivocate with.
+    pub fn sign_beacon(
+        &self,
+        height: chain_types::BlockHeight,
+        seed: &chain_types::Hash,
+    ) -> Result<BlsSignature, SignerError> {
+        let message = chain_types::beacon::beacon_message(height, seed);
+        let raw = self
+            .secret_key
+            .sign(&message, chain_types::bls::DST_BEACON, &[]);
+        BlsSignature::from_bytes(raw.to_bytes()).map_err(|_| SignerError::MalformedSignature)
+    }
 }
 
 #[cfg(test)]
@@ -213,5 +236,37 @@ mod tests {
         // aggregate check is exactly equivalent and reuses its existing
         // public API rather than adding a new one just for this test.
         assert!(chain_types::bls::verify_aggregate(&[&public], b"hello", DST, &sig).is_ok());
+    }
+
+    #[test]
+    fn a_beacon_reveal_verifies_as_one_and_moves_no_mark() {
+        use chain_types::beacon::verify_reveal;
+        use chain_types::{BlockHeight as Height, BlsPublicKey, Hash};
+        let key = test_key();
+        let public = BlsPublicKey::from_bytes(key.sk_to_pk().to_bytes()).unwrap();
+        let mut signer = Signer::load(key, InMemoryStore::new()).unwrap();
+        let seed = Hash::from_bytes([4u8; 32]);
+
+        let reveal = signer.sign_beacon(Height(9), &seed).unwrap();
+        assert!(verify_reveal(&public, Height(9), &seed, &reveal).is_ok());
+        assert_eq!(signer.high_water_mark(), None, "no position was consumed");
+
+        // Same bytes every time, and it does not disturb signing votes.
+        assert_eq!(signer.sign_beacon(Height(9), &seed).unwrap(), reveal);
+        assert!(signer.sign(hwm(9, 0, Step::Propose), b"msg", DST).is_ok());
+        assert_eq!(signer.sign_beacon(Height(9), &seed).unwrap(), reveal);
+    }
+
+    #[test]
+    fn a_beacon_reveal_cannot_be_used_as_a_vote_signature() {
+        use chain_types::bls::{verify_aggregate, DST_VOTE};
+        use chain_types::{BlockHeight as Height, BlsPublicKey, Hash};
+        let key = test_key();
+        let public = BlsPublicKey::from_bytes(key.sk_to_pk().to_bytes()).unwrap();
+        let signer = Signer::load(key, InMemoryStore::new()).unwrap();
+        let seed = Hash::from_bytes([4u8; 32]);
+        let reveal = signer.sign_beacon(Height(9), &seed).unwrap();
+        let message = chain_types::beacon::beacon_message(Height(9), &seed);
+        assert!(verify_aggregate(&[&public], &message, DST_VOTE, &reveal).is_err());
     }
 }

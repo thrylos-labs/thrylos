@@ -95,19 +95,67 @@ impl malachite_core_types::Validator<ThrylosContext> for ConsensusValidator {
 /// deterministically (by descending power, then ascending address) —
 /// `new` sorts on construction so that invariant can't be forgotten at
 /// a call site.
+///
+/// The set also carries the randomness that decides who proposes at its
+/// height (`chain_types::beacon`), because that is the one thing
+/// `select_proposer` is handed besides the height and round: Malachite
+/// gives each height its own set, so the seed for the height travels
+/// with it instead of living in some state the engine's own copy of the
+/// context could not see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsensusValidatorSet {
     validators: Vec<ConsensusValidator>,
+    proposer_seed: Hash,
 }
 
 impl ConsensusValidatorSet {
-    pub fn new(mut validators: Vec<ConsensusValidator>) -> Self {
+    /// A set with the all-zero seed — for tests and anything that does not
+    /// care who proposes. A running chain uses [`Self::from_infos`].
+    pub fn new(validators: Vec<ConsensusValidator>) -> Self {
+        Self::with_seed(validators, Hash::from_bytes([0u8; 32]))
+    }
+
+    pub fn with_seed(mut validators: Vec<ConsensusValidator>, proposer_seed: Hash) -> Self {
         validators.sort_by(|a, b| {
             b.voting_power
                 .cmp(&a.voting_power)
                 .then_with(|| a.address.cmp(&b.address))
         });
-        Self { validators }
+        Self {
+            validators,
+            proposer_seed,
+        }
+    }
+
+    /// The set the chain reports (`chain_engine_api::ChainView::
+    /// validator_set`) with the seed in force for the height it is for.
+    pub fn from_infos(infos: &[chain_engine_api::ValidatorInfo], proposer_seed: Hash) -> Self {
+        Self::with_seed(
+            infos
+                .iter()
+                .map(|info| ConsensusValidator {
+                    address: ConsensusAddress(info.address),
+                    public_key: info.consensus_key,
+                    voting_power: info.voting_power,
+                })
+                .collect(),
+            proposer_seed,
+        )
+    }
+
+    /// The randomness that picks this height's proposers.
+    pub const fn proposer_seed(&self) -> &Hash {
+        &self.proposer_seed
+    }
+
+    /// Voting powers in the set's own order.
+    pub fn powers(&self) -> Vec<u64> {
+        self.validators.iter().map(|v| v.voting_power).collect()
+    }
+
+    /// The validators, in the set's own order.
+    pub fn validators(&self) -> &[ConsensusValidator] {
+        &self.validators
     }
 }
 
@@ -281,9 +329,10 @@ impl malachite_core_types::Proposal<ThrylosContext> for ConsensusProposal {
     }
 }
 
-/// This pass uses `ValuePayload::ProposalOnly` (see `context.rs`), so
-/// proposal parts are never actually streamed — this exists only to
-/// satisfy `Context`'s associated type.
+/// The host runs `ValuePayload::ProposalAndParts`, but carries the block
+/// as its own message (`host::ProposedBlock`) rather than through
+/// Malachite's part-streaming, so this type is never constructed: it
+/// exists only to satisfy `Context`'s associated type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsensusProposalPart;
 

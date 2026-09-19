@@ -387,3 +387,99 @@ fn the_first_epoch_starts_its_reward_clock_at_the_first_block_not_at_genesis() {
         "no reward at the first block"
     );
 }
+
+// ---- the read-only view consensus uses -------------------------------------
+
+use chain_engine_api::{ChainView, MAX_BLOCK_SIZE_BYTES};
+
+#[test]
+fn the_head_at_genesis_is_the_genesis_state_and_moves_with_each_block() {
+    let c = config();
+    let mut executor = Executor::from_genesis(&c).unwrap();
+    let head = executor.head().unwrap();
+    assert_eq!(head.height, BlockHeight(0));
+    assert_eq!(head.timestamp_ms, GENESIS_TIME);
+    assert_eq!(head.block_hash, c.hash());
+    assert_eq!(head.state_root, executor.state_root());
+
+    let block = block_at(&executor, GENESIS_TIME + 1_000, Vec::new());
+    commit(&mut executor, &block);
+    let head = executor.head().unwrap();
+    assert_eq!(head.height, BlockHeight(1));
+    assert_eq!(head.timestamp_ms, GENESIS_TIME + 1_000);
+    assert_eq!(head.block_hash, block.hash());
+    assert_eq!(head.state_root, executor.state_root());
+}
+
+#[test]
+fn the_validator_set_is_the_genesis_validators_largest_first_with_their_keys() {
+    let executor = Executor::from_genesis(&config()).unwrap();
+    let set = ChainView::validator_set(&executor).unwrap();
+    assert_eq!(
+        set.iter().map(|v| v.voting_power).collect::<Vec<_>>(),
+        vec![
+            u64::try_from(5 * MIN).unwrap(),
+            u64::try_from(2 * MIN).unwrap(),
+            u64::try_from(MIN).unwrap()
+        ]
+    );
+    assert_eq!(set[0].address, address(2));
+    assert_eq!(set[0].consensus_key, bls(2).0);
+    assert_eq!(set[2].address, address(3));
+}
+
+#[test]
+fn voting_power_is_scaled_to_fit_a_u64_keeping_the_proportions() {
+    let huge = u128::from(u64::MAX);
+    let c = GenesisConfig::new(
+        ChainId(1),
+        GENESIS_TIME,
+        GENESIS_PARAM_VALUES,
+        vec![],
+        vec![
+            validator(1, 4 * huge),
+            validator(2, 2 * huge),
+            validator(3, huge),
+        ],
+    )
+    .unwrap();
+    let executor = Executor::from_genesis(&c).unwrap();
+    let powers: Vec<u64> = ChainView::validator_set(&executor)
+        .unwrap()
+        .iter()
+        .map(|v| v.voting_power)
+        .collect();
+
+    let total: u128 = powers.iter().map(|p| u128::from(*p)).sum();
+    assert!(total <= u128::from(u64::MAX), "the scaled total fits");
+    // 4 : 2 : 1, to within the bits shifted out.
+    assert!(powers[0] / 2 >= powers[1] - 1 && powers[0] / 2 <= powers[1] + 1);
+    assert!(powers[1] / 2 >= powers[2] - 1 && powers[1] / 2 <= powers[2] + 1);
+}
+
+#[test]
+fn the_block_limits_follow_the_governed_parameters() {
+    let executor = Executor::from_genesis(&config()).unwrap();
+    let limits = executor.block_limits().unwrap();
+    assert_eq!(limits.max_gas, GENESIS_PARAM_VALUES.max_block_gas);
+    assert_eq!(limits.max_size_bytes, MAX_BLOCK_SIZE_BYTES);
+
+    let mut params = GENESIS_PARAM_VALUES;
+    params.max_block_gas = 30_000_000;
+    let c = GenesisConfig::new(
+        ChainId(1),
+        GENESIS_TIME,
+        params,
+        vec![],
+        vec![validator(1, MIN)],
+    )
+    .unwrap();
+    assert_eq!(
+        Executor::from_genesis(&c)
+            .unwrap()
+            .block_limits()
+            .unwrap()
+            .max_gas,
+        30_000_000
+    );
+}
