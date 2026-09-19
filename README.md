@@ -17,7 +17,7 @@ Thrylos is pre-genesis. **There is no runnable node yet**: nothing starts a netw
 | **Execution** (`chain-exec`) | Block executor around MoveVM (Mysten's `external-crates/move`, pinned by revision, not patched); transaction validity rules; fee accounting; a per-block supply-conservation check; epoch hooks; genesis configuration and the `chain-genesis` file tool |
 | **Native modules** (`chain-modules`) | Staking and delegation with share-price rewards, unbonding, double-sign slashing from evidence, fees, and parameter-only governance, all stored in chain state |
 | **Consensus** (`chain-consensus`) | Malachite's pure core integrated end to end: stake-weighted proposer selection from a randomness beacon, certificate verification, block judging before voting, a host that will not sign twice at a position, a write-ahead log with replay after a crash, and verified catch-up from peers for a node that missed a height |
-| **Storage** (`chain-db`) | MDBX block and state store with atomic per-block commits, checked by killing a process mid-write; a checksummed height log for the write-ahead log |
+| **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits, checked by killing a process mid-write; a checksummed, torn-write-tolerant height log; and the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history, the signer's high-water mark), which the crash-restart tests run against |
 | **Signer logic** (`chain-signer`) | The high-water-mark state machine that refuses to sign at or below a position it has signed |
 
 The consensus tests run four full validators, each with a real executor, against a simulated network that sends every message through the real wire encoding. They stage a silent proposer, a fast clock, a forged reveal, equivocation, a node that never receives blocks, and a restart of each node after each of the events it handles.
@@ -32,8 +32,7 @@ The consensus tests run four full validators, each with a real executor, against
 ### Not built yet
 
 * A node binary that wires these pieces together
-* Durable implementations of the host's storage (write-ahead log, commit history, signed-message log) over the file log, and a durable store for the signer's mark
-* The signer as a separate process, as the spec requires
+* The signer as a separate process, as the spec requires (its mark is durable and refuses to be moved back, but it runs inside the node)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
@@ -43,7 +42,7 @@ The consensus tests run four full validators, each with a real executor, against
 
 ### Size
 
-Tier A, the code that must behave identically on every machine, is about 13,000 lines of Rust excluding tests, counting comments and blank lines. Tier B is about 1,600. The test suite is about 700 tests. These numbers are approximate and will change.
+Tier A, the code that must behave identically on every machine, is about 13,000 lines of Rust excluding tests, counting comments and blank lines. Tier B is about 2,200. The test suite is about 700 tests. These numbers are approximate and will change.
 
 ### What "no unsafe, no panics" covers
 
@@ -69,6 +68,7 @@ Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout a
 | `chain-mempool` | Tx admission, eviction, replacement | B |
 | `chain-rpc` | JSON-RPC, tracing | C |
 | `chain-genesis` | Genesis file parsing and the `chain-genesis` checker tool (not in the spec's table) | C |
+| `chain-node` | The durable storage the consensus host keeps on disk, and where the node binary will be assembled (not in the spec's table) | B |
 
 Tier A crates must build byte-identical output on every machine. They carry `[lints] workspace = true` (see root `Cargo.toml` and `clippy.toml`), which forbids `unsafe`, `unwrap`/`expect`/`panic!`, indexing/slicing, integer division, float arithmetic, and non-deterministic collection types. Tier B/C crates are not held to that bar.
 

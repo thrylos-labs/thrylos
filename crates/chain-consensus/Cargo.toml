@@ -20,6 +20,10 @@ malachite-core-types.workspace = true
 malachite-metrics.workspace = true
 
 [dev-dependencies]
+# A dev-dependency cycle on purpose: chain-node builds on this crate, and its
+# file-backed storage is what the restart tests run against.
+chain-node = { path = "../chain-node", version = "0.1.0" }
+tempfile.workspace = true
 blst.workspace = true
 chain-exec = { path = "../chain-exec", version = "0.1.0" }
 chain-modules = { path = "../chain-modules", version = "0.1.0" }

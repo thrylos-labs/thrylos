@@ -24,7 +24,7 @@ use chain_consensus::certificate::verify_commit_certificate;
 use chain_consensus::context::ThrylosContext;
 use chain_consensus::host::{
     Clock, CommitRecord, Committed, HaltReason, Host, HostConfig, MemorySignedLog, MemoryStorage,
-    Message, Ports, SyncRequest, SyncResponse, TimerCommand, TransactionSource, WalError,
+    Message, Ports, StorageError, SyncRequest, SyncResponse, TimerCommand, TransactionSource,
 };
 use chain_consensus::types::{ConsensusAddress, ConsensusHeight, ConsensusValidatorSet};
 use chain_consensus::wire::{decode_message, encode_message};
@@ -33,6 +33,7 @@ use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::native::{STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS};
 use chain_exec::Executor;
 use chain_modules::params::GENESIS_PARAM_VALUES;
+use chain_node::{DiskConfig, FileMarkStore, FileSignedLog, FileStorage, NodeDisk};
 use chain_signer::{HighWaterMark, HighWaterMarkStore, InMemoryStore, Signer, Step};
 use chain_types::beacon::{genesis_seed, next_seed, verify_reveal};
 use chain_types::bls::{BlsSignature, DST_PROOF_OF_POSSESSION};
@@ -161,77 +162,168 @@ impl TransactionSource for SharedSource {
 }
 
 /// What a node keeps on disk: these outlive the host, so a restarted one is
-/// handed the same ones.
-#[derive(Clone, Default)]
-struct SharedMark(Rc<RefCell<InMemoryStore>>);
+/// handed the same ones. Either in memory, or in real files that a restart
+/// closes and opens again.
+enum MarkBackend {
+    Memory(InMemoryStore),
+    Files(FileMarkStore),
+}
+
+#[derive(Clone)]
+struct SharedMark(Rc<RefCell<MarkBackend>>);
 
 impl HighWaterMarkStore for SharedMark {
-    type Error = std::convert::Infallible;
+    type Error = String;
 
     fn load(&self) -> Result<Option<HighWaterMark>, Self::Error> {
-        self.0.borrow().load()
+        match &*self.0.borrow() {
+            MarkBackend::Memory(store) => store.load().map_err(|e| e.to_string()),
+            MarkBackend::Files(store) => store.load().map_err(|e| e.to_string()),
+        }
     }
 
     fn persist(&mut self, mark: HighWaterMark) -> Result<(), Self::Error> {
-        self.0.borrow_mut().persist(mark)
+        match &mut *self.0.borrow_mut() {
+            MarkBackend::Memory(store) => store.persist(mark).map_err(|e| e.to_string()),
+            MarkBackend::Files(store) => store.persist(mark).map_err(|e| e.to_string()),
+        }
     }
 }
 
-#[derive(Clone, Default)]
-struct SharedSigned(Rc<RefCell<MemorySignedLog>>);
+enum SignedBackend {
+    Memory(MemorySignedLog),
+    Files(FileSignedLog),
+}
+
+#[derive(Clone)]
+struct SharedSigned(Rc<RefCell<SignedBackend>>);
 
 impl chain_consensus::host::SignedLog for SharedSigned {
     fn get(&self, position: HighWaterMark) -> Option<chain_consensus::host::SignedEntry> {
-        self.0.borrow().get(position)
+        match &*self.0.borrow() {
+            SignedBackend::Memory(log) => log.get(position),
+            SignedBackend::Files(log) => log.get(position),
+        }
     }
 
-    fn record(&mut self, position: HighWaterMark, entry: chain_consensus::host::SignedEntry) {
-        self.0.borrow_mut().record(position, entry);
+    fn record(
+        &mut self,
+        position: HighWaterMark,
+        entry: chain_consensus::host::SignedEntry,
+    ) -> Result<(), StorageError> {
+        match &mut *self.0.borrow_mut() {
+            SignedBackend::Memory(log) => log.record(position, entry),
+            SignedBackend::Files(log) => log.record(position, entry),
+        }
     }
+}
+
+enum StorageBackend {
+    Memory(MemoryStorage),
+    Files(FileStorage),
 }
 
 /// The host's own storage. `forgetful` makes its write-ahead log return
 /// nothing at a restart, which is what having no log is.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct SharedStorage {
-    inner: Rc<RefCell<MemoryStorage>>,
+    inner: Rc<RefCell<StorageBackend>>,
     forgetful: bool,
 }
 
 impl chain_consensus::host::CommitLog for SharedStorage {
-    fn record(&mut self, record: &CommitRecord, seed_after: Hash) {
-        self.inner.borrow_mut().record(record, seed_after);
+    fn record(&mut self, record: &CommitRecord, seed_after: Hash) -> Result<(), StorageError> {
+        match &mut *self.inner.borrow_mut() {
+            StorageBackend::Memory(s) => s.record(record, seed_after),
+            StorageBackend::Files(s) => s.record(record, seed_after),
+        }
     }
 
     fn range(&self, from: BlockHeight, max: usize) -> Vec<CommitRecord> {
-        self.inner.borrow().range(from, max)
+        match &*self.inner.borrow() {
+            StorageBackend::Memory(s) => s.range(from, max),
+            StorageBackend::Files(s) => s.range(from, max),
+        }
     }
 
     fn seed_after(&self, height: BlockHeight) -> Option<Hash> {
-        self.inner.borrow().seed_after(height)
+        match &*self.inner.borrow() {
+            StorageBackend::Memory(s) => s.seed_after(height),
+            StorageBackend::Files(s) => s.seed_after(height),
+        }
     }
 }
 
 impl chain_consensus::host::Wal for SharedStorage {
-    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), WalError> {
-        self.inner.borrow_mut().append(height, entry)
+    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), StorageError> {
+        match &mut *self.inner.borrow_mut() {
+            StorageBackend::Memory(s) => s.append(height, entry),
+            StorageBackend::Files(s) => s.append(height, entry),
+        }
     }
 
-    fn flush(&mut self) -> Result<(), WalError> {
-        self.inner.borrow_mut().flush()
+    fn flush(&mut self) -> Result<(), StorageError> {
+        match &mut *self.inner.borrow_mut() {
+            StorageBackend::Memory(s) => s.flush(),
+            StorageBackend::Files(s) => s.flush(),
+        }
     }
 
-    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, WalError> {
-        let entries = self.inner.borrow_mut().start_height(height)?;
+    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, StorageError> {
+        let entries = match &mut *self.inner.borrow_mut() {
+            StorageBackend::Memory(s) => s.start_height(height)?,
+            StorageBackend::Files(s) => s.start_height(height)?,
+        };
         Ok(if self.forgetful { Vec::new() } else { entries })
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Disk {
     mark: SharedMark,
     signed: SharedSigned,
     storage: SharedStorage,
+    /// Where the files are, if they are files. Removed with the last clone.
+    dir: Option<Rc<tempfile::TempDir>>,
+}
+
+impl Disk {
+    fn new(files: bool, forgetful: bool) -> Self {
+        let disk = Self {
+            mark: SharedMark(Rc::new(RefCell::new(MarkBackend::Memory(
+                InMemoryStore::new(),
+            )))),
+            signed: SharedSigned(Rc::new(RefCell::new(SignedBackend::Memory(
+                MemorySignedLog::new(),
+            )))),
+            storage: SharedStorage {
+                inner: Rc::new(RefCell::new(StorageBackend::Memory(MemoryStorage::new()))),
+                forgetful,
+            },
+            dir: files.then(|| Rc::new(tempfile::tempdir().unwrap())),
+        };
+        disk.reopen();
+        disk
+    }
+
+    /// For files: closes everything and opens it again from what is on the
+    /// disk, as a restarted process does.
+    fn reopen(&self) {
+        let Some(dir) = &self.dir else {
+            return;
+        };
+        let opened = NodeDisk::open(dir.path(), DiskConfig::default()).unwrap();
+        *self.mark.0.borrow_mut() = MarkBackend::Files(opened.mark);
+        *self.signed.0.borrow_mut() = SignedBackend::Files(opened.signed);
+        *self.storage.inner.borrow_mut() = StorageBackend::Files(opened.storage);
+    }
+
+    /// For memory: what a crash does to what was appended and not flushed.
+    fn lose_unflushed(&self) {
+        if let StorageBackend::Memory(storage) = &mut *self.storage.inner.borrow_mut() {
+            storage.wal.lose_unflushed();
+        }
+    }
 }
 
 type TestHost = Host<Executor, SharedSource, SimClock, SharedMark, SharedSigned, SharedStorage>;
@@ -279,6 +371,8 @@ struct Options {
     host: HostConfig,
     /// Every node's write-ahead log is lost at a restart.
     forgetful: bool,
+    /// Keep what the nodes keep in real files, reopened at each restart.
+    files: bool,
     crash_at: Option<(usize, usize)>,
 }
 
@@ -292,6 +386,7 @@ impl Options {
             filter: Box::new(|_, _, _| true),
             host: HostConfig::default(),
             forgetful: false,
+            files: false,
             crash_at: None,
         }
     }
@@ -322,17 +417,10 @@ impl Sim {
             height_starts: std::collections::BTreeMap::new(),
         };
         for i in 0..n {
-            let disk = Disk {
-                storage: SharedStorage {
-                    forgetful: options.forgetful,
-                    ..SharedStorage::default()
-                },
-                ..Disk::default()
-            };
+            let disk = Disk::new(options.files, options.forgetful);
             if options.advanced_signers.contains(&i) {
                 disk.mark
-                    .0
-                    .borrow_mut()
+                    .clone()
                     .persist(HighWaterMark::new(
                         BlockHeight(99),
                         Round(0),
@@ -396,15 +484,11 @@ impl Sim {
     /// are what they were.
     fn restart(&mut self, i: usize) {
         drop(self.nodes[i].take_outbox());
-        self.disks[i]
-            .storage
-            .inner
-            .borrow_mut()
-            .wal
-            .lose_unflushed();
+        self.disks[i].lose_unflushed();
         self.timers[i].clear();
         let old = self.nodes.remove(i);
         let executor = old.into_chain();
+        self.disks[i].reopen();
         let mut host = self.host_on(i, executor);
         host.start();
         self.nodes.insert(i, host);
@@ -1326,8 +1410,7 @@ impl Sim {
         use chain_consensus::host::Wal as _;
         self.disks[i]
             .storage
-            .inner
-            .borrow_mut()
+            .clone()
             .start_height(BlockHeight(height))
             .unwrap()
     }
@@ -1340,14 +1423,13 @@ fn events_to_commit(heights: usize) -> Vec<usize> {
     sim.events
 }
 
-#[test]
-fn a_node_that_crashes_at_any_moment_comes_back_without_halting_or_disagreeing() {
-    // Restart each node in turn right after each of the events it handles —
-    // messages, timers — with everything it had just produced lost, and let
-    // the network carry on. However it is cut off, it must come back to the
-    // same place as the others: its log gives it back what it had locked and
-    // seen, and its signer's record makes every re-signed message the one it
-    // signed before.
+/// Restarts each node in turn right after each `stride`th event it handles
+/// — messages, timers — with everything it had just produced lost, and lets
+/// the network carry on. However it is cut off, it must come back to the
+/// same place as the others: its log gives it back what it had locked and
+/// seen, and its signer's record makes every re-signed message the one it
+/// signed before. Returns how many restarts were made.
+fn restart_sweep(files: bool, stride: usize) -> usize {
     let events = events_to_commit(3);
     // One thread per node: each builds its own networks, so nothing is
     // shared between them.
@@ -1356,8 +1438,9 @@ fn a_node_that_crashes_at_any_moment_comes_back_without_halting_or_disagreeing()
             let count = events[node];
             std::thread::spawn(move || {
                 let mut restarts = 0;
-                for at in 1..=count {
+                for at in (1..=count).step_by(stride) {
                     let mut options = Options::new(4);
+                    options.files = files;
                     options.crash_at = Some((node, at));
                     let mut sim = Sim::new(options);
                     sim.run_until(|s| s.all_committed(3));
@@ -1379,9 +1462,47 @@ fn a_node_that_crashes_at_any_moment_comes_back_without_halting_or_disagreeing()
             })
         })
         .collect();
-    let restarts: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+    handles.into_iter().map(|h| h.join().unwrap()).sum()
+}
+
+#[test]
+fn a_node_that_crashes_at_any_moment_comes_back_without_halting_or_disagreeing() {
     // Every crash point was reached: the run up to it is the undisturbed one.
-    assert_eq!(restarts, events.iter().sum::<usize>());
+    assert_eq!(
+        restart_sweep(false, 1),
+        events_to_commit(3).iter().sum::<usize>()
+    );
+}
+
+#[test]
+fn a_node_that_crashes_at_any_moment_comes_back_from_real_files() {
+    // The same, with what each node keeps in files that the restart closes
+    // and opens again — the mark, the record of what was signed, the commit
+    // history, the write-ahead log.
+    let events = events_to_commit(3);
+    let expected: usize = events.iter().map(|count| count.div_ceil(3)).sum();
+    assert_eq!(restart_sweep(true, 3), expected);
+}
+
+#[test]
+fn four_validators_agree_on_real_files_and_leave_what_a_restart_needs_on_disk() {
+    let mut options = Options::new(4);
+    options.files = true;
+    let mut sim = Sim::new(options);
+    sim.run_until(|s| s.all_committed(3));
+    agree(&sim, 3);
+
+    // What a restart of node 0 would find: the mark at the newest position it
+    // signed, and the seed the head led to.
+    use chain_consensus::host::CommitLog as _;
+    let disk = &sim.disks[0];
+    let mark = disk.mark.clone().load().unwrap().unwrap();
+    assert!(mark.height.0 >= 3);
+    let head = sim.nodes[0].chain().head().unwrap().height;
+    assert_eq!(
+        disk.storage.clone().seed_after(head),
+        Some(*sim.nodes[0].seed())
+    );
 }
 
 #[test]

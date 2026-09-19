@@ -474,12 +474,16 @@ struct Flaky {
     fail_append: bool,
     fail_flush: bool,
     fail_start: bool,
+    fail_record: bool,
     rubbish: bool,
 }
 
 impl CommitLog for Flaky {
-    fn record(&mut self, record: &CommitRecord, seed_after: Hash) {
-        self.inner.record(record, seed_after);
+    fn record(&mut self, record: &CommitRecord, seed_after: Hash) -> Result<(), StorageError> {
+        if self.fail_record {
+            return Err(StorageError("disk full".into()));
+        }
+        self.inner.record(record, seed_after)
     }
     fn range(&self, from: BlockHeight, max: usize) -> Vec<CommitRecord> {
         self.inner.range(from, max)
@@ -490,21 +494,21 @@ impl CommitLog for Flaky {
 }
 
 impl Wal for Flaky {
-    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), WalError> {
+    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), StorageError> {
         if self.fail_append {
-            return Err(WalError("disk full".into()));
+            return Err(StorageError("disk full".into()));
         }
         self.inner.append(height, entry)
     }
-    fn flush(&mut self) -> Result<(), WalError> {
+    fn flush(&mut self) -> Result<(), StorageError> {
         if self.fail_flush {
-            return Err(WalError("fsync failed".into()));
+            return Err(StorageError("fsync failed".into()));
         }
         self.inner.flush()
     }
-    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, WalError> {
+    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, StorageError> {
         if self.fail_start {
-            return Err(WalError("cannot read".into()));
+            return Err(StorageError("cannot read".into()));
         }
         if self.rubbish {
             return Ok(vec![vec![0xEE, 1, 2, 3]]);
@@ -524,7 +528,7 @@ fn flaky(storage: Flaky) -> HostWith<Flaky> {
 }
 
 fn wal_failed<D: Storage>(host: &HostWith<D>) -> bool {
-    matches!(host.halted(), Some(HaltReason::WalFailed(_)))
+    matches!(host.halted(), Some(HaltReason::StorageFailed(_)))
 }
 
 #[test]
@@ -769,4 +773,17 @@ fn a_round_certificate_that_checks_out_is_logged_and_one_that_does_not_is_not() 
 
     host.handle_message(certificate(&[1, 2]));
     assert!(logged_messages(&mut host).iter().any(is_certificate));
+}
+
+#[test]
+fn a_host_that_cannot_record_a_commit_halts_before_finalising_it() {
+    let mut host = flaky(Flaky {
+        fail_record: true,
+        ..Flaky::default()
+    });
+    let head = host.env.exec.head().unwrap();
+    let record = certified(&host, &good_block(&head));
+    adopting(&mut host, record);
+    assert!(wal_failed(&host));
+    assert_eq!(host.chain().head().unwrap().height, BlockHeight(0));
 }

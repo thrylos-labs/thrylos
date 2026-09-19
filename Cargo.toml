@@ -13,6 +13,7 @@ members = [
     "crates/chain-mempool",
     "crates/chain-rpc",
     "crates/chain-genesis",
+    "crates/chain-node",
 ]
 
 [workspace.package]

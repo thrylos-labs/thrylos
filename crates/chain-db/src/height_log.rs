@@ -237,6 +237,19 @@ impl HeightLog {
     /// this log holds for `height`, oldest first. A torn final record is
     /// dropped; damage anywhere else is an error.
     pub fn start_height(&mut self, height: u64) -> Result<Vec<Vec<u8>>, LogError> {
+        Ok(self
+            .retain_from(height)?
+            .into_iter()
+            .filter(|(at, _)| *at == height)
+            .map(|(_, entry)| entry)
+            .collect())
+    }
+
+    /// Forgets every height before `height` and returns everything from it
+    /// on, as `(height, entry)`, in the order it was appended. Like
+    /// [`Self::start_height`], drops a torn final record and fails on damage
+    /// anywhere else.
+    pub fn retain_from(&mut self, height: u64) -> Result<Vec<(u64, Vec<u8>)>, LogError> {
         let mut bytes = Vec::new();
         File::open(&self.path)?.read_to_end(&mut bytes)?;
         let (records, whole) = parse(&bytes)?;
@@ -248,8 +261,8 @@ impl HeightLog {
         }
         Ok(records
             .into_iter()
-            .filter(|record| record.height == height)
-            .map(|record| record.entry)
+            .filter(|record| keeps(record))
+            .map(|record| (record.height, record.entry))
             .collect())
     }
 
@@ -339,6 +352,29 @@ mod tests {
         );
         assert!(entries(&mut log, 1).is_empty(), "height 1 is gone");
         assert!(!dir.path().join("wal.log.tmp").exists());
+    }
+
+    #[test]
+    fn retaining_from_a_height_returns_everything_from_it_on_and_forgets_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut log, path) = log_in(&dir);
+        for (height, entry) in [(1, "a"), (2, "b"), (3, "c"), (3, "d"), (5, "e")] {
+            log.append(height, entry.as_bytes()).unwrap();
+        }
+        log.flush().unwrap();
+
+        let kept = log.retain_from(3).unwrap();
+        assert_eq!(
+            kept,
+            vec![(3, b"c".to_vec()), (3, b"d".to_vec()), (5, b"e".to_vec())]
+        );
+        drop(log);
+        let mut log = HeightLog::open(&path).unwrap();
+        assert_eq!(
+            log.retain_from(0).unwrap(),
+            kept,
+            "and it is gone from disk"
+        );
     }
 
     #[test]

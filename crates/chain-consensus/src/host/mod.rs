@@ -100,11 +100,14 @@
 //!
 //! # What is not built
 //!
-//! - **Durable storage.** [`ports::Wal`], [`ports::CommitLog`],
-//!   [`ports::SignedLog`] and the signer's mark store are traits with
-//!   in-memory implementations for tests. A node that is to survive a crash
-//!   needs real ones, fsynced, and the write-ahead log's behaviour on a torn
-//!   final entry is part of that contract.
+//! - **Durable storage is not in this crate.** [`ports::Wal`],
+//!   [`ports::CommitLog`], [`ports::SignedLog`] and the signer's mark store are
+//!   traits, here with in-memory implementations for tests; tier A does no
+//!   I/O. The file-backed ones are in `chain-node`, and the restart tests run
+//!   against them. Every write a safety argument rests on must be durable
+//!   before the trait method returns, and every one can fail — a failure halts
+//!   the host, and a signature whose record could not be written is never
+//!   released.
 //! - **A source of blocks other than validators.** A node whose peers all
 //!   fail to answer stays where it is.
 //! - **Observer nodes.** The host assumes it is one of the validators.
@@ -156,7 +159,7 @@ pub use messages::{
 };
 pub use ports::{
     Clock, CommitLog, MemoryCommitLog, MemorySignedLog, MemoryStorage, MemoryWal, SignedEntry,
-    SignedLog, Storage, TransactionSource, Wal, WalError,
+    SignedLog, Storage, StorageError, TransactionSource, Wal,
 };
 pub use signing::{GuardedSigner, SigningRefusal};
 
@@ -449,7 +452,7 @@ where
         let entries = match self.env.storage.start_height(self.env.height) {
             Ok(entries) => entries,
             Err(error) => {
-                self.env.halt(HaltReason::WalFailed(error.0));
+                self.env.halt(HaltReason::StorageFailed(error.0));
                 return;
             }
         };
@@ -462,7 +465,7 @@ where
                 }
                 Err(_) => {
                     self.env
-                        .halt(HaltReason::WalFailed("an entry cannot be read".into()));
+                        .halt(HaltReason::StorageFailed("an entry cannot be read".into()));
                     return;
                 }
             }
@@ -682,7 +685,7 @@ where
             return Ok(());
         }
         if let Err(error) = self.storage.append(self.height, &bytes) {
-            return Err(self.halt(HaltReason::WalFailed(error.0)));
+            return Err(self.halt(HaltReason::StorageFailed(error.0)));
         }
         self.wal_dirty = true;
         self.remember(entry, bytes);
@@ -692,7 +695,7 @@ where
     fn log_timeout(&mut self, timeout: Timeout) -> Result<(), HostError> {
         let bytes = Entry::Timeout(timeout).encode();
         if let Err(error) = self.storage.append(self.height, &bytes) {
-            return Err(self.halt(HaltReason::WalFailed(error.0)));
+            return Err(self.halt(HaltReason::StorageFailed(error.0)));
         }
         self.logged_count = self.logged_count.saturating_add(1);
         self.wal_dirty = true;
@@ -707,7 +710,7 @@ where
         }
         self.wal_dirty = false;
         if let Err(error) = self.storage.flush() {
-            self.halt(HaltReason::WalFailed(error.0));
+            self.halt(HaltReason::StorageFailed(error.0));
         }
         if self.halted.is_some() {
             self.outbox.messages.clear();
@@ -862,6 +865,7 @@ where
             self.halt(match refusal {
                 SigningRefusal::Signer(error) => HaltReason::SignerRefused(error),
                 SigningRefusal::Conflicting(position) => HaltReason::ConflictingSignature(position),
+                SigningRefusal::Log(error) => HaltReason::StorageFailed(error.0),
             })
         })
     }
@@ -1277,14 +1281,16 @@ where
         let seed_after = next_seed(&self.seed, &reveal);
         // Before finalising: a record without a block is harmless, a block
         // without its record would leave a restarted node without a seed.
-        self.storage.record(
+        if let Err(error) = self.storage.record(
             &CommitRecord {
                 block: block.clone(),
                 certificate: certificate.clone(),
                 reveal,
             },
             seed_after,
-        );
+        ) {
+            return Err(self.halt(HaltReason::StorageFailed(error.0)));
+        }
         if self.exec.finalise_block(&block, &executed).is_err() {
             return Err(self.halt(HaltReason::FinaliseFailed { height }));
         }
@@ -1364,7 +1370,7 @@ where
     fn start_next_height(&mut self) {
         // The log forgets the heights before this one.
         if let Err(error) = self.storage.start_height(self.height) {
-            self.halt(HaltReason::WalFailed(error.0));
+            self.halt(HaltReason::StorageFailed(error.0));
             return;
         }
         self.queue.push_back(Input::StartHeight(

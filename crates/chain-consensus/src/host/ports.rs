@@ -55,7 +55,9 @@ pub struct SignedEntry {
 /// node loses its place, never its safety.
 pub trait SignedLog {
     fn get(&self, position: HighWaterMark) -> Option<SignedEntry>;
-    fn record(&mut self, position: HighWaterMark, entry: SignedEntry);
+    /// Durably records a signature. Must not return `Ok` until the entry
+    /// would survive a crash: the signature is released only after this.
+    fn record(&mut self, position: HighWaterMark, entry: SignedEntry) -> Result<(), StorageError>;
 }
 
 /// A [`SignedLog`] in memory, for tests. A real one must survive a crash.
@@ -83,8 +85,9 @@ impl SignedLog for MemorySignedLog {
         self.entries.get(&position).cloned()
     }
 
-    fn record(&mut self, position: HighWaterMark, entry: SignedEntry) {
+    fn record(&mut self, position: HighWaterMark, entry: SignedEntry) -> Result<(), StorageError> {
         self.entries.insert(position, entry);
+        Ok(())
     }
 }
 
@@ -101,7 +104,9 @@ impl SignedLog for MemorySignedLog {
 /// between the two leaves a record for a height the chain does not yet
 /// have — harmless, and the height is decided again.
 pub trait CommitLog {
-    fn record(&mut self, record: &CommitRecord, seed_after: Hash);
+    /// Durably records a commit. Must not return `Ok` until it would
+    /// survive a crash: the host finalises the block only after this.
+    fn record(&mut self, record: &CommitRecord, seed_after: Hash) -> Result<(), StorageError>;
 
     /// Up to `max` consecutive records starting at `from`; empty if there
     /// is none at `from`.
@@ -132,9 +137,10 @@ impl MemoryCommitLog {
 }
 
 impl CommitLog for MemoryCommitLog {
-    fn record(&mut self, record: &CommitRecord, seed_after: Hash) {
+    fn record(&mut self, record: &CommitRecord, seed_after: Hash) -> Result<(), StorageError> {
         self.records
             .insert(record.block.height.0, (record.clone(), seed_after));
+        Ok(())
     }
 
     fn range(&self, from: BlockHeight, max: usize) -> Vec<CommitRecord> {
@@ -158,9 +164,10 @@ impl CommitLog for MemoryCommitLog {
     }
 }
 
-/// Why the write-ahead log could not do what it was asked.
+/// Why a durable store could not do what it was asked: a write that did not
+/// reach the disk, a file that would not open, damage found on reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WalError(pub String);
+pub struct StorageError(pub String);
 
 /// The host's write-ahead log: what changed its state during the height it
 /// is running, kept so that a restart can put it back.
@@ -180,10 +187,10 @@ pub struct WalError(pub String);
 pub trait Wal {
     /// Adds an entry for `height`. It need not survive a crash until the
     /// next [`Self::flush`].
-    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), WalError>;
+    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), StorageError>;
 
     /// Makes everything appended so far survive a crash.
-    fn flush(&mut self) -> Result<(), WalError>;
+    fn flush(&mut self) -> Result<(), StorageError>;
 
     /// Begins `height`: forgets every earlier height's entries and returns,
     /// oldest first, what was appended for `height` before — empty unless
@@ -192,7 +199,7 @@ pub trait Wal {
     /// A log that finds its last entry cut short by a crash drops that entry
     /// and returns the rest; one that finds damage anywhere else must fail,
     /// since what follows a hole cannot be trusted to mean what it did.
-    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, WalError>;
+    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, StorageError>;
 }
 
 /// A [`Wal`] in memory, for tests. A real one must survive a crash;
@@ -223,17 +230,17 @@ impl MemoryWal {
 }
 
 impl Wal for MemoryWal {
-    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), WalError> {
+    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), StorageError> {
         self.entries.push((height.0, entry.to_vec()));
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), WalError> {
+    fn flush(&mut self) -> Result<(), StorageError> {
         self.flushed = self.entries.len();
         Ok(())
     }
 
-    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, WalError> {
+    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, StorageError> {
         self.entries.retain(|(h, _)| *h >= height.0);
         self.flushed = self.flushed.min(self.entries.len());
         Ok(self
@@ -264,8 +271,8 @@ impl MemoryStorage {
 }
 
 impl CommitLog for MemoryStorage {
-    fn record(&mut self, record: &CommitRecord, seed_after: Hash) {
-        self.commits.record(record, seed_after);
+    fn record(&mut self, record: &CommitRecord, seed_after: Hash) -> Result<(), StorageError> {
+        self.commits.record(record, seed_after)
     }
 
     fn range(&self, from: BlockHeight, max: usize) -> Vec<CommitRecord> {
@@ -278,15 +285,15 @@ impl CommitLog for MemoryStorage {
 }
 
 impl Wal for MemoryStorage {
-    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), WalError> {
+    fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), StorageError> {
         self.wal.append(height, entry)
     }
 
-    fn flush(&mut self) -> Result<(), WalError> {
+    fn flush(&mut self) -> Result<(), StorageError> {
         self.wal.flush()
     }
 
-    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, WalError> {
+    fn start_height(&mut self, height: BlockHeight) -> Result<Vec<Vec<u8>>, StorageError> {
         self.wal.start_height(height)
     }
 }

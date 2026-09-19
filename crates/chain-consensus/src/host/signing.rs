@@ -25,15 +25,19 @@ use chain_signer::{HighWaterMark, HighWaterMarkStore, Signer, SignerError};
 use chain_types::bls::{BlsSignature, DST_VOTE};
 use chain_types::{BlockHeight, Hash};
 
-use super::ports::{SignedEntry, SignedLog};
+use super::ports::{SignedEntry, SignedLog, StorageError};
 
 /// Why a signature was not produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SigningRefusal {
     /// The signer refused: at or below its mark, or unable to record it.
     Signer(SignerError),
     /// The position was already signed with different bytes.
     Conflicting(HighWaterMark),
+    /// The signature could not be recorded, so it is not released: a
+    /// signature that a restart could not answer for is one the node must
+    /// not have made.
+    Log(StorageError),
 }
 
 /// A [`Signer`] that answers repeats from a [`SignedLog`]. See the module
@@ -81,7 +85,9 @@ impl<S: HighWaterMarkStore, L: SignedLog> GuardedSigner<S, L> {
             .signer
             .sign(position, &bytes, DST_VOTE)
             .map_err(SigningRefusal::Signer)?;
-        self.log.record(position, SignedEntry { bytes, signature });
+        self.log
+            .record(position, SignedEntry { bytes, signature })
+            .map_err(SigningRefusal::Log)?;
         Ok(signature)
     }
 }
@@ -109,6 +115,31 @@ mod tests {
             Signer::load(secret(), InMemoryStore::new()).unwrap(),
             MemorySignedLog::new(),
         )
+    }
+
+    /// A log that cannot be written.
+    struct FullDisk;
+
+    impl SignedLog for FullDisk {
+        fn get(&self, _: HighWaterMark) -> Option<SignedEntry> {
+            None
+        }
+        fn record(&mut self, _: HighWaterMark, _: SignedEntry) -> Result<(), StorageError> {
+            Err(StorageError("disk full".into()))
+        }
+    }
+
+    #[test]
+    fn a_signature_that_could_not_be_recorded_is_not_released() {
+        let mut g = GuardedSigner::new(
+            Signer::load(secret(), InMemoryStore::new()).unwrap(),
+            FullDisk,
+        );
+        let refused = g.sign(position(1, 0, Step::Prevote), b"vote".to_vec());
+        assert_eq!(
+            refused,
+            Err(SigningRefusal::Log(StorageError("disk full".into())))
+        );
     }
 
     #[test]

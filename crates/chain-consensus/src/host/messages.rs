@@ -155,9 +155,11 @@ pub enum HaltReason {
     CannotCommit { height: BlockHeight },
     /// The chain refused a block this node itself had executed.
     FinaliseFailed { height: BlockHeight },
-    /// The write-ahead log could not be written, flushed or read. A host that
-    /// cannot remember what it is about to do must not do it.
-    WalFailed(String),
+    /// Something the host keeps on disk — its write-ahead log, its record of
+    /// what it signed, its commit history — could not be written, flushed or
+    /// read. A host that cannot remember what it is about to do must not do
+    /// it.
+    StorageFailed(String),
     /// The chain is past genesis but the host has no record of the seed for
     /// the height after its head, so it cannot tell who proposes.
     SeedUnknown,

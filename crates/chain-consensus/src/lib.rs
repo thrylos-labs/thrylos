@@ -40,10 +40,9 @@
 //! each of the events it handles.
 //!
 //! The host's storage is a set of traits (`host::ports`) with in-memory
-//! implementations for tests; `chain-db`'s `HeightLog` is the durable
-//! primitive for the write-ahead log. Not built yet: the durable
-//! implementations wired to a node, and observer (non-validator) nodes — see
-//! the `host` module docs.
+//! implementations for tests; the file-backed ones are in `chain-node`, which
+//! the restart tests run against. Not built yet: a node binary that assembles
+//! it all, and observer (non-validator) nodes — see the `host` module docs.
 
 #![forbid(unsafe_code)]
 

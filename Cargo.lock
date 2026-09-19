@@ -1242,11 +1242,13 @@ dependencies = [
  "chain-engine-api",
  "chain-exec",
  "chain-modules",
+ "chain-node",
  "chain-signer",
  "chain-state",
  "chain-types",
  "ed25519-dalek",
  "proptest",
+ "tempfile",
 ]
 
 [[package]]
@@ -1323,6 +1325,21 @@ dependencies = [
  "chain-types",
  "proptest",
  "ruint",
+]
+
+[[package]]
+name = "chain-node"
+version = "0.1.0"
+dependencies = [
+ "arc-malachitebft-core-types",
+ "blake3",
+ "blst",
+ "chain-consensus",
+ "chain-db",
+ "chain-engine-api",
+ "chain-signer",
+ "chain-types",
+ "tempfile",
 ]
 
 [[package]]
