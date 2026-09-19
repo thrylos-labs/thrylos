@@ -21,6 +21,7 @@ Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout a
 | `chain-p2p` | Gossip, peer scoring, discovery | B |
 | `chain-mempool` | Tx admission, eviction, replacement | B |
 | `chain-rpc` | JSON-RPC, tracing | C |
+| `chain-genesis` | Genesis file parsing and the `chain-genesis` checker tool (not in the spec's table) | C |
 
 Tier A crates must build byte-identical output on every machine. They carry `[lints] workspace = true` (see root `Cargo.toml` and `clippy.toml`), which forbids `unsafe`, `unwrap`/`expect`/`panic!`, indexing/slicing, integer division, float arithmetic, and non-deterministic collection types. Tier B/C crates are not held to that bar.
 

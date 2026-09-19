@@ -32,6 +32,15 @@
 //!   reports which happened to each transaction. A third case, an
 //!   internal executor failure no transaction can trigger, also rejects
 //!   the block rather than charging a sender for a bug of ours.
+//! - A real chain starts from a [`genesis_config::GenesisConfig`] through
+//!   `Executor::from_genesis`: its id and start time, its governed
+//!   parameters, its allocations and its validators (registered and bonded,
+//!   proofs of possession verified). The configuration is valid by
+//!   construction and canonically ordered, and its hash is the first block's
+//!   parent. Reading one from a file is `chain-genesis`'s job, since parsing
+//!   is I/O and does not belong in this crate. `Executor::genesis` remains
+//!   for development and tests: default parameters, nothing allocated, no
+//!   validators.
 //! - The block itself is checked against its parent, both read from state
 //!   (a chain-head entry written by every block, so it is in the state
 //!   root and diff): the height must be exactly one more, and the
@@ -79,7 +88,7 @@
 //!   transaction whose `max_fee_per_gas` can't cover it is invalid and
 //!   rejects the block, and so does a block over the gas limit. The fee
 //!   is burned, with no priority tip — `TransactionBody` has one price
-//!   field. The gas limit and fee denominator are fixed at genesis; when
+//!   field. The gas limit and fee denominator start where genesis puts them; when
 //!   governance can change them they belong in state too.
 //!
 //! Each of those is real, separate follow-up work, not a hidden
@@ -94,6 +103,7 @@ pub mod accounting;
 mod effects;
 pub mod executor;
 pub mod genesis;
+pub mod genesis_config;
 pub mod hooks;
 pub mod keys;
 pub mod module_resolver;

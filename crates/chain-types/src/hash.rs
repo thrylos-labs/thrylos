@@ -59,6 +59,10 @@ pub enum DomainTag {
     /// distinct from `TrieLeafV1`, which hashes a key *and* its value as
     /// the content stored at that path.
     TrieKeyPathV1 = 5,
+    /// A genesis configuration's canonical encoding: what a chain's first
+    /// block's parent hash commits to, so two networks that differ in any
+    /// allocation, validator or parameter cannot share a block.
+    GenesisConfigV1 = 6,
 }
 
 /// Hash `payload` under `tag`'s domain-separation prefix.
@@ -72,6 +76,25 @@ pub fn hash_with_domain(tag: DomainTag, payload: &[u8]) -> Hash {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_domain_tag_hashes_the_same_payload_differently() {
+        let payload = b"one payload, every domain";
+        let tags = [
+            DomainTag::TrieLeafV1,
+            DomainTag::TrieBranchV1,
+            DomainTag::BlockHeaderV1,
+            DomainTag::TransactionV1,
+            DomainTag::AddressV1,
+            DomainTag::TrieKeyPathV1,
+            DomainTag::GenesisConfigV1,
+        ];
+        let hashes: std::collections::BTreeSet<Hash> = tags
+            .into_iter()
+            .map(|tag| hash_with_domain(tag, payload))
+            .collect();
+        assert_eq!(hashes.len(), tags.len());
+    }
 
     #[test]
     fn different_domain_tags_never_collide_on_the_same_payload() {

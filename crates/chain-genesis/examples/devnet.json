@@ -1,0 +1,57 @@
+{
+  "chain_id": 1337,
+  "genesis_time_ms": 1700000000000,
+  "parameters": {
+    "max_block_gas": 60000000,
+    "base_fee_change_denominator": 8,
+    "min_self_stake": "1000000",
+    "inflation_bps": 400,
+    "unbonding_period_ms": 1814400000,
+    "quorum_bps": 3340,
+    "veto_threshold_bps": 3340
+  },
+  "allocations": [
+    {
+      "public_key": "54b0d81d0fa7d00e4a7d600dfaba6f2b22035b22fe335e17edf5f9aa5bb05074",
+      "amount": "1000000000000"
+    },
+    {
+      "public_key": "34b4d9043156cb6dcf0beb0a2949b7559c940d2bcb6dbe8c53a9b30278e3a746",
+      "amount": "1000000000000"
+    },
+    {
+      "public_key": "12a41592c8b7c17d4059e7b29b61e8ff96c7415f2f803348f2f017e05b9ea1da",
+      "amount": "1000000000000"
+    },
+    {
+      "public_key": "d62f016a1efd1e4fdf793eb42cd84471e1ba9f0cf04d1287b5cc71f616287cb8",
+      "amount": "1000000000000"
+    }
+  ],
+  "validators": [
+    {
+      "operator_public_key": "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+      "consensus_key": "95e05aea89db0e84b87ab96a0203cbff924f86a35494c9a9ce274b768fc555a6b761f2fc2b1b58d9cda73d4cdf4bca24",
+      "proof_of_possession": "ae909459fc8a302bcfcccae433aa40a789358c962144b0c9f97e7315e61d6020492a464aac1e62af54d105b18f2e68110fe8865091397f704c14690bd01c6f6b909814036bc3c25fa79936c5d9701692e6996d17d0e067735da19901701c017f",
+      "self_stake": "10000000"
+    },
+    {
+      "operator_public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "consensus_key": "95a254501b7733239ed3cec4d56737977bd09ede881d8a234560e83e5525017add3b1dcc3eabfb85e12a4131b19c253b",
+      "proof_of_possession": "974e8f3470775e8f07088223a2a0bb89bc57a3832e32a50f21725c2b4ce80853f36ca077fcaa4b5f1e8e734a41e574d30c25808dd643f24b03bf23c3647617d291b3ab60bcb5eca72fbd862955748a0524f589c8af5dee545b0e0dd9424a4120",
+      "self_stake": "10000000"
+    },
+    {
+      "operator_public_key": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "consensus_key": "96df714a5cc9ddd2298546dce3d6d3827762a6d5b1c2a91e5ca93c9c898b1b4319cc105c493212a55b63080732ec2249",
+      "proof_of_possession": "8c1ef7f4b46730f3c70c4cf977c91a7c013b2c70b7157e8f41477293e2e922f42f0c68d8d0debc92315443d6e6ce784f194a0347459b1f1d461774b488b3d9fe304398b2a5ee42d560d2a5311128999a3d228b33787326df0537315441d04ad2",
+      "self_stake": "10000000"
+    },
+    {
+      "operator_public_key": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "consensus_key": "ac80a5e08c712d5f08f0306ad743f7d8c215d982489b84a1d6ba805733d94c006e8938f9089a75db3ffa135af33bc69a",
+      "proof_of_possession": "a5c64d6a356578c012653586177b6a7b2f64c56d231d268ea2f275cc2023f3b47b84f4e9918ff121f4ff3d5a1d85ac0e010dd5202dfb37003cc82247e7306147b7cf6fafb885c460de366eb4120b00e667fab2ad7765300333e5956739e8ae5d",
+      "self_stake": "10000000"
+    }
+  ]
+}

@@ -13,6 +13,7 @@ use chain_modules::fees::{next_base_fee, GENESIS_BASE_FEE};
 use chain_modules::params::GENESIS_PARAM_VALUES;
 use chain_modules::{
     ActiveValidator, Governance, GovernedParams, ParamError, ParamValues, StakingRegistry,
+    ValidatorId, DEAD_SHARES,
 };
 use chain_state::{compute_root, StateKey, StateRoot, StateValue};
 use chain_types::codec::CodecError;
@@ -36,6 +37,7 @@ use crate::genesis::{
     COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS, SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME,
     SYSTEM_PACKAGE_ADDRESS,
 };
+use crate::genesis_config::{GenesisConfig, GenesisConfigError};
 use crate::hooks::end_of_block;
 use crate::keys::{base_fee_key, calculator_result_key, chain_head_key, object_key};
 use crate::module_resolver::ChainStateModuleResolver;
@@ -52,6 +54,8 @@ pub enum ExecutorError {
     Modules(String),
     /// The state failed an audit.
     Audit(String),
+    /// A genesis configuration could not be turned into a chain.
+    GenesisConfig(GenesisConfigError),
 }
 
 impl core::fmt::Display for ExecutorError {
@@ -62,6 +66,7 @@ impl core::fmt::Display for ExecutorError {
             Self::Params(err) => write!(f, "invalid genesis parameters: {err}"),
             Self::Modules(msg) => write!(f, "native module state: {msg}"),
             Self::Audit(msg) => write!(f, "audit failed: {msg}"),
+            Self::GenesisConfig(err) => write!(f, "genesis configuration: {err}"),
         }
     }
 }
@@ -76,9 +81,10 @@ struct AppliedTransaction {
 /// The height of the state `Executor::genesis` builds: no block yet.
 pub const GENESIS_HEIGHT: u64 = 0;
 
-/// The timestamp of that state. `docs/spec.md` fixes no genesis time yet,
-/// so it is the earliest possible one, leaving the first block's
-/// timestamp bounded only by the host's clock check.
+/// The timestamp of the state [`Executor::genesis`] builds: the earliest
+/// possible one, leaving the first block's timestamp bounded only by the
+/// host's clock check. A real chain sets its own through
+/// [`crate::genesis_config::GenesisConfig`].
 pub const GENESIS_TIMESTAMP_MILLIS: u64 = 0;
 
 pub struct Executor {
@@ -94,11 +100,80 @@ pub struct Executor {
 }
 
 impl Executor {
+    /// The chain a [`GenesisConfig`] describes: its parameters, its
+    /// allocations, and its validators registered and bonded, at its start
+    /// time. This is how a real chain starts. The first block's parent is
+    /// the configuration's hash ([`GenesisConfig::hash`]), so blocks of a
+    /// network with any different genesis are not blocks on this one.
+    ///
+    /// The configuration is already valid, so what can fail here is the
+    /// executor's own construction; a final audit confirms the supply
+    /// equals what was created, so a genesis that would start a chain
+    /// out of balance is refused rather than started.
+    pub fn from_genesis(config: &GenesisConfig) -> Result<Self, ExecutorError> {
+        let params = GovernedParams::new(*config.parameters()).map_err(ExecutorError::Params)?;
+        let mut executor = Self::build(
+            config.chain_id(),
+            config.genesis_time_ms(),
+            params,
+            config.hash(),
+        )?;
+
+        for allocation in config.allocations() {
+            executor
+                .credit_account(
+                    Address::from_public_key(&allocation.owner),
+                    allocation.amount,
+                )
+                .map_err(|err| ExecutorError::Modules(err.to_string()))?;
+        }
+        for validator in config.validators() {
+            let operator = Address::from_public_key(&validator.operator);
+            StakingRegistry::new(StateStore::new(&mut executor.state))
+                .register_validator(
+                    &params,
+                    ValidatorId(operator),
+                    operator,
+                    validator.consensus_key,
+                    &validator.proof_of_possession,
+                    validator.self_stake,
+                )
+                .map_err(|error| {
+                    ExecutorError::GenesisConfig(GenesisConfigError::Registry { operator, error })
+                })?;
+            // The stake and the pool's dead shares came into being here.
+            let created = validator.self_stake.checked_add(DEAD_SHARES).ok_or(
+                ExecutorError::GenesisConfig(GenesisConfigError::SupplyOverflow),
+            )?;
+            let supply = read_supply(&executor.state).unwrap_or(0);
+            write_supply(
+                &mut executor.state,
+                supply
+                    .checked_add(created)
+                    .ok_or(ExecutorError::GenesisConfig(
+                        GenesisConfigError::SupplyOverflow,
+                    ))?,
+            );
+        }
+
+        executor.audit()?;
+        if executor.supply() != Some(config.total_supply()) {
+            return Err(ExecutorError::Audit(
+                "the supply is not what the genesis configuration creates".to_owned(),
+            ));
+        }
+        Ok(executor)
+    }
+
     /// A freshly initialised executor with the fixed system packages
     /// published, including one seeded `Counter` object (see
     /// `crate::genesis`), checking every transaction against
     /// `chain_id` (`docs/spec.md`, "Transaction validity": "Chain ID
     /// ... checked against the node's own").
+    ///
+    /// For development and tests: default parameters, no allocations and
+    /// no validators, starting at [`GENESIS_TIMESTAMP_MILLIS`]. A real
+    /// chain starts from [`Self::from_genesis`].
     pub fn genesis(chain_id: ChainId) -> Result<Self, ExecutorError> {
         Self::genesis_with_params(chain_id, GENESIS_PARAM_VALUES)
     }
@@ -109,18 +184,36 @@ impl Executor {
     ///
     /// The supply starts at zero and grows only as coin is allocated with
     /// [`Self::credit_account`]; there are no validators until some
-    /// register. Both are what a genesis file will eventually carry.
+    /// register.
     pub fn genesis_with_params(
         chain_id: ChainId,
         params: ParamValues,
     ) -> Result<Self, ExecutorError> {
         let params = GovernedParams::new(params).map_err(ExecutorError::Params)?;
+        Self::build(
+            chain_id,
+            GENESIS_TIMESTAMP_MILLIS,
+            params,
+            Hash::from_bytes([0u8; 32]),
+        )
+    }
+
+    /// The empty chain: fixed system packages, the base fee, the head at
+    /// height 0 and `genesis_time_ms`, zero supply, and the governed
+    /// parameters in state. `tip` is what the first block names as its
+    /// parent.
+    fn build(
+        chain_id: ChainId,
+        genesis_time_ms: u64,
+        params: GovernedParams,
+        tip: Hash,
+    ) -> Result<Self, ExecutorError> {
         let mut state = genesis_state().map_err(ExecutorError::Genesis)?;
         state.insert(
             base_fee_key(),
             StateValue::new(GENESIS_BASE_FEE.to_le_bytes().to_vec()),
         );
-        write_head(&mut state, GENESIS_HEIGHT, GENESIS_TIMESTAMP_MILLIS);
+        write_head(&mut state, GENESIS_HEIGHT, genesis_time_ms);
         write_supply(&mut state, 0);
         Governance::new(StateStore::new(&mut state))
             .init_genesis(params)
@@ -137,7 +230,7 @@ impl Executor {
         Ok(Self {
             chain_id,
             state,
-            tip_block_hash: Hash::from_bytes([0u8; 32]),
+            tip_block_hash: tip,
             runtime,
             #[cfg(test)]
             fault: None,

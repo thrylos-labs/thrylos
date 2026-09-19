@@ -1283,6 +1283,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "chain-genesis"
+version = "0.1.0"
+dependencies = [
+ "blst",
+ "chain-exec",
+ "chain-modules",
+ "chain-types",
+ "ed25519-dalek",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "chain-mempool"
 version = "0.1.0"
 dependencies = [

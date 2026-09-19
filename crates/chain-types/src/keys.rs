@@ -73,6 +73,12 @@ impl PublicKey {
         self.scheme
     }
 
+    /// The compressed Ed25519 point, as [`Self::from_ed25519_bytes`] takes
+    /// it.
+    pub fn ed25519_bytes(&self) -> [u8; 32] {
+        self.inner.to_bytes()
+    }
+
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
         self.inner
             .verify(message, &signature.inner)
@@ -158,6 +164,14 @@ mod tests {
     use super::*;
     use crate::codec::decode_exact;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn a_public_key_gives_back_the_bytes_it_was_made_from() {
+        let (signing_key, public_key) = test_keypair();
+        let bytes = signing_key.verifying_key().to_bytes();
+        assert_eq!(public_key.ed25519_bytes(), bytes);
+        assert_eq!(PublicKey::from_ed25519_bytes(bytes).unwrap(), public_key);
+    }
 
     fn test_keypair() -> (SigningKey, PublicKey) {
         let signing = SigningKey::from_bytes(&[7u8; 32]);

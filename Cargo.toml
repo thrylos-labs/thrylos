@@ -12,6 +12,7 @@ members = [
     "crates/chain-p2p",
     "crates/chain-mempool",
     "crates/chain-rpc",
+    "crates/chain-genesis",
 ]
 
 [workspace.package]
@@ -25,6 +26,8 @@ blake3 = "1"
 blst = "0.3"
 ed25519-dalek = "2"
 proptest = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tempfile = "3"
 
 # MoveVM, pinned to a specific MystenLabs/sui commit (tag testnet-v1.80.0).
