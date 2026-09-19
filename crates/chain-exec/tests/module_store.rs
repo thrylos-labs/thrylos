@@ -275,3 +275,68 @@ fn the_registry_behaves_the_same_over_the_real_state_as_over_the_in_memory_store
     let on_state = run(StakingRegistry::new(StateStore::new(&mut state)));
     assert_eq!(in_memory, on_state);
 }
+
+#[test]
+fn governance_and_the_registry_share_one_state_and_a_passed_change_shows_in_the_diff() {
+    use chain_modules::governance::{
+        ProposalKind, ProposalStatus, VoteChoice, TIMELOCK_MS, VOTING_PERIOD_MS,
+    };
+    use chain_modules::{Governance, ParamChange};
+    use chain_types::BlockHeight;
+
+    let mut state = busy_state();
+
+    // Both modules, one state.
+    let mut registry = StakingRegistry::new(StateStore::new(&mut state));
+    register(&mut registry, 1, 5_000);
+    registry.delegate(&id(1), staker(1), 400).unwrap();
+    let mut gov = Governance::new(StateStore::new(&mut state));
+    gov.init_genesis(params()).unwrap();
+
+    let proposal = gov
+        .submit(
+            ProposalKind::ParameterChange(ParamChange {
+                inflation_bps: Some(700),
+                ..ParamChange::default()
+            }),
+            T0,
+            1_000,
+        )
+        .unwrap();
+    gov.vote(proposal, staker(1), 900, VoteChoice::Yes, T0 + 1)
+        .unwrap();
+    gov.process(T0 + VOTING_PERIOD_MS, BlockHeight(1)).unwrap();
+
+    let before_applying = state.clone();
+    let root_before = compute_root(&state);
+    let mut gov = Governance::new(StateStore::new(&mut state));
+    let events = gov
+        .process(T0 + VOTING_PERIOD_MS + TIMELOCK_MS, BlockHeight(2))
+        .unwrap();
+    assert_eq!(events, vec![(proposal, ProposalStatus::Applied)]);
+    assert_eq!(gov.params().unwrap().values().inflation_bps, 700);
+    gov.assert_invariants().unwrap();
+
+    // Applying the change moved the root, and what the diff holds is
+    // enough to rebuild the state: the new parameters, the proposal's new
+    // status, and the open-index entry going away.
+    assert_ne!(compute_root(&state), root_before);
+    let changes = diff(&before_applying, &state);
+    assert!(changes
+        .iter()
+        .any(|(_, change)| *change == StateChange::Delete));
+    let mut replayed = before_applying;
+    apply(&mut replayed, &changes);
+    assert_eq!(compute_root(&replayed), compute_root(&state));
+
+    // The registry, in the same state, was not disturbed by any of it.
+    StakingRegistry::new(StateStore::new(&mut state))
+        .assert_invariants()
+        .unwrap();
+    assert_eq!(
+        StakingRegistry::new(StateStore::new(&mut state))
+            .stake_of(&id(1), &staker(1))
+            .unwrap(),
+        400
+    );
+}

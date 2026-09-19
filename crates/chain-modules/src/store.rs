@@ -38,7 +38,7 @@
 
 use core::ops::Bound;
 
-use chain_types::codec::{decode_exact, Decode, Encode};
+use chain_types::codec::{decode_exact, decode_field, CodecError, Decode, Encode};
 use chain_types::collections::BTreeMap;
 
 /// An ordered byte-keyed store. Every method is deterministic and
@@ -137,6 +137,51 @@ pub fn decode_entries<T: Decode>(
         .collect()
 }
 
+/// Runs `op` against an overlay of `store` and applies what it wrote only
+/// if it returns `Ok`: the whole operation happens or none of it does.
+/// Every mutating module method is built on this.
+pub fn atomically<S: Store, T, E>(
+    store: &mut S,
+    op: impl FnOnce(&mut Overlay<'_, S>) -> Result<T, E>,
+) -> Result<T, E> {
+    let mut overlay = Overlay::new(&*store);
+    let result = op(&mut overlay);
+    if result.is_ok() {
+        let changes = overlay.into_changes();
+        apply_changes(store, changes);
+    }
+    result
+}
+
+/// `value` as a presence byte (`0` absent, `1` present) and, if present,
+/// the value. Strict: [`decode_option`] accepts nothing else.
+pub fn encode_option<T: Encode>(value: &Option<T>, out: &mut Vec<u8>) {
+    match value {
+        None => 0u8.encode(out),
+        Some(inner) => {
+            1u8.encode(out);
+            inner.encode(out);
+        }
+    }
+}
+
+/// The inverse of [`encode_option`], read at `offset` of `input`;
+/// returns the value and the offset after it.
+pub fn decode_option<T: Decode>(
+    input: &[u8],
+    offset: usize,
+) -> Result<(Option<T>, usize), CodecError> {
+    let (present, offset) = decode_field::<u8>(input, offset)?;
+    match present {
+        0 => Ok((None, offset)),
+        1 => {
+            let (value, offset) = decode_field::<T>(input, offset)?;
+            Ok((Some(value), offset))
+        }
+        _ => Err(CodecError::InvalidValue),
+    }
+}
+
 /// Every key prefix the native modules use, in one place so no two
 /// collide. Each is the first byte of the keys it names; the layout
 /// after it is that module's own, documented where it is built.
@@ -152,9 +197,15 @@ pub mod tag {
     pub const SLASH_STATUS: u8 = 9;
     pub const SLASH_RECORD: u8 = 10;
     pub const SLASH_BY_TIME: u8 = 11;
+    pub const GOV_PARAMS: u8 = 12;
+    pub const GOV_META: u8 = 13;
+    pub const GOV_PROPOSAL: u8 = 14;
+    pub const GOV_VOTE: u8 = 15;
+    pub const GOV_OPEN: u8 = 16;
+    pub const GOV_FORK: u8 = 17;
 
     /// Every tag above, for the uniqueness test.
-    pub const ALL: [u8; 11] = [
+    pub const ALL: [u8; 17] = [
         VALIDATOR,
         SHARES,
         CONSENSUS_KEY,
@@ -166,6 +217,12 @@ pub mod tag {
         SLASH_STATUS,
         SLASH_RECORD,
         SLASH_BY_TIME,
+        GOV_PARAMS,
+        GOV_META,
+        GOV_PROPOSAL,
+        GOV_VOTE,
+        GOV_OPEN,
+        GOV_FORK,
     ];
 }
 

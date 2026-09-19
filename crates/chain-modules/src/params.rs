@@ -23,7 +23,10 @@
 //! Where the spec says "bounded" without a number, the range below is a
 //! choice, not a fact from the spec, and each is marked as one.
 
+use chain_types::codec::{decode_field, CodecError, Decode, Encode};
+
 use crate::fees::{FeeError, FeeParams};
+use crate::store::{decode_option, encode_option};
 
 pub const SECOND_MS: u64 = 1_000;
 pub const DAY_MS: u64 = 24 * 60 * 60 * SECOND_MS;
@@ -74,6 +77,40 @@ pub enum ParamError {
     VetoThresholdOutOfRange,
 }
 
+impl Encode for ParamError {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Fee(err) => {
+                0u8.encode(out);
+                err.encode(out);
+            }
+            Self::MinSelfStakeZero => 1u8.encode(out),
+            Self::InflationOutOfRange => 2u8.encode(out),
+            Self::UnbondingPeriodOutOfRange => 3u8.encode(out),
+            Self::QuorumOutOfRange => 4u8.encode(out),
+            Self::VetoThresholdOutOfRange => 5u8.encode(out),
+        }
+    }
+}
+
+impl Decode for ParamError {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (kind, offset) = u8::decode(input)?;
+        match kind {
+            0 => {
+                let (err, offset) = decode_field::<FeeError>(input, offset)?;
+                Ok((Self::Fee(err), offset))
+            }
+            1 => Ok((Self::MinSelfStakeZero, offset)),
+            2 => Ok((Self::InflationOutOfRange, offset)),
+            3 => Ok((Self::UnbondingPeriodOutOfRange, offset)),
+            4 => Ok((Self::QuorumOutOfRange, offset)),
+            5 => Ok((Self::VetoThresholdOutOfRange, offset)),
+            _ => Err(CodecError::InvalidValue),
+        }
+    }
+}
+
 impl core::fmt::Display for ParamError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -108,6 +145,42 @@ pub struct ParamValues {
     pub veto_threshold_bps: u16,
 }
 
+impl Encode for ParamValues {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.max_block_gas.encode(out);
+        self.base_fee_change_denominator.encode(out);
+        self.min_self_stake.encode(out);
+        self.inflation_bps.encode(out);
+        self.unbonding_period_ms.encode(out);
+        self.quorum_bps.encode(out);
+        self.veto_threshold_bps.encode(out);
+    }
+}
+
+impl Decode for ParamValues {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (max_block_gas, offset) = u64::decode(input)?;
+        let (base_fee_change_denominator, offset) = decode_field::<u64>(input, offset)?;
+        let (min_self_stake, offset) = decode_field::<u128>(input, offset)?;
+        let (inflation_bps, offset) = decode_field::<u16>(input, offset)?;
+        let (unbonding_period_ms, offset) = decode_field::<u64>(input, offset)?;
+        let (quorum_bps, offset) = decode_field::<u16>(input, offset)?;
+        let (veto_threshold_bps, offset) = decode_field::<u16>(input, offset)?;
+        Ok((
+            Self {
+                max_block_gas,
+                base_fee_change_denominator,
+                min_self_stake,
+                inflation_bps,
+                unbonding_period_ms,
+                quorum_bps,
+                veto_threshold_bps,
+            },
+            offset,
+        ))
+    }
+}
+
 /// A proposed change to some of the parameters; `None` leaves that
 /// parameter as it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,6 +192,42 @@ pub struct ParamChange {
     pub unbonding_period_ms: Option<u64>,
     pub quorum_bps: Option<u16>,
     pub veto_threshold_bps: Option<u16>,
+}
+
+impl Encode for ParamChange {
+    fn encode(&self, out: &mut Vec<u8>) {
+        encode_option(&self.max_block_gas, out);
+        encode_option(&self.base_fee_change_denominator, out);
+        encode_option(&self.min_self_stake, out);
+        encode_option(&self.inflation_bps, out);
+        encode_option(&self.unbonding_period_ms, out);
+        encode_option(&self.quorum_bps, out);
+        encode_option(&self.veto_threshold_bps, out);
+    }
+}
+
+impl Decode for ParamChange {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (max_block_gas, offset) = decode_option::<u64>(input, 0)?;
+        let (base_fee_change_denominator, offset) = decode_option::<u64>(input, offset)?;
+        let (min_self_stake, offset) = decode_option::<u128>(input, offset)?;
+        let (inflation_bps, offset) = decode_option::<u16>(input, offset)?;
+        let (unbonding_period_ms, offset) = decode_option::<u64>(input, offset)?;
+        let (quorum_bps, offset) = decode_option::<u16>(input, offset)?;
+        let (veto_threshold_bps, offset) = decode_option::<u16>(input, offset)?;
+        Ok((
+            Self {
+                max_block_gas,
+                base_fee_change_denominator,
+                min_self_stake,
+                inflation_bps,
+                unbonding_period_ms,
+                quorum_bps,
+                veto_threshold_bps,
+            },
+            offset,
+        ))
+    }
 }
 
 impl ParamChange {
@@ -153,6 +262,23 @@ impl ParamChange {
 pub struct GovernedParams {
     values: ParamValues,
     fees: FeeParams,
+}
+
+/// A parameter set is stored as its raw values. Decoding re-checks every
+/// clamp, so a stored set that somehow fell outside them cannot become a
+/// [`GovernedParams`] — it is an invalid encoding.
+impl Encode for GovernedParams {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.values.encode(out);
+    }
+}
+
+impl Decode for GovernedParams {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (values, offset) = ParamValues::decode(input)?;
+        let params = Self::new(values).map_err(|_| CodecError::InvalidValue)?;
+        Ok((params, offset))
+    }
 }
 
 impl GovernedParams {
@@ -198,7 +324,7 @@ impl GovernedParams {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
     use proptest::prelude::*;
@@ -429,5 +555,95 @@ mod tests {
                 && (MIN_VETO_THRESHOLD_BPS..=MAX_VETO_THRESHOLD_BPS).contains(&veto_bps);
             prop_assert_eq!(GovernedParams::new(values).is_ok(), expected);
         }
+    }
+
+    // ---- encoding ------------------------------------------------------
+
+    use chain_types::codec::decode_exact;
+
+    fn encoded<T: Encode>(value: &T) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        value.encode(&mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn parameter_values_round_trip_and_are_strict() {
+        let bytes = encoded(&valid());
+        assert_eq!(decode_exact::<ParamValues>(&bytes).unwrap(), valid());
+        assert_eq!(bytes.len(), 8 + 8 + 16 + 2 + 8 + 2 + 2, "fixed width");
+        assert!(decode_exact::<ParamValues>(&bytes[..bytes.len() - 1]).is_err());
+        let mut longer = bytes;
+        longer.push(0);
+        assert!(decode_exact::<ParamValues>(&longer).is_err());
+    }
+
+    #[test]
+    fn a_governed_set_is_re_validated_on_decode() {
+        let params = GovernedParams::new(valid()).unwrap();
+        let bytes = encoded(&params);
+        assert_eq!(decode_exact::<GovernedParams>(&bytes).unwrap(), params);
+
+        // The same bytes with a value outside its clamp are not a
+        // `GovernedParams`, however they got that way.
+        let mut values = valid();
+        values.quorum_bps = MAX_QUORUM_BPS + 1;
+        let bad = encoded(&values);
+        assert!(
+            decode_exact::<ParamValues>(&bad).is_ok(),
+            "raw values decode"
+        );
+        assert!(
+            decode_exact::<GovernedParams>(&bad).is_err(),
+            "but a validated set does not"
+        );
+    }
+
+    #[test]
+    fn a_parameter_change_round_trips_with_any_mix_of_fields() {
+        for change in [
+            ParamChange::default(),
+            ParamChange {
+                inflation_bps: Some(5),
+                ..ParamChange::default()
+            },
+            ParamChange {
+                max_block_gas: Some(u64::MAX),
+                base_fee_change_denominator: Some(2),
+                min_self_stake: Some(u128::MAX),
+                inflation_bps: Some(u16::MAX),
+                unbonding_period_ms: Some(0),
+                quorum_bps: Some(1),
+                veto_threshold_bps: Some(3),
+            },
+        ] {
+            let bytes = encoded(&change);
+            assert_eq!(decode_exact::<ParamChange>(&bytes).unwrap(), change);
+            for cut in 0..bytes.len() {
+                assert!(decode_exact::<ParamChange>(&bytes[..cut]).is_err());
+            }
+        }
+        // A presence byte that is neither 0 nor 1.
+        assert!(decode_exact::<ParamChange>(&[2; 7]).is_err());
+    }
+
+    #[test]
+    fn parameter_errors_round_trip() {
+        for err in [
+            ParamError::MinSelfStakeZero,
+            ParamError::InflationOutOfRange,
+            ParamError::UnbondingPeriodOutOfRange,
+            ParamError::QuorumOutOfRange,
+            ParamError::VetoThresholdOutOfRange,
+            ParamError::Fee(FeeError::BlockGasLimitOutOfRange),
+            ParamError::Fee(FeeError::DenominatorOutOfRange),
+        ] {
+            assert_eq!(decode_exact::<ParamError>(&encoded(&err)).unwrap(), err);
+        }
+        assert!(decode_exact::<ParamError>(&[6]).is_err());
+        assert!(
+            decode_exact::<ParamError>(&[0, 2]).is_err(),
+            "unknown fee error"
+        );
     }
 }

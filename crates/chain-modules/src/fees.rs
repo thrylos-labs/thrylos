@@ -42,6 +42,8 @@
 //! as-is) and that the base fee denominator is "bounded ... non-
 //! degenerate" without giving a range.
 
+use chain_types::codec::{CodecError, Decode, Encode};
+
 /// The floor the base fee can never fall below. Zero would make blocks
 /// free to fill, which is exactly the spam economy this module exists to
 /// prevent — and a base fee of zero could never rise proportionally
@@ -83,6 +85,26 @@ pub enum FeeError {
     /// Outside [`MIN_BASE_FEE_CHANGE_DENOMINATOR`]..=
     /// [`MAX_BASE_FEE_CHANGE_DENOMINATOR`].
     DenominatorOutOfRange,
+}
+
+impl Encode for FeeError {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::BlockGasLimitOutOfRange => 0u8.encode(out),
+            Self::DenominatorOutOfRange => 1u8.encode(out),
+        }
+    }
+}
+
+impl Decode for FeeError {
+    fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
+        let (kind, offset) = u8::decode(input)?;
+        match kind {
+            0 => Ok((Self::BlockGasLimitOutOfRange, offset)),
+            1 => Ok((Self::DenominatorOutOfRange, offset)),
+            _ => Err(CodecError::InvalidValue),
+        }
+    }
 }
 
 impl core::fmt::Display for FeeError {

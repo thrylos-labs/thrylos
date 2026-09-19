@@ -113,7 +113,7 @@ use crate::slashing::{
 };
 use crate::staking::{StakingError, StakingPool};
 use crate::store::{
-    apply_changes, be64, load, prefix_end, read_be64, save, tag, Corrupt, Overlay, Store,
+    atomically, be64, load, prefix_end, read_be64, save, tag, Corrupt, Overlay, Store,
 };
 
 /// `docs/spec.md`, "Consensus": "Active validator set: 128, by stake".
@@ -406,13 +406,9 @@ impl<S: Store> StakingRegistry<S> {
         &mut self,
         op: impl FnOnce(&mut StakingRegistry<&mut Overlay<'_, S>>) -> Result<T, RegistryError>,
     ) -> Result<T, RegistryError> {
-        let mut overlay = Overlay::new(&self.store);
-        let result = op(&mut StakingRegistry::new(&mut overlay));
-        if result.is_ok() {
-            let changes = overlay.into_changes();
-            apply_changes(&mut self.store, changes);
-        }
-        result
+        atomically(&mut self.store, |overlay| {
+            op(&mut StakingRegistry::new(overlay))
+        })
     }
 
     // ---- reads ---------------------------------------------------------
