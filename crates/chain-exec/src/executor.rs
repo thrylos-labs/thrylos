@@ -100,7 +100,85 @@ pub struct Executor {
     fault: Option<fn(&mut BTreeMap<StateKey, StateValue>)>,
 }
 
+/// A fully checked next state, kept opaque so callers can persist the block
+/// before allowing the executor's in-memory canonical head to advance.
+///
+/// [`Executor::prepare_finalisation`] performs every deterministic check and
+/// re-execution. [`Executor::apply_prepared_finalisation`] only installs the
+/// resulting state after confirming the executor has not moved meanwhile.
+pub struct PreparedFinalisation {
+    parent_block_hash: Hash,
+    parent_state_root: StateRoot,
+    state: BTreeMap<StateKey, StateValue>,
+    block_hash: Hash,
+}
+
 impl Executor {
+    /// Validate and re-execute a finalisation without advancing canonical
+    /// in-memory state. A durable host commits `executed.state_diff` and the
+    /// block atomically after this succeeds, then installs this value.
+    pub fn prepare_finalisation(
+        &self,
+        block: &Block,
+        executed: &ExecutedBlock,
+    ) -> Result<PreparedFinalisation, FinaliseError> {
+        let max_size = usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap_or(usize::MAX);
+        if block.encoded_len().is_none_or(|size| size > max_size) {
+            return Err(FinaliseError {
+                reason: FinaliseErrorReason::StateRootMismatch,
+            });
+        }
+        if block.parent_block_hash != self.tip_block_hash {
+            return Err(FinaliseError {
+                reason: FinaliseErrorReason::NotOnCanonicalChain,
+            });
+        }
+
+        let mut scratch = self.state.clone();
+        let (gas_used, outcomes) =
+            self.apply_block(&mut scratch, block)
+                .map_err(|_| FinaliseError {
+                    reason: FinaliseErrorReason::StateRootMismatch,
+                })?;
+        let recomputed_root = compute_root(&scratch);
+        let recomputed_diff = chain_state::diff(&self.state, &scratch);
+        if recomputed_root != executed.state_root
+            || gas_used != executed.gas_used
+            || recomputed_diff != executed.state_diff
+            || outcomes != executed.outcomes
+        {
+            return Err(FinaliseError {
+                reason: FinaliseErrorReason::StateRootMismatch,
+            });
+        }
+
+        Ok(PreparedFinalisation {
+            parent_block_hash: self.tip_block_hash,
+            parent_state_root: self.state_root(),
+            state: scratch,
+            block_hash: block.hash(),
+        })
+    }
+
+    /// Advance to a state returned by [`Self::prepare_finalisation`]. This
+    /// remains fallible so a stale prepared value can never overwrite a head
+    /// that moved before it was installed.
+    pub fn apply_prepared_finalisation(
+        &mut self,
+        prepared: PreparedFinalisation,
+    ) -> Result<(), FinaliseError> {
+        if self.tip_block_hash != prepared.parent_block_hash
+            || self.state_root() != prepared.parent_state_root
+        {
+            return Err(FinaliseError {
+                reason: FinaliseErrorReason::NotOnCanonicalChain,
+            });
+        }
+        self.state = prepared.state;
+        self.tip_block_hash = prepared.block_hash;
+        Ok(())
+    }
+
     /// The chain a [`GenesisConfig`] describes: its parameters, its
     /// allocations, and its validators registered and bonded, at its start
     /// time. This is how a real chain starts. The first block's parent is
@@ -941,43 +1019,8 @@ impl Engine for Executor {
         block: &Block,
         executed: &ExecutedBlock,
     ) -> Result<(), FinaliseError> {
-        let max_size = usize::try_from(MAX_BLOCK_SIZE_BYTES).unwrap_or(usize::MAX);
-        if block.encoded_len().is_none_or(|size| size > max_size) {
-            return Err(FinaliseError {
-                reason: FinaliseErrorReason::StateRootMismatch,
-            });
-        }
-        if block.parent_block_hash != self.tip_block_hash {
-            return Err(FinaliseError {
-                reason: FinaliseErrorReason::NotOnCanonicalChain,
-            });
-        }
-
-        let mut scratch = self.state.clone();
-        // A rejection here means `executed` doesn't correspond to a real
-        // execution of `block` on top of this executor's own state —
-        // treated the same as a root mismatch, since both mean the
-        // caller handed us something inconsistent.
-        let (gas_used, outcomes) =
-            self.apply_block(&mut scratch, block)
-                .map_err(|_| FinaliseError {
-                    reason: FinaliseErrorReason::StateRootMismatch,
-                })?;
-        let recomputed_root = compute_root(&scratch);
-        let recomputed_diff = chain_state::diff(&self.state, &scratch);
-        if recomputed_root != executed.state_root
-            || gas_used != executed.gas_used
-            || recomputed_diff != executed.state_diff
-            || outcomes != executed.outcomes
-        {
-            return Err(FinaliseError {
-                reason: FinaliseErrorReason::StateRootMismatch,
-            });
-        }
-
-        self.state = scratch;
-        self.tip_block_hash = block.hash();
-        Ok(())
+        let prepared = self.prepare_finalisation(block, executed)?;
+        self.apply_prepared_finalisation(prepared)
     }
 }
 

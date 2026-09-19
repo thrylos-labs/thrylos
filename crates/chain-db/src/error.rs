@@ -3,6 +3,7 @@
 //! on-disk corruption or a schema change, not a normal runtime path).
 
 use chain_types::codec::CodecError;
+use chain_types::BlockHeight;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbError {
@@ -15,6 +16,12 @@ pub enum DbError {
     /// kept as a real variant rather than a panic because "not
     /// expected" is not the same guarantee as "impossible".
     Decoding(String),
+    /// Block commits are append-only and contiguous. Replacing a committed
+    /// height or leaving a gap would make replay ambiguous.
+    NonSequentialCommit {
+        expected: BlockHeight,
+        actual: BlockHeight,
+    },
 }
 
 impl core::fmt::Display for DbError {
@@ -23,6 +30,10 @@ impl core::fmt::Display for DbError {
             Self::Mdbx(err) => write!(f, "mdbx error: {err}"),
             Self::Decode(err) => write!(f, "decode error: {err}"),
             Self::Decoding(msg) => write!(f, "mdbx table decode error: {msg}"),
+            Self::NonSequentialCommit { expected, actual } => write!(
+                f,
+                "non-sequential block commit: expected height {expected}, got {actual}"
+            ),
         }
     }
 }

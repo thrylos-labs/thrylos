@@ -117,6 +117,9 @@ pub enum FinaliseErrorReason {
     StateRootMismatch,
     /// `block`'s parent is not the current chain tip.
     NotOnCanonicalChain,
+    /// The durable store did not commit the block. The in-memory canonical
+    /// state must remain at its previous head when this is returned.
+    StorageUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

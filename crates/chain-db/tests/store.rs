@@ -183,3 +183,34 @@ fn a_deleted_key_can_be_written_again_later() {
         Some(StateValue::new(vec![41]))
     );
 }
+
+#[test]
+fn block_commits_are_contiguous_and_cannot_replace_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).unwrap();
+    let root = Hash::from_bytes([1u8; 32]);
+
+    let skipped = db
+        .commit_block(&block_at(2), root, &StateDiff::empty())
+        .unwrap_err();
+    assert!(matches!(
+        skipped,
+        chain_db::DbError::NonSequentialCommit {
+            expected: BlockHeight(1),
+            actual: BlockHeight(2)
+        }
+    ));
+
+    db.commit_block(&block_at(1), root, &StateDiff::empty())
+        .unwrap();
+    let replacement = db
+        .commit_block(&block_at(1), root, &StateDiff::empty())
+        .unwrap_err();
+    assert!(matches!(
+        replacement,
+        chain_db::DbError::NonSequentialCommit {
+            expected: BlockHeight(2),
+            actual: BlockHeight(1)
+        }
+    ));
+}

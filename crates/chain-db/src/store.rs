@@ -87,6 +87,23 @@ impl Db {
         let state_db = txn.create_db(Some(STATE_TABLE), DatabaseFlags::empty())?;
         let meta_db = txn.create_db(Some(META_TABLE), DatabaseFlags::empty())?;
 
+        let committed_tip: Option<Vec<u8>> = txn.get(meta_db.dbi(), TIP_HEIGHT_KEY)?;
+        let expected = match committed_tip.as_deref().and_then(height_from_bytes) {
+            Some(height) => BlockHeight(height.0.checked_add(1).ok_or(
+                DbError::NonSequentialCommit {
+                    expected: height,
+                    actual: block.height,
+                },
+            )?),
+            None => BlockHeight(1),
+        };
+        if block.height != expected {
+            return Err(DbError::NonSequentialCommit {
+                expected,
+                actual: block.height,
+            });
+        }
+
         let mut block_bytes = Vec::new();
         block.encode(&mut block_bytes);
         txn.put(
