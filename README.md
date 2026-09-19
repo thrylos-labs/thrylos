@@ -4,6 +4,53 @@ A single-client, Move-based proof-of-stake L1 in Rust, optimised for auditabilit
 
 The full technical spec, including the open decisions that still need answers before genesis, is at [docs/spec.md](docs/spec.md). Read the Requirements and Open decisions sections first — most of the parameters in this repo are defaults to be argued with, not settled decisions.
 
+## What is working today
+
+Thrylos is pre-genesis. **There is no runnable node yet**: nothing starts a network, opens a socket or serves an RPC request. What exists is the protocol's core logic, built as libraries and exercised by tests, including a simulated four-validator network in one process.
+
+### Implemented and tested
+
+| Area | What exists |
+|---|---|
+| **Types and encoding** (`chain-types`) | Canonical, strict byte encoding with round-trip and malformed-input tests; domain-separated hashing; Ed25519 accounts; BLS12-381 validator keys with proof-of-possession; the randomness beacon used to pick proposers |
+| **State** (`chain-state`) | Account model and state root; the state diff a block produces |
+| **Execution** (`chain-exec`) | Block executor around MoveVM (Mysten's `external-crates/move`, pinned by revision, not patched); transaction validity rules; fee accounting; a per-block supply-conservation check; epoch hooks; genesis configuration and the `chain-genesis` file tool |
+| **Native modules** (`chain-modules`) | Staking and delegation with share-price rewards, unbonding, double-sign slashing from evidence, fees, and parameter-only governance, all stored in chain state |
+| **Consensus** (`chain-consensus`) | Malachite's pure core integrated end to end: stake-weighted proposer selection from a randomness beacon, certificate verification, block judging before voting, a host that will not sign twice at a position, a write-ahead log with replay after a crash, and verified catch-up from peers for a node that missed a height |
+| **Storage** (`chain-db`) | MDBX block and state store with atomic per-block commits, checked by killing a process mid-write; a checksummed height log for the write-ahead log |
+| **Signer logic** (`chain-signer`) | The high-water-mark state machine that refuses to sign at or below a position it has signed |
+
+The consensus tests run four full validators, each with a real executor, against a simulated network that sends every message through the real wire encoding. They stage a silent proposer, a fast clock, a forged reveal, equivocation, a node that never receives blocks, and a restart of each node after each of the events it handles.
+
+### Libraries without a transport
+
+| Area | What exists | What is missing |
+|---|---|---|
+| **P2P** (`chain-p2p`) | The ingress pipeline (size and rate limits, then decode, then signature check), token buckets, bounded queues, decaying peer scores, eclipse-resistant peer selection | An actual network transport; peer discovery |
+| **Mempool** (`chain-mempool`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals | Cleanup after a block commits |
+
+### Not built yet
+
+* A node binary that wires these pieces together
+* Durable implementations of the host's storage (write-ahead log, commit history, signed-message log) over the file log, and a durable store for the signer's mark
+* The signer as a separate process, as the spec requires
+* JSON-RPC (`chain-rpc` is a placeholder)
+* Downtime detection, so jailed validators can actually be released
+* Snapshots, pruning and warp sync
+* Verification that gas metering bounds every execution path (the DoS fuzzing in the spec's verification plan)
+* Observer (non-validator) nodes
+* The developer workflow: local network, deploy a Move module, submit a transaction, see it finalize
+
+### Size
+
+Tier A, the code that must behave identically on every machine, is about 13,000 lines of Rust excluding tests, counting comments and blank lines. Tier B is about 1,600. The test suite is about 700 tests. These numbers are approximate and will change.
+
+### What "no unsafe, no panics" covers
+
+The lints apply to the crates in this repository. Dependencies (MoveVM, Malachite, `blst`) are upstream code held to no such rules. Tier A also has a few documented `assert!`s where a function's signature leaves no other way to say "this cannot happen."
+
+The architecture and parameters are **not final**.
+
 ## Layout
 
 Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout and trust tiers"):
