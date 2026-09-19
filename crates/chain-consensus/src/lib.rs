@@ -29,12 +29,21 @@
 //! [`host`] is the loop around the engine: it owns the engine's I/O,
 //! signing through `chain-signer` (guarded so a restart cannot sign two
 //! things at one position), execution through `chain-exec`'s `Engine`, and
-//! block distribution. `tests/network.rs` runs four of them, each with a
-//! real executor, against a simulated network.
+//! block distribution. It keeps a write-ahead log so that a restart in the
+//! middle of a height replays to the state it left, and it catches up from
+//! peers when it has missed a height — asking, and then verifying and
+//! executing everything it is told for itself. [`wire`] is the byte encoding
+//! of what hosts send each other and of what the log holds.
+//! `tests/network.rs` runs four hosts, each with a real executor, against a
+//! simulated network that carries every message through the wire encoding;
+//! it stages every kind of trouble, including a restart of each node after
+//! each of the events it handles.
 //!
-//! Not built yet: a write-ahead log, sync for a node that fell behind, the
-//! wire encoding of `host::Message`, and observer (non-validator) nodes —
-//! see the `host` module docs.
+//! The host's storage is a set of traits (`host::ports`) with in-memory
+//! implementations for tests; `chain-db`'s `HeightLog` is the durable
+//! primitive for the write-ahead log. Not built yet: the durable
+//! implementations wired to a node, and observer (non-validator) nodes — see
+//! the `host` module docs.
 
 #![forbid(unsafe_code)]
 
@@ -44,3 +53,4 @@ pub mod evidence;
 pub mod host;
 pub mod proposer;
 pub mod types;
+pub mod wire;

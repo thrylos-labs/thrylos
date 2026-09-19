@@ -14,6 +14,10 @@
 //! store afterward, not just by reasoning about MDBX's documented
 //! guarantees.
 //!
+//! [`HeightLog`] is a separate, smaller piece: a crash-safe append-only
+//! file of entries grouped by height, with the torn-write handling a
+//! write-ahead log needs, for the consensus host's log.
+//!
 //! Deliberately deferred, and not yet attempted: pruning (removing
 //! anything outside the unbonding window), the three sync modes
 //! (`docs/spec.md` requires full replay, snapshot sync, and warp sync
@@ -24,8 +28,10 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod height_log;
 pub mod schema;
 pub mod store;
 
 pub use error::DbError;
+pub use height_log::{HeightLog, LogError};
 pub use store::Db;

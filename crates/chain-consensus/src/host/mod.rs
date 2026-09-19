@@ -59,30 +59,61 @@
 //! [`messages::ProposedBlock`]: consensus votes on a hash, and the reveal
 //! that fixes the *next* seed has to reach everyone alongside the block.
 //!
+//! # Restarting: the write-ahead log
+//!
+//! The engine is a deterministic function of what it has been fed, so a
+//! host that remembers those inputs can feed them again and arrive where it
+//! was: with the value it had locked, the blocks it had built, the votes it
+//! had seen. [`ports::Wal`] is that memory. Before acting on a verified
+//! vote, proposal or certificate, a block from a peer, a timeout, a block of
+//! its own, or a decision to vote against a block, the host appends it, and
+//! it flushes before the runtime can collect anything the call produced —
+//! so nothing has left the node that a restart would not reproduce. On
+//! [`Host::start`] the entries for the height are replayed through the same
+//! code that first handled them. The signer's log makes every re-signed
+//! message the one already signed; a block built for a round is proposed
+//! again as it was; a block voted against stays voted against even if the
+//! clock has since moved on. If a log cannot be written, the host halts:
+//! one that cannot remember what it is about to do must not do it.
+//!
+//! The engine's own `Effect::WalAppend` is not used, because what has to be
+//! remembered includes what it does not know about — the blocks.
+//!
+//! # Catching up: sync
+//!
+//! A node that missed a height — it never received the block, or it lacks a
+//! proposer's reveal — is not stuck. It notices that validators are working
+//! at a later height (a verified vote or proposal past its own), and if that
+//! is still so after [`HostConfig::sync_grace_ms`] it asks one of them for
+//! what was decided from its height on ([`messages::SyncRequest`]); the
+//! answer is a run of [`messages::CommitRecord`]s. Nothing in an answer is
+//! trusted. For each block the node checks the commit certificate against
+//! the validator set it already holds, the reveal against the proposer the
+//! draw picked, and then *executes the block itself*; only then does it
+//! commit and move on. Peers are tried in turn if one does not answer. A
+//! block certified by a quorum that this node's own chain cannot accept
+//! means the node is on another chain, and it halts
+//! ([`HaltReason::CannotCommit`]) rather than guess.
+//!
+//! The runtime calls [`Host::tick`] when [`Host::next_wake_ms`] comes due;
+//! everything else is driven by messages.
+//!
 //! # What is not built
 //!
-//! - **A write-ahead log.** The engine asks for one (`Effect::WalAppend`)
-//!   so it can restore a locked value after a crash. Without it a restarted
-//!   node must not vote at the height it crashed in, and the runtime should
-//!   simply start it at the next one. Double-signing is prevented
-//!   independently, by the signer; what a missing WAL costs is *liveness
-//!   and lock memory*, not slashing.
-//! - **Sync and stall detection.** A node that never receives a block, or
-//!   whose own execution judges a block invalid, does not vote for it and
-//!   Malachite will not decide a value the host has not called valid: the
-//!   node *stalls* at that height, safely — it commits nothing it cannot
-//!   vouch for — but silently. Noticing "the network is deciding and I am
-//!   not" and fetching the missing blocks belongs with the (separate) sync
-//!   path. [`HaltReason::CannotCommit`] is the backstop for a decision that
-//!   reaches the host and then cannot be committed.
-//! - **Wire encoding.** [`Message`] is a Rust value; putting it on a
-//!   network needs a codec and the size limits `chain-p2p` enforces.
+//! - **Durable storage.** [`ports::Wal`], [`ports::CommitLog`],
+//!   [`ports::SignedLog`] and the signer's mark store are traits with
+//!   in-memory implementations for tests. A node that is to survive a crash
+//!   needs real ones, fsynced, and the write-ahead log's behaviour on a torn
+//!   final entry is part of that contract.
+//! - **A source of blocks other than validators.** A node whose peers all
+//!   fail to answer stays where it is.
 //! - **Observer nodes.** The host assumes it is one of the validators.
 //! - **Vote extensions**, which the spec does not use.
 
 pub mod messages;
 pub mod ports;
 pub mod signing;
+mod wal;
 
 #[cfg(test)]
 mod tests;
@@ -117,9 +148,16 @@ use crate::types::{
     round_as_u64, ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValidatorSet,
     ConsensusValue,
 };
+use wal::Entry;
 
-pub use messages::{Committed, HaltReason, Message, Outbox, ProposedBlock, TimerCommand};
-pub use ports::{Clock, MemorySignedLog, SignedEntry, SignedLog, TransactionSource};
+pub use messages::{
+    CommitRecord, Committed, HaltReason, Message, Outbox, ProposedBlock, SyncRequest, SyncResponse,
+    TimerCommand,
+};
+pub use ports::{
+    Clock, CommitLog, MemoryCommitLog, MemorySignedLog, MemoryStorage, MemoryWal, SignedEntry,
+    SignedLog, Storage, TransactionSource, Wal, WalError,
+};
 pub use signing::{GuardedSigner, SigningRefusal};
 
 /// The host's tunables.
@@ -143,6 +181,23 @@ pub struct HostConfig {
     /// the height being run: everything a peer can make this node hold is
     /// bounded.
     pub max_pending_per_height: usize,
+    /// **A choice.** How long a validator has to be seen working past this
+    /// node's height before it asks for what it missed. Peers a moment ahead
+    /// are the normal case at every height boundary; a node that is still
+    /// behind a second later has missed something.
+    pub sync_grace_ms: u64,
+    /// **A choice.** How long to wait for an answer before asking again,
+    /// of a different peer.
+    pub sync_retry_ms: u64,
+    /// **A choice.** The most decided blocks sent in one answer.
+    pub sync_batch: usize,
+    /// **A choice.** The most received messages and blocks written to the
+    /// write-ahead log for one height. Past it they are simply not
+    /// remembered — after a restart the node may have to be told them again
+    /// — so that a validator sending endless distinct signed votes cannot
+    /// fill the disk. This node's own blocks, its verdicts and its timeouts
+    /// are always written.
+    pub max_wal_entries: usize,
 }
 
 impl Default for HostConfig {
@@ -156,6 +211,10 @@ impl Default for HostConfig {
             max_transactions: 10_000,
             max_future_heights: 2,
             max_pending_per_height: 64,
+            sync_grace_ms: 1_000,
+            sync_retry_ms: 3_000,
+            sync_batch: 16,
+            max_wal_entries: 4096,
         }
     }
 }
@@ -177,6 +236,31 @@ struct Prop {
     fed: bool,
 }
 
+/// What the host knows about being behind.
+#[derive(Debug, Default)]
+struct Lag {
+    /// Validators seen, with a checked signature, working at a height past
+    /// this node's, and the highest each was seen at. Such a validator has
+    /// committed everything below that height, so it can answer a request.
+    ahead: BTreeMap<Address, u64>,
+    /// When the first of them was seen.
+    since_ms: Option<u64>,
+    last_request_ms: Option<u64>,
+    /// How many requests since the node last made progress, used to rotate
+    /// through the peers.
+    attempts: usize,
+}
+
+/// What became of one block from a peer's answer.
+enum Adopted {
+    Committed,
+    /// Already have it.
+    Old,
+    /// Not usable: out of order, or not proven. The rest of the answer is
+    /// dropped with it.
+    Rejected,
+}
+
 /// An effect could not be carried out; the reason is in `Env::halted`.
 #[derive(Debug)]
 struct HostError;
@@ -184,7 +268,7 @@ struct HostError;
 /// Everything but the engine's own state, so that carrying out an effect
 /// (which needs `&mut Env`) can happen while the engine (`&mut State`) is
 /// mid-step.
-struct Env<X, T, C, S: HighWaterMarkStore, L> {
+struct Env<X, T, C, S: HighWaterMarkStore, L, D> {
     config: HostConfig,
     ctx: ThrylosContext,
     me: ConsensusAddress,
@@ -192,6 +276,7 @@ struct Env<X, T, C, S: HighWaterMarkStore, L> {
     source: T,
     clock: C,
     guard: GuardedSigner<S, L>,
+    storage: D,
 
     /// The height being run, its validators (with its seed) and that seed.
     height: BlockHeight,
@@ -207,6 +292,22 @@ struct Env<X, T, C, S: HighWaterMarkStore, L> {
     props: BTreeMap<(Hash, Address), Prop>,
     announced: BTreeSet<Hash>,
 
+    /// The write-ahead log's entries for this height, as written, so that
+    /// replaying one does not write it a second time.
+    logged: BTreeSet<Vec<u8>>,
+    /// How many entries this height has in the log.
+    logged_count: usize,
+    wal_dirty: bool,
+    /// Blocks this validator built, by round, so it never builds a second
+    /// for a round it already has one for.
+    own_blocks: BTreeMap<u64, ProposedBlock>,
+    /// Blocks the log says this node judged invalid.
+    judged_invalid: BTreeSet<Hash>,
+
+    /// Set when the engine decided a block this node could not commit
+    /// itself; the height then stays open until a peer's answer closes it.
+    awaiting_sync: bool,
+    lag: Lag,
     future_blocks: BTreeMap<u64, Vec<ProposedBlock>>,
     queue: VecDeque<Input<ThrylosContext>>,
     outbox: Outbox,
@@ -216,44 +317,49 @@ struct Env<X, T, C, S: HighWaterMarkStore, L> {
 /// What a host talks to besides the chain: where transactions come from,
 /// what time it is, and the validator's key with its record of what it has
 /// signed.
-pub struct Ports<T, C, S: HighWaterMarkStore, L> {
+pub struct Ports<T, C, S: HighWaterMarkStore, L, D> {
     pub source: T,
     pub clock: C,
     pub signer: Signer<S>,
     pub log: L,
+    /// The host's own history of what was decided; see [`CommitLog`].
+    pub storage: D,
 }
 
 /// The host. See the module docs.
-pub struct Host<X, T, C, S: HighWaterMarkStore, L> {
+pub struct Host<X, T, C, S: HighWaterMarkStore, L, D> {
     consensus: State<ThrylosContext>,
     metrics: Metrics,
-    env: Env<X, T, C, S, L>,
+    env: Env<X, T, C, S, L, D>,
 }
 
-impl<X, T, C, S, L> Host<X, T, C, S, L>
+impl<X, T, C, S, L, D> Host<X, T, C, S, L, D>
 where
     X: Engine + ChainView,
     T: TransactionSource,
     C: Clock,
     S: HighWaterMarkStore,
     L: SignedLog,
+    D: Storage,
 {
     /// A host for the validator `me` on the chain `exec`, at the chain's
-    /// current head. `seed` is the beacon seed for the next height — for a
-    /// new chain `chain_types::beacon::genesis_seed(genesis_hash)`, and for
-    /// a restarted node the `Committed::seed_after` it saved.
+    /// current head. `genesis_seed` is `chain_types::beacon::genesis_seed` of
+    /// the genesis hash; past genesis the seed for the next height is the
+    /// one the [`CommitLog`] recorded when it committed the head, so a
+    /// restart finds its place there.
     pub fn new(
         config: HostConfig,
         me: Address,
         exec: X,
-        ports: Ports<T, C, S, L>,
-        seed: Hash,
+        ports: Ports<T, C, S, L, D>,
+        genesis_seed: Hash,
     ) -> Result<Self, HaltReason> {
         let Ports {
             source,
             clock,
             signer,
             log,
+            storage,
         } = ports;
         let head = exec.head().map_err(|_| HaltReason::ChainUnreadable)?;
         let infos = exec
@@ -263,6 +369,13 @@ where
             return Err(HaltReason::NoValidators);
         }
         let height = BlockHeight(head.height.0.saturating_add(1));
+        let seed = if head.height.0 == 0 {
+            genesis_seed
+        } else {
+            storage
+                .seed_after(head.height)
+                .ok_or(HaltReason::SeedUnknown)?
+        };
         let validators = ConsensusValidatorSet::from_infos(&infos, seed);
         let me = ConsensusAddress(me);
 
@@ -296,6 +409,7 @@ where
                 source,
                 clock,
                 guard: GuardedSigner::new(signer, log),
+                storage,
                 height,
                 validators,
                 seed,
@@ -305,6 +419,13 @@ where
                 verdicts: BTreeMap::new(),
                 props: BTreeMap::new(),
                 announced: BTreeSet::new(),
+                logged: BTreeSet::new(),
+                logged_count: 0,
+                wal_dirty: false,
+                own_blocks: BTreeMap::new(),
+                judged_invalid: BTreeSet::new(),
+                awaiting_sync: false,
+                lag: Lag::default(),
                 future_blocks: BTreeMap::new(),
                 queue: VecDeque::new(),
                 outbox: Outbox::default(),
@@ -314,7 +435,39 @@ where
     }
 
     /// Begins consensus at the height after the chain's head.
+    ///
+    /// If the write-ahead log holds entries for that height, this is a
+    /// restart in the middle of it: they are replayed, in order, through the
+    /// same code that handled them the first time, so the engine arrives
+    /// where it was — with the value it had locked, the blocks it had
+    /// built, the votes it had seen — and anything it signs on the way is
+    /// what it signed before.
     pub fn start(&mut self) {
+        if self.env.halted.is_some() {
+            return;
+        }
+        let entries = match self.env.storage.start_height(self.env.height) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.env.halt(HaltReason::WalFailed(error.0));
+                return;
+            }
+        };
+        let mut replay = Vec::with_capacity(entries.len());
+        for bytes in entries {
+            match Entry::decode(&bytes) {
+                Ok(entry) => {
+                    self.env.remember(&entry, bytes);
+                    replay.push(entry);
+                }
+                Err(_) => {
+                    self.env
+                        .halt(HaltReason::WalFailed("an entry cannot be read".into()));
+                    return;
+                }
+            }
+        }
+
         let height = self.env.height;
         let set = self.env.validators.clone();
         self.env.queue.push_back(Input::StartHeight(
@@ -325,6 +478,17 @@ where
             VoteExtensionPolicy::default(),
         ));
         self.pump();
+        for entry in replay {
+            match entry {
+                Entry::Message(message) => self.route(message),
+                Entry::Timeout(timeout) => {
+                    self.env.queue.push_back(Input::TimeoutElapsed(timeout));
+                }
+                Entry::OwnBlock { .. } | Entry::Invalid(_) => {}
+            }
+            self.pump();
+        }
+        self.env.flush_wal();
     }
 
     /// A message from a peer.
@@ -332,14 +496,24 @@ where
         if self.env.halted.is_some() {
             return;
         }
+        self.route(message);
+        self.pump();
+        self.env.maybe_request_sync();
+        self.env.flush_wal();
+    }
+
+    fn route(&mut self, message: Message) {
         match message {
             Message::Consensus(SignedConsensusMsg::Vote(vote)) => {
+                self.env.note_ahead_vote(&vote);
                 self.input_for_height(vote.message.height, Input::Vote(vote));
             }
             Message::Consensus(SignedConsensusMsg::Proposal(proposal)) => {
+                self.env.note_ahead_proposal(&proposal);
                 self.input_for_height(proposal.message.height, Input::Proposal(proposal));
             }
             Message::Liveness(LivenessMsg::Vote(vote)) => {
+                self.env.note_ahead_vote(&vote);
                 self.input_for_height(vote.message.height, Input::Vote(vote));
             }
             Message::Liveness(LivenessMsg::PolkaCertificate(certificate)) => {
@@ -349,8 +523,35 @@ where
                 self.input_for_height(certificate.height, Input::RoundCertificate(certificate));
             }
             Message::Block(block) => self.env.receive_block(block),
+            Message::SyncRequest(request) => self.env.serve(&request),
+            Message::SyncResponse(response) => {
+                if self.env.adopt(response) && self.env.halted.is_none() {
+                    // The height the engine was stuck at is over; it
+                    // restarts at the new one, cancelling its timers.
+                    self.env.start_next_height();
+                }
+            }
         }
-        self.pump();
+    }
+
+    /// Gives the host a chance to act on the passage of time: asking a peer
+    /// for what it missed, once it has been behind long enough. The runtime
+    /// should call it whenever [`Self::next_wake_ms`] comes due, and it is
+    /// harmless to call at any other time.
+    pub fn tick(&mut self) {
+        if self.env.halted.is_some() {
+            return;
+        }
+        self.env.maybe_request_sync();
+    }
+
+    /// The time, on the host's clock, at which [`Self::tick`] next has
+    /// something to do; `None` when the node is not known to be behind.
+    pub fn next_wake_ms(&self) -> Option<u64> {
+        if self.env.halted.is_some() {
+            return None;
+        }
+        self.env.next_sync_action_ms()
     }
 
     /// A timer the host asked for has fired.
@@ -358,8 +559,15 @@ where
         if self.env.halted.is_some() {
             return;
         }
+        // Written even if identical to an earlier one: a timer can fire
+        // again, and it is the sequence that is replayed.
+        if self.env.log_timeout(timeout).is_err() {
+            return;
+        }
         self.env.queue.push_back(Input::TimeoutElapsed(timeout));
         self.pump();
+        self.env.maybe_request_sync();
+        self.env.flush_wal();
     }
 
     /// What the host wants done, collected since the last call.
@@ -370,6 +578,13 @@ where
     /// The chain the host is driving.
     pub const fn chain(&self) -> &X {
         &self.env.exec
+    }
+
+    /// Gives the chain back, for a runtime that is tearing this host down —
+    /// after a crash it is the chain that is durable, and the next host is
+    /// built on it.
+    pub fn into_chain(self) -> X {
+        self.env.exec
     }
 
     /// Why the host stopped, if it has.
@@ -419,19 +634,85 @@ where
     }
 }
 
-impl<X, T, C, S, L> Env<X, T, C, S, L>
+impl<X, T, C, S, L, D> Env<X, T, C, S, L, D>
 where
     X: Engine + ChainView,
     T: TransactionSource,
     C: Clock,
     S: HighWaterMarkStore,
     L: SignedLog,
+    D: Storage,
 {
     fn halt(&mut self, reason: HaltReason) -> HostError {
         if self.halted.is_none() {
             self.halted = Some(reason);
         }
         HostError
+    }
+
+    // ---- the write-ahead log -----------------------------------------------------
+
+    /// Notes that `entry`, in the form `bytes`, is already in the log.
+    fn remember(&mut self, entry: &Entry, bytes: Vec<u8>) {
+        self.logged_count = self.logged_count.saturating_add(1);
+        match entry {
+            Entry::OwnBlock { round, proposed } => {
+                self.own_blocks
+                    .insert(round_as_u64(*round), proposed.clone());
+            }
+            Entry::Invalid(id) => {
+                self.judged_invalid.insert(*id);
+            }
+            Entry::Message(_) | Entry::Timeout(_) => {}
+        }
+        if !matches!(entry, Entry::Timeout(_)) {
+            self.logged.insert(bytes);
+        }
+    }
+
+    /// Writes `entry`, unless it is already there. A `bounded` entry — one a
+    /// peer can cause — is not written once the height has the configured
+    /// number.
+    fn log(&mut self, entry: &Entry, bounded: bool) -> Result<(), HostError> {
+        let bytes = entry.encode();
+        if self.logged.contains(&bytes) {
+            return Ok(());
+        }
+        if bounded && self.logged_count >= self.config.max_wal_entries {
+            return Ok(());
+        }
+        if let Err(error) = self.storage.append(self.height, &bytes) {
+            return Err(self.halt(HaltReason::WalFailed(error.0)));
+        }
+        self.wal_dirty = true;
+        self.remember(entry, bytes);
+        Ok(())
+    }
+
+    fn log_timeout(&mut self, timeout: Timeout) -> Result<(), HostError> {
+        let bytes = Entry::Timeout(timeout).encode();
+        if let Err(error) = self.storage.append(self.height, &bytes) {
+            return Err(self.halt(HaltReason::WalFailed(error.0)));
+        }
+        self.logged_count = self.logged_count.saturating_add(1);
+        self.wal_dirty = true;
+        Ok(())
+    }
+
+    /// Makes what was logged survive a crash before the runtime can take
+    /// anything this call produced; if that fails, nothing is released.
+    fn flush_wal(&mut self) {
+        if !self.wal_dirty {
+            return;
+        }
+        self.wal_dirty = false;
+        if let Err(error) = self.storage.flush() {
+            self.halt(HaltReason::WalFailed(error.0));
+        }
+        if self.halted.is_some() {
+            self.outbox.messages.clear();
+            self.outbox.directed.clear();
+        }
     }
 
     fn handle_effect(
@@ -519,7 +800,8 @@ where
                 r.resume_with(SignedProposal::new(proposal, signature))
             }
             Effect::VerifySignature(signed, public_key, r) => {
-                r.resume_with(self.verify_signature(&signed, &public_key))
+                let valid = self.verify_signature(&signed, &public_key)?;
+                r.resume_with(valid)
             }
             Effect::VerifyCommitCertificate(certificate, set, params, r) => {
                 r.resume_with(verify_commit_certificate(&certificate, &set, params))
@@ -531,12 +813,24 @@ where
                     params,
                 )),
             Effect::VerifyPolkaCertificate(certificate, set, params, r) => {
-                r.resume_with(verify_polka_certificate(&certificate, &set, params))
+                let result = verify_polka_certificate(&certificate, &set, params);
+                if result.is_ok() && certificate.height.0 == self.height {
+                    let message = Message::Liveness(LivenessMsg::PolkaCertificate(certificate));
+                    self.log(&Entry::Message(message), true)?;
+                }
+                r.resume_with(result)
             }
             Effect::VerifyRoundCertificate(certificate, set, params, r) => {
-                r.resume_with(verify_round_certificate(&certificate, &set, params))
+                let result = verify_round_certificate(&certificate, &set, params);
+                if result.is_ok() && certificate.height.0 == self.height {
+                    let message = Message::Liveness(LivenessMsg::SkipRoundCertificate(certificate));
+                    self.log(&Entry::Message(message), true)?;
+                }
+                r.resume_with(result)
             }
-            // See the module docs: no write-ahead log yet.
+            // The engine's own write-ahead entries are not used: the host
+            // keeps its own (see the module docs), which also holds what the
+            // engine does not know about — the blocks.
             Effect::WalAppend(_, _, r) => r.resume_with(()),
             Effect::ExtendVote(_, _, _, r) => r.resume_with(None),
             Effect::VerifyVoteExtension(_, _, _, _, _, _, r) => r.resume_with(Ok(())),
@@ -576,23 +870,41 @@ where
         &mut self,
         signed: &SignedMessage<ThrylosContext, ConsensusMsg<ThrylosContext>>,
         public_key: &chain_types::BlsPublicKey,
-    ) -> bool {
+    ) -> Result<bool, HostError> {
         let bytes = match &signed.message {
             ConsensusMsg::Vote(vote) => encoded(vote),
             ConsensusMsg::Proposal(proposal) => encoded(proposal),
         };
         let valid = verify_aggregate(&[public_key], &bytes, DST_VOTE, &signed.signature).is_ok();
 
+        if !valid {
+            return Ok(false);
+        }
+        // Written before anything is done about it.
+        let message = match &signed.message {
+            ConsensusMsg::Vote(vote) if vote.height.0 == self.height => Some(
+                SignedConsensusMsg::Vote(SignedVote::new(vote.clone(), signed.signature)),
+            ),
+            ConsensusMsg::Proposal(proposal) if proposal.height.0 == self.height => {
+                Some(SignedConsensusMsg::Proposal(SignedProposal::new(
+                    proposal.clone(),
+                    signed.signature,
+                )))
+            }
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.log(&Entry::Message(Message::Consensus(message)), true)?;
+        }
+
         // A proposal that verifies, from the validator the draw picked for
         // its round, is one whose block is worth executing. Anything else
         // is left for the engine to reject without this node spending work
         // on it.
-        if valid {
-            if let ConsensusMsg::Proposal(proposal) = &signed.message {
-                self.note_proposal(proposal);
-            }
+        if let ConsensusMsg::Proposal(proposal) = &signed.message {
+            self.note_proposal(proposal);
         }
-        valid
+        Ok(true)
     }
 
     fn note_proposal(&mut self, proposal: &ConsensusProposal) {
@@ -654,6 +966,13 @@ where
         {
             return;
         }
+        // Written before it is used.
+        if self
+            .log(&Entry::Message(Message::Block(pb.clone())), true)
+            .is_err()
+        {
+            return;
+        }
         self.reveals.entry(pb.proposer).or_insert(pb.reveal);
         self.blocks.entry(id).or_insert(pb.block);
         self.feed_ready();
@@ -699,10 +1018,22 @@ where
         if let Some(verdict) = self.verdicts.get(&id) {
             return Ok(verdict.clone());
         }
-        let verdict = match self.judge(id) {
-            Ok(verdict) => verdict,
-            Err(reason) => return Err(self.halt(reason)),
+        // A block this node voted against stays voted against: after a
+        // restart a later clock must not be allowed to change its mind.
+        let verdict = if self.judged_invalid.contains(&id) {
+            Verdict {
+                validity: Validity::Invalid,
+                executed: None,
+            }
+        } else {
+            match self.judge(id) {
+                Ok(verdict) => verdict,
+                Err(reason) => return Err(self.halt(reason)),
+            }
         };
+        if verdict.validity == Validity::Invalid {
+            self.log(&Entry::Invalid(id), false)?;
+        }
         self.verdicts.insert(id, verdict.clone());
         Ok(verdict)
     }
@@ -739,6 +1070,23 @@ where
     /// Builds this validator's block for `height` and hands it to the
     /// engine to propose.
     fn build_value(&mut self, height: ConsensusHeight, round: Round) -> Result<(), HostError> {
+        // A block already built for this round — before a restart, which is
+        // replaying it — is proposed again as it was: proposing a different
+        // one would be signing two proposals for the round.
+        if let Some(proposed) = self.own_blocks.get(&round_as_u64(round)).cloned() {
+            let id = proposed.id();
+            self.blocks.entry(id).or_insert(proposed.block);
+            self.reveals.entry(self.me.0).or_insert(proposed.reveal);
+            self.verdict(id)?;
+            self.announce_own(id)?;
+            self.queue
+                .push_back(Input::Propose(LocallyProposedValue::new(
+                    height,
+                    round,
+                    ConsensusValue(id),
+                )));
+            return Ok(());
+        }
         let head = self
             .exec
             .head()
@@ -793,6 +1141,20 @@ where
         };
 
         let id = block.hash();
+        let reveal = self.my_reveal()?;
+        // Written before the engine hears of it, so before any proposal of
+        // it is signed.
+        self.log(
+            &Entry::OwnBlock {
+                round,
+                proposed: ProposedBlock {
+                    proposer: self.me.0,
+                    block: block.clone(),
+                    reveal,
+                },
+            },
+            false,
+        )?;
         self.blocks.insert(id, block);
         self.verdicts.insert(
             id,
@@ -853,7 +1215,6 @@ where
 
     /// Consensus has decided a block: commit it to the chain.
     fn decide(&mut self, certificate: &CommitCertificate<ThrylosContext>) -> Result<(), HostError> {
-        let height = certificate.height.0;
         let id = certificate.value_id;
         let proposer = self
             .ctx
@@ -861,29 +1222,79 @@ where
             .address()
             .0;
 
-        let cannot_commit = HaltReason::CannotCommit { height };
+        // The engine decided this, but this node may not hold everything it
+        // needs to commit it: a re-proposed block whose new proposer's reveal
+        // never reached it, say. That is not a reason to stop. The decision
+        // is certified and any peer that signed it can supply the block with
+        // its proof, which this node then checks and executes for itself; if
+        // that is where it disagrees, it halts there.
         let (Some(block), Some(reveal), Some(verdict)) = (
             self.blocks.get(&id).cloned(),
             self.reveals.get(&proposer).copied(),
             self.verdicts.get(&id).cloned(),
         ) else {
-            return Err(self.halt(cannot_commit));
+            self.defer_to_sync(certificate);
+            return Ok(());
         };
         let Some(executed) = verdict.executed else {
-            return Err(self.halt(cannot_commit));
+            self.defer_to_sync(certificate);
+            return Ok(());
         };
 
+        self.commit(block, executed, certificate.clone(), reveal)
+    }
+
+    /// The engine decided a block this node cannot commit from what it holds:
+    /// stays at the height and asks the validators that signed the decision,
+    /// at once, for the block and its proof.
+    fn defer_to_sync(&mut self, certificate: &CommitCertificate<ThrylosContext>) {
+        self.awaiting_sync = true;
+        let seen = certificate.height.0 .0.saturating_add(1);
+        for entry in &certificate.commit_signatures {
+            if entry.address != self.me {
+                self.lag.ahead.insert(entry.address.0, seen);
+            }
+        }
+        let now = self
+            .clock
+            .now_ms()
+            .saturating_sub(self.config.sync_grace_ms);
+        self.lag.since_ms = Some(self.lag.since_ms.map_or(now, |since| since.min(now)));
+    }
+
+    /// Makes a block the chain's next: records it (with its proof, for
+    /// peers and for a restart), finalises it, and remembers the seed it
+    /// leads to. The host must not have committed anything else since
+    /// `executed` was produced.
+    fn commit(
+        &mut self,
+        block: Block,
+        executed: ExecutedBlock,
+        certificate: CommitCertificate<ThrylosContext>,
+        reveal: BlsSignature,
+    ) -> Result<(), HostError> {
+        let height = block.height;
+        let seed_after = next_seed(&self.seed, &reveal);
+        // Before finalising: a record without a block is harmless, a block
+        // without its record would leave a restarted node without a seed.
+        self.storage.record(
+            &CommitRecord {
+                block: block.clone(),
+                certificate: certificate.clone(),
+                reveal,
+            },
+            seed_after,
+        );
         if self.exec.finalise_block(&block, &executed).is_err() {
             return Err(self.halt(HaltReason::FinaliseFailed { height }));
         }
         self.source.committed(&block);
-        let seed_after = next_seed(&self.seed, &reveal);
         self.seed_after = Some(seed_after);
         self.outbox.committed.push(Committed {
             height,
             block,
             executed,
-            certificate: certificate.clone(),
+            certificate,
             reveal,
             seed_after,
         });
@@ -900,6 +1311,20 @@ where
             .evidence
             .extend(duplicate_vote_evidence(evidence));
 
+        if self.awaiting_sync {
+            // The block was not committed, so there is no next height yet.
+            return Ok(());
+        }
+        self.advance_state()?;
+        self.start_next_height();
+        Ok(())
+    }
+
+    /// Moves to the height after the chain's head, with the validators it
+    /// reports and the seed the last commit led to. Does not start the
+    /// engine on it: a run of heights adopted from a peer only starts the
+    /// last one.
+    fn advance_state(&mut self) -> Result<(), HostError> {
         let head = self
             .exec
             .head()
@@ -923,9 +1348,27 @@ where
         self.props.clear();
         self.announced.clear();
         self.future_blocks.retain(|height, _| *height >= next.0);
+        self.awaiting_sync = false;
+        self.logged.clear();
+        self.logged_count = 0;
+        self.own_blocks.clear();
+        self.judged_invalid.clear();
+        // Progress: whatever was asked for is answered, and any further
+        // request can go at once.
+        self.lag.last_request_ms = None;
+        self.lag.attempts = 0;
+        Ok(())
+    }
 
+    /// Starts the engine on the height `advance_state` moved to.
+    fn start_next_height(&mut self) {
+        // The log forgets the heights before this one.
+        if let Err(error) = self.storage.start_height(self.height) {
+            self.halt(HaltReason::WalFailed(error.0));
+            return;
+        }
         self.queue.push_back(Input::StartHeight(
-            ConsensusHeight(next),
+            ConsensusHeight(self.height),
             self.validators.clone(),
             false,
             None,
@@ -933,10 +1376,232 @@ where
         ));
         // Blocks that peers sent while this node was still on the last
         // height, now checked against this height's seed.
-        for pb in self.future_blocks.remove(&next.0).unwrap_or_default() {
+        for pb in self
+            .future_blocks
+            .remove(&self.height.0)
+            .unwrap_or_default()
+        {
             self.accept_block(pb);
         }
-        Ok(())
+    }
+
+    // ---- catching up -----------------------------------------------------------
+
+    fn note_ahead_vote(&mut self, vote: &SignedVote<ThrylosContext>) {
+        self.note_ahead(
+            vote.message.height,
+            vote.message.validator_address,
+            &vote.message,
+            &vote.signature,
+        );
+    }
+
+    fn note_ahead_proposal(&mut self, proposal: &SignedProposal<ThrylosContext>) {
+        self.note_ahead(
+            proposal.message.height,
+            proposal.message.validator_address,
+            &proposal.message,
+            &proposal.signature,
+        );
+    }
+
+    /// Records that `signer` was seen at `height` — if that is past this
+    /// node's and the signature is genuine. An honest validator only works
+    /// at a height once it has committed the one before, so this is what
+    /// tells a node that the network has moved on without it. The check
+    /// costs one signature verification, and only for a message that raises
+    /// what that validator has been seen at.
+    fn note_ahead<M: Encode>(
+        &mut self,
+        height: ConsensusHeight,
+        signer: ConsensusAddress,
+        message: &M,
+        signature: &BlsSignature,
+    ) {
+        if height.0 <= self.height {
+            return;
+        }
+        if self
+            .lag
+            .ahead
+            .get(&signer.0)
+            .is_some_and(|seen| *seen >= height.0 .0)
+        {
+            return;
+        }
+        let Some(validator) = self.validators.get_by_address(&signer) else {
+            return;
+        };
+        let genuine = verify_aggregate(
+            &[validator.public_key()],
+            &encoded(message),
+            DST_VOTE,
+            signature,
+        )
+        .is_ok();
+        if !genuine {
+            return;
+        }
+        self.lag.ahead.insert(signer.0, height.0 .0);
+        if self.lag.since_ms.is_none() {
+            self.lag.since_ms = Some(self.clock.now_ms());
+        }
+    }
+
+    /// Forgets peers that this node has caught up with.
+    fn prune_ahead(&mut self) {
+        let height = self.height.0;
+        self.lag.ahead.retain(|_, seen| *seen > height);
+        if self.lag.ahead.is_empty() {
+            self.lag.since_ms = None;
+        }
+    }
+
+    /// When [`Self::maybe_request_sync`] will next act, if it will.
+    fn next_sync_action_ms(&self) -> Option<u64> {
+        if !self.lag.ahead.values().any(|seen| *seen > self.height.0) {
+            return None;
+        }
+        let due = self.lag.since_ms?.saturating_add(self.config.sync_grace_ms);
+        Some(match self.lag.last_request_ms {
+            Some(last) => due.max(last.saturating_add(self.config.sync_retry_ms)),
+            None => due,
+        })
+    }
+
+    /// Asks a peer that is ahead for what this node missed, if it has been
+    /// behind long enough and has not just asked. Successive requests go to
+    /// successive peers, so one that will not answer cannot hold it up.
+    fn maybe_request_sync(&mut self) {
+        self.prune_ahead();
+        let Some(due) = self.next_sync_action_ms() else {
+            return;
+        };
+        if self.clock.now_ms() < due {
+            return;
+        }
+        let peers: Vec<Address> = self.lag.ahead.keys().copied().collect();
+        let Some(index) = self.lag.attempts.checked_rem(peers.len()) else {
+            return;
+        };
+        let Some(peer) = peers.get(index).copied() else {
+            return;
+        };
+        self.outbox.directed.push((
+            peer,
+            Message::SyncRequest(SyncRequest {
+                requester: self.me.0,
+                from: self.height,
+            }),
+        ));
+        self.lag.last_request_ms = Some(self.clock.now_ms());
+        self.lag.attempts = self.lag.attempts.saturating_add(1);
+    }
+
+    /// Answers a request from a validator with what was decided from the
+    /// height it is at.
+    fn serve(&mut self, request: &SyncRequest) {
+        if self
+            .validators
+            .get_by_address(&ConsensusAddress(request.requester))
+            .is_none()
+        {
+            return;
+        }
+        let commits = self.storage.range(request.from, self.config.sync_batch);
+        if commits.is_empty() {
+            return;
+        }
+        self.outbox.directed.push((
+            request.requester,
+            Message::SyncResponse(SyncResponse {
+                requester: request.requester,
+                commits,
+            }),
+        ));
+    }
+
+    /// Adopts, one after another, the blocks in a peer's answer — each only
+    /// after checking for itself that the network decided it. Returns whether
+    /// the chain moved.
+    fn adopt(&mut self, response: SyncResponse) -> bool {
+        if response.requester != self.me.0 {
+            return false;
+        }
+        let mut moved = false;
+        for record in response.commits {
+            match self.adopt_one(record) {
+                Adopted::Committed => moved = true,
+                Adopted::Old => {}
+                Adopted::Rejected => break,
+            }
+            if self.halted.is_some() {
+                break;
+            }
+        }
+        moved
+    }
+
+    fn adopt_one(&mut self, record: CommitRecord) -> Adopted {
+        let CommitRecord {
+            block,
+            certificate,
+            reveal,
+        } = record;
+        if block.height < self.height {
+            return Adopted::Old;
+        }
+        let id = block.hash();
+        if block.height > self.height
+            || certificate.height.0 != block.height
+            || certificate.value_id != id
+        {
+            return Adopted::Rejected;
+        }
+        // A quorum of this height's validators precommitted exactly this
+        // block...
+        if verify_commit_certificate(&certificate, &self.validators, self.config.threshold).is_err()
+        {
+            return Adopted::Rejected;
+        }
+        // ...and the reveal is the one the proposer the draw picked for the
+        // deciding round made, which fixes the next seed.
+        let proposer = self
+            .ctx
+            .select_proposer(&self.validators, certificate.height, certificate.round)
+            .address();
+        let Some(proposer) = self.validators.get_by_address(proposer) else {
+            return Adopted::Rejected;
+        };
+        if verify_reveal(proposer.public_key(), self.height, &self.seed, &reveal).is_err() {
+            return Adopted::Rejected;
+        }
+
+        // The network decided it. What follows is this node's own chain
+        // agreeing or not, and if not it cannot go on.
+        let cannot_commit = HaltReason::CannotCommit {
+            height: block.height,
+        };
+        let Ok(head) = self.exec.head() else {
+            self.halt(HaltReason::ChainUnreadable);
+            return Adopted::Rejected;
+        };
+        if block.parent_block_hash != head.block_hash {
+            self.halt(cannot_commit);
+            return Adopted::Rejected;
+        }
+        let Ok(executed) = self.exec.execute_block(head.state_root, &block) else {
+            self.halt(cannot_commit);
+            return Adopted::Rejected;
+        };
+        if self
+            .commit(block, executed, certificate, reveal)
+            .and_then(|()| self.advance_state())
+            .is_err()
+        {
+            return Adopted::Rejected;
+        }
+        Adopted::Committed
     }
 }
 

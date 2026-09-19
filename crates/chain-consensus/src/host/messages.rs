@@ -32,6 +32,38 @@ impl ProposedBlock {
     }
 }
 
+/// A decided block with the proof that it was decided: everything a node
+/// that missed the height needs to adopt it without having watched
+/// consensus. Nothing in it is taken on trust — the receiver checks the
+/// certificate against the validator set it already knows, the reveal
+/// against the proposer the draw picked, and executes the block itself.
+#[derive(Debug, Clone)]
+pub struct CommitRecord {
+    pub block: Block,
+    /// The quorum of precommits that decided `block`.
+    pub certificate: CommitCertificate<ThrylosContext>,
+    /// The proposer's reveal, which the next height's seed is built from.
+    pub reveal: BlsSignature,
+}
+
+/// "I am at `from`; send me what was decided from there on."
+///
+/// Unauthenticated, and it need not be: the reply is bounded by
+/// `HostConfig::sync_batch` and is only ever addressed to a validator, and
+/// what a reply contains is checked by whoever receives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncRequest {
+    pub requester: Address,
+    pub from: BlockHeight,
+}
+
+/// Consecutive decided blocks, oldest first, for `requester`.
+#[derive(Debug, Clone)]
+pub struct SyncResponse {
+    pub requester: Address,
+    pub commits: Vec<CommitRecord>,
+}
+
 /// A message between hosts.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -41,6 +73,11 @@ pub enum Message {
     Liveness(LivenessMsg<ThrylosContext>),
     /// A proposed block's contents.
     Block(ProposedBlock),
+    /// A node that has fallen behind asking a peer for what it missed. Sent
+    /// to one peer (see [`Outbox::directed`]).
+    SyncRequest(SyncRequest),
+    /// The answer, sent to the requester alone.
+    SyncResponse(SyncResponse),
 }
 
 /// A timer the runtime should keep for the host. When one fires it calls
@@ -64,9 +101,20 @@ pub struct Committed {
     pub certificate: CommitCertificate<ThrylosContext>,
     /// The proposer's reveal, which the next height's seed is built from.
     pub reveal: BlsSignature,
-    /// The seed for the *next* height: persist it, since a restarted node
-    /// cannot rederive it from state (`Host::new` takes it as an argument).
+    /// The seed for the *next* height. The host also keeps it in its
+    /// [`crate::host::CommitLog`], which is where a restart finds it.
     pub seed_after: Hash,
+}
+
+impl Committed {
+    /// The part of this that a peer can be sent and can check.
+    pub fn record(&self) -> CommitRecord {
+        CommitRecord {
+            block: self.block.clone(),
+            certificate: self.certificate.clone(),
+            reveal: self.reveal,
+        }
+    }
 }
 
 /// Everything the host wants done, collected as it runs. The runtime
@@ -75,6 +123,8 @@ pub struct Committed {
 pub struct Outbox {
     /// To send to every peer.
     pub messages: Vec<Message>,
+    /// To send to one validator only, named by its address.
+    pub directed: Vec<(Address, Message)>,
     pub timers: Vec<TimerCommand>,
     /// Blocks committed, in order.
     pub committed: Vec<Committed>,
@@ -105,6 +155,12 @@ pub enum HaltReason {
     CannotCommit { height: BlockHeight },
     /// The chain refused a block this node itself had executed.
     FinaliseFailed { height: BlockHeight },
+    /// The write-ahead log could not be written, flushed or read. A host that
+    /// cannot remember what it is about to do must not do it.
+    WalFailed(String),
+    /// The chain is past genesis but the host has no record of the seed for
+    /// the height after its head, so it cannot tell who proposes.
+    SeedUnknown,
     /// The consensus engine reported an error it cannot continue past.
     Engine(String),
 }
