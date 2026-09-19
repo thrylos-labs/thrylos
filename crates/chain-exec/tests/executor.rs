@@ -89,13 +89,38 @@ fn signed_transaction_priced(
     declared_inputs: Vec<Address>,
     call: MoveCall,
 ) -> Transaction {
+    signed_transaction_expiring(
+        seed,
+        chain_id,
+        sequence_number,
+        1_000,
+        gas_limit,
+        max_fee_per_gas,
+        declared_inputs,
+        call,
+    )
+}
+
+/// Like [`signed_transaction_priced`], with the expiry height under the
+/// caller's control too.
+#[allow(clippy::too_many_arguments)]
+fn signed_transaction_expiring(
+    seed: u8,
+    chain_id: u64,
+    sequence_number: u64,
+    expiry: u64,
+    gas_limit: u64,
+    max_fee_per_gas: u64,
+    declared_inputs: Vec<Address>,
+    call: MoveCall,
+) -> Transaction {
     let signing_key = SigningKey::from_bytes(&[seed; 32]);
     let sender = PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes()).unwrap();
     let body = TransactionBody {
         chain_id: ChainId(chain_id),
         sender,
         sequence_number: SequenceNumber(sequence_number),
-        expiry: BlockHeight(1_000),
+        expiry: BlockHeight(expiry),
         gas_limit: GasAmount(gas_limit),
         max_fee_per_gas: GasPrice(max_fee_per_gas),
         declared_inputs,
@@ -110,15 +135,31 @@ fn signed_transaction_priced(
     }
 }
 
+/// The first block's timestamp in these tests, and the step between blocks.
+const FIRST_TIMESTAMP: u64 = 1_700_000_000_000;
+const BLOCK_INTERVAL_MS: u64 = 1_000;
+
+/// Height and timestamp for the block after the executor's current head:
+/// one higher, and one interval later.
+fn next_height_and_timestamp(executor: &Executor) -> (BlockHeight, u64) {
+    let height = BlockHeight(executor.head_height().unwrap().saturating_add(1));
+    let timestamp = match executor.head_timestamp_millis().unwrap() {
+        0 => FIRST_TIMESTAMP,
+        previous => previous.saturating_add(BLOCK_INTERVAL_MS),
+    };
+    (height, timestamp)
+}
+
 /// Proposes, executes and finalises `transactions` as the next block on
 /// top of the executor's current tip, returning what execution produced.
 fn execute_and_finalise(executor: &mut Executor, transactions: Vec<Transaction>) -> ExecutedBlock {
     let parent_root = executor.state_root();
+    let (height, timestamp) = next_height_and_timestamp(executor);
     let block = executor.propose_block(
         executor.tip_block_hash(),
         parent_root,
-        BlockHeight(1),
-        1_700_000_000_000,
+        height,
+        timestamp,
         transactions,
         default_limits(),
     );
@@ -324,12 +365,13 @@ fn bump_mutates_the_counter_object_and_the_write_is_readable_back() {
         default_limits(),
     );
     let executed = executor.execute_block(genesis_root, &block).unwrap();
-    // Two keys changed: the counter object's bumped value, and the
-    // sender's account (gas debited, sequence number advanced). The
+    // Three keys changed: the counter object's bumped value, the
+    // sender's account (gas debited, sequence number advanced), and the
+    // chain head (the block's own height and timestamp). The
     // diff is what `chain-db` would persist instead of the whole
     // state, so it has to reflect the real writes, not the genesis
     // state's other untouched keys.
-    assert_eq!(executed.state_diff.len(), 2);
+    assert_eq!(executed.state_diff.len(), 3);
     executor.finalise_block(&block, &executed).unwrap();
 
     assert_eq!(executor.read_counter(), Some(5));
@@ -534,8 +576,9 @@ fn an_aborted_transactions_diff_is_only_the_senders_account() {
     let executed = execute_and_finalise(&mut executor, vec![tx]);
     assert_eq!(
         executed.state_diff.len(),
-        1,
-        "gas and sequence number are the only effects of an abort"
+        2,
+        "the sender's gas and sequence number, and the chain head every block writes: \
+         the only effects of an abort"
     );
 }
 
@@ -867,8 +910,8 @@ fn the_base_fee_moves_show_up_in_the_state_diff() {
         .unwrap();
 
     let executed = execute_and_finalise(&mut executor, vec![filler]);
-    // calculator result + the sender's account + the base fee.
-    assert_eq!(executed.state_diff.len(), 3);
+    // calculator result + the sender's account + the base fee + the head.
+    assert_eq!(executed.state_diff.len(), 4);
 }
 
 #[test]
@@ -907,4 +950,300 @@ fn a_block_exactly_at_the_gas_limit_is_accepted() {
         .credit_account(tx.sender_address(), 1_000_000_000)
         .unwrap();
     execute_and_finalise(&mut executor, vec![tx]);
+}
+
+// ---- expiry, height and timestamp ---------------------------------------
+
+/// A block on top of `executor`'s head with the given height, timestamp
+/// and transactions, built by hand so a test can make either one wrong.
+fn block_at(
+    executor: &Executor,
+    height: u64,
+    timestamp_millis: u64,
+    transactions: Vec<Transaction>,
+) -> chain_engine_api::Block {
+    chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(height),
+        timestamp_millis,
+        transactions,
+    }
+}
+
+fn expiring_at(seed: u8, sequence_number: u64, expiry: u64) -> Transaction {
+    signed_transaction_expiring(
+        seed,
+        1,
+        sequence_number,
+        expiry,
+        1_000,
+        1,
+        Vec::new(),
+        calculator_call(1, 2),
+    )
+}
+
+/// Advances `executor` through `count` empty blocks.
+fn advance(executor: &mut Executor, count: u64) {
+    for _ in 0..count {
+        execute_and_finalise(executor, Vec::new());
+    }
+}
+
+fn rejection_of(
+    executor: &Executor,
+    block: &chain_engine_api::Block,
+) -> (RejectionReason, Option<u32>) {
+    let rejected = executor
+        .execute_block(executor.state_root(), block)
+        .unwrap_err();
+    (rejected.reason, rejected.transaction_index)
+}
+
+#[test]
+fn a_transaction_is_valid_up_to_and_including_its_expiry_height_and_not_after() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    advance(&mut executor, 9); // the next block is height 10
+    let at_expiry = expiring_at(60, 0, 10);
+    let past_expiry = expiring_at(61, 0, 9);
+    fund(&mut executor, &at_expiry);
+    fund(&mut executor, &past_expiry);
+    let (height, timestamp) = next_height_and_timestamp(&executor);
+    assert_eq!(height, BlockHeight(10));
+
+    let ok = block_at(&executor, height.0, timestamp, vec![at_expiry]);
+    assert!(executor.execute_block(executor.state_root(), &ok).is_ok());
+
+    let expired = block_at(&executor, height.0, timestamp, vec![past_expiry]);
+    assert_eq!(
+        rejection_of(&executor, &expired),
+        (RejectionReason::InvalidExpiry, Some(0))
+    );
+}
+
+#[test]
+fn an_expired_transaction_rejects_the_whole_block_and_is_attributed_to_its_index() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    advance(&mut executor, 4); // the next block is height 5
+    let fine = expiring_at(62, 0, 100);
+    let stale = expiring_at(63, 0, 4);
+    fund(&mut executor, &fine);
+    fund(&mut executor, &stale);
+    let (height, timestamp) = next_height_and_timestamp(&executor);
+
+    let block = block_at(&executor, height.0, timestamp, vec![fine, stale]);
+    assert_eq!(
+        rejection_of(&executor, &block),
+        (RejectionReason::InvalidExpiry, Some(1))
+    );
+}
+
+#[test]
+fn an_expiry_set_further_ahead_than_the_horizon_is_rejected_at_execution_too() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let horizon = chain_types::MAX_EXPIRY_HORIZON;
+    let at_horizon = expiring_at(64, 0, 1 + horizon); // block height 1
+    let beyond = expiring_at(65, 0, 1 + horizon + 1);
+    fund(&mut executor, &at_horizon);
+    fund(&mut executor, &beyond);
+    let (height, timestamp) = next_height_and_timestamp(&executor);
+
+    let ok = block_at(&executor, height.0, timestamp, vec![at_horizon]);
+    assert!(executor.execute_block(executor.state_root(), &ok).is_ok());
+
+    let too_far = block_at(&executor, height.0, timestamp, vec![beyond]);
+    assert_eq!(
+        rejection_of(&executor, &too_far),
+        (RejectionReason::InvalidExpiry, Some(0))
+    );
+}
+
+#[test]
+fn a_transaction_that_expired_while_waiting_cannot_be_included_later() {
+    // The point of the rule: signed at height 1, valid until 3, not
+    // included in time — it must stay out for good, not merely for now.
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = expiring_at(66, 0, 3);
+    fund(&mut executor, &tx);
+
+    advance(&mut executor, 2); // the next block is height 3: the last valid one
+    let (height, timestamp) = next_height_and_timestamp(&executor);
+    let still_ok = block_at(&executor, height.0, timestamp, vec![tx.clone()]);
+    assert!(executor
+        .execute_block(executor.state_root(), &still_ok)
+        .is_ok());
+
+    advance(&mut executor, 1); // height 3 passes without it
+    let (height, timestamp) = next_height_and_timestamp(&executor);
+    let too_late = block_at(&executor, height.0, timestamp, vec![tx]);
+    assert_eq!(
+        rejection_of(&executor, &too_late),
+        (RejectionReason::InvalidExpiry, Some(0))
+    );
+}
+
+#[test]
+fn a_proposer_cannot_dodge_expiry_by_claiming_a_lower_height() {
+    // Expiry is measured against the block's height, so the height has
+    // to be pinned to the chain's, or the rule is decoration.
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let tx = expiring_at(67, 0, 3);
+    fund(&mut executor, &tx);
+    advance(&mut executor, 4); // the chain is at height 4; the tx expired at 3
+    let (_, timestamp) = next_height_and_timestamp(&executor);
+
+    let lying = block_at(&executor, 2, timestamp, vec![tx]);
+    assert_eq!(
+        rejection_of(&executor, &lying),
+        (RejectionReason::InvalidBlockHeight, None)
+    );
+}
+
+#[test]
+fn a_block_must_be_exactly_one_higher_than_its_parent() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    assert_eq!(executor.head_height(), Some(0));
+
+    for wrong in [0, 2, 1_000, u64::MAX] {
+        let block = block_at(&executor, wrong, FIRST_TIMESTAMP, Vec::new());
+        assert_eq!(
+            rejection_of(&executor, &block),
+            (RejectionReason::InvalidBlockHeight, None),
+            "height {wrong} on a genesis parent"
+        );
+    }
+    let right = block_at(&executor, 1, FIRST_TIMESTAMP, Vec::new());
+    assert!(executor
+        .execute_block(executor.state_root(), &right)
+        .is_ok());
+
+    advance(&mut executor, 1);
+    assert_eq!(executor.head_height(), Some(1));
+    // Repeating the height just executed is no better than skipping ahead.
+    for wrong in [1, 3] {
+        let block = block_at(
+            &executor,
+            wrong,
+            FIRST_TIMESTAMP + 10 * BLOCK_INTERVAL_MS,
+            Vec::new(),
+        );
+        assert_eq!(
+            rejection_of(&executor, &block),
+            (RejectionReason::InvalidBlockHeight, None)
+        );
+    }
+}
+
+#[test]
+fn a_block_must_be_strictly_later_than_its_parent() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    advance(&mut executor, 1);
+    let parent = executor.head_timestamp_millis().unwrap();
+    assert_eq!(parent, FIRST_TIMESTAMP);
+
+    for (label, timestamp) in [
+        ("equal", parent),
+        ("a millisecond earlier", parent - 1),
+        ("zero", 0),
+    ] {
+        let block = block_at(&executor, 2, timestamp, Vec::new());
+        assert_eq!(
+            rejection_of(&executor, &block),
+            (RejectionReason::InvalidBlockTimestamp, None),
+            "{label}"
+        );
+    }
+    let next = block_at(&executor, 2, parent + 1, Vec::new());
+    assert!(
+        executor.execute_block(executor.state_root(), &next).is_ok(),
+        "a millisecond later is enough"
+    );
+}
+
+#[test]
+fn the_first_block_must_be_after_the_genesis_timestamp() {
+    let executor = Executor::genesis(ChainId(1)).unwrap();
+    assert_eq!(executor.head_timestamp_millis(), Some(0));
+    let block = block_at(&executor, 1, 0, Vec::new());
+    assert_eq!(
+        rejection_of(&executor, &block),
+        (RejectionReason::InvalidBlockTimestamp, None)
+    );
+}
+
+#[test]
+fn the_head_is_committed_in_the_state_root_and_the_diff() {
+    // Two blocks alike in everything but their timestamp must land on
+    // different states, or nodes could disagree about the parent a later
+    // block is checked against without the roots ever showing it.
+    let executor = Executor::genesis(ChainId(1)).unwrap();
+    let executed_at = |timestamp: u64| {
+        let block = block_at(&executor, 1, timestamp, Vec::new());
+        executor
+            .execute_block(executor.state_root(), &block)
+            .unwrap()
+    };
+    let (a, b) = (
+        executed_at(FIRST_TIMESTAMP),
+        executed_at(FIRST_TIMESTAMP + 1),
+    );
+    assert_ne!(a.state_root, b.state_root);
+    assert_eq!(a.state_diff.len(), 1, "an empty block writes only the head");
+}
+
+#[test]
+fn finalising_advances_the_head() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    advance(&mut executor, 3);
+    assert_eq!(executor.head_height(), Some(3));
+    assert_eq!(
+        executor.head_timestamp_millis(),
+        Some(FIRST_TIMESTAMP + 2 * BLOCK_INTERVAL_MS)
+    );
+}
+
+#[test]
+fn a_rejected_block_leaves_the_head_where_it_was() {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    advance(&mut executor, 1);
+    let before = (executor.head_height(), executor.head_timestamp_millis());
+    let root = executor.state_root();
+
+    let bad = block_at(&executor, 5, FIRST_TIMESTAMP + 1, Vec::new());
+    assert!(executor.execute_block(root, &bad).is_err());
+    assert_eq!(
+        (executor.head_height(), executor.head_timestamp_millis()),
+        before
+    );
+    assert_eq!(executor.state_root(), root);
+}
+
+#[test]
+fn finalise_refuses_a_block_whose_height_or_timestamp_is_wrong() {
+    // `finalise_block` re-runs the checks rather than trusting the
+    // caller's `ExecutedBlock`: a block that could not have executed
+    // cannot be committed with someone else's result attached.
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let good = block_at(&executor, 1, FIRST_TIMESTAMP, Vec::new());
+    let executed = executor
+        .execute_block(executor.state_root(), &good)
+        .unwrap();
+
+    let wrong_height = block_at(&executor, 2, FIRST_TIMESTAMP, Vec::new());
+    assert_eq!(
+        executor
+            .finalise_block(&wrong_height, &executed)
+            .unwrap_err()
+            .reason,
+        FinaliseErrorReason::StateRootMismatch
+    );
+    let wrong_time = block_at(&executor, 1, 0, Vec::new());
+    assert_eq!(
+        executor
+            .finalise_block(&wrong_time, &executed)
+            .unwrap_err()
+            .reason,
+        FinaliseErrorReason::StateRootMismatch
+    );
+    assert_eq!(executor.head_height(), Some(0), "nothing was committed");
 }

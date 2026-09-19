@@ -19,6 +19,7 @@ enum KeyTag {
     ObjectData = chain_state::account::KEY_TAG + 2,
     CalculatorResult = chain_state::account::KEY_TAG + 3,
     BaseFee = chain_state::account::KEY_TAG + 4,
+    ChainHead = chain_state::account::KEY_TAG + 5,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -44,6 +45,14 @@ pub fn object_key(address: AccountAddress) -> StateKey {
 /// root and diff like everything else consensus must agree on.
 pub fn base_fee_key() -> StateKey {
     StateKey::new(vec![KeyTag::BaseFee as u8])
+}
+
+/// Where the last executed block's height and timestamp are stored: what
+/// the next block's own height and timestamp are checked against. Chain-
+/// wide like the base fee, so it sits in the state root and diff — every
+/// node checks a block against the same parent, whatever it has cached.
+pub fn chain_head_key() -> StateKey {
+    StateKey::new(vec![KeyTag::ChainHead as u8])
 }
 
 /// Where the fixed system `calculator::add` call's result is stored,
@@ -77,7 +86,13 @@ mod tests {
         ] {
             assert_ne!(base_fee_key(), other);
             assert_ne!(base_fee_key().as_bytes().first(), other.as_bytes().first());
+            assert_ne!(chain_head_key(), other);
+            assert_ne!(
+                chain_head_key().as_bytes().first(),
+                other.as_bytes().first()
+            );
         }
+        assert_ne!(base_fee_key(), chain_head_key());
     }
 
     #[test]
@@ -87,6 +102,7 @@ mod tests {
             KeyTag::ObjectData as u8,
             KeyTag::CalculatorResult as u8,
             KeyTag::BaseFee as u8,
+            KeyTag::ChainHead as u8,
         ] {
             assert_ne!(tag, chain_state::account::KEY_TAG);
         }

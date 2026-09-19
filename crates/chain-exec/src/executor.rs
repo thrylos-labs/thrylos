@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use chain_engine_api::timestamp::is_after_parent;
 use chain_engine_api::{
     AbortReason, Block, BlockLimits, BlockRejected, Engine, ExecutedBlock, FinaliseError,
     FinaliseErrorReason, RejectionReason, TransactionOutcome, GENESIS_MAX_BLOCK_GAS,
@@ -29,7 +30,7 @@ use crate::genesis::{
     COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS, SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME,
     SYSTEM_PACKAGE_ADDRESS,
 };
-use crate::keys::{base_fee_key, calculator_result_key, object_key};
+use crate::keys::{base_fee_key, calculator_result_key, chain_head_key, object_key};
 use crate::module_resolver::ChainStateModuleResolver;
 
 #[derive(Debug)]
@@ -86,6 +87,14 @@ struct AppliedTransaction {
     outcome: TransactionOutcome,
 }
 
+/// The height of the state `Executor::genesis` builds: no block yet.
+pub const GENESIS_HEIGHT: u64 = 0;
+
+/// The timestamp of that state. `docs/spec.md` fixes no genesis time yet,
+/// so it is the earliest possible one, leaving the first block's
+/// timestamp bounded only by the host's clock check.
+pub const GENESIS_TIMESTAMP_MILLIS: u64 = 0;
+
 pub struct Executor {
     chain_id: ChainId,
     /// Fixed at genesis for now. The block gas limit and base fee
@@ -113,6 +122,7 @@ impl Executor {
             base_fee_key(),
             StateValue::new(GENESIS_BASE_FEE.to_le_bytes().to_vec()),
         );
+        write_head(&mut state, GENESIS_HEIGHT, GENESIS_TIMESTAMP_MILLIS);
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
         })?;
@@ -137,6 +147,18 @@ impl Executor {
 
     pub const fn tip_block_hash(&self) -> Hash {
         self.tip_block_hash
+    }
+
+    /// The height of the last executed block (`0` at genesis) — the next
+    /// block must be exactly one more.
+    pub fn head_height(&self) -> Option<u64> {
+        read_head(&self.state).map(|(height, _)| height)
+    }
+
+    /// The timestamp of the last executed block — the next block's must
+    /// be strictly later. [`GENESIS_TIMESTAMP_MILLIS`] at genesis.
+    pub fn head_timestamp_millis(&self) -> Option<u64> {
+        read_head(&self.state).map(|(_, timestamp)| timestamp)
     }
 
     /// The last result of a `calculator::add` call by `address`, if any.
@@ -185,6 +207,16 @@ impl Executor {
     /// block carries on ("Aborts consume gas and roll back the
     /// transaction's effects, but never abort the block").
     ///
+    /// Before any transaction runs, the block itself is checked against
+    /// its parent, both read from state: its height must be exactly the
+    /// parent's plus one (a transaction's expiry is measured against it,
+    /// so it can't be left to the proposer's say-so), and its timestamp
+    /// strictly later (`docs/spec.md`, "Transaction validity"). The
+    /// other timestamp rule, "not too far ahead of the clock", needs a
+    /// clock and belongs to the consensus host — see
+    /// `chain_engine_api::timestamp`. The new height and timestamp are
+    /// written back once the block has applied.
+    ///
     /// Every transaction in the block pays the same price, the base fee
     /// stored in `state` when the block starts; the block's total gas
     /// then sets the base fee the *next* block will charge, written back
@@ -203,10 +235,27 @@ impl Executor {
             reason: RejectionReason::Rejected,
         })?;
 
+        let (parent_height, parent_timestamp) = read_head(state).ok_or(BlockRejected {
+            transaction_index: None,
+            reason: RejectionReason::Rejected,
+        })?;
+        if parent_height.checked_add(1) != Some(block.height.0) {
+            return Err(BlockRejected {
+                transaction_index: None,
+                reason: RejectionReason::InvalidBlockHeight,
+            });
+        }
+        if !is_after_parent(parent_timestamp, block.timestamp_millis) {
+            return Err(BlockRejected {
+                transaction_index: None,
+                reason: RejectionReason::InvalidBlockTimestamp,
+            });
+        }
+
         let mut gas_used: u64 = 0;
         let mut outcomes = Vec::with_capacity(block.transactions.len());
         for (index, tx) in block.transactions.iter().enumerate() {
-            let applied = self.apply_transaction(state, tx, index, base_fee)?;
+            let applied = self.apply_transaction(state, tx, index, base_fee, block.height)?;
             gas_used = gas_used.saturating_add(applied.gas_used);
             // Checked as it accumulates rather than after the loop, so an
             // oversized block is refused without executing the rest of it.
@@ -227,12 +276,14 @@ impl Executor {
             base_fee_key(),
             StateValue::new(next_fee.to_le_bytes().to_vec()),
         );
+        write_head(state, block.height.0, block.timestamp_millis);
         Ok((gas_used, outcomes))
     }
 
     /// One transaction, in two distinct phases with distinct failure
     /// modes. First, validity (`docs/spec.md`'s "Transaction validity"
-    /// table in full): chain ID, signature, then sequence number and
+    /// table in full): chain ID, expiry against `height` (the height of
+    /// the block carrying it), signature, then sequence number and
     /// balance against the sender's account. Failing any of those is a
     /// rejection — the transaction should never have been in this block.
     /// Second, execution of the call itself, which can only abort:
@@ -245,6 +296,7 @@ impl Executor {
         tx: &Transaction,
         tx_index: usize,
         base_fee: u64,
+        height: BlockHeight,
     ) -> Result<AppliedTransaction, BlockRejected> {
         let transaction_index = u32::try_from(tx_index).ok();
         let reject = move |reason: RejectionReason| BlockRejected {
@@ -254,6 +306,15 @@ impl Executor {
 
         if tx.body.chain_id != self.chain_id {
             return Err(reject(RejectionReason::WrongChainId));
+        }
+        // Both halves of the rule, as `is_expiry_valid` defines them:
+        // not yet past its expiry, and not set further ahead than the
+        // horizon. The second is checked here as well as at admission so
+        // it is a rule of the chain, not just of one node's mempool: a
+        // transaction signed to live for years is exactly what the
+        // horizon exists to prevent.
+        if !tx.is_expiry_valid(height) {
+            return Err(reject(RejectionReason::InvalidExpiry));
         }
         tx.verify_signature()
             .map_err(|_| reject(RejectionReason::InvalidSignature))?;
@@ -491,6 +552,23 @@ fn read_u64(state: &BTreeMap<StateKey, StateValue>, key: &StateKey) -> Option<u6
     let value = state.get(key)?;
     let bytes: [u8; 8] = value.as_bytes().try_into().ok()?;
     Some(u64::from_le_bytes(bytes))
+}
+
+/// The head is 16 bytes: height then timestamp, both little-endian.
+fn read_head(state: &BTreeMap<StateKey, StateValue>) -> Option<(u64, u64)> {
+    let bytes: [u8; 16] = state.get(&chain_head_key())?.as_bytes().try_into().ok()?;
+    let (height, timestamp) = bytes.split_at(8);
+    Some((
+        u64::from_le_bytes(height.try_into().ok()?),
+        u64::from_le_bytes(timestamp.try_into().ok()?),
+    ))
+}
+
+fn write_head(state: &mut BTreeMap<StateKey, StateValue>, height: u64, timestamp_millis: u64) {
+    let mut bytes = Vec::with_capacity(16);
+    bytes.extend_from_slice(&height.to_le_bytes());
+    bytes.extend_from_slice(&timestamp_millis.to_le_bytes());
+    state.insert(chain_head_key(), StateValue::new(bytes));
 }
 
 fn decode_u64_arg(bytes: &[u8]) -> Option<u64> {

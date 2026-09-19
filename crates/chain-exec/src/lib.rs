@@ -20,8 +20,9 @@
 //!   dispatch. A call to anything else is an abort, not a rejection.
 //! - Two failure modes, kept apart as `docs/spec.md`'s "Execution"
 //!   section requires. A transaction that is *invalid* — wrong chain ID,
-//!   bad signature, wrong sequence number, balance that can't cover its
-//!   gas limit — rejects the whole block. A valid transaction that
+//!   expired (or expiring further ahead than the horizon), bad signature,
+//!   wrong sequence number, balance that can't cover its gas limit —
+//!   rejects the whole block. A valid transaction that
 //!   *fails while executing* (unknown function, bad arguments, touching
 //!   an undeclared object, a Move abort such as overflow) is aborted:
 //!   the block stands, the sender is still charged gas and their
@@ -31,6 +32,14 @@
 //!   reports which happened to each transaction. A third case, an
 //!   internal executor failure no transaction can trigger, also rejects
 //!   the block rather than charging a sender for a bug of ours.
+//! - The block itself is checked against its parent, both read from state
+//!   (a chain-head entry written by every block, so it is in the state
+//!   root and diff): the height must be exactly one more, and the
+//!   timestamp strictly later. Height matters because a transaction's
+//!   expiry is measured against it. The other half of the timestamp rule,
+//!   "not more than 5 seconds ahead of the validating node's clock",
+//!   needs a clock and so is not here: `chain_engine_api::timestamp` has
+//!   it as a pure function for the consensus host to apply before voting.
 //! - Declared-input enforcement for the object case is an abort when
 //!   the counter isn't declared, and structural underneath that: Sui's
 //!   Move has no ambient lookup by address, so `bump` can only touch the

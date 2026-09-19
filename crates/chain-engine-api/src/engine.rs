@@ -49,8 +49,9 @@ pub enum RejectionReason {
     WrongChainId,
     /// Signature does not verify against the declared sender.
     InvalidSignature,
-    /// Expired, or scheduled further ahead than
-    /// `chain_types::transaction::MAX_EXPIRY_HORIZON`.
+    /// Expired at the height of the block carrying it, or scheduled
+    /// further ahead than `chain_types::transaction::MAX_EXPIRY_HORIZON`
+    /// from that height.
     InvalidExpiry,
     /// A check that needs chain state failed: sequence-number ordering
     /// or balance. The specific reason is owned by whichever crate
@@ -59,6 +60,17 @@ pub enum RejectionReason {
     /// declared-access violation — is not a rejection: it's an
     /// [`crate::AbortReason`], and the block stands.
     Rejected,
+    /// The block's height is not exactly one more than its parent's.
+    /// Checked because a transaction's expiry is measured against the
+    /// height of the block that carries it: a proposer free to claim any
+    /// height could keep an expired transaction alive forever.
+    InvalidBlockHeight,
+    /// The block's timestamp is not strictly after its parent's
+    /// (`docs/spec.md`, "Transaction validity"). Only the half of the
+    /// rule that needs chain state alone: the "not too far ahead of the
+    /// clock" half needs a clock, and is the consensus host's to check —
+    /// see [`crate::timestamp`].
+    InvalidBlockTimestamp,
     /// The block itself is malformed independent of any one
     /// transaction — over a [`BlockLimits`] ceiling, for instance.
     MalformedBlock,
