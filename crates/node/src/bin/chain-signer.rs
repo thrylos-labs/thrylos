@@ -31,7 +31,8 @@ fn private_file(path: &Path) -> Result<Vec<u8>, io::Error> {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "{} must not be accessible by group or other users",
+                "{} must not be accessible by group or other users; run: chmod 600 {}",
+                path.display(),
                 path.display()
             ),
         ));
@@ -41,12 +42,16 @@ fn private_file(path: &Path) -> Result<Vec<u8>, io::Error> {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1).peekable();
-    if matches!(
-        args.peek().and_then(|arg| arg.to_str()),
-        Some("-h" | "--help")
-    ) {
-        println!("{USAGE}");
-        return Ok(());
+    match args.peek().and_then(|arg| arg.to_str()) {
+        Some("-h" | "--help") => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Some("-V" | "--version") => {
+            println!("chain-signer {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {}
     }
     let socket = required_path(&mut args, "socket")?;
     let key_path = required_path(&mut args, "key file")?;

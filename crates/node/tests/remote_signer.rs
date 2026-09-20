@@ -209,6 +209,32 @@ fn signer_refuses_a_consensus_key_readable_by_other_users() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("must not be accessible"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must not be accessible"));
+    assert!(
+        stderr.contains(&format!("chmod 600 {}", fixture.key.display())),
+        "the message says how to fix it: {stderr}"
+    );
     assert!(!fixture.socket.exists());
+}
+
+#[test]
+fn signer_answers_help_and_version_without_touching_anything() {
+    for (flag, expected) in [
+        ("--help", "usage: chain-signer"),
+        ("-h", "usage: chain-signer"),
+        ("--version", "chain-signer "),
+        ("-V", "chain-signer "),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_chain-signer"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).starts_with(expected),
+            "{flag}"
+        );
+        assert!(output.stderr.is_empty(), "{flag}");
+    }
 }

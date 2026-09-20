@@ -11,6 +11,7 @@
 
 use chain_exec::genesis_config::GenesisConfig;
 use chain_exec::Executor;
+use chain_modules::params::ParamValues;
 use chain_types::{Address, Hash};
 
 use crate::file::ParseError;
@@ -99,6 +100,8 @@ pub struct Report {
     pub allocated: u128,
     /// Bonded self-stake, not counting each pool's dead shares.
     pub bonded: u128,
+    /// The parameters the chain starts with.
+    pub parameters: ParamValues,
     /// Largest stake first.
     pub validators: Vec<ValidatorLine>,
     pub warnings: Vec<Warning>,
@@ -136,6 +139,7 @@ pub fn report(config: &GenesisConfig) -> Result<Report, ParseError> {
             .validators()
             .iter()
             .fold(0u128, |sum, v| sum.saturating_add(v.self_stake)),
+        parameters: *config.parameters(),
         validators,
         warnings: warnings(config),
     })

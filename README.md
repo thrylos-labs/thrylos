@@ -10,7 +10,7 @@ There is no node to run yet, but the genesis tool works. The Rust toolchain is p
 
 ```bash
 cargo run -p chain-genesis -- devnet > devnet.json   # a four-validator development genesis
-cargo run -p chain-genesis -- check devnet.json      # validate it: genesis hash, state root, supply, validator set
+cargo run -p chain-genesis -- check devnet.json      # validate it: hash, state root, supply, parameters, validator set
 ```
 
 `chain-genesis hash <file>` prints only the genesis hash, and `chain-genesis address <ed25519-public-key-hex>` derives an account address. Beyond that, the tests are the way in: `cargo test --workspace`.

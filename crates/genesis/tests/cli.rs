@@ -126,3 +126,40 @@ fn unknown_commands_and_missing_arguments_print_usage_and_exit_two() {
         assert!(stderr(&output).contains("usage:"), "{args:?}");
     }
 }
+
+#[test]
+fn check_shows_the_parameters_in_units_a_person_can_read() {
+    let text = stdout(&run(&["check", DEVNET]));
+    for expected in [
+        "parameters:",
+        "max block gas:                 60000000",
+        "minimum self-stake:            1000000",
+        "inflation:                     4.00% (400 bps)",
+        "unbonding period:              21 d (1814400000 ms)",
+        "governance quorum:             33.40% (3340 bps)",
+        "governance veto threshold:     33.40% (3340 bps)",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+}
+
+#[test]
+fn help_and_version_are_answers_not_errors() {
+    for flag in ["--help", "-h"] {
+        let output = run(&[flag]);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert!(stdout(&output).contains("usage:"), "{flag}");
+        assert!(stderr(&output).is_empty(), "{flag}");
+    }
+    for flag in ["--version", "-V"] {
+        let output = run(&[flag]);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert_eq!(
+            stdout(&output),
+            format!("chain-genesis {}\n", env!("CARGO_PKG_VERSION")),
+            "{flag}"
+        );
+    }
+    // Only as the sole argument: a flag among others is still a usage error.
+    assert_eq!(run(&["check", "--help"]).status.code(), Some(1));
+}

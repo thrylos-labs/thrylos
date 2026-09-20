@@ -29,6 +29,7 @@ pub mod check;
 pub mod devnet;
 pub mod file;
 pub mod hex;
+pub mod human;
 
 use std::io::Read;
 use std::path::Path;

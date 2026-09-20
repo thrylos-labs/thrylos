@@ -6,6 +6,7 @@
 //! chain-genesis hash <file>         print just the genesis hash
 //! chain-genesis address <pubkey>    the address of an Ed25519 public key
 //! chain-genesis devnet              the INSECURE development genesis, as JSON
+//! chain-genesis --help | --version
 //! ```
 //!
 //! Exits non-zero if the file is not a valid genesis. Warnings about the
@@ -15,6 +16,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use chain_genesis::check::{report, ValidatorLine};
+use chain_genesis::human::{duration, percent_bps};
 use chain_genesis::{devnet, hex, load, to_json};
 use chain_types::{Address, PublicKey};
 
@@ -22,7 +24,8 @@ const USAGE: &str = "usage:
   chain-genesis check <file>
   chain-genesis hash <file>
   chain-genesis address <ed25519-public-key-hex>
-  chain-genesis devnet";
+  chain-genesis devnet
+  chain-genesis --help | --version";
 
 fn fail(message: impl core::fmt::Display) -> ExitCode {
     eprintln!("error: {message}");
@@ -30,13 +33,7 @@ fn fail(message: impl core::fmt::Display) -> ExitCode {
 }
 
 fn percent(part: u128, whole: u128) -> String {
-    // Basis points, then as a percentage with two decimals.
-    let bps = part.saturating_mul(10_000).checked_div(whole).unwrap_or(0);
-    let (whole_percent, fraction) = (
-        bps.checked_div(100).unwrap_or(0),
-        bps.checked_rem(100).unwrap_or(0),
-    );
-    format!("{whole_percent}.{fraction:02}%")
+    percent_bps(part.saturating_mul(10_000).checked_div(whole).unwrap_or(0))
 }
 
 fn check(path: &Path) -> ExitCode {
@@ -81,6 +78,34 @@ fn check(path: &Path) -> ExitCode {
             percent(*self_stake, report.bonded)
         );
     }
+    let p = &report.parameters;
+    println!("parameters:");
+    println!("  max block gas:                 {}", p.max_block_gas);
+    println!(
+        "  base fee change denominator:   {}",
+        p.base_fee_change_denominator
+    );
+    println!("  minimum self-stake:            {}", p.min_self_stake);
+    println!(
+        "  inflation:                     {} ({} bps)",
+        percent_bps(u128::from(p.inflation_bps)),
+        p.inflation_bps
+    );
+    println!(
+        "  unbonding period:              {} ({} ms)",
+        duration(p.unbonding_period_ms),
+        p.unbonding_period_ms
+    );
+    println!(
+        "  governance quorum:             {} ({} bps)",
+        percent_bps(u128::from(p.quorum_bps)),
+        p.quorum_bps
+    );
+    println!(
+        "  governance veto threshold:     {} ({} bps)",
+        percent_bps(u128::from(p.veto_threshold_bps)),
+        p.veto_threshold_bps
+    );
     if !report.warnings.is_empty() {
         println!("warnings:");
         for warning in &report.warnings {
@@ -128,6 +153,14 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
+        ["-h" | "--help"] => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        ["-V" | "--version"] => {
+            println!("chain-genesis {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         ["check", path] => check(Path::new(path)),
         ["hash", path] => hash(Path::new(path)),
         ["address", key] => address(key),
