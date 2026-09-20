@@ -1377,3 +1377,278 @@ fn finalise_refuses_a_block_whose_height_or_timestamp_is_wrong() {
     );
     assert_eq!(executor.head_height(), Some(0), "nothing was committed");
 }
+
+// ---- restoring a chain from the state a node stored ---------------------------
+
+use chain_exec::keys::{base_fee_key, chain_head_key};
+use chain_exec::ExecutorError;
+use chain_state::{StateKey, StateValue};
+use std::collections::BTreeMap;
+
+/// The state an executor holds, as a node would have stored it.
+fn stored(executor: &Executor) -> BTreeMap<StateKey, StateValue> {
+    executor
+        .state_entries()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn restore_as_stored(chain: u64, executor: &Executor) -> Executor {
+    Executor::restore(
+        ChainId(chain),
+        stored(executor),
+        executor.tip_block_hash(),
+        executor.state_root(),
+    )
+    .unwrap()
+}
+
+/// The error a restore was refused with. (`Executor` is not `Debug`, so
+/// `unwrap_err` is not available.)
+fn refused(result: Result<Executor, ExecutorError>) -> ExecutorError {
+    result.err().expect("the restore should have been refused")
+}
+
+/// Why a restore was refused, for the refusals that are about the state.
+/// Any other error gives a reason no assertion will match.
+fn restore_reason(error: &ExecutorError) -> &'static str {
+    match error {
+        ExecutorError::Restore(reason) => reason,
+        _ => "not a restore refusal",
+    }
+}
+
+/// A chain with a few blocks of history: a funded sender making calculator
+/// calls and bumping the counter.
+fn a_chain_with_history() -> Executor {
+    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+    let first = signed_transaction_full(1, 1, 0, Vec::new(), calculator_call(2, 40));
+    fund(&mut executor, &first);
+    execute_and_finalise(&mut executor, vec![first]);
+    let second = signed_transaction_full(1, 1, 1, vec![counter_address()], bump_call(5));
+    execute_and_finalise(&mut executor, vec![second]);
+    executor
+}
+
+#[test]
+fn a_restored_chain_is_the_chain_it_was() {
+    let original = a_chain_with_history();
+    let restored = restore_as_stored(1, &original);
+
+    assert_eq!(restored.state_root(), original.state_root());
+    assert_eq!(restored.tip_block_hash(), original.tip_block_hash());
+    assert_eq!(restored.head_height(), Some(2));
+    assert_eq!(restored.head_height(), original.head_height());
+    assert_eq!(
+        restored.head_timestamp_millis(),
+        original.head_timestamp_millis()
+    );
+    assert_eq!(restored.base_fee(), original.base_fee());
+    assert_eq!(restored.supply(), original.supply());
+    assert_eq!(restored.read_counter(), Some(5));
+    assert_eq!(restored.read_counter(), original.read_counter());
+    let sender = signed_transaction(1, 1, calculator_call(0, 0)).sender_address();
+    assert_eq!(restored.read_result(&sender), Some(42));
+    assert_eq!(
+        restored.read_account(sender).unwrap(),
+        original.read_account(sender).unwrap()
+    );
+    restored.audit().unwrap();
+}
+
+#[test]
+fn a_restored_chain_executes_the_next_block_exactly_as_the_original_would() {
+    let mut original = a_chain_with_history();
+    let mut restored = restore_as_stored(1, &original);
+
+    // One block, built once, run by both: a calculator call, a counter bump
+    // and a call that aborts.
+    let transactions = vec![
+        signed_transaction_full(1, 1, 2, Vec::new(), calculator_call(7, 8)),
+        signed_transaction_full(1, 1, 3, vec![counter_address()], bump_call(10)),
+        signed_transaction_full(1, 1, 4, Vec::new(), bump_call(1)),
+    ];
+    let parent_root = original.state_root();
+    let (height, timestamp) = next_height_and_timestamp(&original);
+    let block = original.propose_block(
+        original.tip_block_hash(),
+        parent_root,
+        height,
+        timestamp,
+        transactions,
+        default_limits(),
+    );
+
+    let by_original = original.execute_block(parent_root, &block).unwrap();
+    let by_restored = restored.execute_block(parent_root, &block).unwrap();
+    assert_eq!(by_original, by_restored);
+    assert!(
+        by_original
+            .outcomes
+            .iter()
+            .any(|outcome| *outcome != TransactionOutcome::Success),
+        "the block includes an abort, so the comparison covers that path"
+    );
+
+    original.finalise_block(&block, &by_original).unwrap();
+    restored.finalise_block(&block, &by_restored).unwrap();
+    assert_eq!(restored.state_root(), original.state_root());
+    assert_eq!(restored.tip_block_hash(), original.tip_block_hash());
+    assert_eq!(restored.read_counter(), Some(15));
+}
+
+#[test]
+fn a_restore_needs_the_recorded_root() {
+    let original = a_chain_with_history();
+    let other_root = Executor::genesis(ChainId(1)).unwrap().state_root();
+    let error = refused(Executor::restore(
+        ChainId(1),
+        stored(&original),
+        original.tip_block_hash(),
+        other_root,
+    ));
+    assert!(restore_reason(&error).contains("hash to the recorded root"));
+}
+
+#[test]
+fn a_state_with_one_byte_changed_is_refused() {
+    let original = a_chain_with_history();
+    let sender = signed_transaction(1, 1, calculator_call(0, 0)).sender_address();
+    let key = chain_state::account::account_key(sender);
+    let mut damaged = stored(&original);
+    let mut bytes = damaged
+        .get(&key)
+        .expect("the sender's account is stored")
+        .as_bytes()
+        .to_vec();
+    *bytes.first_mut().expect("an account is not empty") ^= 1;
+    damaged.insert(key, StateValue::new(bytes));
+
+    let error = refused(Executor::restore(
+        ChainId(1),
+        damaged,
+        original.tip_block_hash(),
+        original.state_root(),
+    ));
+    assert!(restore_reason(&error).contains("hash to the recorded root"));
+}
+
+#[test]
+fn a_state_that_hashes_correctly_but_is_out_of_balance_is_refused_by_the_audit() {
+    // A lie that is consistent with itself: the root is recomputed for the
+    // changed state, so only the supply audit can catch it.
+    let original = a_chain_with_history();
+    let sender = signed_transaction(1, 1, calculator_call(0, 0)).sender_address();
+    let mut inflated = stored(&original);
+    let mut account = original.read_account(sender).unwrap();
+    account.balance = account.balance.saturating_add(1);
+    chain_state::account::write_account(&mut inflated, sender, account);
+    let root = chain_state::compute_root(&inflated);
+
+    let error = refused(Executor::restore(
+        ChainId(1),
+        inflated,
+        original.tip_block_hash(),
+        root,
+    ));
+    assert!(
+        matches!(error, ExecutorError::Audit(_)),
+        "expected the audit to refuse it, got {error}"
+    );
+}
+
+#[test]
+fn a_state_missing_what_a_chain_needs_is_refused_and_says_what() {
+    let original = a_chain_with_history();
+    let refuse_without = |remove: &dyn Fn(&mut BTreeMap<StateKey, StateValue>)| {
+        let mut state = stored(&original);
+        remove(&mut state);
+        let root = chain_state::compute_root(&state);
+        restore_reason(&refused(Executor::restore(
+            ChainId(1),
+            state,
+            original.tip_block_hash(),
+            root,
+        )))
+    };
+
+    assert!(refuse_without(&|state| {
+        state.remove(&chain_head_key());
+    })
+    .contains("no chain head"));
+    assert!(refuse_without(&|state| {
+        state.remove(&base_fee_key());
+    })
+    .contains("no base fee"));
+
+    // The governed parameters: find their entry by what changes when the
+    // parameters do, then damage it.
+    let mut other = chain_modules::params::GENESIS_PARAM_VALUES;
+    other.max_block_gas = 50_000_000;
+    let changed = chain_state::diff(
+        &stored(&Executor::genesis(ChainId(1)).unwrap()),
+        &stored(&Executor::genesis_with_params(ChainId(1), other).unwrap()),
+    );
+    let (parameters_key, _) = changed.iter().next().expect("the parameters are in state");
+    assert!(refuse_without(&|state| {
+        state.insert(parameters_key.clone(), StateValue::new(vec![0xFF]));
+    })
+    .contains("governed parameters"));
+
+    // And nothing at all is not a chain.
+    let error = refused(Executor::restore(
+        ChainId(1),
+        BTreeMap::new(),
+        Hash::from_bytes([0; 32]),
+        chain_state::empty_root(),
+    ));
+    assert!(restore_reason(&error).contains("no chain head"));
+}
+
+#[test]
+fn the_chain_id_is_an_input_of_a_restore_not_something_read_from_the_state() {
+    let mut original = Executor::genesis(ChainId(1)).unwrap();
+    let for_chain_one = signed_transaction(1, 1, calculator_call(1, 2));
+    let for_chain_two = signed_transaction(2, 2, calculator_call(3, 4));
+    fund(&mut original, &for_chain_one);
+    fund(&mut original, &for_chain_two);
+
+    // The same state, restored as chain 2, checks transactions against 2.
+    let restored = restore_as_stored(2, &original);
+    let root = restored.state_root();
+    let block_of = |transaction: Transaction| chain_engine_api::Block {
+        parent_block_hash: restored.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: FIRST_TIMESTAMP,
+        transactions: vec![transaction],
+    };
+    assert_eq!(
+        restored
+            .execute_block(root, &block_of(for_chain_one))
+            .unwrap_err()
+            .reason,
+        RejectionReason::WrongChainId
+    );
+    assert!(restored
+        .execute_block(root, &block_of(for_chain_two))
+        .is_ok());
+}
+
+#[test]
+fn restoring_takes_a_copy_and_the_original_carries_on_independently() {
+    let mut original = a_chain_with_history();
+    let restored = restore_as_stored(1, &original);
+    let root_then = restored.state_root();
+    execute_and_finalise(
+        &mut original,
+        vec![signed_transaction_full(
+            1,
+            1,
+            2,
+            Vec::new(),
+            calculator_call(1, 1),
+        )],
+    );
+    assert_ne!(original.state_root(), root_then);
+    assert_eq!(restored.state_root(), root_then, "the copy did not move");
+}

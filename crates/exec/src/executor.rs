@@ -57,6 +57,9 @@ pub enum ExecutorError {
     Audit(String),
     /// A genesis configuration could not be turned into a chain.
     GenesisConfig(GenesisConfigError),
+    /// Stored state could not be turned back into a chain: it is not the
+    /// state that was committed, or is not a state a chain can be in.
+    Restore(&'static str),
 }
 
 impl core::fmt::Display for ExecutorError {
@@ -68,6 +71,7 @@ impl core::fmt::Display for ExecutorError {
             Self::Modules(msg) => write!(f, "native module state: {msg}"),
             Self::Audit(msg) => write!(f, "audit failed: {msg}"),
             Self::GenesisConfig(err) => write!(f, "genesis configuration: {err}"),
+            Self::Restore(reason) => write!(f, "cannot restore the chain: {reason}"),
         }
     }
 }
@@ -297,6 +301,19 @@ impl Executor {
         Governance::new(StateStore::new(&mut state))
             .init_genesis(params)
             .map_err(|err| ExecutorError::Modules(err.to_string()))?;
+        Ok(Self {
+            chain_id,
+            state,
+            tip_block_hash: tip,
+            runtime: Self::new_runtime()?,
+            #[cfg(test)]
+            fault: None,
+        })
+    }
+
+    /// The Move runtime every executor uses, however it was made: the same
+    /// configuration for a chain that is starting and one that is restarting.
+    fn new_runtime() -> Result<MoveRuntime, ExecutorError> {
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
         })?;
@@ -305,15 +322,53 @@ impl Executor {
         // `allow_unpublishable_code_execution: false` is the more
         // restrictive, production-appropriate setting despite the name.
         let vm_config = VMConfig::new_for_test(false, None);
-        let runtime = MoveRuntime::new(natives, vm_config);
-        Ok(Self {
+        Ok(MoveRuntime::new(natives, vm_config))
+    }
+
+    /// Rebuilds the executor of a chain that was already running, from the
+    /// state a node stored: `state` is the whole committed state,
+    /// `tip_block_hash` is what the next block names as its parent, and
+    /// `expected_root` is the root recorded for that state.
+    ///
+    /// Nothing is taken on trust. The state must hash to `expected_root`,
+    /// must record a chain head, a base fee and governed parameters that can
+    /// be read, and must pass the full [`Self::audit`]. Any failure is an
+    /// error, so a node never starts from anything but the state it
+    /// committed. Like the rest of this crate it does no I/O: every input is
+    /// an argument, and the Move packages come from `state` itself, so
+    /// nothing is compiled.
+    pub fn restore(
+        chain_id: ChainId,
+        state: BTreeMap<StateKey, StateValue>,
+        tip_block_hash: Hash,
+        expected_root: StateRoot,
+    ) -> Result<Self, ExecutorError> {
+        if compute_root(&state) != expected_root {
+            return Err(ExecutorError::Restore(
+                "the state does not hash to the recorded root",
+            ));
+        }
+        if read_head(&state).is_none() {
+            return Err(ExecutorError::Restore("the state records no chain head"));
+        }
+        let executor = Self {
             chain_id,
             state,
-            tip_block_hash: tip,
-            runtime,
+            tip_block_hash,
+            runtime: Self::new_runtime()?,
             #[cfg(test)]
             fault: None,
-        })
+        };
+        if executor.base_fee().is_none() {
+            return Err(ExecutorError::Restore("the state records no base fee"));
+        }
+        if executor.params().is_err() {
+            return Err(ExecutorError::Restore(
+                "the governed parameters cannot be read",
+            ));
+        }
+        executor.audit()?;
+        Ok(executor)
     }
 
     pub fn state_root(&self) -> StateRoot {

@@ -388,6 +388,104 @@ fn the_first_epoch_starts_its_reward_clock_at_the_first_block_not_at_genesis() {
     );
 }
 
+// ---- restoring a chain that has validators, stakes and unbonding -------------
+
+fn restored(executor: &Executor) -> Executor {
+    let state = executor
+        .state_entries()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    Executor::restore(
+        ChainId(1),
+        state,
+        executor.tip_block_hash(),
+        executor.state_root(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_chain_restored_mid_unbonding_pays_out_exactly_as_the_original_does() {
+    let with_fee_money = GenesisConfig::new(
+        ChainId(1),
+        GENESIS_TIME,
+        GENESIS_PARAM_VALUES,
+        vec![allocation(1, 100_000)],
+        vec![validator(1, 2 * MIN), validator(2, MIN)],
+    )
+    .unwrap();
+    let mut original = Executor::from_genesis(&with_fee_money).unwrap();
+
+    // Begin unstaking half of the operator's shares, so the restored copy is
+    // taken with an unbonding entry open and a reward clock running.
+    let operator = address(1);
+    let shares =
+        original.with_registry(|r| r.shares_of(&ValidatorId(operator), &operator).unwrap());
+    let unstake = call(
+        1,
+        0,
+        UNSTAKE,
+        vec![
+            operator.as_bytes().to_vec(),
+            (shares / 2).to_le_bytes().to_vec(),
+        ],
+    );
+    let began = block_at(&original, GENESIS_TIME + 1_000, vec![unstake]);
+    commit(&mut original, &began);
+
+    let mut copy = restored(&original);
+    assert_eq!(copy.state_root(), original.state_root());
+    assert_eq!(
+        copy.validator_set().unwrap(),
+        original.validator_set().unwrap()
+    );
+    assert_eq!(copy.params().unwrap(), original.params().unwrap());
+    assert_eq!(copy.supply(), original.supply());
+    copy.audit().unwrap();
+
+    // What consensus reads through the view is the same too.
+    assert_eq!(
+        ChainView::head(&copy).unwrap(),
+        ChainView::head(&original).unwrap()
+    );
+    assert_eq!(
+        ChainView::validator_set(&copy).unwrap(),
+        ChainView::validator_set(&original).unwrap()
+    );
+    assert_eq!(
+        ChainView::block_limits(&copy).unwrap(),
+        ChainView::block_limits(&original).unwrap()
+    );
+
+    // The unbonding period elapses in a block both run: the payout, the
+    // queue and the rewards must come out the same.
+    let matured = block_at(
+        &original,
+        GENESIS_TIME + 1_000 + MIN_UNBONDING_PERIOD_MS,
+        Vec::new(),
+    );
+    let by_original = original
+        .execute_block(original.state_root(), &matured)
+        .unwrap();
+    let by_copy = copy.execute_block(copy.state_root(), &matured).unwrap();
+    assert_eq!(by_original, by_copy);
+    original.finalise_block(&matured, &by_original).unwrap();
+    copy.finalise_block(&matured, &by_copy).unwrap();
+
+    assert_eq!(copy.state_root(), original.state_root());
+    assert_eq!(
+        copy.read_account(operator).unwrap().balance,
+        original.read_account(operator).unwrap().balance
+    );
+    assert_eq!(
+        copy.read_account(operator).unwrap().balance,
+        100_000 - 1_000 + MIN,
+        "half of the self-stake came back, on the restored chain too"
+    );
+    copy.audit().unwrap();
+    original.audit().unwrap();
+}
+
 // ---- the read-only view consensus uses -------------------------------------
 
 use chain_engine_api::{ChainView, MAX_BLOCK_SIZE_BYTES};
