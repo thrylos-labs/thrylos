@@ -28,13 +28,17 @@ use chain_consensus::host::{
 };
 use chain_consensus::types::{ConsensusAddress, ConsensusHeight, ConsensusValidatorSet};
 use chain_consensus::wire::{decode_message, encode_message};
-use chain_engine_api::{Block, ChainView};
+use chain_engine_api::{
+    Block, BlockLimits, BlockRejected, ChainView, ChainViewError, Engine, ExecutedBlock,
+    FinaliseError, FinaliseErrorReason, Head, ValidatorInfo,
+};
 use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::native::{STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS};
 use chain_exec::Executor;
 use chain_modules::params::GENESIS_PARAM_VALUES;
-use chain_node::{DiskConfig, FileMarkStore, FileSignedLog, FileStorage, NodeDisk};
+use chain_node::{DiskConfig, DurableEngine, FileMarkStore, FileSignedLog, FileStorage, NodeDisk};
 use chain_signer::{HighWaterMark, HighWaterMarkStore, InMemoryStore, Signer, Step};
+use chain_state::StateRoot;
 use chain_types::beacon::{genesis_seed, next_seed, verify_reveal};
 use chain_types::bls::{BlsSignature, DST_PROOF_OF_POSSESSION};
 use chain_types::{
@@ -327,8 +331,95 @@ impl Disk {
     }
 }
 
+/// A node's chain: an executor in memory, or one kept in a database that a
+/// restart closes and opens again. Derefs to the executor, so a test reads the
+/// chain the same way whichever it is.
+enum Chain {
+    Memory(Executor),
+    Durable {
+        engine: Box<DurableEngine>,
+        /// A finalisation at this height fails, as if the process had died
+        /// just before the database commit.
+        fail_at: Rc<Cell<Option<u64>>>,
+    },
+}
+
+impl std::ops::Deref for Chain {
+    type Target = Executor;
+
+    fn deref(&self) -> &Executor {
+        match self {
+            Self::Memory(executor) => executor,
+            Self::Durable { engine, .. } => engine.executor(),
+        }
+    }
+}
+
+impl Engine for Chain {
+    fn propose_block(
+        &self,
+        parent_block_hash: Hash,
+        parent_state_root: StateRoot,
+        height: BlockHeight,
+        timestamp_millis: u64,
+        candidate_transactions: Vec<Transaction>,
+        limits: BlockLimits,
+    ) -> Block {
+        Engine::propose_block(
+            &**self,
+            parent_block_hash,
+            parent_state_root,
+            height,
+            timestamp_millis,
+            candidate_transactions,
+            limits,
+        )
+    }
+
+    fn execute_block(
+        &self,
+        parent_state_root: StateRoot,
+        block: &Block,
+    ) -> Result<ExecutedBlock, BlockRejected> {
+        Engine::execute_block(&**self, parent_state_root, block)
+    }
+
+    fn finalise_block(
+        &mut self,
+        block: &Block,
+        executed: &ExecutedBlock,
+    ) -> Result<(), FinaliseError> {
+        match self {
+            Self::Memory(executor) => executor.finalise_block(block, executed),
+            Self::Durable { engine, fail_at } => {
+                if fail_at.get() == Some(block.height.0) {
+                    fail_at.set(None);
+                    return Err(FinaliseError {
+                        reason: FinaliseErrorReason::StorageUnavailable,
+                    });
+                }
+                engine.finalise_block(block, executed)
+            }
+        }
+    }
+}
+
+impl ChainView for Chain {
+    fn head(&self) -> Result<Head, ChainViewError> {
+        ChainView::head(&**self)
+    }
+
+    fn validator_set(&self) -> Result<Vec<ValidatorInfo>, ChainViewError> {
+        ChainView::validator_set(&**self)
+    }
+
+    fn block_limits(&self) -> Result<BlockLimits, ChainViewError> {
+        ChainView::block_limits(&**self)
+    }
+}
+
 type TestHost =
-    Host<Executor, SharedSource, SimClock, Signer<SharedMark>, SharedSigned, SharedStorage>;
+    Host<Chain, SharedSource, SimClock, Signer<SharedMark>, SharedSigned, SharedStorage>;
 
 // ---- the network -------------------------------------------------------------
 
@@ -346,6 +437,9 @@ struct Sim {
     filter: Box<dyn FnMut(usize, usize, &Message) -> bool>,
     now: u64,
     config: GenesisConfig,
+    /// The genesis each node's chain started from: `config`, except for a
+    /// divergent node.
+    genesis: Vec<GenesisConfig>,
     host_config: HostConfig,
     disks: Vec<Disk>,
     /// How many events (messages, timers, ticks) each node has handled.
@@ -373,9 +467,15 @@ struct Options {
     host: HostConfig,
     /// Every node's write-ahead log is lost at a restart.
     forgetful: bool,
-    /// Keep what the nodes keep in real files, reopened at each restart.
+    /// Keep what the nodes keep in real files, reopened at each restart:
+    /// including the chain itself, in a database, so a restart rebuilds it
+    /// from disk.
     files: bool,
     crash_at: Option<(usize, usize)>,
+    /// `(node, height)`: with `files`, the node's database commit of that
+    /// height does not happen, as if it had died just before it (after the
+    /// host recorded the commit in its own log).
+    fail_finalise: Option<(usize, u64)>,
 }
 
 impl Options {
@@ -390,6 +490,7 @@ impl Options {
             forgetful: false,
             files: false,
             crash_at: None,
+            fail_finalise: None,
         }
     }
 }
@@ -411,6 +512,7 @@ impl Sim {
             filter: options.filter,
             now: start,
             config,
+            genesis: Vec::new(),
             host_config: options.host,
             disks: Vec::new(),
             events: vec![0; n],
@@ -430,7 +532,7 @@ impl Sim {
                     ))
                     .unwrap();
             }
-            let executor = if options.divergent.contains(&i) {
+            let node_genesis = if options.divergent.contains(&i) {
                 let mut other = self::config(&options.stakes);
                 other = GenesisConfig::new(
                     other.chain_id(),
@@ -443,15 +545,28 @@ impl Sim {
                     other.validators().to_vec(),
                 )
                 .unwrap();
-                Executor::from_genesis(&other).unwrap()
+                other
             } else {
-                Executor::from_genesis(&sim.config).unwrap()
+                sim.config.clone()
             };
+            let chain = match &disk.dir {
+                Some(dir) => Chain::Durable {
+                    engine: Box::new(DurableEngine::open(dir.path(), &node_genesis).unwrap()),
+                    fail_at: Rc::new(Cell::new(
+                        options
+                            .fail_finalise
+                            .filter(|(node, _)| *node == i)
+                            .map(|(_, height)| height),
+                    )),
+                },
+                None => Chain::Memory(Executor::from_genesis(&node_genesis).unwrap()),
+            };
+            sim.genesis.push(node_genesis);
             sim.clocks
                 .push(SimClock(Rc::new(Cell::new(start + options.skew[i]))));
             sim.sources.push(SharedSource::default());
             sim.disks.push(disk);
-            let host = sim.host_on(i, executor);
+            let host = sim.host_on(i, chain);
             sim.nodes.push(host);
         }
         for node in &mut sim.nodes {
@@ -460,14 +575,14 @@ impl Sim {
         sim
     }
 
-    /// A host for node `i` on `executor`, with the disk the node has.
-    fn host_on(&self, i: usize, executor: Executor) -> TestHost {
+    /// A host for node `i` on `chain`, with the disk the node has.
+    fn host_on(&self, i: usize, chain: Chain) -> TestHost {
         let seed = u8::try_from(i).unwrap() + 1;
         let disk = self.disks[i].clone();
         Host::new(
             self.host_config,
             operator_address(seed),
-            executor,
+            chain,
             Ports {
                 source: self.sources[i].clone(),
                 clock: self.clocks[i].clone(),
@@ -482,16 +597,32 @@ impl Sim {
 
     /// Node `i` crashes and starts again. Whatever it had produced and not
     /// yet handed over is gone, so is what it had appended to its log and not
-    /// flushed, and so are its timers; its chain and what it keeps on disk
-    /// are what they were.
+    /// flushed, and so are its timers. With files, everything in memory is
+    /// gone, the chain included: it is opened again from its database, which
+    /// checks it against the genesis and its own records. Without files, the
+    /// chain and what the node keeps are what they were.
     fn restart(&mut self, i: usize) {
         drop(self.nodes[i].take_outbox());
         self.disks[i].lose_unflushed();
         self.timers[i].clear();
         let old = self.nodes.remove(i);
-        let executor = old.into_chain();
+        let chain = match old.into_chain() {
+            Chain::Durable { engine, .. } => {
+                // The database allows one open writer: close it first.
+                drop(engine);
+                let dir = self.disks[i]
+                    .dir
+                    .clone()
+                    .expect("a durable chain has a directory");
+                Chain::Durable {
+                    engine: Box::new(DurableEngine::open(dir.path(), &self.genesis[i]).unwrap()),
+                    fail_at: Rc::new(Cell::new(None)),
+                }
+            }
+            memory => memory,
+        };
         self.disks[i].reopen();
-        let mut host = self.host_on(i, executor);
+        let mut host = self.host_on(i, chain);
         host.start();
         self.nodes.insert(i, host);
         self.restarts += 1;
@@ -1680,4 +1811,95 @@ fn a_timeout_that_fired_before_a_restart_fires_again_in_the_replay() {
         sim.nodes[node].halted()
     );
     agree(&sim, 2);
+}
+
+/// The tip a node's database holds, for a node whose chain is durable.
+fn database_tip(sim: &Sim, i: usize) -> Option<BlockHeight> {
+    match sim.nodes[i].chain() {
+        Chain::Durable { engine, .. } => engine.database().tip_height().unwrap(),
+        Chain::Memory(_) => panic!("node {i} keeps its chain in memory"),
+    }
+}
+
+#[test]
+fn every_nodes_database_holds_exactly_the_chain_it_is_on() {
+    let mut options = Options::new(4);
+    options.files = true;
+    let mut sim = Sim::new(options);
+    sim.run_until(|s| s.all_committed(4));
+    agree(&sim, 4);
+    for i in 0..4 {
+        let head = sim.nodes[i].chain().head().unwrap();
+        assert_eq!(
+            database_tip(&sim, i),
+            Some(head.height).filter(|h| h.0 > 0),
+            "node {i}"
+        );
+        let Chain::Durable { engine, .. } = sim.nodes[i].chain() else {
+            unreachable!()
+        };
+        assert_eq!(
+            engine.database().get_root(head.height).unwrap(),
+            Some(head.state_root.as_hash()),
+            "node {i}: the stored root is the head's"
+        );
+    }
+}
+
+#[test]
+fn a_node_that_dies_after_recording_a_decision_but_before_committing_it_recovers() {
+    // The host records a decided block in its own log, then finalises it.
+    // Here node `victim` never gets to the second step at height 2: its log
+    // has the decision, its database does not have the block. Restarted, it
+    // must find its chain at height 1 and its log a block ahead, carry on,
+    // and end up on the same chain as everyone else, without halting and
+    // without signing anything it had not already signed (an equivocation
+    // would be witnessed as evidence).
+    use chain_consensus::host::CommitLog as _;
+
+    let victim = 3;
+    let mut options = Options::new(4);
+    options.files = true;
+    options.fail_finalise = Some((victim, 2));
+    let mut sim = Sim::new(options);
+
+    assert!(
+        sim.try_run(|s| s.nodes[victim].halted().is_some(), 20_000),
+        "the node should have stopped at the failed commit"
+    );
+    assert!(matches!(
+        sim.nodes[victim].halted(),
+        Some(HaltReason::FinaliseFailed { height }) if *height == BlockHeight(2)
+    ));
+    // The window itself: recorded in the log, absent from the database.
+    let logged = sim.disks[victim].storage.clone().range(BlockHeight(2), 1);
+    assert_eq!(
+        logged.len(),
+        1,
+        "the decision was recorded before the commit"
+    );
+    assert_eq!(database_tip(&sim, victim), Some(BlockHeight(1)));
+    assert_eq!(
+        sim.nodes[victim].chain().head().unwrap().height,
+        BlockHeight(1),
+        "and the in-memory chain did not move"
+    );
+
+    // Restarting opens the chain from its database (at height 1) and starts
+    // the host, whose write-ahead log replays the height and decides block 2
+    // again, this time committing it.
+    sim.restart(victim);
+    assert!(sim.try_run(|s| s.all_committed(4), 20_000));
+    for (i, host) in sim.nodes.iter().enumerate() {
+        assert!(host.halted().is_none(), "node {i}: {:?}", host.halted());
+    }
+    assert!(
+        sim.evidence.iter().all(Vec::is_empty),
+        "nothing equivocated"
+    );
+    agree(&sim, 4);
+    assert_eq!(
+        database_tip(&sim, victim),
+        Some(sim.nodes[victim].chain().head().unwrap().height)
+    );
 }

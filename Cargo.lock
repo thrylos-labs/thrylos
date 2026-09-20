@@ -1338,8 +1338,12 @@ dependencies = [
  "chain-consensus",
  "chain-db",
  "chain-engine-api",
+ "chain-exec",
+ "chain-genesis",
  "chain-signer",
+ "chain-state",
  "chain-types",
+ "ed25519-dalek",
  "tempfile",
 ]
 

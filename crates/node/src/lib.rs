@@ -4,6 +4,10 @@
 //! `chain-consensus` (tier A, no I/O) defines meet the files `chain-db`
 //! knows how to write safely, and where a node binary will be assembled.
 //!
+//! The chain itself is [`DurableEngine`]'s: the executor with its blocks and
+//! state kept in an MDBX database (`chain/` inside the node's directory),
+//! committed before the chain advances and restored, checked, on restart.
+//!
 //! The node keeps three things beyond the chain itself, each with its own
 //! file under one directory ([`NodeDisk::open`]):
 //!
@@ -30,6 +34,7 @@
 mod atomic;
 pub mod commit_log;
 pub mod disk;
+pub mod durable_engine;
 pub mod mark_store;
 pub mod remote_signer;
 pub mod signed_log;
@@ -37,6 +42,7 @@ pub mod wal;
 
 pub use commit_log::FileCommitLog;
 pub use disk::{DiskConfig, FileStorage, NodeDisk};
+pub use durable_engine::{DurableEngine, OpenError};
 pub use mark_store::{FileMarkStore, MarkError};
 pub use remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential, SignerServer};
 pub use signed_log::FileSignedLog;

@@ -80,8 +80,9 @@ Status meanings:
 |---|---|---|---|
 | BLAKE3 domain-separated binary Merkle root over sorted flat state | **Conforms** | `chain-state::trie` and property tests. | Retain the simple implementation as a reference when introducing incremental updates. |
 | Execution cost is bounded independently of total historical state | **Missing** | Execution and finalisation clone the whole state, recompute the whole root and diff the whole map. | Introduce write-set execution and incremental trie updates; prove equivalence against the reference implementation. |
-| Block, root and state diff commit atomically | **Partial** | MDBX transaction and process-kill crash test in `chain-db`. | Wire this store into the real finalisation/restart path. |
-| A node restarts from durable canonical chain state | **Missing** | Consensus logs are durable, but no node binary connects executor finalisation to MDBX restoration. | Build the minimal node runtime and replay recovery before networking features. |
+| Block, root and state diff commit atomically | **Conforms** | `Db::commit_block` is one MDBX transaction, and `chain-node`'s `DurableEngine::finalise_block` checks and stages the block, commits it, and only then advances the executor, so a refused commit leaves the head where it was. Evidence: a killed uncommitted transaction leaves no trace (`chain-db`); a helper process finalising blocks is `SIGKILL`ed ten times in a row and every restart is at a block boundary; the four-validator crash sweep reloads each node's chain from its database, including a death between the host's log record and the database commit. | Keep the commit-before-advance order when finalisation moves to write-set execution. |
+| A node restarts from durable canonical chain state | **Partial** | `DurableEngine::open` starts a chain from genesis or restores it: the database must have been made from the same genesis, its tip block and recorded root must be present, and the state must hash to that root, record the tip's height and time, and pass the full audit (`Executor::restore`), or the node refuses to start. Restoring mid-unbonding then executes identically to the original. | A node binary that assembles this with the consensus host, signer client and transport. Restart cost is O(state) until write-set execution exists. |
+| State keys have a fixed maximum length, enforced before storage | **Partial** | `chain-db` refuses a key over `MAX_KEY_BYTES` (1,024) with an error, identically on every platform; MDBX itself panics on an oversized key, at a limit that depends on the OS page size. Every key the chain builds today is a tag and fixed-width fields, under 40 bytes. | Declare the bound at the state layer and test that no key builder can exceed it, before module publishing adds variable-length keys. |
 | Full replay, snapshot and weak-subjectivity warp produce identical roots in CI | **Missing** | No snapshot or warp implementation. | Implement all three paths and a single cross-mode root-equivalence fixture. |
 | Pruning preserves the unbonding window | **Missing** | No pruning implementation. | Add only after snapshot/warp formats and retention invariants are fixed. |
 | Persistent state growth pays a fixed deposit | **Missing** | No general creation path or storage deposit exists. | Define byte accounting and deletion refunds together with immutable module/object creation. |
@@ -137,8 +138,9 @@ The next milestone is one **runnable, crash-recoverable validator process**
 that joins a static network using the completed bounded transport. Remaining
 work, in order:
 
-1. wire executor finalisation and restart to MDBX in `chain-node`, including
-   restoration of the canonical block, state root and validator state;
+1. ~~wire executor finalisation and restart to MDBX in `chain-node`~~ — done
+   (`DurableEngine`); what remains of it is assembling it into the node
+   binary;
 2. drive the consensus host, bounded mempool and block catch-up through
    `TcpNetwork`, supplying a consensus verifier backed by the canonical
    validator set;
