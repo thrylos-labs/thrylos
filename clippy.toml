@@ -11,7 +11,7 @@
 
 disallowed-types = [
     { path = "std::collections::HashMap", reason = "non-deterministic iteration order; use BTreeMap" },
-    { path = "std::collections::HashSet", reason = "non-deterministic iteration order; use BTreeSet" },
+    { path = "std::collections::HashSet", reason = "noån-deterministic iteration order; use BTreeSet" },
 ]
 
 disallowed-methods = [

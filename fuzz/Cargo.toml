@@ -1,0 +1,50 @@
+[package]
+name = "thrylos-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+blst = "0.3"
+ed25519-dalek = "2"
+libfuzzer-sys = "0.4"
+chain-consensus = { path = "../crates/consensus" }
+chain-engine-api = { path = "../crates/engine-api" }
+chain-exec = { path = "../crates/exec" }
+chain-modules = { path = "../crates/modules" }
+chain-state = { path = "../crates/state" }
+chain-types = { path = "../crates/types" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "codecs"
+path = "fuzz_targets/codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "state_transitions"
+path = "fuzz_targets/state_transitions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol_calls"
+path = "fuzz_targets/protocol_calls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metering_ratio"
+path = "fuzz_targets/metering_ratio.rs"
+test = false
+doc = false
+bench = false

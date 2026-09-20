@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Longer fuzzing keeps running even when the repository is quiet.
+    - cron: "17 2 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +36,59 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
+
+  formal-consensus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Download pinned TLC model checker
+        run: |
+          curl -fsSL \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar \
+            -o "$RUNNER_TEMP/tla2tools.jar"
+          echo "85b172970b0a1d283b9e45679b8ecf5b4de72ab2  $RUNNER_TEMP/tla2tools.jar" \
+            | sha1sum -c -
+      - name: Check consensus safety and eventual-synchrony liveness
+        working-directory: formal/consensus
+        run: >-
+          java -cp "$RUNNER_TEMP/tla2tools.jar" tlc2.TLC
+          -workers 1 -config Consensus.cfg Consensus.tla
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [codecs, state_transitions, protocol_calls, metering_ratio]
+    env:
+      CARGO_FUZZ_VERSION: 0.12.0
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && 600 || 30 }}
+      THRYLOS_MAX_NS_PER_GAS: 1000000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/cargo-fuzz
+          key: cargo-fuzz-${{ runner.os }}-${{ env.CARGO_FUZZ_VERSION }}
+      - name: Install cargo-fuzz
+        run: |
+          echo "${{ runner.tool_cache }}/cargo-fuzz/bin" >> "$GITHUB_PATH"
+          cargo install --root "${{ runner.tool_cache }}/cargo-fuzz" \
+            --version "$CARGO_FUZZ_VERSION" cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        run: >-
+          cargo fuzz run ${{ matrix.target }} --
+          -max_len=4096 -max_total_time="$FUZZ_SECONDS"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.sha }}
+          path: fuzz/artifacts/${{ matrix.target }}
 
   deny:
     runs-on: ubuntu-latest
