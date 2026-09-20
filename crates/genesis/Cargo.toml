@@ -14,6 +14,7 @@ workspace = true
 blst.workspace = true
 chain-exec = { path = "../exec", version = "0.1.0" }
 chain-modules = { path = "../modules", version = "0.1.0" }
+chain-text = { path = "../text", version = "0.1.0" }
 chain-types = { path = "../types", version = "0.1.0" }
 ed25519-dalek.workspace = true
 serde.workspace = true

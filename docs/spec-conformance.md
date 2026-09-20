@@ -33,6 +33,8 @@ Status meanings:
 | D-007 | Remove the total-line-count target. Track audit scope by trust tier, dependency revision, boundary size, bounds and verification evidence. | On 2026-09-19 the crate source trees contain 27,096 lines of Rust, including unit tests embedded beside production code, and 33,980 with integration tests. The node and sync paths are still incomplete. Dependency code remains part of the review surface even when first-party glue is short. |
 | D-008 | Use one mutually authenticated TCP transport and a static trusted-peer allowlist for the first testnet. | This carries consensus, bounded block catch-up and transaction submission without adding discovery, multiple transports, ASN data or a reputation subsystem. Loopback tests exercise real sockets, mutual Ed25519 authentication and session-bound signed frames. |
 | D-009 | Separate the consensus signer with one authenticated Unix-socket protocol; defer remote custody adapters and key rotation. | The signer process exposes only fixed-domain consensus signing, deterministic beacon signing and mark inspection. Keyed BLAKE3 authenticates bounded requests and binds each response to its request without adding TLS, HTTP or a general RPC framework. |
+| D-010 | Write addresses as bech32m with the prefix `thry` (`thry1…`, 63 characters) at every human edge: the tools, and RPC when it exists. The chain still stores and hashes 32 raw bytes, and genesis files still name public keys in hex. | A 64-digit hex address treats every mistyped character as a different valid address, so the funds are gone. bech32m catches every single-character typo, every swap of neighbours and any burst up to four characters, refuses another chain's prefix, and has no look-alike characters. Implemented in `chain-text` with the standard's own test vectors, a Python reference implementation and an exhaustive single-typo test. |
+| D-011 | Show amounts in tokens with the ticker `THRY` and nine decimal places (`1 THRY` = 1,000,000,000 base units). The protocol, transactions and genesis files count in whole base units only. | The fee market prices gas in whole base units with a floor of 1, so the base unit must be tiny next to a token: six decimals would make a 21,000-gas call cost at least 0.021 tokens, while eighteen would leave a 64-bit balance holding about 18 tokens, and Move code conventionally uses 64 bits. Formatting is exact and parsing refuses ambiguous input (`1,5`, a tenth decimal place). This fixes a display convention, not the token schedule, which stays open. The ticker and prefix are single constants in `chain-text`. |
 
 ## Scope and architecture
 
@@ -124,7 +126,8 @@ Status meanings:
 ## Open product decisions
 
 The specification's L1 need, first applications, MEV policy, validator entry,
-token schedule, bridge/value cap, emergency powers and reference hardware
+token schedule (supply, inflation and allocations; the display unit is fixed
+by D-011), bridge/value cap, emergency powers and reference hardware
 remain open. Until owners and applications are named, their numerical defaults
 must not be treated as audited requirements.
 

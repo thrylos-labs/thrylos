@@ -4,7 +4,9 @@
 //! ```text
 //! chain-genesis check <file>        validate it and report what it creates
 //! chain-genesis hash <file>         print just the genesis hash
-//! chain-genesis address <pubkey>    the address of an Ed25519 public key
+//! chain-genesis address <pubkey>    the address (thry1…) of an Ed25519 public key
+//! chain-genesis address --hex <pubkey>   the same address as raw hex
+//! chain-genesis verify-address <thry1…>  check that an address was copied correctly
 //! chain-genesis devnet              the INSECURE development genesis, as JSON
 //! chain-genesis --help | --version
 //! ```
@@ -18,12 +20,14 @@ use std::process::ExitCode;
 use chain_genesis::check::{report, ValidatorLine};
 use chain_genesis::human::{duration, percent_bps};
 use chain_genesis::{devnet, hex, load, to_json};
+use chain_text::{format_address, format_amount, parse_address, BASE_UNITS_PER_TOKEN, TICKER};
 use chain_types::{Address, PublicKey};
 
 const USAGE: &str = "usage:
   chain-genesis check <file>
   chain-genesis hash <file>
-  chain-genesis address <ed25519-public-key-hex>
+  chain-genesis address [--hex] <ed25519-public-key-hex>
+  chain-genesis verify-address <address>
   chain-genesis devnet
   chain-genesis --help | --version";
 
@@ -56,15 +60,19 @@ fn check(path: &Path) -> ExitCode {
         "state root:         {}",
         hex::encode(report.state_root.as_bytes())
     );
-    println!("total supply:       {}", report.total_supply);
+    println!(
+        "units:              amounts are in {TICKER}; 1 {TICKER} = {BASE_UNITS_PER_TOKEN} base units"
+    );
+    println!("total supply:       {}", format_amount(report.total_supply));
     println!(
         "allocations:        {} accounts, {} in total",
-        report.allocation_count, report.allocated
+        report.allocation_count,
+        format_amount(report.allocated)
     );
     println!(
         "validators:         {}, {} bonded",
         report.validators.len(),
-        report.bonded
+        format_amount(report.bonded)
     );
     for ValidatorLine {
         operator,
@@ -73,8 +81,8 @@ fn check(path: &Path) -> ExitCode {
     {
         println!(
             "  {}  {}  {}",
-            hex::encode(operator.as_bytes()),
-            self_stake,
+            format_address(operator),
+            format_amount(*self_stake),
             percent(*self_stake, report.bonded)
         );
     }
@@ -85,7 +93,10 @@ fn check(path: &Path) -> ExitCode {
         "  base fee change denominator:   {}",
         p.base_fee_change_denominator
     );
-    println!("  minimum self-stake:            {}", p.min_self_stake);
+    println!(
+        "  minimum self-stake:            {}",
+        format_amount(p.min_self_stake)
+    );
     println!(
         "  inflation:                     {} ({} bps)",
         percent_bps(u128::from(p.inflation_bps)),
@@ -125,17 +136,33 @@ fn hash(path: &Path) -> ExitCode {
     }
 }
 
-fn address(text: &str) -> ExitCode {
+fn address(text: &str, raw_hex: bool) -> ExitCode {
     let bytes = match hex::decode::<32>(text) {
         Ok(bytes) => bytes,
         Err(err) => return fail(format!("public key: {err}")),
     };
     match PublicKey::from_ed25519_bytes(bytes) {
         Ok(key) => {
-            println!("{}", hex::encode(Address::from_public_key(&key).as_bytes()));
+            let address = Address::from_public_key(&key);
+            if raw_hex {
+                println!("{}", hex::encode(address.as_bytes()));
+            } else {
+                println!("{}", format_address(&address));
+            }
             ExitCode::SUCCESS
         }
         Err(_) => fail("public key: not a valid Ed25519 public key"),
+    }
+}
+
+fn verify_address(text: &str) -> ExitCode {
+    match parse_address(text) {
+        Ok(address) => {
+            println!("address:  valid");
+            println!("raw hex:  {}", hex::encode(address.as_bytes()));
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
     }
 }
 
@@ -147,6 +174,11 @@ fn devnet_json() -> ExitCode {
         }
         Err(err) => fail(err),
     }
+}
+
+fn usage_error() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
@@ -163,11 +195,11 @@ fn main() -> ExitCode {
         }
         ["check", path] => check(Path::new(path)),
         ["hash", path] => hash(Path::new(path)),
-        ["address", key] => address(key),
+        ["address", "--hex"] => usage_error(),
+        ["address", "--hex", key] => address(key, true),
+        ["address", key] => address(key, false),
+        ["verify-address", text] => verify_address(text),
         ["devnet"] => devnet_json(),
-        _ => {
-            eprintln!("{USAGE}");
-            ExitCode::from(2)
-        }
+        _ => usage_error(),
     }
 }

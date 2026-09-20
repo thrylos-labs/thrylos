@@ -1,0 +1,17 @@
+[package]
+name = "chain-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Human-readable text forms of chain values: checksummed addresses and token amounts"
+
+[lints]
+workspace = true
+
+[dependencies]
+chain-types = { path = "../types", version = "0.1.0" }
+
+[dev-dependencies]
+proptest.workspace = true

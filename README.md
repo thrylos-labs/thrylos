@@ -13,7 +13,14 @@ cargo run -p chain-genesis -- devnet > devnet.json   # a four-validator developm
 cargo run -p chain-genesis -- check devnet.json      # validate it: hash, state root, supply, parameters, validator set
 ```
 
-`chain-genesis hash <file>` prints only the genesis hash, and `chain-genesis address <ed25519-public-key-hex>` derives an account address. Beyond that, the tests are the way in: `cargo test --workspace`.
+Addresses are written `thry1…` (bech32m: a mistyped character is always caught), and amounts are shown in tokens (`THRY`, nine decimal places; the chain itself counts in base units, and genesis files stay in base units). The tool converts and checks both:
+
+```bash
+cargo run -p chain-genesis -- address <ed25519-public-key-hex>   # the thry1… address of a key
+cargo run -p chain-genesis -- verify-address thry1…              # was it copied correctly? says what is wrong if not
+```
+
+`chain-genesis hash <file>` prints only the genesis hash, and `address --hex` prints the raw bytes. Beyond that, the tests are the way in: `cargo test --workspace`.
 
 Fuzzing is described in [fuzz/README.md](fuzz/README.md) and the TLA+ consensus model in [formal/consensus/README.md](formal/consensus/README.md).
 
@@ -84,6 +91,7 @@ Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout a
 | `rpc` | JSON-RPC, tracing | C |
 | `genesis` | Genesis file parsing and the `chain-genesis` checker tool | C |
 | `node` | The durable storage the consensus host keeps on disk, and where the node binary will be assembled (not in the spec's table) | B |
+| `text` | How people read and write addresses (`thry1…`) and amounts (`THRY`); presentation only (not in the spec's table) | C |
 
 Tier A crates must build byte-identical output on every machine. They carry `[lints] workspace = true` (see root `Cargo.toml` and `clippy.toml`), which forbids `unsafe`, `unwrap`/`expect`/`panic!`, indexing/slicing, integer division, float arithmetic, and non-deterministic collection types. Tier B/C crates are not held to that bar.
 

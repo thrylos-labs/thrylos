@@ -96,14 +96,82 @@ fn address_derives_the_address_of_a_public_key_and_refuses_junk() {
     let output = run(&["address", key]);
     assert_eq!(output.status.code(), Some(0));
     let address = stdout(&output);
-    assert_eq!(address.trim().len(), 64);
-    assert_ne!(address.trim(), key, "an address is not the key");
+    let address = address.trim();
+    assert!(address.starts_with("thry1"), "{address}");
+    assert_eq!(address.len(), 63);
     // It is one of the lines `check` lists for the validators.
-    assert!(stdout(&run(&["check", DEVNET])).contains(address.trim()));
+    assert!(stdout(&run(&["check", DEVNET])).contains(address));
+
+    // The same address as raw bytes, for scripts.
+    let raw = stdout(&run(&["address", "--hex", key]));
+    let raw = raw.trim();
+    assert_eq!(raw.len(), 64);
+    assert!(raw.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_ne!(raw, key, "an address is not the key");
+    // And the text form verifies back to those bytes.
+    let verified = stdout(&run(&["verify-address", address]));
+    assert!(verified.contains("address:  valid"), "{verified}");
+    assert!(verified.contains(raw), "{verified}");
 
     for junk in ["", "zz", "abcd", &"0".repeat(63)] {
         assert_eq!(run(&["address", junk]).status.code(), Some(1), "{junk:?}");
+        assert_eq!(
+            run(&["address", "--hex", junk]).status.code(),
+            Some(1),
+            "{junk:?}"
+        );
     }
+}
+
+#[test]
+fn verify_address_says_what_is_wrong_with_a_badly_copied_address() {
+    let key = "54b0d81d0fa7d00e4a7d600dfaba6f2b22035b22fe335e17edf5f9aa5bb05074";
+    let good = stdout(&run(&["address", key])).trim().to_owned();
+    let raw = stdout(&run(&["address", "--hex", key])).trim().to_owned();
+
+    // One character changed anywhere in what follows the prefix.
+    let mut characters: Vec<char> = good.chars().collect();
+    characters[20] = if characters[20] == 'q' { 'p' } else { 'q' };
+    let typo: String = characters.into_iter().collect();
+
+    for (text, says) in [
+        (typo.as_str(), "typo"),
+        (&good[..good.len() - 1], "truncated"),
+        (raw.as_str(), "raw hex"),
+        (
+            "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",
+            "for something else",
+        ),
+        ("", "empty"),
+    ] {
+        let output = run(&["verify-address", text]);
+        assert_eq!(output.status.code(), Some(1), "{text:?}");
+        assert!(stdout(&output).is_empty(), "{text:?}");
+        assert!(
+            stderr(&output).contains(says),
+            "{text:?}: {}",
+            stderr(&output)
+        );
+    }
+    // Upper case is the same address.
+    let upper = run(&["verify-address", &good.to_ascii_uppercase()]);
+    assert_eq!(upper.status.code(), Some(0));
+}
+
+#[test]
+fn check_shows_amounts_in_tokens_and_says_what_a_token_is() {
+    let text = stdout(&run(&["check", DEVNET]));
+    for expected in [
+        "units:              amounts are in THRY; 1 THRY = 1000000000 base units",
+        "total supply:       4,000.040004 THRY",
+        "allocations:        4 accounts, 4,000 THRY in total",
+        "validators:         4, 0.04 THRY bonded",
+        "  0.01 THRY  25.00%",
+        "  thry1",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+    assert!(!text.contains("4000040004000"), "no raw amounts:\n{text}");
 }
 
 #[test]
@@ -120,6 +188,9 @@ fn unknown_commands_and_missing_arguments_print_usage_and_exit_two() {
         &["bogus"],
         &["check", "a", "b"],
         &["devnet", "x"],
+        &["verify-address"],
+        &["address", "--hex"],
+        &["verify-address", "a", "b"],
     ] {
         let output = run(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -133,7 +204,7 @@ fn check_shows_the_parameters_in_units_a_person_can_read() {
     for expected in [
         "parameters:",
         "max block gas:                 60000000",
-        "minimum self-stake:            1000000",
+        "minimum self-stake:            0.001 THRY",
         "inflation:                     4.00% (400 bps)",
         "unbonding period:              21 d (1814400000 ms)",
         "governance quorum:             33.40% (3340 bps)",

@@ -1299,6 +1299,7 @@ dependencies = [
  "blst",
  "chain-exec",
  "chain-modules",
+ "chain-text",
  "chain-types",
  "ed25519-dalek",
  "proptest",
@@ -1368,6 +1369,14 @@ dependencies = [
 
 [[package]]
 name = "chain-state"
+version = "0.1.0"
+dependencies = [
+ "chain-types",
+ "proptest",
+]
+
+[[package]]
+name = "chain-text"
 version = "0.1.0"
 dependencies = [
  "chain-types",

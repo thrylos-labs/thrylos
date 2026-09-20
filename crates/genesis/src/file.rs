@@ -7,6 +7,11 @@
 //! a later release might change; a repeated key is refused; and numbers
 //! that do not fit a JSON number exactly are strings.
 //!
+//! Amounts are strings of **base units**, never tokens: `"1000000000"` is
+//! one token (see `chain_text::amount`). The file stays in whole base units
+//! so that nothing in it can be misread as a decimal; `chain-genesis check`
+//! shows the same amounts in tokens.
+//!
 //! ```json
 //! {
 //!   "chain_id": 1,

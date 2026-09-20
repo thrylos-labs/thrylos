@@ -74,7 +74,7 @@ pub fn to_json(config: &GenesisConfig) -> Result<String, ParseError> {
 }
 
 fn account(address: &Address) -> String {
-    hex::encode(address.as_bytes())
+    chain_text::format_address(address)
 }
 
 /// An error in words, naming the account it is about where there is one.

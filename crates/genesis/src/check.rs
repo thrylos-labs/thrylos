@@ -47,12 +47,12 @@ impl core::fmt::Display for Warning {
             Self::CanHaltTheChain { operator } => write!(
                 f,
                 "validator {} holds a third or more of the bonded stake and can halt the chain",
-                crate::hex::encode(operator.as_bytes())
+                chain_text::format_address(operator)
             ),
             Self::ControlsFinality { operator } => write!(
                 f,
                 "validator {} holds two thirds or more of the bonded stake and alone decides finality",
-                crate::hex::encode(operator.as_bytes())
+                chain_text::format_address(operator)
             ),
         }
     }
