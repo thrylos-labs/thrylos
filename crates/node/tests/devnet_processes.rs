@@ -14,6 +14,7 @@
 )]
 
 use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
@@ -79,14 +80,6 @@ fn committed(log: &Path) -> u64 {
     committed_heights(log).into_iter().max().unwrap_or(0)
 }
 
-fn signal(pid: u32, name: &str) {
-    let status = Command::new("kill")
-        .args([format!("-{name}"), pid.to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success(), "kill -{name} {pid}");
-}
-
 fn append(path: &Path) -> File {
     OpenOptions::new()
         .create(true)
@@ -129,6 +122,63 @@ impl Network {
             signers: nodes.iter().map(|_| None).collect(),
             processes: nodes.iter().map(|_| None).collect(),
             nodes,
+        }
+    }
+
+    /// `devnet start --until-height` on this network. If it has not finished
+    /// within two minutes (a network that cannot make progress never will) it
+    /// is killed with everything it started, and the test fails with what the
+    /// nodes had said.
+    fn start_until(&self, height: u64) -> Output {
+        let mut child = Command::new(NODE)
+            .args(["devnet", "start", self.dir.to_str().unwrap()])
+            .args(["--until-height", &height.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let mut err = child.stderr.take().unwrap();
+        let out = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = out.read_to_end(&mut bytes);
+            bytes
+        });
+        let err = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = err.read_to_end(&mut bytes);
+            bytes
+        });
+        let end = Instant::now() + Duration::from_secs(120);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= end {
+                // Its children first, or they outlive it; then it.
+                let _ = Command::new("pkill")
+                    .args(["-9", "-P", &child.id().to_string()])
+                    .status();
+                child.kill().unwrap();
+                child.wait().unwrap();
+                let tails: Vec<String> = self
+                    .nodes
+                    .iter()
+                    .map(|node| format!("node {}:\n{}", node.number, tail(&node.node_log())))
+                    .collect();
+                panic!(
+                    "devnet start had not finished after two minutes:\n{}\n{}",
+                    String::from_utf8_lossy(&out.join().unwrap()),
+                    tails.join("\n")
+                );
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        Output {
+            status,
+            stdout: out.join().unwrap(),
+            stderr: err.join().unwrap(),
         }
     }
 
@@ -198,29 +248,6 @@ impl Network {
         );
     }
 
-    /// Runs `action` while every other node is frozen with `SIGSTOP`, after
-    /// giving the node at `index` time to finish what it was doing. It is then
-    /// idle: waiting on peers that are not answering, with no timer due for
-    /// longer than the pause. A node killed at a moment like that has nothing
-    /// half done.
-    fn while_others_are_frozen(&mut self, index: usize, action: impl FnOnce(&mut Self)) {
-        let frozen: Vec<u32> = self
-            .processes
-            .iter()
-            .enumerate()
-            .filter(|(other, _)| *other != index)
-            .filter_map(|(_, process)| process.as_ref().map(Child::id))
-            .collect();
-        for pid in &frozen {
-            signal(*pid, "STOP");
-        }
-        thread::sleep(Duration::from_millis(300));
-        action(self);
-        for pid in &frozen {
-            signal(*pid, "CONT");
-        }
-    }
-
     fn kill_node(&mut self, index: usize) {
         Self::kill(&mut self.processes[index], "the node");
     }
@@ -233,9 +260,21 @@ impl Network {
         committed(&self.nodes[index].node_log())
     }
 
-    fn await_height(&self, index: usize, target: u64) {
+    fn await_height(&mut self, index: usize, target: u64) {
         let end = Instant::now() + Duration::from_secs(90);
         while self.height(index) < target {
+            // A node that has stopped will not get there: say why at once.
+            if let Some(Some(status)) = self.processes[index]
+                .as_mut()
+                .map(|p| p.try_wait().unwrap())
+            {
+                panic!(
+                    "node {} stopped ({status}) at {} before reaching {target}:\n{}",
+                    self.nodes[index].number,
+                    self.height(index),
+                    tail(&self.nodes[index].node_log())
+                );
+            }
             assert!(
                 Instant::now() < end,
                 "node {} was still at {} waiting for {target}:\n{}",
@@ -333,13 +372,7 @@ fn assert_one_chain(nodes: &[NodeDir], height: u64) {
 fn devnet_start_runs_a_generated_network_to_a_height_and_leaves_no_process_behind() {
     const HEIGHT: u64 = 6;
     let network = Network::generate(4);
-    let output = run(&[
-        "devnet",
-        "start",
-        network.dir.to_str().unwrap(),
-        "--until-height",
-        &HEIGHT.to_string(),
-    ]);
+    let output = network.start_until(HEIGHT);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let said = stdout(&output);
     assert_eq!(
@@ -380,15 +413,7 @@ fn devnet_start_runs_a_generated_network_to_a_height_and_leaves_no_process_behin
 fn a_network_started_again_from_its_disks_waits_for_fresh_blocks_not_the_old_log() {
     const HEIGHT: u64 = 4;
     let network = Network::generate(4);
-    let start = || {
-        run(&[
-            "devnet",
-            "start",
-            network.dir.to_str().unwrap(),
-            "--until-height",
-            &HEIGHT.to_string(),
-        ])
-    };
+    let start = || network.start_until(HEIGHT);
     let first = start();
     assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
     let before: Vec<usize> = network
@@ -419,15 +444,13 @@ fn a_network_started_again_from_its_disks_waits_for_fresh_blocks_not_the_old_log
     assert_one_chain(&network.nodes, HEIGHT);
 }
 
-// What this does not cover, and is known not to work: a kill that lands after a
-// signer has recorded a signature and before its node has recorded the same
-// signature. The signer's rule, in the spec, is to refuse anything at or below
-// its mark unconditionally, so the restarted node is refused the position it
-// needs to sign again and halts. A kill at a random moment finds that window
-// often enough to make a test of it unreliable, so this one kills while the
-// victim is idle (see `while_others_are_frozen`).
+// A kill at a random moment, of the node alone and then of the node and its
+// signer together, while the other three carry on. (The signer of a node killed
+// between recording a signature and the node recording it gives the same
+// signature again when asked for the same message, so no moment is unsafe: see
+// `every_process_killed_at_a_random_moment...` for the whole network at once.)
 #[test]
-fn processes_killed_without_warning_while_idle_and_started_again_rejoin_and_the_chain_stays_one() {
+fn processes_killed_without_warning_and_started_again_rejoin_and_the_chain_stays_one() {
     const HEIGHT: u64 = 30;
     let mut network = Network::generate(4);
     network.start_all(HEIGHT);
@@ -435,7 +458,7 @@ fn processes_killed_without_warning_while_idle_and_started_again_rejoin_and_the_
 
     // First a crash of the node alone: its signer, a separate process, lives on.
     network.await_height(victim, 3);
-    network.while_others_are_frozen(victim, |network| network.kill_node(victim));
+    network.kill_node(victim);
     let first_crash = network.height(victim);
     // Three of four validators are more than two thirds: the rest go on.
     network.await_height(0, first_crash + 2);
@@ -444,10 +467,8 @@ fn processes_killed_without_warning_while_idle_and_started_again_rejoin_and_the_
 
     // Then the whole machine at once: the node and its signer, both without
     // warning. The signer has only its mark file to remember what it signed.
-    network.while_others_are_frozen(victim, |network| {
-        network.kill_node(victim);
-        network.kill_signer(victim);
-    });
+    network.kill_node(victim);
+    network.kill_signer(victim);
     assert!(
         network.nodes[victim].signer_mark().is_file(),
         "the signer had recorded what it signed"
@@ -472,6 +493,70 @@ fn processes_killed_without_warning_while_idle_and_started_again_rejoin_and_the_
         "a height was repeated: {heights:?}"
     );
     assert_one_chain(&network.nodes, HEIGHT);
+}
+
+/// Whatever moment every process of a running network is killed at, it starts
+/// again. Each cycle kills all four signers and all four nodes with `SIGKILL`,
+/// at a point in the block cycle that changes from one cycle to the next, and
+/// then requires every node to come back and commit more. (The moment matters:
+/// a signer that has recorded a signature its node died before recording used
+/// to refuse the position when asked again, and the node halted. Killing right
+/// after a commit is logged does not find that; killing at all phases does.)
+#[test]
+fn every_process_killed_at_a_random_moment_over_and_over_starts_again_and_the_chain_stays_one() {
+    const CYCLES: u64 = 8;
+    let mut network = Network::generate(4);
+    // A different sequence each run, so that over many runs every phase is
+    // tried; a failure prints it.
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos()
+        | 1;
+    let mut next = move || {
+        // xorshift: not random enough to matter, varied enough to matter.
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+
+    for cycle in 1..=CYCLES {
+        network.start_all(u64::MAX);
+        // Every node has to resume and get on, or this cycle proved nothing.
+        let reached = (0..4).map(|node| network.height(node)).max().unwrap();
+        for node in 0..4 {
+            network.await_height(node, reached + 2);
+        }
+        // Let it run a little further, for a time that is not a whole number of
+        // blocks, and then kill everything at once.
+        thread::sleep(Duration::from_millis(u64::from(next() % 180)));
+        for index in 0..4 {
+            network.kill_node(index);
+        }
+        for index in 0..4 {
+            network.kill_signer(index);
+        }
+        eprintln!(
+            "cycle {cycle}: killed at heights {:?}",
+            (0..4).map(|n| network.height(n)).collect::<Vec<_>>()
+        );
+    }
+
+    // After the last kill: one launch that has to bring all four to a height
+    // past anything before it.
+    let target = (0..4).map(|node| network.height(node)).max().unwrap() + 3;
+    let output = network.start_until(target);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    for node in &network.nodes {
+        let heights = committed_heights(&node.node_log());
+        assert!(
+            heights.windows(2).all(|pair| pair[0] < pair[1]),
+            "node {} repeated a height across {CYCLES} crashes: {heights:?}",
+            node.number
+        );
+    }
+    assert_one_chain(&network.nodes, target);
 }
 
 #[test]
@@ -531,13 +616,7 @@ fn a_signer_that_cannot_start_stops_the_launch_before_any_node_runs() {
     let key = network.nodes[0].signer_key();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-    let output = run(&[
-        "devnet",
-        "start",
-        network.dir.to_str().unwrap(),
-        "--until-height",
-        "3",
-    ]);
+    let output = network.start_until(3);
     assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
     assert!(
         stderr(&output).contains("the signer of node 1"),
@@ -567,13 +646,7 @@ fn a_node_that_cannot_start_is_reported_while_the_others_finish() {
     let key = network.nodes[1].dir.join("network.key");
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-    let output = run(&[
-        "devnet",
-        "start",
-        network.dir.to_str().unwrap(),
-        "--until-height",
-        "3",
-    ]);
+    let output = network.start_until(3);
     // Three of four validators are more than two thirds, so the rest finish;
     // the command still says it did not all go well, and which node.
     assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));

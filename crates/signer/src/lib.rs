@@ -21,5 +21,5 @@ pub mod timing;
 
 pub use high_water_mark::{HighWaterMark, Step};
 pub use signer::{ConsensusSigner, Signer, SignerError};
-pub use store::{HighWaterMarkStore, InMemoryStore};
+pub use store::{HighWaterMarkStore, InMemoryStore, MessageDigest};
 pub use timing::{assert_slashing_window_ordering, TimingError};

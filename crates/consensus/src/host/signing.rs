@@ -17,9 +17,16 @@
 //! The order matters: the log is consulted first, then the signer signs
 //! (persisting its mark before it returns), and only then is the entry
 //! recorded. A crash between the last two leaves a signer that remembers
-//! what the log does not — so on restart it *refuses*, and the node is
-//! stuck at that height until it moves on. Safe, and the only cost is
-//! liveness. Losing the log entirely has the same result.
+//! what the log does not. On restart the node asks again, and because the
+//! signer also remembers *what* it signed, it gives the same signature for
+//! the same bytes (`Signer::sign`), which is then recorded. Only different
+//! bytes at that position are refused, and that refusal halts the node: it
+//! would be signing twice.
+//!
+//! Losing the log entirely is different from a crash in that window: the
+//! signer then holds only its last position, and is asked for signatures the
+//! log used to answer. It answers for the one at its mark, and refuses the
+//! rest, because they are below it.
 
 use chain_signer::{ConsensusSigner, HighWaterMark, SignerError};
 use chain_types::bls::BlsSignature;
@@ -217,11 +224,99 @@ mod tests {
         }
     }
 
+    /// A store the "crash" and the "restart" both see, as a disk is.
+    #[derive(Clone, Default)]
+    struct Disk(std::rc::Rc<std::cell::RefCell<InMemoryStore>>);
+
+    impl chain_signer::HighWaterMarkStore for Disk {
+        type Error = core::convert::Infallible;
+
+        fn load(&self) -> Result<Option<HighWaterMark>, Self::Error> {
+            self.0.borrow().load()
+        }
+
+        fn persist(&mut self, mark: HighWaterMark) -> Result<(), Self::Error> {
+            self.0.borrow_mut().persist(mark)
+        }
+
+        fn load_digest(&self) -> Result<Option<chain_signer::MessageDigest>, Self::Error> {
+            self.0.borrow().load_digest()
+        }
+
+        fn persist_signed(
+            &mut self,
+            mark: HighWaterMark,
+            digest: chain_signer::MessageDigest,
+        ) -> Result<(), Self::Error> {
+            self.0.borrow_mut().persist_signed(mark, digest)
+        }
+    }
+
+    /// The signer records a signature and the node dies before it records the
+    /// same signature: the log write fails, as a crash there would have.
+    fn signed_but_never_logged(disk: &Disk, at: HighWaterMark, bytes: &[u8]) {
+        use chain_signer::HighWaterMarkStore;
+
+        let mut before_the_crash =
+            GuardedSigner::new(Signer::load(secret(), disk.clone()).unwrap(), FullDisk);
+        assert!(matches!(
+            before_the_crash.sign(at, bytes.to_vec()),
+            Err(SigningRefusal::Log(_))
+        ));
+        assert_eq!(disk.load().unwrap(), Some(at), "the signer did record it");
+    }
+
     #[test]
-    fn a_lost_log_does_not_let_the_signer_sign_again() {
-        // The signer has moved to (1,0,Prevote); a fresh log has forgotten
-        // it. Asking for the same message finds no entry, and the signer
-        // itself refuses: the node loses its place, never its safety.
+    fn a_crash_between_the_signer_and_the_log_is_recovered_by_asking_again() {
+        let disk = Disk::default();
+        let at = position(4, 0, Step::Prevote);
+        signed_but_never_logged(&disk, at, b"vote");
+
+        // The restarted node has an empty log and the same signer state.
+        let mut restarted = GuardedSigner::new(
+            Signer::load(secret(), disk.clone()).unwrap(),
+            MemorySignedLog::new(),
+        );
+        let signature = restarted.sign(at, b"vote".to_vec()).unwrap();
+        let public = BlsPublicKey::from_bytes(secret().sk_to_pk().to_bytes()).unwrap();
+        assert!(
+            chain_types::bls::verify_aggregate(&[&public], b"vote", DST_VOTE, &signature).is_ok()
+        );
+        // It is remembered now, and answered from the log without the signer.
+        assert_eq!(restarted.sign(at, b"vote".to_vec()).unwrap(), signature);
+        assert_eq!(
+            restarted.sign(at, b"another vote".to_vec()),
+            Err(SigningRefusal::Conflicting(at))
+        );
+        // And the chain goes on from there.
+        assert!(restarted
+            .sign(position(4, 0, Step::Precommit), b"commit".to_vec())
+            .is_ok());
+    }
+
+    #[test]
+    fn a_crash_in_that_window_does_not_let_the_restarted_node_sign_something_else() {
+        use chain_signer::HighWaterMarkStore;
+
+        let disk = Disk::default();
+        let at = position(4, 0, Step::Prevote);
+        signed_but_never_logged(&disk, at, b"vote for A");
+        let mut restarted = GuardedSigner::new(
+            Signer::load(secret(), disk.clone()).unwrap(),
+            MemorySignedLog::new(),
+        );
+        assert!(matches!(
+            restarted.sign(at, b"vote for B".to_vec()),
+            Err(SigningRefusal::Signer(SignerError::Regression { .. }))
+        ));
+        assert_eq!(disk.load().unwrap(), Some(at), "and the mark stayed");
+    }
+
+    #[test]
+    fn a_signer_that_kept_only_the_position_still_refuses_at_it() {
+        // A signer state from before digests were kept: the position, and no
+        // record of what was signed there. Asking again gets a refusal, as
+        // it always did: the node loses its place, never its safety.
         let mut store = InMemoryStore::new();
         {
             let mut g = GuardedSigner::new(

@@ -195,6 +195,28 @@ impl HighWaterMarkStore for SharedMark {
             MarkBackend::Files(store) => store.persist(mark).map_err(|e| e.to_string()),
         }
     }
+
+    fn load_digest(&self) -> Result<Option<chain_signer::MessageDigest>, Self::Error> {
+        match &*self.0.borrow() {
+            MarkBackend::Memory(store) => store.load_digest().map_err(|e| e.to_string()),
+            MarkBackend::Files(store) => store.load_digest().map_err(|e| e.to_string()),
+        }
+    }
+
+    fn persist_signed(
+        &mut self,
+        mark: HighWaterMark,
+        digest: chain_signer::MessageDigest,
+    ) -> Result<(), Self::Error> {
+        match &mut *self.0.borrow_mut() {
+            MarkBackend::Memory(store) => store
+                .persist_signed(mark, digest)
+                .map_err(|e| e.to_string()),
+            MarkBackend::Files(store) => store
+                .persist_signed(mark, digest)
+                .map_err(|e| e.to_string()),
+        }
+    }
 }
 
 enum SignedBackend {

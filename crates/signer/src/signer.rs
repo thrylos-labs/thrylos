@@ -8,14 +8,16 @@
 use chain_types::bls::BlsSignature;
 
 use crate::high_water_mark::HighWaterMark;
-use crate::store::HighWaterMarkStore;
+use crate::store::{HighWaterMarkStore, MessageDigest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignerError {
     /// Refused: `requested` is at or below `mark`, the last position
-    /// this signer has already signed. Unconditional — `docs/spec.md`:
-    /// "It refuses to sign anything at or below that mark,
-    /// unconditionally, with no override flag and no reset command."
+    /// this signer has already signed, and is not a request for the very
+    /// message it signed there (`docs/spec.md`: it refuses "anything at or
+    /// below that mark ... with no override flag and no reset command", the
+    /// one thing it will do at exactly the mark being to give again the
+    /// signature it already gave).
     Regression {
         requested: HighWaterMark,
         mark: HighWaterMark,
@@ -77,6 +79,18 @@ pub struct Signer<S: HighWaterMarkStore> {
     secret_key: blst::min_pk::SecretKey,
     store: S,
     mark: Option<HighWaterMark>,
+    /// The digest of the message signed at `mark`, when the store recorded it.
+    last_digest: Option<MessageDigest>,
+}
+
+/// What identifies a message to sign: its domain-separation tag as well as its
+/// bytes, since the same bytes under another tag are another signature.
+fn digest_of(dst: &[u8], message: &[u8]) -> MessageDigest {
+    let mut hasher = blake3::Hasher::new_derive_key("thrylos chain-signer signed message v1");
+    hasher.update(&u64::try_from(dst.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(dst);
+    hasher.update(message);
+    *hasher.finalize().as_bytes()
 }
 
 impl<S: HighWaterMarkStore> Signer<S> {
@@ -87,10 +101,16 @@ impl<S: HighWaterMarkStore> Signer<S> {
     /// the node never sees them").
     pub fn load(secret_key: blst::min_pk::SecretKey, store: S) -> Result<Self, S::Error> {
         let mark = store.load()?;
+        let last_digest = if mark.is_some() {
+            store.load_digest()?
+        } else {
+            None
+        };
         Ok(Self {
             secret_key,
             store,
             mark,
+            last_digest,
         })
     }
 
@@ -100,25 +120,42 @@ impl<S: HighWaterMarkStore> Signer<S> {
 
     /// Sign `message` under `dst` at `requested`, refusing unless
     /// `requested` is strictly greater than the persisted high-water
-    /// mark. Persists the new mark before producing the signature —
-    /// never the other way around.
+    /// mark. Persists the new mark, and a digest of what is signed at it,
+    /// before producing the signature — never the other way around.
+    ///
+    /// The one exception is a request for exactly what was signed last: the
+    /// same `message` under the same `dst` at exactly the mark. That gets the
+    /// same signature again and moves nothing. It exists because a signature
+    /// can be made and then lost on its way to whoever asked (the asker
+    /// crashed before it recorded the signature), and the asker must be able
+    /// to ask again. It cannot be used to sign twice: BLS signatures are
+    /// unique, so the answer is the very bytes already given, and any
+    /// different message at that position is refused as before.
     pub fn sign(
         &mut self,
         requested: HighWaterMark,
         message: &[u8],
         dst: &[u8],
     ) -> Result<BlsSignature, SignerError> {
+        let digest = digest_of(dst, message);
         if let Some(mark) = self.mark {
-            if requested <= mark {
+            if requested < mark || (requested == mark && self.last_digest != Some(digest)) {
                 return Err(SignerError::Regression { requested, mark });
+            }
+            if requested == mark {
+                return self.produce(message, dst);
             }
         }
 
         self.store
-            .persist(requested)
+            .persist_signed(requested, digest)
             .map_err(|_| SignerError::PersistenceFailed)?;
         self.mark = Some(requested);
+        self.last_digest = Some(digest);
+        self.produce(message, dst)
+    }
 
+    fn produce(&self, message: &[u8], dst: &[u8]) -> Result<BlsSignature, SignerError> {
         let raw = self.secret_key.sign(message, dst, &[]);
         BlsSignature::from_bytes(raw.to_bytes()).map_err(|_| SignerError::MalformedSignature)
     }
@@ -198,12 +235,12 @@ mod tests {
     }
 
     #[test]
-    fn refuses_to_sign_at_the_same_position_again() {
+    fn refuses_a_different_message_at_the_same_position() {
         let mut signer = Signer::load(test_key(), InMemoryStore::new()).unwrap();
         let position = hwm(1, 0, Step::Propose);
         signer.sign(position, b"msg", DST).unwrap();
 
-        let result = signer.sign(position, b"msg", DST);
+        let result = signer.sign(position, b"another msg", DST);
         assert_eq!(
             result,
             Err(SignerError::Regression {
@@ -211,6 +248,214 @@ mod tests {
                 mark: position
             })
         );
+    }
+
+    #[test]
+    fn the_same_message_at_the_same_position_gets_the_same_signature_and_moves_nothing() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        /// An in-memory store that counts what is persisted.
+        struct Counting(InMemoryStore, Rc<Cell<u32>>);
+        impl HighWaterMarkStore for Counting {
+            type Error = core::convert::Infallible;
+            fn load(&self) -> Result<Option<HighWaterMark>, Self::Error> {
+                self.0.load()
+            }
+            fn persist(&mut self, mark: HighWaterMark) -> Result<(), Self::Error> {
+                self.1.set(self.1.get() + 1);
+                self.0.persist(mark)
+            }
+            fn load_digest(&self) -> Result<Option<MessageDigest>, Self::Error> {
+                self.0.load_digest()
+            }
+            fn persist_signed(
+                &mut self,
+                mark: HighWaterMark,
+                digest: MessageDigest,
+            ) -> Result<(), Self::Error> {
+                self.1.set(self.1.get() + 1);
+                self.0.persist_signed(mark, digest)
+            }
+        }
+
+        let writes = Rc::new(Cell::new(0));
+        let mut signer =
+            Signer::load(test_key(), Counting(InMemoryStore::new(), writes.clone())).unwrap();
+        let position = hwm(1, 0, Step::Prevote);
+        let first = signer.sign(position, b"vote", DST).unwrap();
+        assert_eq!(writes.get(), 1);
+
+        for _ in 0..3 {
+            assert_eq!(signer.sign(position, b"vote", DST), Ok(first));
+        }
+        assert_eq!(writes.get(), 1, "asking again wrote nothing");
+        assert_eq!(signer.high_water_mark(), Some(position));
+
+        // The refusal of anything else is untouched by having been asked again.
+        assert!(matches!(
+            signer.sign(position, b"a different vote", DST),
+            Err(SignerError::Regression { .. })
+        ));
+        assert_eq!(signer.sign(position, b"vote", DST), Ok(first));
+    }
+
+    #[test]
+    fn the_same_bytes_under_another_domain_are_another_message() {
+        let mut signer = Signer::load(test_key(), InMemoryStore::new()).unwrap();
+        let position = hwm(1, 0, Step::Prevote);
+        signer.sign(position, b"vote", DST).unwrap();
+        // The same length, so only what the tag says can tell them apart.
+        let other = b"THRYLOS-BLS-VOTE-TESU";
+        assert_eq!(other.len(), DST.len());
+        assert!(matches!(
+            signer.sign(position, b"vote", other),
+            Err(SignerError::Regression { .. })
+        ));
+    }
+
+    /// A store two signers can be loaded from one after the other, as a disk is.
+    #[derive(Clone, Default)]
+    struct Disk(std::rc::Rc<std::cell::RefCell<InMemoryStore>>);
+
+    impl HighWaterMarkStore for Disk {
+        type Error = core::convert::Infallible;
+        fn load(&self) -> Result<Option<HighWaterMark>, Self::Error> {
+            self.0.borrow().load()
+        }
+        fn persist(&mut self, mark: HighWaterMark) -> Result<(), Self::Error> {
+            self.0.borrow_mut().persist(mark)
+        }
+        fn load_digest(&self) -> Result<Option<MessageDigest>, Self::Error> {
+            self.0.borrow().load_digest()
+        }
+        fn persist_signed(
+            &mut self,
+            mark: HighWaterMark,
+            digest: MessageDigest,
+        ) -> Result<(), Self::Error> {
+            self.0.borrow_mut().persist_signed(mark, digest)
+        }
+    }
+
+    #[test]
+    fn a_signer_started_again_from_what_the_last_one_persisted_can_answer_for_its_last_message() {
+        let disk = Disk::default();
+        let (first, second) = (hwm(3, 0, Step::Prevote), hwm(3, 0, Step::Precommit));
+        let mut before = Signer::load(test_key(), disk.clone()).unwrap();
+        before.sign(first, b"vote", DST).unwrap();
+        let commit = before.sign(second, b"commit", DST).unwrap();
+        drop(before);
+
+        // The process is gone; a new one reads only the disk.
+        let mut after = Signer::load(test_key(), disk.clone()).unwrap();
+        assert_eq!(after.high_water_mark(), Some(second));
+        assert_eq!(after.sign(second, b"commit", DST), Ok(commit));
+        assert!(matches!(
+            after.sign(second, b"another commit", DST),
+            Err(SignerError::Regression { .. })
+        ));
+        // Only the last position: the one before it is below the mark.
+        assert!(matches!(
+            after.sign(first, b"vote", DST),
+            Err(SignerError::Regression { .. })
+        ));
+    }
+
+    #[test]
+    fn only_the_last_position_can_be_asked_for_again() {
+        let mut signer = Signer::load(test_key(), InMemoryStore::new()).unwrap();
+        let (first, second) = (hwm(1, 0, Step::Prevote), hwm(1, 0, Step::Precommit));
+        signer.sign(first, b"vote", DST).unwrap();
+        let precommit = signer.sign(second, b"commit", DST).unwrap();
+
+        // Below the mark, even for exactly what was signed there: refused.
+        assert!(matches!(
+            signer.sign(first, b"vote", DST),
+            Err(SignerError::Regression { .. })
+        ));
+        // At the mark it is still the same signature.
+        assert_eq!(signer.sign(second, b"commit", DST), Ok(precommit));
+        // And a message signed below is not the one signed at the mark.
+        assert!(matches!(
+            signer.sign(second, b"vote", DST),
+            Err(SignerError::Regression { .. })
+        ));
+    }
+
+    #[test]
+    fn a_signer_loaded_from_a_store_that_holds_the_digest_can_answer_again() {
+        // What a restart finds when the signer had signed, and its asker never
+        // heard: the mark, with the digest of what was signed at it.
+        let position = hwm(7, 1, Step::Precommit);
+        let mut store = InMemoryStore::new();
+        store
+            .persist_signed(position, digest_of(DST, b"the vote"))
+            .unwrap();
+        let mut signer = Signer::load(test_key(), store).unwrap();
+
+        let mut fresh = Signer::load(test_key(), InMemoryStore::new()).unwrap();
+        let expected = fresh.sign(position, b"the vote", DST).unwrap();
+        assert_eq!(signer.sign(position, b"the vote", DST), Ok(expected));
+        assert!(matches!(
+            signer.sign(position, b"another vote", DST),
+            Err(SignerError::Regression { .. })
+        ));
+    }
+
+    #[test]
+    fn a_mark_with_no_digest_refuses_everything_at_it_as_a_signer_always_did() {
+        let position = hwm(7, 1, Step::Precommit);
+        let mut store = InMemoryStore::new();
+        store.persist(position).unwrap();
+        let mut signer = Signer::load(test_key(), store).unwrap();
+        assert!(matches!(
+            signer.sign(position, b"the vote", DST),
+            Err(SignerError::Regression { .. })
+        ));
+        assert!(signer.sign(hwm(7, 1, Step::Precommit), b"x", DST).is_err());
+        assert!(signer.sign(hwm(8, 0, Step::Propose), b"x", DST).is_ok());
+    }
+
+    mod never_twice {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            /// Whatever is asked, in whatever order, the signer never gives
+            /// two different messages a signature at one position, never
+            /// signs below where it has been, and answers a repeat with the
+            /// signature it gave.
+            #[test]
+            fn no_sequence_of_requests_makes_it_sign_two_things_at_one_position(
+                requests in proptest::collection::vec((0u64..3, 0u64..2, 0u8..3, 0u8..3), 1..80),
+            ) {
+                let mut signer = Signer::load(test_key(), InMemoryStore::new()).unwrap();
+                let mut signed: std::collections::BTreeMap<HighWaterMark, (u8, BlsSignature)> =
+                    std::collections::BTreeMap::new();
+                let mut high: Option<HighWaterMark> = None;
+                for (height, round, step, message) in requests {
+                    let step = match step {
+                        0 => Step::Propose,
+                        1 => Step::Prevote,
+                        _ => Step::Precommit,
+                    };
+                    let position = hwm(height, round, step);
+                    let bytes = [message];
+                    if let Ok(signature) = signer.sign(position, &bytes, DST) {
+                        if let Some((earlier, given)) = signed.get(&position) {
+                            prop_assert_eq!(*earlier, message, "two messages at {}", position);
+                            prop_assert_eq!(*given, signature);
+                        }
+                        prop_assert!(high.is_none_or(|high| position >= high), "went back");
+                        signed.insert(position, (message, signature));
+                        high = Some(position);
+                    }
+                    prop_assert_eq!(signer.high_water_mark(), high);
+                }
+            }
+        }
     }
 
     #[test]

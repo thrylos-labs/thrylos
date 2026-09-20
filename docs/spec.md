@@ -352,7 +352,7 @@ The failure to design against here is not theft, it is an honest validator getti
 Double-sign protection therefore lives in `chain-signer`, isolated from the node:
 
 1. The signer holds a monotonic high-water mark of (height, round, step), persisted and fsynced *before* any signature is returned.
-2. It refuses to sign anything at or below that mark, unconditionally, with no override flag and no reset command.
+2. It refuses to sign anything at or below that mark, with no override flag and no reset command. The one thing it does at exactly the mark is answer a request for the very message it last signed (the same bytes under the same domain) with the signature it already gave. It keeps a digest of that message with the mark, in the same fsynced write. A signature can be made and lost before its asker records it, because the node crashes in between; without this exception the restarted node would be refused a position it has to sign, and would halt. Giving the identical signature again is not signing twice: BLS signatures are unique, so nothing different can come of it. Any other message at that position, and every position below it, is refused.
 3. It is a separate process with its own storage, so a node rollback, restore-from-snapshot or container restart cannot rewind it.
 4. Consensus keys are BLS with proof-of-possession, held only by the signer; the node never sees them.
 

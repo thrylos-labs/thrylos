@@ -17,10 +17,10 @@
 //! closing it makes a node stop between one thing it does and the next, never
 //! in the middle of signing (see `chain-node run --stop-when-stdin-closes`), so
 //! what it leaves on disk can be started from again. The same happens if this
-//! process is killed outright, since its pipes close with it. Ctrl-C is
-//! different: it reaches every process at once and stops each wherever it is,
-//! which can leave a node unable to restart (see that flag's documentation).
-//! Signers, which are idle once their nodes have stopped, are killed. A failure
+//! process is killed outright, since its pipes close with it. Ctrl-C reaches
+//! every process at once and stops each wherever it is, which a node and its
+//! signer also survive. Signers, which are idle once their nodes have stopped,
+//! are killed. A failure
 //! or a panic here kills whatever was started.
 
 // Waiting for a signer and for nodes is real time, which nothing here feeds

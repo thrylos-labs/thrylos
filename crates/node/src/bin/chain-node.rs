@@ -17,12 +17,12 @@
 //! With `--stop-when-stdin-closes` it also stops, and exits 0, when its standard
 //! input reaches end of file. That is the orderly way out, and the launcher's:
 //! it stops between one thing the node does and the next, never in the middle
-//! of signing. Killing a node is *not* always safe to resume from: if it dies
-//! after its signer has recorded a signature and before it has recorded that
-//! signature itself, the signer will refuse that position on restart (the spec
-//! makes that refusal unconditional) and the node halts. Do not use the flag
-//! from a shell or a service manager that gives the node an empty standard
-//! input, which is closed at once.
+//! of signing. Killing a node at any moment is also safe to resume from: if it
+//! dies after its signer has recorded a signature and before it has recorded
+//! that signature itself, the signer gives the same signature again when the
+//! restarted node asks for the same message. Do not use the flag from a shell
+//! or a service manager that gives the node an empty standard input, which is
+//! closed at once.
 //!
 //! `network-key` creates the file a node's `network_key` names and prints the
 //! public key its peers list to trust it. It refuses to overwrite a file.
