@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 description = "Authenticated transport and bounded ingress"
 
 # A deliberately narrower lint set than the workspace's tier-A table

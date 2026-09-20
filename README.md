@@ -4,6 +4,19 @@ A single-client, Move-based proof-of-stake L1 in Rust, optimised for auditabilit
 
 The full technical spec, including the open decisions that still need answers before genesis, is at [docs/spec.md](docs/spec.md). Its implementation status and evidence are tracked in the [spec-conformance ledger](docs/spec-conformance.md). Read the Requirements and Open decisions sections first — most of the parameters in this repo are defaults to be argued with, not settled decisions.
 
+## Try it today
+
+There is no node to run yet, but the genesis tool works. The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
+
+```bash
+cargo run -p chain-genesis -- devnet > devnet.json   # a four-validator development genesis
+cargo run -p chain-genesis -- check devnet.json      # validate it: genesis hash, state root, supply, validator set
+```
+
+`chain-genesis hash <file>` prints only the genesis hash, and `chain-genesis address <ed25519-public-key-hex>` derives an account address. Beyond that, the tests are the way in: `cargo test --workspace`.
+
+Fuzzing is described in [fuzz/README.md](fuzz/README.md) and the TLA+ consensus model in [formal/consensus/README.md](formal/consensus/README.md).
+
 ## What is working today
 
 Thrylos is pre-genesis. **There is no runnable node binary yet**. The authenticated

@@ -21,6 +21,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
 license = "Apache-2.0"
+# Nothing here is meant for crates.io: the node is built from this repository.
+publish = false
 
 [workspace.dependencies]
 blake3 = "1"

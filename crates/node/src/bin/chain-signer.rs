@@ -11,6 +11,8 @@ use blst::min_pk::SecretKey;
 use chain_node::{FileMarkStore, SignerCredential, SignerServer};
 use chain_signer::Signer;
 
+const USAGE: &str = "usage: chain-signer <socket> <key-file> <credential-file> <mark-file>";
+
 fn required_path(
     args: &mut impl Iterator<Item = std::ffi::OsString>,
     name: &str,
@@ -18,7 +20,7 @@ fn required_path(
     args.next().map(PathBuf::from).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("missing {name}; usage: chain-signer <socket> <key-file> <credential-file> <mark-file>"),
+            format!("missing {name}; {USAGE}"),
         )
     })
 }
@@ -38,7 +40,14 @@ fn private_file(path: &Path) -> Result<Vec<u8>, io::Error> {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args_os().skip(1);
+    let mut args = std::env::args_os().skip(1).peekable();
+    if matches!(
+        args.peek().and_then(|arg| arg.to_str()),
+        Some("-h" | "--help")
+    ) {
+        println!("{USAGE}");
+        return Ok(());
+    }
     let socket = required_path(&mut args, "socket")?;
     let key_path = required_path(&mut args, "key file")?;
     let credential_path = required_path(&mut args, "credential file")?;
