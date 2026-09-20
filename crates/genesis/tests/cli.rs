@@ -29,6 +29,7 @@ fn check_reports_a_valid_file_and_exits_zero() {
     for expected in [
         "genesis file:       valid",
         "chain id:           1337",
+        "genesis time:       2023-11-14 22:13:20 UTC (1700000000000 ms)",
         "genesis hash:       ",
         "state root:         ",
         "validators:         4",

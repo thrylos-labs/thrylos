@@ -40,8 +40,10 @@ exercised by a simulated four-validator network in one process. RPC is not built
 | **Native modules** (`chain-modules`) | Staking and delegation with share-price rewards, unbonding, double-sign slashing from evidence, fees, and parameter-only governance, all stored in chain state |
 | **Consensus** (`chain-consensus`) | Malachite's pure core integrated end to end: stake-weighted proposer selection from a randomness beacon, certificate verification, block judging before voting, a host that will not sign twice at a position, a write-ahead log with replay after a crash, and verified catch-up from peers for a node that missed a height |
 | **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits, checked by killing a process mid-write; a checksummed, torn-write-tolerant height log; and the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history, the signer's high-water mark), which the crash-restart tests run against |
-| **Signer logic** (`chain-signer`) | The high-water-mark state machine that refuses to sign at or below a position it has signed |
+| **Signer** (`chain-signer`, `chain-node`) | The high-water-mark state machine that refuses to sign at or below a position it has signed, and a separate `chain-signer` process that alone holds the consensus key and its mark and answers over an authenticated Unix socket. The node's ports accept only that client, never a key, and tests kill and restart each side to check the mark never rewinds |
+| **Text forms** (`chain-text`) | Checksummed `thry1…` addresses (bech32m: every single-character typo is caught) and `THRY` amounts (nine decimal places, exact, refusing ambiguous input), used by the `chain-genesis` tool. Presentation only: the chain still counts raw address bytes and base units |
 | **P2P** (`chain-p2p`) | One mutual-Ed25519-authenticated TCP transport with session-bound signed frames for consensus, block catch-up and transaction submission; static trusted peers; hard frame, byte-rate and connection bounds enforced before decode |
+| **Verification** | cargo-fuzz targets for the wire and storage decoders, state transitions, the seven protocol calls and metering cost per gas (smoke-run in CI, longer scheduled runs), and a TLA+ model of one consensus height (safety, and liveness after synchrony) that CI runs through TLC. The model is an abstraction: cryptography, encoding, proposer selection and crash durability stay in the Rust tests |
 
 The consensus tests run four full validators, each with a real executor, against a simulated network that sends every message through the real wire encoding. They stage a silent proposer, a fast clock, a forged reveal, equivocation, a node that never receives blocks, and a restart of each node after each of the events it handles.
 
@@ -54,17 +56,16 @@ The consensus tests run four full validators, each with a real executor, against
 ### Not built yet
 
 * A node binary that wires these pieces together
-* The signer as a separate process, as the spec requires (its mark is durable and refuses to be moved back, but it runs inside the node)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
-* Verification that gas metering bounds every execution path (the DoS fuzzing in the spec's verification plan)
+* A calibrated gas schedule: metering is fuzzed against a provisional time-per-gas ceiling, but nothing is measured on reference hardware yet
 * Observer (non-validator) nodes
 * The developer workflow: local network, deploy a Move module, submit a transaction, see it finalize
 
-### Size
+### Size and audit scope
 
-Tier A, the code that must behave identically on every machine, is about 13,000 lines of Rust excluding tests, counting comments and blank lines. Tier B is about 2,200. The test suite is about 700 tests. These numbers are approximate and will change.
+Line counts are not a target. Audit scope is tracked by trust tier, dependency revision, boundary size, enforced bounds and verification evidence in the [conformance ledger](docs/spec-conformance.md), which also says, requirement by requirement, what is done, partial or missing.
 
 ### What "no unsafe, no panics" covers
 

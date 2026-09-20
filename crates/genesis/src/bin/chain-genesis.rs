@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use chain_genesis::check::{report, ValidatorLine};
-use chain_genesis::human::{duration, percent_bps};
+use chain_genesis::human::{duration, percent_bps, utc_date_time};
 use chain_genesis::{devnet, hex, load, to_json};
 use chain_text::{format_address, format_amount, parse_address, BASE_UNITS_PER_TOKEN, TICKER};
 use chain_types::{Address, PublicKey};
@@ -51,7 +51,11 @@ fn check(path: &Path) -> ExitCode {
     };
     println!("genesis file:       valid");
     println!("chain id:           {}", report.chain_id);
-    println!("genesis time (ms):  {}", report.genesis_time_ms);
+    println!(
+        "genesis time:       {} ({} ms)",
+        utc_date_time(report.genesis_time_ms),
+        report.genesis_time_ms
+    );
     println!(
         "genesis hash:       {}",
         hex::encode(report.genesis_hash.as_bytes())
