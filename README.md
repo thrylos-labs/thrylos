@@ -6,7 +6,20 @@ The full technical spec, including the open decisions that still need answers be
 
 ## Try it today
 
-There is no node to run yet, but the genesis tool works. The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
+The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
+
+A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It produces empty blocks (nothing can be sent to it yet):
+
+```bash
+cargo build -p chain-node --bins                       # the node and the signer, side by side
+target/debug/chain-node devnet init /tmp/thrylos-devnet   # write four validators' files, on 127.0.0.1
+target/debug/chain-node devnet start /tmp/thrylos-devnet  # run them (Ctrl-C stops them; see "Known problems")
+tail -f /tmp/thrylos-devnet/node1/node.log             # "committed block 1 (0 transactions)", ...
+```
+
+`devnet init` takes `--validators <2 to 65>` (four by default; one is not generated yet, see "Known problems") and `--base-port <port>`, and refuses a directory that already holds anything. Keep its path short: a signer's Unix socket path may be at most 100 bytes, and it says so if yours is longer. **It is insecure by design**: every consensus key is derived from a public seed, exactly as in the development genesis below, so nothing on it can hold value. `devnet start --until-height <n>` runs until every node has committed that height, then stops them all cleanly and exits, which is how the tests use it. A node started later than the others can take a few seconds to catch up, and `start` waits for it.
+
+The genesis tool works on its own too:
 
 ```bash
 cargo run -p chain-genesis -- devnet > devnet.json   # a four-validator development genesis
@@ -28,10 +41,11 @@ Fuzzing is described in [fuzz/README.md](fuzz/README.md) and the TLA+ consensus 
 
 Thrylos is pre-genesis. There is a `chain-node` binary that runs a validator: it
 reads a configuration file, opens or restores its chain from disk, reaches its
-signer, connects to its static peers and runs consensus. **It carries no
-transactions yet** (it proposes empty blocks: no mempool is wired in), has no RPC,
-and has been run as four nodes in one process over real sockets, not yet as
-separate processes on separate machines.
+signer, connects to its static peers and runs consensus, and `chain-node devnet`
+generates and runs a local network of them. **It carries no transactions yet**
+(it proposes empty blocks: no mempool is wired in) and has no RPC. Its tests run
+four validators as separate processes, kill them with `SIGKILL` and start them
+again; nothing has yet run on more than one machine.
 
 ### Implemented and tested
 
@@ -45,7 +59,7 @@ separate processes on separate machines.
 | **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits and a recorded genesis; a checksummed, torn-write-tolerant height log; the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history); and `DurableEngine`, which commits each block to the database before the chain advances and restores the chain on restart, refusing a database from another genesis or one that fails its root and audit checks. Checked by killing a committing process, and by a four-validator crash sweep that reloads every node's chain from disk |
 | **Signer** (`chain-signer`, `chain-node`) | The high-water-mark state machine that refuses to sign at or below a position it has signed, and a separate `chain-signer` process that alone holds the consensus key and its mark and answers over an authenticated Unix socket. The node's ports accept only that client, never a key, and tests kill and restart each side to check the mark never rewinds |
 | **Peer network** (`chain-node`, `chain-p2p`) | `PeerNetwork` keeps a node connected to its static peers over real sockets: the lower peer ID dials, redials back off and reset, handshakes run on a bounded pool of short threads so a silent stranger holds up only one, and every queue is bounded with a stated overflow policy (`send` never blocks). The transport gained split reader and writer halves, a quiet-link-safe read, and a closer. Tested on loopback: routing across four nodes, transactions, a node leaving and returning on the same port, quiet links staying up, strangers kept out, and prompt shutdown |
-| **Node** (`chain-node`) | The `chain-node` binary and the library behind it: a JSON configuration (unknown fields refused, secrets in private files), `run_node`, which assembles a node in the order that fails earliest (signer before any file is created), an event loop that joins the peer network to the driver, and a filter that rejects a vote, proposal or catch-up request naming a different author than the peer it arrived from. Tested by starting four nodes from configuration files, killing and restarting one from its disk while the others carry on, and a node whose signer refuses halting with the reason while the rest finish the chain |
+| **Node** (`chain-node`) | The `chain-node` binary and the library behind it: a JSON configuration (unknown fields refused, secrets in private files), `run_node`, which assembles a node in the order that fails earliest (signer before any file is created), an event loop that joins the peer network to the driver, and a filter that rejects a vote, proposal or catch-up request naming a different author than the peer it arrived from. Tested by starting four nodes from configuration files, killing and restarting one from its disk while the others carry on, and a node whose signer refuses halting with the reason while the rest finish the chain. `chain-node devnet init` writes the files of a local network (an insecure development genesis for one to 65 validators, fresh transport keys and signer credentials each time, nothing ever overwritten), and `devnet start` runs it as a signer process and a node process per validator, stopping the nodes cleanly through their standard input. Tested by running four real `chain-signer` and `chain-node` processes to a height, then, with the other nodes frozen so it is idle, killing one node with `SIGKILL` and starting it again, then killing that node and its signer together and starting both again, and checking that all four end on one chain and the victim never repeats a height |
 | **Node driver** (`chain-node`) | `NodeRuntime`: the driver around the consensus host, with no sockets or threads. It keeps the host's timers, routes its outbox to everyone or to one validator, and wakes it for its own catch-up requests, all in time supplied by the caller. The four-validator simulation runs on it |
 | **Text forms** (`chain-text`) | Checksummed `thry1…` addresses (bech32m: every single-character typo is caught) and `THRY` amounts (nine decimal places, exact, refusing ambiguous input), used by the `chain-genesis` tool. Presentation only: the chain still counts raw address bytes and base units |
 | **P2P** (`chain-p2p`) | One mutual-Ed25519-authenticated TCP transport with session-bound signed frames for consensus, block catch-up and transaction submission; static trusted peers; hard frame, byte-rate and connection bounds enforced before decode |
@@ -59,16 +73,22 @@ The consensus tests run four full validators, each with a real executor, against
 |---|---|---|
 | **Mempool** (`chain-mempool`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals | Cleanup after a block commits |
 
+### Known problems
+
+* **A node killed at the wrong instant may be unable to restart.** If it dies after its signer has recorded a signature and before the node has recorded the same signature, the signer refuses that position when the node comes back (the spec makes that refusal unconditional) and the node halts, saying so. Killing every process of a running four-node local network at a random height left at least one node unable to restart in 4 of 16 trials; `devnet start` stops its nodes through their standard input for that reason, but Ctrl-C reaches every process at once and does not. The process tests kill nodes only while they are idle. The way out needs a decision about the signer's rule: see the ledger, "A node killed at any instant restarts without operator action".
+* **A network of one validator does not work.** With no one to wait for, a node commits blocks in a loop that never returns to its event loop, so it reports nothing and cannot be stopped at a height. `devnet init` refuses one validator until that is fixed.
+* **A node that starts later than the others can be slow to join.** When a local network starts, the first node sometimes has committed nothing when the others have committed five blocks. It caught up in every run where the chain kept going (24 of 24); why it starts slowly has not been looked into.
+
 ### Not built yet
 
 * Transactions on a running node: the mempool is not connected to the node, so it proposes empty blocks
-* A run as separate processes on separate machines
+* A run on separate machines (a local network of separate processes works)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
 * A calibrated gas schedule: metering is fuzzed against a provisional time-per-gas ceiling, but nothing is measured on reference hardware yet
 * Observer (non-validator) nodes
-* The developer workflow: generating a local network's files and launching it, deploying a Move module, submitting a transaction, seeing it finalize
+* The rest of the developer workflow: deploying a Move module, submitting a transaction, seeing it finalize (a local network can be generated and run, but nothing can be sent to it)
 
 ### Size and audit scope
 

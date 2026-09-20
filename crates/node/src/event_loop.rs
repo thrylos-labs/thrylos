@@ -222,3 +222,51 @@ where
         reached
     }
 }
+
+/// What a node's log line for a committed block starts with. `chain-node` writes
+/// the line and the launcher reads the height back out of it, so both go through
+/// [`committed_line`] and [`committed_height`].
+const COMMITTED: &str = "committed block ";
+
+/// The log line for a committed block.
+pub fn committed_line(height: BlockHeight, transactions: usize) -> String {
+    format!("{COMMITTED}{height} ({transactions} transactions)")
+}
+
+/// The height in a line [`committed_line`] wrote, or `None` for any other line.
+pub fn committed_height(line: &str) -> Option<u64> {
+    line.strip_prefix(COMMITTED)?
+        .split(' ')
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_committed_line_gives_its_height_back() {
+        for (height, transactions) in [(1, 0), (7, 3), (u64::MAX, 12_345)] {
+            let line = committed_line(BlockHeight(height), transactions);
+            assert_eq!(committed_height(&line), Some(height), "{line}");
+        }
+    }
+
+    #[test]
+    fn no_other_line_is_taken_for_one() {
+        for line in [
+            "",
+            "starting validator thry1abc on 127.0.0.1:1 with 3 peers",
+            "halted: the signer refused",
+            " committed block 5 (0 transactions)",
+            "committed block ",
+            "committed block five (0 transactions)",
+            "committed block -5 (0 transactions)",
+            "witnessed equivocation by thry1abc",
+        ] {
+            assert_eq!(committed_height(line), None, "{line:?}");
+        }
+    }
+}

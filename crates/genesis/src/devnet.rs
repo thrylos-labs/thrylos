@@ -18,6 +18,9 @@ pub const DEVNET_CHAIN_ID: u64 = 1_337;
 pub const DEVNET_GENESIS_TIME_MS: u64 = 1_700_000_000_000;
 pub const DEVNET_VALIDATORS: u8 = 4;
 pub const DEVNET_ACCOUNTS: u8 = 4;
+/// The most validators [`config_with_validators`] makes: validator seeds run
+/// from 1, and the funded accounts start at seed 101.
+pub const DEVNET_MAX_VALIDATORS: u8 = 100;
 
 fn invalid(what: &str) -> ParseError {
     ParseError::Invalid {
@@ -51,9 +54,22 @@ pub fn bls(seed: u8) -> Result<(BlsPublicKey, BlsSignature), ParseError> {
 /// Four validators (seeds 1 to 4) with ten times the minimum self-stake
 /// each, and four funded accounts (seeds 101 to 104).
 pub fn config() -> Result<GenesisConfig, ParseError> {
+    config_with_validators(DEVNET_VALIDATORS)
+}
+
+/// Like [`config`], with `count` validators (seeds 1 to `count`), from one to
+/// [`DEVNET_MAX_VALIDATORS`]. The funded accounts are the same whatever the
+/// count, so a network of any size can be used with the same test keys.
+pub fn config_with_validators(count: u8) -> Result<GenesisConfig, ParseError> {
+    if count == 0 || count > DEVNET_MAX_VALIDATORS {
+        return Err(ParseError::Invalid {
+            at: "devnet validators".to_owned(),
+            reason: "must be between 1 and 100",
+        });
+    }
     let stake = GENESIS_PARAM_VALUES.min_self_stake.saturating_mul(10);
     let mut validators = Vec::new();
-    for seed in 1..=DEVNET_VALIDATORS {
+    for seed in 1..=count {
         let (consensus_key, proof_of_possession) = bls(seed)?;
         validators.push(GenesisValidator {
             operator: ed25519(seed)?,
@@ -76,4 +92,43 @@ pub fn config() -> Result<GenesisConfig, ParseError> {
         allocations,
         validators,
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::*;
+
+    #[test]
+    fn the_default_is_four_validators() {
+        assert_eq!(
+            config().unwrap().hash(),
+            config_with_validators(4).unwrap().hash()
+        );
+    }
+
+    #[test]
+    fn any_count_from_one_to_the_limit_is_a_valid_genesis_with_the_same_accounts() {
+        let four = config().unwrap();
+        for count in [1, 2, 7, DEVNET_MAX_VALIDATORS] {
+            let config = config_with_validators(count).unwrap();
+            assert_eq!(config.validators().len(), usize::from(count));
+            assert_eq!(config.allocations(), four.allocations());
+        }
+        // Validators are held in canonical order, not seed order, but the four
+        // of the default network are all there in a larger one.
+        let seven = config_with_validators(7).unwrap();
+        for validator in four.validators() {
+            assert!(seven.validators().contains(validator));
+        }
+    }
+
+    #[test]
+    fn no_validators_or_too_many_is_refused() {
+        for count in [0, DEVNET_MAX_VALIDATORS + 1] {
+            let error = config_with_validators(count).unwrap_err().to_string();
+            assert!(error.contains("between 1 and 100"), "{error}");
+        }
+    }
 }
