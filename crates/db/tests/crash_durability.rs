@@ -93,3 +93,43 @@ fn a_transaction_killed_before_commit_leaves_no_trace() {
     // And the side that was never in question: block 1 is untouched.
     assert_eq!(db.get_block(BlockHeight(1)).unwrap(), Some(block_at(1)));
 }
+
+#[test]
+fn an_initialisation_killed_before_commit_leaves_the_database_uninitialised() {
+    let dir = tempfile::tempdir().unwrap();
+    // Create the environment and its tables, then let go of it: MDBX
+    // allows one live writer.
+    drop(Db::open(dir.path()).unwrap());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_crash_helper"))
+        .arg(dir.path())
+        .arg("1")
+        .arg("initialise")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn crash_helper");
+    let stdout = child.stdout.take().expect("child stdout was not piped");
+    let mut line = String::new();
+    BufReader::new(stdout)
+        .read_line(&mut line)
+        .expect("read READY line");
+    assert_eq!(line.trim(), "READY");
+    child.kill().expect("SIGKILL the helper");
+    child.wait().expect("wait for the killed child");
+
+    let db = Db::open(dir.path()).unwrap();
+    assert_eq!(db.genesis_hash().unwrap(), None, "no genesis hash recorded");
+    assert!(db.load_state().unwrap().is_empty(), "no genesis state");
+    assert_eq!(
+        db.get_root(BlockHeight(0)).unwrap(),
+        None,
+        "no genesis root"
+    );
+    assert_eq!(db.tip_height().unwrap(), None);
+
+    // The half-written attempt did not block a real one.
+    let state = chain_types::collections::BTreeMap::new();
+    db.initialise(Hash::from_bytes([1; 32]), Hash::from_bytes([2; 32]), &state)
+        .unwrap();
+    assert_eq!(db.genesis_hash().unwrap(), Some(Hash::from_bytes([1; 32])));
+}

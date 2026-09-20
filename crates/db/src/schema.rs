@@ -26,6 +26,24 @@ pub const META_TABLE: &str = "meta";
 /// most recently committed block.
 pub const TIP_HEIGHT_KEY: &[u8] = b"tip_height";
 
+/// The single fixed key in [`META_TABLE`] holding the hash of the genesis
+/// configuration the chain started from. Present exactly when
+/// [`crate::Db::initialise`] has run, so a database can be told apart from
+/// an empty one and from one that belongs to a different chain.
+pub const GENESIS_HASH_KEY: &[u8] = b"genesis_hash";
+
+/// The longest state key the store will write, the same on every platform.
+///
+/// MDBX's own limit depends on the operating system's page size (8,166 bytes
+/// at 16 KiB pages, 2,022 at 4 KiB), and when it is exceeded the library
+/// panics rather than returning an error. A panic in a block commit is a
+/// chain halt, and a limit that differs between machines would let the same
+/// state commit on one and not another. So the store checks its own limit,
+/// well under the smallest MDBX has, and refuses with
+/// [`crate::DbError::KeyTooLarge`]. Every key the chain builds is a one-byte
+/// tag and a few fixed-width fields, under 40 bytes.
+pub const MAX_KEY_BYTES: usize = 1_024;
+
 pub fn height_key(height: BlockHeight) -> [u8; 8] {
     height.0.to_be_bytes()
 }

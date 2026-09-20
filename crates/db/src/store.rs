@@ -7,6 +7,7 @@ use std::path::Path;
 use chain_engine_api::Block;
 use chain_state::{StateChange, StateDiff, StateKey, StateValue};
 use chain_types::codec::{decode_exact, Encode};
+use chain_types::collections::BTreeMap;
 use chain_types::{BlockHeight, Hash};
 use libmdbx::{
     DatabaseFlags, Environment, EnvironmentFlags, Geometry, MdbxError, Mode, SyncMode, WriteFlags,
@@ -14,9 +15,18 @@ use libmdbx::{
 
 use crate::error::DbError;
 use crate::schema::{
-    height_from_bytes, height_key, BLOCKS_TABLE, META_TABLE, ROOTS_TABLE, STATE_TABLE,
-    TIP_HEIGHT_KEY,
+    height_from_bytes, height_key, BLOCKS_TABLE, GENESIS_HASH_KEY, MAX_KEY_BYTES, META_TABLE,
+    ROOTS_TABLE, STATE_TABLE, TIP_HEIGHT_KEY,
 };
+
+/// Refuses a key the store will not write. See [`MAX_KEY_BYTES`].
+fn check_key(key: &StateKey) -> Result<(), DbError> {
+    let length = key.as_bytes().len();
+    if length > MAX_KEY_BYTES {
+        return Err(DbError::KeyTooLarge { length });
+    }
+    Ok(())
+}
 
 /// Upper bound on the memory-mapped address range MDBX reserves for
 /// this environment. MDBX only allocates disk pages as they're
@@ -119,6 +129,7 @@ impl Db {
             WriteFlags::UPSERT,
         )?;
         for (key, change) in diff.iter() {
+            check_key(key)?;
             match change {
                 StateChange::Put(value) => {
                     txn.put(
@@ -144,6 +155,102 @@ impl Db {
 
         txn.commit()?;
         Ok(())
+    }
+
+    /// Records where the chain starts: the hash of the genesis configuration,
+    /// the state root at height 0, and every entry of the genesis state, as
+    /// one transaction. [`Self::commit_block`] writes only what a block
+    /// *changes*, so without this the genesis state (the allocations, the
+    /// validators, the parameters) would exist nowhere on disk, and the
+    /// chain could not be rebuilt from it.
+    ///
+    /// Refuses with [`DbError::AlreadyInitialised`] if a genesis hash is
+    /// already recorded or any block has been committed. Nothing is
+    /// visible, and nothing is durable, until this returns `Ok`.
+    pub fn initialise<'a>(
+        &self,
+        genesis_hash: Hash,
+        genesis_root: Hash,
+        state: impl IntoIterator<Item = (&'a StateKey, &'a StateValue)>,
+    ) -> Result<(), DbError> {
+        let txn = self.env.begin_rw_sync()?;
+
+        let roots_db = txn.create_db(Some(ROOTS_TABLE), DatabaseFlags::empty())?;
+        let state_db = txn.create_db(Some(STATE_TABLE), DatabaseFlags::empty())?;
+        let meta_db = txn.create_db(Some(META_TABLE), DatabaseFlags::empty())?;
+        txn.create_db(Some(BLOCKS_TABLE), DatabaseFlags::empty())?;
+
+        let genesis: Option<Vec<u8>> = txn.get(meta_db.dbi(), GENESIS_HASH_KEY)?;
+        let tip: Option<Vec<u8>> = txn.get(meta_db.dbi(), TIP_HEIGHT_KEY)?;
+        if genesis.is_some() || tip.is_some() {
+            return Err(DbError::AlreadyInitialised);
+        }
+
+        for (key, value) in state {
+            check_key(key)?;
+            txn.put(
+                state_db,
+                key.as_bytes(),
+                value.as_bytes(),
+                WriteFlags::UPSERT,
+            )?;
+        }
+        txn.put(
+            roots_db,
+            height_key(BlockHeight(0)),
+            genesis_root.as_bytes(),
+            WriteFlags::UPSERT,
+        )?;
+        txn.put(
+            meta_db,
+            GENESIS_HASH_KEY,
+            genesis_hash.as_bytes(),
+            WriteFlags::UPSERT,
+        )?;
+
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// The hash of the genesis configuration this database was initialised
+    /// with, or `None` if [`Self::initialise`] has not run.
+    pub fn genesis_hash(&self) -> Result<Option<Hash>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(META_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), GENESIS_HASH_KEY)?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let array: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| DbError::Mdbx(MdbxError::BadValSize))?;
+        Ok(Some(Hash::from_bytes(array)))
+    }
+
+    /// Every entry of the committed state, in key order: the genesis state
+    /// with every block's diff applied. Reads it all into memory, from one
+    /// snapshot, so it is a consistent state of the chain at some height
+    /// even if a block is committed while it runs. Meant for starting a
+    /// node, not for serving queries.
+    pub fn load_state(&self) -> Result<BTreeMap<StateKey, StateValue>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(STATE_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(BTreeMap::new()),
+            Err(err) => return Err(err.into()),
+        };
+        let mut cursor = txn.cursor(db)?;
+        let mut state = BTreeMap::new();
+        let mut entry = cursor.first::<Vec<u8>, Vec<u8>>()?;
+        while let Some((key, value)) = entry {
+            state.insert(StateKey::new(key), StateValue::new(value));
+            entry = cursor.next::<Vec<u8>, Vec<u8>>()?;
+        }
+        Ok(state)
     }
 
     pub fn get_block(&self, height: BlockHeight) -> Result<Option<Block>, DbError> {

@@ -19,7 +19,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chain_db::schema::{
-    height_key, BLOCKS_TABLE, META_TABLE, ROOTS_TABLE, STATE_TABLE, TIP_HEIGHT_KEY,
+    height_key, BLOCKS_TABLE, GENESIS_HASH_KEY, META_TABLE, ROOTS_TABLE, STATE_TABLE,
+    TIP_HEIGHT_KEY,
 };
 use chain_engine_api::Block;
 use chain_types::codec::Encode;
@@ -28,10 +29,13 @@ use libmdbx::{DatabaseFlags, Environment, EnvironmentFlags, Geometry, Mode, Sync
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = PathBuf::from(args.get(1).expect("usage: crash_helper <db_path> <height>"));
+    let path = PathBuf::from(
+        args.get(1)
+            .expect("usage: crash_helper <db_path> <height> [initialise]"),
+    );
     let height: u64 = args
         .get(2)
-        .expect("usage: crash_helper <db_path> <height>")
+        .expect("usage: crash_helper <db_path> <height> [initialise]")
         .parse()
         .expect("height must be a u64");
 
@@ -64,38 +68,58 @@ fn main() {
         .create_db(Some(META_TABLE), DatabaseFlags::empty())
         .expect("create meta table");
 
-    let block = Block {
-        parent_block_hash: Hash::from_bytes([0u8; 32]),
-        height: BlockHeight(height),
-        timestamp_millis: 1_700_000_000_000,
-        transactions: Vec::new(),
-    };
-    let mut block_bytes = Vec::new();
-    block.encode(&mut block_bytes);
+    if args.get(3).is_some_and(|mode| mode == "initialise") {
+        // What `Db::initialise` writes, never committed.
+        txn.put(
+            state_db,
+            b"torn-genesis-key",
+            b"torn-genesis-value",
+            WriteFlags::UPSERT,
+        )
+        .expect("put genesis state entry");
+        txn.put(
+            roots_db,
+            height_key(BlockHeight(0)),
+            [0xCDu8; 32],
+            WriteFlags::UPSERT,
+        )
+        .expect("put genesis root");
+        txn.put(meta_db, GENESIS_HASH_KEY, [0xEFu8; 32], WriteFlags::UPSERT)
+            .expect("put genesis hash");
+    } else {
+        let block = Block {
+            parent_block_hash: Hash::from_bytes([0u8; 32]),
+            height: BlockHeight(height),
+            timestamp_millis: 1_700_000_000_000,
+            transactions: Vec::new(),
+        };
+        let mut block_bytes = Vec::new();
+        block.encode(&mut block_bytes);
 
-    txn.put(
-        blocks_db,
-        height_key(BlockHeight(height)),
-        block_bytes,
-        WriteFlags::UPSERT,
-    )
-    .expect("put block");
-    txn.put(
-        roots_db,
-        height_key(BlockHeight(height)),
-        [0xABu8; 32],
-        WriteFlags::UPSERT,
-    )
-    .expect("put root");
-    txn.put(state_db, b"torn-key", b"torn-value", WriteFlags::UPSERT)
-        .expect("put state entry");
-    txn.put(
-        meta_db,
-        TIP_HEIGHT_KEY,
-        height_key(BlockHeight(height)),
-        WriteFlags::UPSERT,
-    )
-    .expect("put tip height");
+        txn.put(
+            blocks_db,
+            height_key(BlockHeight(height)),
+            block_bytes,
+            WriteFlags::UPSERT,
+        )
+        .expect("put block");
+        txn.put(
+            roots_db,
+            height_key(BlockHeight(height)),
+            [0xABu8; 32],
+            WriteFlags::UPSERT,
+        )
+        .expect("put root");
+        txn.put(state_db, b"torn-key", b"torn-value", WriteFlags::UPSERT)
+            .expect("put state entry");
+        txn.put(
+            meta_db,
+            TIP_HEIGHT_KEY,
+            height_key(BlockHeight(height)),
+            WriteFlags::UPSERT,
+        )
+        .expect("put tip height");
+    }
 
     println!("READY");
     std::io::stdout().flush().expect("flush stdout");

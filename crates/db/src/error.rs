@@ -22,6 +22,17 @@ pub enum DbError {
         expected: BlockHeight,
         actual: BlockHeight,
     },
+    /// [`crate::Db::initialise`] found a chain already here: either an
+    /// earlier initialisation or blocks that were committed without one.
+    /// It never overwrites, since replacing a chain's starting point would
+    /// change what every stored root means.
+    AlreadyInitialised,
+    /// A state key is longer than [`crate::schema::MAX_KEY_BYTES`]. Refused
+    /// before anything is written, since the store library panics on a key
+    /// it cannot hold.
+    KeyTooLarge {
+        length: usize,
+    },
 }
 
 impl core::fmt::Display for DbError {
@@ -33,6 +44,14 @@ impl core::fmt::Display for DbError {
             Self::NonSequentialCommit { expected, actual } => write!(
                 f,
                 "non-sequential block commit: expected height {expected}, got {actual}"
+            ),
+            Self::AlreadyInitialised => {
+                f.write_str("the database already holds a chain: it is never initialised over")
+            }
+            Self::KeyTooLarge { length } => write!(
+                f,
+                "a state key of {length} bytes is over the {}-byte limit",
+                crate::schema::MAX_KEY_BYTES
             ),
         }
     }

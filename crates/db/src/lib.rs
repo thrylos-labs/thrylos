@@ -14,6 +14,11 @@
 //! store afterward, not just by reasoning about MDBX's documented
 //! guarantees.
 //!
+//! [`Db::initialise`] records where the chain starts (the genesis hash, the
+//! root at height 0 and the whole genesis state), because a block commit
+//! writes only what the block changes; [`Db::load_state`] reads the whole
+//! committed state back, which is how a node restarts.
+//!
 //! [`HeightLog`] is a separate, smaller piece: a crash-safe append-only
 //! file of entries grouped by height, with the torn-write handling a
 //! write-ahead log needs, for the consensus host's log.
