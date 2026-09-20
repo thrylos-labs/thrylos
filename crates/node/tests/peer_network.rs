@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -398,10 +399,18 @@ fn a_quiet_network_keeps_its_connections_instead_of_cycling_them() {
 /// An address nobody is listening on yet, chosen ahead of time so that two
 /// nodes can each be told the other's.
 fn free_address() -> SocketAddr {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
+    // Ports are handed out one after another from a range that depends on the
+    // process, so two tests running at once are never given the same one (a
+    // bind to port 0, read and released, can hand it to both).
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let base = 20_000 + u16::try_from(std::process::id() % 20_000).unwrap();
+    loop {
+        let port = base + NEXT.fetch_add(1, Ordering::Relaxed);
+        let address: SocketAddr = ([127, 0, 0, 1], port).into();
+        if TcpListener::bind(address).is_ok() {
+            return address;
+        }
+    }
 }
 
 #[test]

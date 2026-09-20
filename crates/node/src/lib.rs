@@ -18,6 +18,12 @@
 //! queues around `chain-p2p`'s authenticated transport, with sends that never
 //! block and a stated policy wherever a queue can fill.
 //!
+//! [`EventLoop`] joins the two in one thread, [`NodeConfig`] is the JSON file a
+//! node is described by, and [`run_node`] assembles a node from it: this is
+//! everything the `chain-node` binary does. [`SenderBoundVerifier`] is the
+//! filter the transport applies to consensus messages before the node sees
+//! them.
+//!
 //! The node keeps three things beyond the chain itself, each with its own
 //! file under one directory ([`NodeDisk::open`]):
 //!
@@ -42,26 +48,36 @@
 #![forbid(unsafe_code)]
 
 mod atomic;
+pub mod clock;
 pub mod commit_log;
+pub mod config;
 pub mod disk;
 pub mod durable_engine;
+pub mod event_loop;
 pub mod mark_store;
+pub mod node;
 pub mod peer_network;
 pub mod remote_signer;
 pub mod runtime;
 pub mod signed_log;
+pub mod verifier;
 pub mod wal;
 
+pub use clock::SystemClock;
 pub use commit_log::FileCommitLog;
+pub use config::{ConfigError, NodeConfig, PeerSpec};
 pub use disk::{DiskConfig, FileStorage, NodeDisk};
 pub use durable_engine::{DurableEngine, OpenError};
+pub use event_loop::{DiscardTransactions, EventLoop, NodeEvent, TransactionIntake};
 pub use mark_store::{FileMarkStore, MarkError};
+pub use node::{run_node, NoTransactions, RunError};
 pub use peer_network::{
     Inbound, NetworkStats, PeerLink, PeerNetwork, PeerNetworkConfig, SendReport,
 };
 pub use remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential, SignerServer};
 pub use runtime::{Actions, NodeRuntime, Outgoing, Recipient, Timers};
 pub use signed_log::FileSignedLog;
+pub use verifier::SenderBoundVerifier;
 pub use wal::FileWal;
 
 use chain_consensus::host::StorageError;

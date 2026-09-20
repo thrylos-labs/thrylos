@@ -26,9 +26,12 @@ Fuzzing is described in [fuzz/README.md](fuzz/README.md) and the TLA+ consensus 
 
 ## What is working today
 
-Thrylos is pre-genesis. **There is no runnable node binary yet**. The authenticated
-TCP transport opens real sockets in loopback tests, while consensus is also
-exercised by a simulated four-validator network in one process. RPC is not built.
+Thrylos is pre-genesis. There is a `chain-node` binary that runs a validator: it
+reads a configuration file, opens or restores its chain from disk, reaches its
+signer, connects to its static peers and runs consensus. **It carries no
+transactions yet** (it proposes empty blocks: no mempool is wired in), has no RPC,
+and has been run as four nodes in one process over real sockets, not yet as
+separate processes on separate machines.
 
 ### Implemented and tested
 
@@ -42,6 +45,7 @@ exercised by a simulated four-validator network in one process. RPC is not built
 | **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits and a recorded genesis; a checksummed, torn-write-tolerant height log; the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history); and `DurableEngine`, which commits each block to the database before the chain advances and restores the chain on restart, refusing a database from another genesis or one that fails its root and audit checks. Checked by killing a committing process, and by a four-validator crash sweep that reloads every node's chain from disk |
 | **Signer** (`chain-signer`, `chain-node`) | The high-water-mark state machine that refuses to sign at or below a position it has signed, and a separate `chain-signer` process that alone holds the consensus key and its mark and answers over an authenticated Unix socket. The node's ports accept only that client, never a key, and tests kill and restart each side to check the mark never rewinds |
 | **Peer network** (`chain-node`, `chain-p2p`) | `PeerNetwork` keeps a node connected to its static peers over real sockets: the lower peer ID dials, redials back off and reset, handshakes run on a bounded pool of short threads so a silent stranger holds up only one, and every queue is bounded with a stated overflow policy (`send` never blocks). The transport gained split reader and writer halves, a quiet-link-safe read, and a closer. Tested on loopback: routing across four nodes, transactions, a node leaving and returning on the same port, quiet links staying up, strangers kept out, and prompt shutdown |
+| **Node** (`chain-node`) | The `chain-node` binary and the library behind it: a JSON configuration (unknown fields refused, secrets in private files), `run_node`, which assembles a node in the order that fails earliest (signer before any file is created), an event loop that joins the peer network to the driver, and a filter that rejects a vote, proposal or catch-up request naming a different author than the peer it arrived from. Tested by starting four nodes from configuration files, killing and restarting one from its disk while the others carry on, and a node whose signer refuses halting with the reason while the rest finish the chain |
 | **Node driver** (`chain-node`) | `NodeRuntime`: the driver around the consensus host, with no sockets or threads. It keeps the host's timers, routes its outbox to everyone or to one validator, and wakes it for its own catch-up requests, all in time supplied by the caller. The four-validator simulation runs on it |
 | **Text forms** (`chain-text`) | Checksummed `thry1…` addresses (bech32m: every single-character typo is caught) and `THRY` amounts (nine decimal places, exact, refusing ambiguous input), used by the `chain-genesis` tool. Presentation only: the chain still counts raw address bytes and base units |
 | **P2P** (`chain-p2p`) | One mutual-Ed25519-authenticated TCP transport with session-bound signed frames for consensus, block catch-up and transaction submission; static trusted peers; hard frame, byte-rate and connection bounds enforced before decode |
@@ -57,13 +61,14 @@ The consensus tests run four full validators, each with a real executor, against
 
 ### Not built yet
 
-* A node binary that wires these pieces together
+* Transactions on a running node: the mempool is not connected to the node, so it proposes empty blocks
+* A run as separate processes on separate machines
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
 * A calibrated gas schedule: metering is fuzzed against a provisional time-per-gas ceiling, but nothing is measured on reference hardware yet
 * Observer (non-validator) nodes
-* The developer workflow: local network, deploy a Move module, submit a transaction, see it finalize
+* The developer workflow: generating a local network's files and launching it, deploying a Move module, submitting a transaction, seeing it finalize
 
 ### Size and audit scope
 

@@ -1332,6 +1332,7 @@ dependencies = [
 name = "chain-node"
 version = "0.1.0"
 dependencies = [
+ "arc-malachitebft-core-consensus",
  "arc-malachitebft-core-types",
  "blake3",
  "blst",
@@ -1343,8 +1344,12 @@ dependencies = [
  "chain-p2p",
  "chain-signer",
  "chain-state",
+ "chain-text",
  "chain-types",
  "ed25519-dalek",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
