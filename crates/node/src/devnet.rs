@@ -73,7 +73,8 @@ const DIRECTORY_PREFIX: &str = "node";
 pub enum DevnetError {
     /// The number of validators is not one the network supports.
     Validators(usize),
-    /// The ports do not fit between `base` and 65535.
+    /// The ports (two for each validator: one for peers, one for the RPC) do not
+    /// fit between `base` and 65535.
     Ports { base: u16, validators: usize },
     /// The block interval is zero.
     BlockInterval,
@@ -101,7 +102,7 @@ impl core::fmt::Display for DevnetError {
             ),
             Self::Ports { base, validators } => write!(
                 f,
-                "{validators} consecutive ports from {base} do not fit below 65536"
+                "two ports for each of {validators} validators, from {base}, do not fit below 65536"
             ),
             Self::BlockInterval => write!(
                 f,
@@ -149,6 +150,8 @@ pub struct DevnetNode {
     pub number: usize,
     pub dir: PathBuf,
     pub listen: SocketAddr,
+    /// Where its RPC listens.
+    pub rpc: SocketAddr,
     pub validator: Address,
     /// The key its peers list to trust it.
     pub network_public_key: [u8; 32],
@@ -223,6 +226,7 @@ struct Plan {
     number: usize,
     seed: u8,
     listen: SocketAddr,
+    rpc: SocketAddr,
     validator: Address,
     network_secret: [u8; 32],
     network_public_key: [u8; 32],
@@ -284,11 +288,13 @@ fn node_config_text(plan: &Plan, plans: &[Plan], block_interval_ms: u64) -> Stri
   "validator": "{}",
   "signer": {{ "socket": "{SIGNER_SOCKET}", "credential": "{SIGNER_CREDENTIAL}" }},
   "peers": [{peers}],
+  "rpc": {{ "listen": "{}" }},
   "tuning": {{ "block_interval_ms": {block_interval_ms} }}
 }}
 "#,
         plan.listen,
-        format_address(&plan.validator)
+        format_address(&plan.validator),
+        plan.rpc
     )
 }
 
@@ -313,7 +319,7 @@ pub fn generate(
     let count = u8::try_from(validators).map_err(|_| DevnetError::Validators(validators))?;
     let ports_fit = base_port != 0
         && usize::from(base_port)
-            .checked_add(validators.saturating_sub(1))
+            .checked_add(validators.saturating_mul(2).saturating_sub(1))
             .is_some_and(|last| u16::try_from(last).is_ok());
     if !ports_fit {
         return Err(DevnetError::Ports {
@@ -350,14 +356,21 @@ pub fn generate(
         let operator =
             devnet::ed25519(seed).map_err(|error| DevnetError::Genesis(error.to_string()))?;
         let offset = u16::from(seed.saturating_sub(1));
-        let port = base_port.checked_add(offset).ok_or(DevnetError::Ports {
+        let ports_error = || DevnetError::Ports {
             base: base_port,
             validators,
-        })?;
+        };
+        let port = base_port.checked_add(offset).ok_or_else(ports_error)?;
+        // The RPC ports follow the peer ports, one block after the other.
+        let rpc_port = u16::try_from(validators)
+            .ok()
+            .and_then(|count| port.checked_add(count))
+            .ok_or_else(ports_error)?;
         plans.push(Plan {
             number: usize::from(seed),
             seed,
             listen: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            rpc: SocketAddr::from((Ipv4Addr::LOCALHOST, rpc_port)),
             validator: Address::from_public_key(&operator),
             network_secret,
             network_public_key: NetworkIdentity::from_secret_bytes(network_secret).public_key(),
@@ -406,6 +419,7 @@ pub fn generate(
             number: plan.number,
             dir: target.join(format!("{DIRECTORY_PREFIX}{}", plan.number)),
             listen: plan.listen,
+            rpc: plan.rpc,
             validator: plan.validator,
             network_public_key: plan.network_public_key,
         })
@@ -470,6 +484,11 @@ mod tests {
             let config = NodeConfig::load(&node.dir.join(NODE_CONFIG)).unwrap();
             assert_eq!(config.validator, node.validator);
             assert_eq!(config.listen, node.listen);
+            // The RPC has an address of its own, on the loopback, in the ports
+            // after every node's peer port.
+            assert_eq!(config.rpc_listen, Some(node.rpc));
+            assert!(node.rpc.ip().is_loopback());
+            assert_eq!(node.rpc.port(), 30_000 + 4 + u16::try_from(index).unwrap());
             assert_eq!(config.listen.port(), 30_000 + u16::try_from(index).unwrap());
             assert!(config.listen.ip().is_loopback());
             assert_eq!(config.genesis, node.dir.join(GENESIS));
@@ -600,17 +619,27 @@ mod tests {
                 .to_string();
             assert!(error.contains("not supported"), "{error}");
         }
-        for (base, validators) in [(0, 4), (65_534, 4), (65_535, 2)] {
+        for (base, validators) in [(0, 4), (65_529, 4), (65_534, 2), (65_535, 1)] {
             let error = generate(&dir, validators, base, DEFAULT_BLOCK_INTERVAL_MS)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("do not fit"), "{base}+{validators}: {error}");
         }
         assert!(
-            generate(&dir, 4, 65_532, DEFAULT_BLOCK_INTERVAL_MS).is_ok(),
+            generate(&dir, 4, 65_528, DEFAULT_BLOCK_INTERVAL_MS).is_ok(),
             "the last four ports fit"
         );
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn no_two_addresses_in_a_network_are_the_same() {
+        let (_root, _dir, nodes) = generated(MAX_VALIDATORS);
+        let mut all: Vec<SocketAddr> = nodes.iter().flat_map(|n| [n.listen, n.rpc]).collect();
+        let count = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), count);
     }
 
     #[test]

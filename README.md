@@ -8,16 +8,18 @@ The full technical spec, including the open decisions that still need answers be
 
 The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
 
-A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It makes a block a second, empty unless a transaction is handed to a node (there is no way for you to do that yet: that is the RPC):
+A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It makes a block a second, empty unless you send it a transaction:
 
 ```bash
 cargo build -p chain-node --bins                       # the node and the signer, side by side
 target/debug/chain-node devnet init /tmp/thrylos-devnet   # write four validators' files, on 127.0.0.1
 target/debug/chain-node devnet start /tmp/thrylos-devnet  # run them (Ctrl-C stops them)
 tail -f /tmp/thrylos-devnet/node1/node.log             # "committed block 1 (0 transactions)", ...
+target/debug/chain-node devnet bump /tmp/thrylos-devnet   # sign a transaction with a funded test account, send it over RPC, watch it get included
+curl -s -d '{"jsonrpc":"2.0","id":1,"method":"status"}' http://127.0.0.1:26660   # node 1's RPC (`devnet init` prints them)
 ```
 
-`devnet init` takes `--validators <1 to 65>` (four by default), `--base-port <port>` and `--block-interval-ms <ms>` (1000 by default, the spec's one-second target: after committing a block every node waits that long before starting the next height), and refuses a directory that already holds anything. Keep its path short: a signer's Unix socket path may be at most 100 bytes, and it says so if yours is longer. **It is insecure by design**: every consensus key is derived from a public seed, exactly as in the development genesis below, so nothing on it can hold value. `devnet start --until-height <n>` runs until every node has committed that height, then stops them all cleanly and exits, which is how the tests use it. A node started later than the others can take a few seconds to catch up, and `start` waits for it.
+`devnet init` takes `--validators <1 to 65>` (four by default), `--base-port <port>` and `--block-interval-ms <ms>` (1000 by default, the spec's one-second target: after committing a block every node waits that long before starting the next height), and refuses a directory that already holds anything. Keep its path short: a signer's Unix socket path may be at most 100 bytes, and it says so if yours is longer. Each node serves a JSON-RPC on the loopback address only, in the ports after the peer ports: `status`, `block`, `commit`, `account` and `send_transaction` (see `chain-rpc`; addresses are `thry1…`, amounts are decimal strings in base units, hashes are hex). `devnet bump [--node n] [--account 1-4] [--amount n]` uses it as a client. **It is insecure by design**: every consensus key is derived from a public seed, exactly as in the development genesis below, so nothing on it can hold value. `devnet start --until-height <n>` runs until every node has committed that height, then stops them all cleanly and exits, which is how the tests use it. A node started later than the others can take a few seconds to catch up, and `start` waits for it.
 
 The genesis tool works on its own too:
 
@@ -43,10 +45,10 @@ Thrylos is pre-genesis. There is a `chain-node` binary that runs a validator: it
 reads a configuration file, opens or restores its chain from disk, reaches its
 signer, connects to its static peers and runs consensus, and `chain-node devnet`
 generates and runs a local network of them. Each node has a transaction pool:
-a transaction handed to it by a trusted peer is checked against the chain,
-passed on to the others, included by whichever validator proposes next and run
-on all of them. **Nothing you can run submits one yet**, because there is no
-RPC; the tests hand them over as a peer would. Its tests run
+a transaction handed to it, by RPC or by a trusted peer, is checked against
+the chain, passed on to the others, included by whichever validator proposes next
+and run on all of them. A local RPC (five calls, loopback only) reports the chain
+and takes transactions. Its tests run
 four validators as separate processes, kill them with `SIGKILL` and start them
 again; nothing has yet run on more than one machine.
 
@@ -74,7 +76,8 @@ The consensus tests run four full validators, each with a real executor, against
 
 | Area | What exists | What is missing |
 |---|---|---|
-| **Mempool** (`chain-mempool`, `chain-node`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals, and cleanup after a block commits (what it executed, what its sender can no longer pay for, what has expired). In the node it is one pool that is both the host's source of transactions and the event loop's intake, reading accounts and the base fee from the same chain the host drives, and passing what is new to it on to every peer but the one it came from. Tested end to end: four running nodes, a transaction handed to one, a watcher that only a second node can have told, the counter it bumps run once on all four, and one sender's transactions included in order | Any way to submit one (no RPC), and gossip that is smarter than telling everyone |
+| **RPC** (`chain-rpc`, `chain-node`) | Five JSON-RPC 2.0 calls over a small HTTP server that only listens on the loopback and is bounded everywhere (workers, backlog, header and body size, time limits, queue to the node): `status`, `block`, `commit`, `account`, `send_transaction`. Answered on the event loop's own thread, a bounded number per pass, so a burst cannot hold up consensus. A refused transaction comes back with the name of the rule it broke. Tested with four real nodes over HTTP (a transaction sent to one, seen included and agreed on at another, with the commit certificate and every refusal) and with the real `devnet bump` command against running processes | Receipts and a transaction index (a client cannot see that a transaction *failed*, only whether it was included), subscriptions, tracing |
+| **Mempool** (`chain-mempool`, `chain-node`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals, and cleanup after a block commits (what it executed, what its sender can no longer pay for, what has expired). In the node it is one pool that is both the host's source of transactions and the event loop's intake, reading accounts and the base fee from the same chain the host drives, and passing what is new to it on to every peer but the one it came from. Tested end to end: four running nodes, a transaction handed to one, a watcher that only a second node can have told, the counter it bumps run once on all four, and one sender's transactions included in order | Gossip that is smarter than telling everyone |
 
 ### Known problems
 
@@ -82,14 +85,14 @@ The consensus tests run four full validators, each with a real executor, against
 
 ### Not built yet
 
-* A way to submit a transaction, and to see what became of it: nothing tells a sender that its transaction was refused (JSON-RPC is the next piece)
+* Receipts: a client can see that its transaction was included, not whether it succeeded in execution (there is no transaction index, and outcomes are not stored)
 * A run on separate machines (a local network of separate processes works)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
 * A calibrated gas schedule: metering is fuzzed against a provisional time-per-gas ceiling, but nothing is measured on reference hardware yet
 * Observer (non-validator) nodes
-* The rest of the developer workflow: deploying a Move module, submitting a transaction, seeing it finalize (a local network can be generated and run, but nothing can be sent to it)
+* The rest of the developer workflow: deploying a Move module (the transaction format carries calls, and there is no publish path yet), and signing tools other than the devnet's own `bump`
 
 ### Size and audit scope
 

@@ -26,14 +26,16 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use chain_consensus::host::{Clock, HaltReason, SignedLog, Storage, TransactionSource};
+use chain_consensus::host::{
+    Clock, CommitRecord, HaltReason, SignedLog, Storage, TransactionSource,
+};
 use chain_engine_api::{ChainView, Engine};
 use chain_p2p::NetworkMessage;
 use chain_signer::ConsensusSigner;
 use chain_types::{Address, BlockHeight, Transaction};
 
 use crate::peer_network::PeerNetwork;
-use crate::runtime::{Actions, NodeRuntime};
+use crate::runtime::{Actions, NodeRuntime, Recipient};
 
 /// The most messages handled between looks at the clock.
 pub const MAX_BATCH: usize = 64;
@@ -61,6 +63,59 @@ impl TransactionIntake for DiscardTransactions {
     }
 }
 
+/// What the RPC may learn from, and ask of, the loop it is answered in.
+pub trait NodeFacts {
+    /// How many peers are connected now.
+    fn connected_peers(&self) -> usize;
+    /// Why the host stopped, if it has.
+    fn halted(&self) -> Option<String>;
+    /// The commit record held for `height`, if any.
+    fn commit_record(&self, height: BlockHeight) -> Option<CommitRecord>;
+    /// Passes a transaction on to every peer.
+    fn relay(&self, transaction: &Transaction);
+}
+
+/// The node's RPC, from the loop's side: given the chance, between the other
+/// things the loop does, it answers what clients have asked.
+pub trait RpcPort {
+    fn serve(&mut self, facts: &dyn NodeFacts);
+}
+
+/// [`NodeFacts`] for a loop: borrows its driver and its network for one pass.
+struct LoopFacts<'a, X, T, C, K: ConsensusSigner, L, D> {
+    runtime: &'a NodeRuntime<X, T, C, K, L, D>,
+    network: &'a PeerNetwork,
+}
+
+impl<X, T, C, K, L, D> NodeFacts for LoopFacts<'_, X, T, C, K, L, D>
+where
+    X: Engine + ChainView,
+    T: TransactionSource,
+    C: Clock,
+    K: ConsensusSigner,
+    L: SignedLog,
+    D: Storage,
+{
+    fn connected_peers(&self) -> usize {
+        self.network.connected_peers().len()
+    }
+
+    fn halted(&self) -> Option<String> {
+        self.runtime.halted().map(ToString::to_string)
+    }
+
+    fn commit_record(&self, height: BlockHeight) -> Option<CommitRecord> {
+        self.runtime.commit_record(height)
+    }
+
+    fn relay(&self, transaction: &Transaction) {
+        let _ = self.network.send(
+            &Recipient::All,
+            &NetworkMessage::Transaction(transaction.clone()),
+        );
+    }
+}
+
 /// Something the loop tells its owner about, as it happens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeEvent {
@@ -82,6 +137,7 @@ pub struct EventLoop<X, T, C, K: ConsensusSigner, L, D, I, N> {
     intake: I,
     now: N,
     stop_at: Option<BlockHeight>,
+    rpc: Option<Box<dyn RpcPort>>,
 }
 
 impl<X, T, C, K, L, D, I, N> EventLoop<X, T, C, K, L, D, I, N>
@@ -109,7 +165,15 @@ where
             intake,
             now,
             stop_at: None,
+            rpc: None,
         }
+    }
+
+    /// Answers `rpc`'s clients from this loop, between everything else it does.
+    #[must_use]
+    pub fn with_rpc(mut self, rpc: Box<dyn RpcPort>) -> Self {
+        self.rpc = Some(rpc);
+        self
     }
 
     /// Stop, successfully, once a block at or past `height` is committed.
@@ -157,6 +221,13 @@ where
                 let reason = reason.clone();
                 report(NodeEvent::Halted(reason.clone()));
                 return Err(reason);
+            }
+
+            if let Some(rpc) = self.rpc.as_mut() {
+                rpc.serve(&LoopFacts {
+                    runtime: &self.runtime,
+                    network: &self.network,
+                });
             }
 
             let now = (self.now)();

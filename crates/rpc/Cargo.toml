@@ -8,3 +8,7 @@ publish.workspace = true
 description = "JSON-RPC, tracing"
 
 [dependencies]
+chain-text = { path = "../text", version = "0.1.0" }
+chain-types = { path = "../types", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true

@@ -20,10 +20,12 @@ chain-exec = { path = "../exec", version = "0.1.0" }
 chain-genesis = { path = "../genesis", version = "0.1.0" }
 chain-mempool = { path = "../mempool", version = "0.1.0" }
 chain-p2p = { path = "../p2p", version = "0.1.0" }
+chain-rpc = { path = "../rpc", version = "0.1.0" }
 chain-text = { path = "../text", version = "0.1.0" }
 chain-signer = { path = "../signer", version = "0.1.0" }
 chain-state = { path = "../state", version = "0.1.0" }
 chain-types = { path = "../types", version = "0.1.0" }
+ed25519-dalek.workspace = true
 malachite-core-consensus.workspace = true
 getrandom.workspace = true
 malachite-core-types.workspace = true
@@ -31,5 +33,4 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-ed25519-dalek.workspace = true
 tempfile.workspace = true

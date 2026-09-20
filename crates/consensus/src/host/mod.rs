@@ -640,6 +640,13 @@ where
         self.env.halted.as_ref()
     }
 
+    /// The commit record (the block, the quorum certificate that decided it and
+    /// the proposer's reveal) the host holds for `height`. It keeps a window of
+    /// recent heights, and always the newest; `None` for one outside it.
+    pub fn commit_record(&self, height: BlockHeight) -> Option<CommitRecord> {
+        self.env.storage.range(height, 1).into_iter().next()
+    }
+
     /// The height being run.
     pub const fn height(&self) -> BlockHeight {
         self.env.height

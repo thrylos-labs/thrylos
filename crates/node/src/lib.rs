@@ -48,6 +48,7 @@
 #![forbid(unsafe_code)]
 
 mod atomic;
+pub mod client;
 pub mod clock;
 pub mod commit_log;
 pub mod config;
@@ -60,6 +61,7 @@ pub mod mark_store;
 pub mod node;
 pub mod peer_network;
 pub mod remote_signer;
+pub mod rpc_api;
 pub mod runtime;
 pub mod signed_log;
 pub mod txpool;
@@ -78,6 +80,7 @@ pub use peer_network::{
     Inbound, NetworkStats, PeerLink, PeerNetwork, PeerNetworkConfig, SendReport,
 };
 pub use remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential, SignerServer};
+pub use rpc_api::NodeApi;
 pub use runtime::{Actions, NodeRuntime, Outgoing, Recipient, Timers};
 pub use signed_log::FileSignedLog;
 pub use txpool::{NodeMempool, SharedEngine};

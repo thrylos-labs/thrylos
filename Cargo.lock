@@ -1343,6 +1343,7 @@ dependencies = [
  "chain-genesis",
  "chain-mempool",
  "chain-p2p",
+ "chain-rpc",
  "chain-signer",
  "chain-state",
  "chain-text",
@@ -1368,6 +1369,12 @@ dependencies = [
 [[package]]
 name = "chain-rpc"
 version = "0.1.0"
+dependencies = [
+ "chain-text",
+ "chain-types",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "chain-signer"

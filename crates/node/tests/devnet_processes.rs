@@ -108,7 +108,8 @@ impl Network {
     fn generate_paced(validators: usize, block_interval_ms: u64) -> Self {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("net");
-        let base = free_base_port(u16::try_from(validators).unwrap());
+        // Two ports for each node: one for peers and one for its RPC.
+        let base = free_base_port(u16::try_from(validators * 2).unwrap());
         let output = run(&[
             "devnet",
             "init",
@@ -625,6 +626,144 @@ fn the_configured_block_interval_is_the_gap_between_the_blocks_on_the_chain() {
     assert!(
         (300..800).contains(&median),
         "the median gap is {median} ms: {gaps:?}"
+    );
+}
+
+/// A transaction, signed and sent by the real `chain-node devnet bump` command
+/// over the real RPC of a running network, seen included, and seen from another node.
+#[test]
+fn a_transaction_sent_with_devnet_bump_is_included_and_seen_from_another_node() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+
+    // Account 2 sends through node 2, twice: the second finds the sequence
+    // number the first left, which is what a client is for.
+    let first = run(&[
+        "devnet",
+        "bump",
+        &dir,
+        "--node",
+        "2",
+        "--account",
+        "2",
+        "--amount",
+        "5",
+    ]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&first),
+        stderr(&first)
+    );
+    let said = stdout(&first);
+    assert!(said.contains("is at sequence 0"), "{said}");
+    assert!(said.contains("included in block"), "{said}");
+    assert!(said.contains("is now at sequence 1"), "{said}");
+
+    let second = run(&[
+        "devnet",
+        "bump",
+        &dir,
+        "--node",
+        "2",
+        "--account",
+        "2",
+        "--amount",
+        "3",
+    ]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&second),
+        stderr(&second)
+    );
+    assert!(
+        stdout(&second).contains("is at sequence 1"),
+        "{}",
+        stdout(&second)
+    );
+    assert!(
+        stdout(&second).contains("is now at sequence 2"),
+        "{}",
+        stdout(&second)
+    );
+
+    // And node 4, which was not the one it was sent to, agrees over its own RPC.
+    let sender =
+        chain_types::Address::from_public_key(&chain_genesis::devnet::ed25519(102).unwrap());
+    let rpc = NodeConfig::load(&network.nodes[3].config())
+        .unwrap()
+        .rpc_listen
+        .unwrap();
+    let client = chain_node::client::RpcClient { address: rpc };
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        let account = client
+            .call(
+                "account",
+                &serde_json::json!({ "address": chain_text::format_address(&sender) }),
+            )
+            .unwrap();
+        if account["nextSequenceNumber"] == 2 {
+            break;
+        }
+        assert!(Instant::now() < end, "node 4 never saw both: {account}");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn devnet_bump_says_what_is_wrong_and_exits_accordingly() {
+    let network = Network::generate(2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+
+    // Nothing is running: it says so, and where it looked.
+    let output = run(&["devnet", "bump", &dir]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("cannot reach the RPC"),
+        "{}",
+        stderr(&output)
+    );
+
+    for (args, expected) in [
+        (vec!["--account", "5"], "accounts 1 to 4"),
+        (vec!["--account", "0"], "accounts 1 to 4"),
+        (vec!["--node", "9"], "no node 9"),
+        (vec!["--amount", "lots"], "wants a number"),
+    ] {
+        let mut full = vec!["devnet", "bump", dir.as_str()];
+        full.extend(args.iter().copied());
+        let output = run(&full);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(
+            stderr(&output).contains(expected),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+    }
+    for args in [
+        vec!["devnet", "bump"],
+        vec!["devnet", "bump", &dir, "--nodes", "2"],
+        vec!["devnet", "bump", &dir, "--node"],
+        vec!["devnet", "bump", &dir, "--node", "1", "--node", "2"],
+    ] {
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&output).contains("usage:"), "{args:?}");
+    }
+    // A directory that is not a network.
+    let empty = tempfile::tempdir().unwrap();
+    let output = run(&["devnet", "bump", empty.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("no generated network"),
+        "{}",
+        stderr(&output)
     );
 }
 

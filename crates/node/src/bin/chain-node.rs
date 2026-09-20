@@ -7,6 +7,8 @@
 //! chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
 //!                          [--block-interval-ms <ms>] write a local network
 //! chain-node devnet start <dir> [--until-height <n>]  run a local network
+//! chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
+//!                                                     send a transaction to a running one
 //! chain-node --help | --version
 //! ```
 //!
@@ -45,6 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chain_genesis::hex;
+use chain_node::client;
 use chain_node::config::create_network_key;
 use chain_node::config::DEFAULT_BLOCK_INTERVAL_MS;
 use chain_node::devnet::{generate, DEFAULT_BASE_PORT};
@@ -59,6 +62,7 @@ const USAGE: &str = "usage:
   chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
                           [--block-interval-ms <ms>]
   chain-node devnet start <dir> [--until-height <n>]
+  chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
   chain-node --help | --version";
 
 fn fail(message: impl core::fmt::Display) -> ExitCode {
@@ -216,15 +220,37 @@ fn devnet_init(dir: &str, flags: &[&str]) -> ExitCode {
             println!("wrote {} validators to {dir}:", nodes.len());
             for node in &nodes {
                 println!(
-                    "  node{}  {}  {}",
+                    "  node{}  {}  peers {}  rpc {}",
                     node.number,
                     chain_text::format_address(&node.validator),
-                    node.listen
+                    node.listen,
+                    node.rpc
                 );
             }
             println!("run it with: chain-node devnet start {dir}");
             ExitCode::SUCCESS
         }
+        Err(error) => fail(error),
+    }
+}
+
+fn devnet_bump(dir: &str, flags: &[&str]) -> ExitCode {
+    let Some(pairs) = flag_pairs(flags, &["--node", "--account", "--amount"]) else {
+        return usage_error();
+    };
+    let (node, account, amount) = match (
+        flag_value::<usize>(&pairs, "--node", Some(1)),
+        flag_value::<u8>(&pairs, "--account", Some(1)),
+        flag_value::<u64>(&pairs, "--amount", Some(1)),
+    ) {
+        (Ok(Some(node)), Ok(Some(account)), Ok(Some(amount))) => (node, account, amount),
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => return fail(error),
+        _ => return usage_error(),
+    };
+    match client::bump(Path::new(dir), node, account, amount, &mut |line| {
+        println!("{line}");
+    }) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error),
     }
 }
@@ -276,6 +302,7 @@ fn main() -> ExitCode {
         ["network-key", path] => network_key(path),
         ["devnet", "init", dir, flags @ ..] => devnet_init(dir, flags),
         ["devnet", "start", dir, flags @ ..] => devnet_start(dir, flags),
+        ["devnet", "bump", dir, flags @ ..] => devnet_bump(dir, flags),
         _ => usage_error(),
     }
 }

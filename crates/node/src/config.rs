@@ -13,9 +13,13 @@
 //!   "signer": { "socket": "signer.sock", "credential": "signer.credential" },
 //!   "peers": [
 //!     { "address": "10.0.0.2:26656", "public_key": "<64 hex digits>", "validator": "thry1…" }
-//!   ]
+//!   ],
+//!   "rpc": { "listen": "127.0.0.1:26657" }
 //! }
 //! ```
+//!
+//! `rpc` is optional: without it the node serves no RPC. Its address must be a
+//! loopback one (the RPC is local only; see `chain-rpc`).
 //!
 //! The file names secrets and never holds one: the transport key and the
 //! signer's credential are files of their own, refused unless only their owner
@@ -93,8 +97,15 @@ struct RawConfig {
     validator: String,
     signer: RawSigner,
     peers: Vec<RawPeer>,
+    rpc: Option<RawRpc>,
     #[serde(default)]
     tuning: RawTuning,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRpc {
+    listen: SocketAddr,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +156,8 @@ pub struct NodeConfig {
     pub signer_credential: PathBuf,
     pub signer_timeout: Duration,
     pub peers: Vec<PeerSpec>,
+    /// Where the RPC listens (always a loopback address), if the node serves one.
+    pub rpc_listen: Option<SocketAddr>,
     pub network: PeerNetworkConfig,
     /// How long a peer may take over a handshake or a stalled frame.
     pub io_timeout: Duration,
@@ -237,6 +250,26 @@ impl NodeConfig {
             });
         }
 
+        let rpc_listen = match raw.rpc {
+            None => None,
+            Some(rpc) => {
+                if !rpc.listen.ip().is_loopback() {
+                    return Err(invalid(
+                        "rpc.listen",
+                        format!(
+                            "{} is not a loopback address: the RPC is local only, and anything \
+                             wider belongs to a proxy in front of it",
+                            rpc.listen
+                        ),
+                    ));
+                }
+                if rpc.listen == raw.listen {
+                    return Err(invalid("rpc.listen", "the same address as `listen`"));
+                }
+                Some(rpc.listen)
+            }
+        };
+
         let millis = |field: &str, value: Option<u64>, default: Duration| match value {
             None => Ok(default),
             Some(0) => Err(invalid(field, "must not be zero")),
@@ -284,6 +317,7 @@ impl NodeConfig {
                 Duration::from_secs(5),
             )?,
             peers,
+            rpc_listen,
             network,
             io_timeout: millis(
                 "tuning.io_timeout_ms",
@@ -418,6 +452,37 @@ mod tests {
             config.network.inbound_queue,
             PeerNetworkConfig::default().inbound_queue
         );
+    }
+
+    #[test]
+    fn the_rpc_is_optional_and_only_ever_local() {
+        assert_eq!(parse(&config_with("", "")).unwrap().rpc_listen, None);
+        let with =
+            |listen: &str| config_with("", &format!(r#", "rpc": {{ "listen": "{listen}" }}"#));
+        assert_eq!(
+            parse(&with("127.0.0.1:9100")).unwrap().rpc_listen,
+            Some("127.0.0.1:9100".parse().unwrap())
+        );
+        assert!(parse(&with("[::1]:9100")).is_ok());
+        for wider in ["0.0.0.0:9100", "192.168.1.5:9100", "10.0.0.2:9100"] {
+            let message = refused(&with(wider));
+            assert!(
+                message.contains("rpc.listen") && message.contains("local only"),
+                "{wider}: {message}"
+            );
+        }
+        // The same socket as the peer network's would be a clash, not a choice.
+        let message = refused(&with("127.0.0.1:9000"));
+        assert!(
+            message.contains("rpc.listen") && message.contains("same address"),
+            "{message}"
+        );
+        // And nothing else may be in the section.
+        let message = refused(&config_with(
+            "",
+            r#", "rpc": { "listen": "127.0.0.1:9100", "public": true }"#,
+        ));
+        assert!(message.contains("public"), "{message}");
     }
 
     #[test]

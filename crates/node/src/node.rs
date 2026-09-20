@@ -21,6 +21,7 @@ use std::sync::Arc;
 use chain_consensus::host::{HaltReason, Host, HostConfig, StorageError, TransactionSource};
 use chain_engine_api::Block;
 use chain_p2p::{NetworkError, TcpNetwork, TransportConfig, TrustedPeer};
+use chain_rpc::{Server, ServerConfig, ServerError};
 use chain_types::beacon::genesis_seed;
 use chain_types::{BlockHeight, Transaction};
 
@@ -31,6 +32,7 @@ use crate::durable_engine::{DurableEngine, OpenError};
 use crate::event_loop::{EventLoop, NodeEvent};
 use crate::peer_network::{PeerLink, PeerNetwork};
 use crate::remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential};
+use crate::rpc_api::NodeApi;
 use crate::runtime::NodeRuntime;
 use crate::txpool::{NodeMempool, SharedEngine};
 use crate::verifier::SenderBoundVerifier;
@@ -49,6 +51,8 @@ pub enum RunError {
     Signer(RemoteSignerError),
     /// The network could not be started.
     Network(NetworkError),
+    /// The RPC could not be started.
+    Rpc(ServerError),
     /// The consensus host stopped.
     Halted(HaltReason),
 }
@@ -62,6 +66,7 @@ impl core::fmt::Display for RunError {
             Self::Storage(error) => write!(f, "the node's files: {error}"),
             Self::Signer(error) => write!(f, "the signer: {error}"),
             Self::Network(error) => write!(f, "the network: {error}"),
+            Self::Rpc(error) => write!(f, "{error}"),
             Self::Halted(reason) => write!(f, "the node stopped: {reason}"),
         }
     }
@@ -141,7 +146,7 @@ pub fn run_node(
             ..HostConfig::default()
         },
         config.validator,
-        engine,
+        engine.clone(),
         ports,
         genesis_seed(&genesis.hash()),
     )
@@ -174,7 +179,29 @@ pub fn run_node(
     )?;
     let peers = PeerNetwork::start(network, links, config.network)?;
 
-    let mut event_loop = EventLoop::new(NodeRuntime::new(host), peers, pool, now_ms);
+    // The RPC comes last, so that the node never accepts a call before it can
+    // answer one.
+    let rpc = match config.rpc_listen {
+        Some(listen) => Some(Server::start(ServerConfig::at(listen)).map_err(RunError::Rpc)?),
+        None => None,
+    };
+
+    let mut event_loop = EventLoop::new(NodeRuntime::new(host), peers, pool.clone(), now_ms);
+    // The server stops, and gives up its port, when this goes out of scope.
+    let _rpc_server = match rpc {
+        Some((server, inbox)) => {
+            event_loop = event_loop.with_rpc(Box::new(NodeApi::new(
+                engine,
+                pool,
+                inbox,
+                genesis.chain_id(),
+                genesis.hash(),
+                config.validator,
+            )));
+            Some(server)
+        }
+        None => None,
+    };
     if let Some(height) = stop_at {
         event_loop = event_loop.stopping_at(height);
     }

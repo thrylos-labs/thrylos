@@ -193,12 +193,14 @@ fn provision_full(root: &Path, advanced: &[u8], clients: &[ClientPlan]) -> Vec<P
                   "network_key": "network.key", "validator": "{}",
                   "signer": {{ "socket": "signer.sock", "credential": "signer.credential" }},
                   "peers": [{}],
+                  "rpc": {{ "listen": "{}" }},
                   "tuning": {{ "io_timeout_ms": 500, "reconnect_initial_ms": 20,
                                "reconnect_max_ms": 250, "block_interval_ms": 50 }}
                 }}"#,
                 plan.listen,
                 format_address(&plan.operator()),
-                peers.join(", ")
+                peers.join(", "),
+                free_address()
             );
             std::fs::write(dir.join("node.json"), &text).unwrap();
             Provisioned {
@@ -446,6 +448,236 @@ fn a_node_whose_signer_refuses_halts_and_says_why_while_the_others_carry_on() {
     assert_one_chain(&nodes[..3], HEIGHT);
 }
 
+// ---- the RPC -----------------------------------------------------------------------
+
+/// One JSON-RPC call over HTTP, and the whole response.
+fn rpc(address: SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
+    use std::io::{Read, Write};
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+        .to_string();
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    write!(
+        stream,
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut text = String::new();
+    stream.read_to_string(&mut text).unwrap();
+    let (head, body) = text.split_once("\r\n\r\n").expect("an HTTP response");
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    serde_json::from_str(body).unwrap()
+}
+
+/// The result of a call that must have succeeded.
+fn rpc_ok(address: SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let response = rpc(address, method, params);
+    assert!(response.get("error").is_none(), "{method}: {response}");
+    response["result"].clone()
+}
+
+/// The error a call must have been answered with.
+fn rpc_error(address: SocketAddr, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let response = rpc(address, method, params);
+    assert!(
+        response.get("result").is_none(),
+        "{method} succeeded: {response}"
+    );
+    response["error"].clone()
+}
+
+/// Waits until `check` holds, up to `patience`, polling.
+fn wait_until(what: &str, patience: Duration, mut check: impl FnMut() -> bool) {
+    let end = Instant::now() + patience;
+    while !check() {
+        assert!(Instant::now() < end, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_transaction_sent_over_rpc_to_one_node_is_seen_included_and_agreed_on_over_rpc_at_others() {
+    // Long enough that everything below is done before the nodes stop.
+    const HEIGHT: u64 = 150;
+    let root = tempfile::tempdir().unwrap();
+    let nodes = provision(root.path());
+    let addresses: Vec<SocketAddr> = nodes.iter().map(|n| n.config.rpc_listen.unwrap()).collect();
+    let running: Vec<Running> = nodes.iter().map(|n| start(n, HEIGHT)).collect();
+
+    // Every node answers, and node 1 has met the other three.
+    for address in &addresses {
+        wait_until("an RPC to answer", Duration::from_secs(30), || {
+            std::net::TcpStream::connect(address).is_ok()
+        });
+    }
+    wait_until("node 1 to meet its peers", Duration::from_secs(30), || {
+        rpc_ok(addresses[0], "status", serde_json::json!({}))["peers"] == 3
+    });
+    let status = rpc_ok(addresses[3], "status", serde_json::json!({}));
+    assert_eq!(status["chainId"], chain_genesis::devnet::DEVNET_CHAIN_ID);
+    assert_eq!(status["halted"], serde_json::Value::Null);
+    assert_eq!(
+        status["validator"],
+        format_address(&nodes[3].config.validator)
+    );
+
+    // What a client does: read the account, build the next transaction, send it.
+    let sender = Address::from_public_key(&chain_genesis::devnet::ed25519(101).unwrap());
+    let account = rpc_ok(
+        addresses[3],
+        "account",
+        serde_json::json!({ "address": format_address(&sender) }),
+    );
+    assert_eq!(account["nextSequenceNumber"], 0);
+    assert_eq!(account["balance"], "1000000000000");
+    let tx = bump(101, account["nextSequenceNumber"].as_u64().unwrap(), 7);
+    let mut bytes = Vec::new();
+    tx.encode(&mut bytes);
+    let hash = chain_rpc::call::transaction_hash(&tx).to_string();
+    let sent = rpc_ok(
+        addresses[0],
+        "send_transaction",
+        serde_json::json!({ "transaction": chain_rpc::hex::encode(&bytes) }),
+    );
+    assert_eq!(sent["hash"], hash);
+    assert_eq!(sent["status"], "pending");
+
+    // Node 4 was never sent it. It sees the account move, and the block.
+    wait_until(
+        "the transaction to run on node 4",
+        Duration::from_secs(60),
+        || {
+            rpc_ok(
+                addresses[3],
+                "account",
+                serde_json::json!({ "address": format_address(&sender) }),
+            )["nextSequenceNumber"]
+                == 1
+        },
+    );
+    let latest = rpc_ok(addresses[3], "status", serde_json::json!({}))["latest"]["height"]
+        .as_u64()
+        .unwrap();
+    let found = (1..=latest)
+        .find(|height| {
+            rpc_ok(
+                addresses[3],
+                "block",
+                serde_json::json!({ "height": height }),
+            )["transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|listed| listed == &serde_json::json!(hash))
+        })
+        .expect("a block on node 4 that carries it");
+
+    // Every node has that block, the same, with the same state after it.
+    let reference = rpc_ok(
+        addresses[3],
+        "block",
+        serde_json::json!({ "height": found }),
+    );
+    for address in &addresses[..3] {
+        wait_until(
+            "the block to reach every node",
+            Duration::from_secs(30),
+            || {
+                rpc(*address, "block", serde_json::json!({ "height": found }))
+                    .get("result")
+                    .is_some()
+            },
+        );
+        let theirs = rpc_ok(*address, "block", serde_json::json!({ "height": found }));
+        assert_eq!(theirs["hash"], reference["hash"]);
+        assert_eq!(theirs["stateRoot"], reference["stateRoot"]);
+    }
+    let full = rpc_ok(
+        addresses[1],
+        "block",
+        serde_json::json!({ "height": found, "full": true }),
+    );
+    assert_eq!(full["transactions"][0]["sender"], format_address(&sender));
+    assert_eq!(
+        full["transactions"][0]["encoded"],
+        chain_rpc::hex::encode(&bytes)
+    );
+
+    // The certificate that decided it: the same block, signed by a quorum of
+    // this network's validators.
+    let commit = rpc_ok(addresses[2], "commit", serde_json::json!({}));
+    let commit_height = commit["height"].as_u64().unwrap();
+    let block_at_commit = rpc_ok(
+        addresses[2],
+        "block",
+        serde_json::json!({ "height": commit_height }),
+    );
+    assert_eq!(commit["blockHash"], block_at_commit["hash"]);
+    assert_eq!(commit["stateRoot"], block_at_commit["stateRoot"]);
+    assert!(commit["signatureCount"].as_u64().unwrap() >= 3, "{commit}");
+    let validators: Vec<String> = nodes
+        .iter()
+        .map(|n| format_address(&n.config.validator))
+        .collect();
+    for signature in commit["signatures"].as_array().unwrap() {
+        assert!(validators.contains(&signature["validator"].as_str().unwrap().to_owned()));
+        assert_eq!(signature["signature"].as_str().unwrap().len(), 96 * 2);
+    }
+
+    // Refusals come back as errors that say why, over the wire.
+    let again = rpc_error(
+        addresses[1],
+        "send_transaction",
+        serde_json::json!({ "transaction": chain_rpc::hex::encode(&bytes) }),
+    );
+    assert_eq!(again["code"], -32010);
+    assert_eq!(again["data"]["reason"], "SequenceNumberTooLow", "{again}");
+    let mut wrong_chain = Vec::new();
+    bump_on_chain(101, 1, 1, chain_genesis::devnet::DEVNET_CHAIN_ID + 1).encode(&mut wrong_chain);
+    let refused = rpc_error(
+        addresses[1],
+        "send_transaction",
+        serde_json::json!({ "transaction": chain_rpc::hex::encode(&wrong_chain) }),
+    );
+    assert_eq!(refused["data"]["reason"], "WrongChainId");
+    assert_eq!(
+        rpc_error(
+            addresses[1],
+            "block",
+            serde_json::json!({ "height": 999_999 })
+        )["code"],
+        -32001
+    );
+    assert_eq!(
+        rpc_error(addresses[1], "nothing", serde_json::json!({}))["code"],
+        -32601
+    );
+    assert_eq!(
+        rpc_error(
+            addresses[1],
+            "account",
+            serde_json::json!({ "address": "thry1nope" })
+        )["code"],
+        -32602
+    );
+
+    // The pool emptied as the block committed.
+    wait_until("the pool to empty", Duration::from_secs(30), || {
+        rpc_ok(addresses[0], "status", serde_json::json!({}))["mempool"] == 0
+    });
+
+    for node in running {
+        node.finish(Duration::from_secs(120)).unwrap();
+    }
+    assert_one_chain(&nodes, 100);
+    for node in &nodes {
+        assert_eq!(counter_on_disk(node), Some(7), "node {}", node.seed);
+    }
+}
+
 // ---- transactions ------------------------------------------------------------------
 
 /// A client of `node`: a peer with a transport key the node lists, connected to
@@ -490,9 +722,18 @@ fn connect_client(client: &ClientPlan, node: &Provisioned) -> PeerNetwork {
 /// A signed call to the genesis counter's `bump`, from a funded devnet account
 /// (seeds 101 to 104).
 fn bump(seed: u8, sequence: u64, amount: u64) -> Transaction {
+    bump_on_chain(
+        seed,
+        sequence,
+        amount,
+        chain_genesis::devnet::DEVNET_CHAIN_ID,
+    )
+}
+
+fn bump_on_chain(seed: u8, sequence: u64, amount: u64, chain: u64) -> Transaction {
     let key = SigningKey::from_bytes(&[seed; 32]);
     let body = TransactionBody {
-        chain_id: ChainId(chain_genesis::devnet::DEVNET_CHAIN_ID),
+        chain_id: ChainId(chain),
         sender: PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes()).unwrap(),
         sequence_number: SequenceNumber(sequence),
         expiry: BlockHeight(1_000),

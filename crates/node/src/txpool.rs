@@ -212,8 +212,10 @@ impl TransactionIntake for NodeMempool {
     }
 }
 
+/// Fixtures for tests here and in the RPC's: a real chain on the devnet genesis,
+/// and signed calls to its counter.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testing {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use chain_exec::genesis::{
@@ -228,9 +230,9 @@ mod tests {
 
     use super::*;
 
-    const DEVNET_CHAIN: u64 = devnet::DEVNET_CHAIN_ID;
+    pub(crate) const DEVNET_CHAIN: u64 = devnet::DEVNET_CHAIN_ID;
 
-    fn chain() -> (tempfile::TempDir, SharedEngine, NodeMempool) {
+    pub(crate) fn chain() -> (tempfile::TempDir, SharedEngine, NodeMempool) {
         let dir = tempfile::tempdir().unwrap();
         let genesis = devnet::config().unwrap();
         let engine = SharedEngine::new(DurableEngine::open(dir.path(), &genesis).unwrap());
@@ -240,7 +242,7 @@ mod tests {
 
     /// A signed call to the genesis counter's `bump`, from the devnet account
     /// with this seed (101 to 104 are funded).
-    fn bump(seed: u8, chain_id: u64, sequence: u64, max_fee: u64) -> Transaction {
+    pub(crate) fn bump(seed: u8, chain_id: u64, sequence: u64, max_fee: u64) -> Transaction {
         let key = SigningKey::from_bytes(&[seed; 32]);
         let sender = PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes()).unwrap();
         let body = TransactionBody {
@@ -268,7 +270,7 @@ mod tests {
     }
 
     /// The next block on the chain, holding `transactions`, committed.
-    fn commit(engine: &SharedEngine, transactions: Vec<Transaction>) -> Block {
+    pub(crate) fn commit(engine: &SharedEngine, transactions: Vec<Transaction>) -> Block {
         let head = ChainView::head(engine).unwrap();
         let limits = ChainView::block_limits(engine).unwrap();
         let block = engine.propose_block(
@@ -283,6 +285,14 @@ mod tests {
         engine.clone().finalise_block(&block, &executed).unwrap();
         block
     }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+
+    use super::testing::*;
+    use super::*;
 
     #[test]
     fn a_funded_senders_transaction_is_admitted_offered_and_passed_on_once() {
