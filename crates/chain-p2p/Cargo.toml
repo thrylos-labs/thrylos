@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Gossip, peer scoring, discovery"
+description = "Authenticated transport and bounded ingress"
 
 # A deliberately narrower lint set than the workspace's tier-A table
 # (`[lints] workspace = true`), not that table itself: this crate's
@@ -25,4 +25,8 @@ panic = "deny"
 indexing_slicing = "deny"
 
 [dependencies]
+chain-consensus = { path = "../chain-consensus", version = "0.1.0" }
 chain-types = { path = "../chain-types", version = "0.1.0" }
+blake3.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true

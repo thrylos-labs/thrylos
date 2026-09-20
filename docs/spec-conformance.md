@@ -31,6 +31,8 @@ Status meanings:
 | D-005 | User modules are immutable in v1. Code or storage-layout replacement requires a named fork and explicit migration. | This removes the transaction-level upgrade and compatibility-checking surface. Governance schedules a named fork but cannot replace code. |
 | D-006 | Require no ambient I/O on the consensus execution path; do not require literal `no_std` compatibility. | Pinned MoveVM and Malachite dependencies use `std`. The auditable property is absence of filesystem, network, process and environment inputs during deterministic execution. Genesis still violates this by compiling through temporary files and is tracked below. |
 | D-007 | Remove the total-line-count target. Track audit scope by trust tier, dependency revision, boundary size, bounds and verification evidence. | On 2026-09-19 the crate source trees contain 27,096 lines of Rust, including unit tests embedded beside production code, and 33,980 with integration tests. The node and sync paths are still incomplete. Dependency code remains part of the review surface even when first-party glue is short. |
+| D-008 | Use one mutually authenticated TCP transport and a static trusted-peer allowlist for the first testnet. | This carries consensus, bounded block catch-up and transaction submission without adding discovery, multiple transports, ASN data or a reputation subsystem. Loopback tests exercise real sockets, mutual Ed25519 authentication and session-bound signed frames. |
+| D-009 | Separate the consensus signer with one authenticated Unix-socket protocol; defer remote custody adapters and key rotation. | The signer process exposes only fixed-domain consensus signing, deterministic beacon signing and mark inspection. Keyed BLAKE3 authenticates bounded requests and binds each response to its request without adding TLS, HTTP or a general RPC framework. |
 
 ## Scope and architecture
 
@@ -53,7 +55,7 @@ Status meanings:
 | Certificates use individual validator-specific signatures resolved against the canonical set | **Conforms** | `chain-consensus::certificate`; outsider, duplicate, wrong-key and quorum tests. | Re-run the budget test on named reference hardware before freezing the format for genesis. |
 | Certificate verification and propagation fit the round budget | **Partial** | Ignored `certificate_budget` test enforces provisional ceilings of 200 ms p99 and 32 KiB. Three 2026-09-19 development-machine runs measured 83.9–118.8 ms p99 and encoded to 16,584 bytes. | Name launch reference hardware, repeat the blocking measurement there, and measure full-block propagation through the real transport. |
 | Safety and eventual-synchrony liveness are model-checked | **Missing** | No TLA+ or Quint model exists. | Model the actual Malachite adapter, proposer beacon, validator-set changes and catch-up assumptions. |
-| Four MiB hard block cap is enforced independently of gas | **Conforms** | `Block::encoded_len` measures the canonical representation linearly; proposal clamps caller limits to `MAX_BLOCK_SIZE_BYTES`, while execution and finalisation reject oversized blocks. Tests cover oversized proposals and validation. | Apply the same cap before concrete network-message decoding when the transport is built. |
+| Four MiB hard block cap is enforced independently of gas | **Conforms** | `Block::encoded_len` measures the canonical representation linearly; proposal clamps caller limits to `MAX_BLOCK_SIZE_BYTES`, while execution and finalisation reject oversized blocks. Tests cover oversized proposals and validation. The transport also rejects consensus envelopes above its bounded two-block catch-up ceiling before allocation. | Keep the block-level check in consensus validation because one bounded envelope can contain more than one block. |
 | A transaction cannot consume over 25% of the block execution budget | **Conforms** | `max_transaction_gas` derives one protocol ceiling from the active block limit. Proposal skips larger budgets and validation rejects them with the transaction index; tests cover the boundary and governance-lowered limits. | Retain the same rule when the gas schedule is recalibrated. |
 
 ## Execution and contract model
@@ -97,9 +99,9 @@ Status meanings:
 
 | Spec commitment | Status | Evidence | Work required |
 |---|---|---|---|
-| Size/rate check precedes strict decode and signature verification | **Partial** | Generic ingress gate and ordering tests. | Apply it to every concrete message in the real transport. |
-| Every remote queue, allocation and loop has a domain-specific bound | **Partial** | Bounded queue and some wire caps exist; generic codec cap is broad and no transport exists. | Inventory concrete paths, tighten per-type decode limits and fuzz malformed encodings. |
-| Peer scoring, diversity, trusted peers and signed discovery | **Partial** | Scoring and selection algorithms exist. | Implement transport integration and the signed, rate-limited discovery protocol. |
+| Size/rate check precedes strict decode and signature verification | **Conforms** | `TcpNetwork` reads the five-byte header, checks the per-type size cap and reserves global/per-peer budget before allocating the body; it then verifies the session-bound frame signature, strictly decodes, verifies transaction signatures and invokes the required consensus verifier. Tests prove an oversized declaration never reaches a verifier and a tampered frame never reaches message decoding. | Add malformed-frame fuzzing without changing this ordering. |
+| Every remote queue, allocation and loop has a domain-specific bound | **Partial** | Consensus and transaction frame allocations have separate hard caps, connections are capped at 64, catch-up is bounded by frame size, and the reusable queue is fixed-capacity. | Audit the eventual node event loop and mempool handoff once they are wired to the transport. |
+| One authenticated transport with static trusted peers and a hard peer limit | **Conforms** | `chain-p2p::TcpNetwork` uses mutual Ed25519 challenge-response authentication and signs every frame over both peers, the fresh session, type, length and sequence number. It rejects keys outside the static allowlist, duplicate peers and configurations above 64 connections. Real loopback tests cover authentication, tamper rejection and both frame types. | Run multi-host soak and partition tests; keep discovery and scoring out of v1 unless measurements require them. |
 | Mempool admission, replacement and eviction rules | **Partial** | Pool rules and state-backed account view are tested. | Remove committed/expired transactions and wire the pool to finalisation. |
 | Minimal JSON-RPC and tracing | **Missing** | `chain-rpc` is an empty placeholder. | Add only the calls required by the first applications and operators. |
 | Observer node mode | **Missing** | Validator host only. | Add after durable replay and sync are complete. |
@@ -108,8 +110,8 @@ Status meanings:
 
 | Spec commitment | Status | Evidence | Work required |
 |---|---|---|---|
-| Signer persists a monotonic high-water mark before releasing a signature | **Conforms** | Signer logic, fsynced file store and crash/restart tests. | Preserve this invariant across the process boundary. |
-| Consensus key lives only in a separate signer process | **Missing** | Signer currently runs in the node process. | Define the minimal authenticated local protocol and independent storage/deployment boundary. |
+| Signer persists a monotonic high-water mark before releasing a signature | **Conforms** | `Signer::sign` persists through `FileMarkStore` before constructing a signature. Process tests kill and restart the real signer binary and prove the returned signature's mark survives. | Keep the mark file on signer-owned storage and retain the no-reset rule. |
+| Consensus key lives only in a separate signer process | **Conforms** | The `chain-signer` binary alone reads the BLS secret and mark. `NodeDisk::into_ports` accepts only `RemoteSigner`, whose bounded Unix-socket protocol authenticates requests and request-bound responses. Independent node-client and signer-process kill tests prove neither crash rewinds the mark. | Add deployment packaging and secret provisioning without adding a local-signing fallback. |
 | Consensus, operator and reward keys are separate and rotatable as specified | **Missing** | Roles and rotations are not implemented end to end. | Specify transaction formats, delays and recovery procedures before genesis. |
 | Halt detection and certificate-based recovery runbook is implemented and rehearsed | **Missing** | The prose runbook exists only in the specification. | Add monitoring, release/restart tooling and a chaos-testnet rehearsal. |
 | Named forks select old/new rules and run deterministic migrations exactly once | **Missing** | Governance stores activation heights only. | Build rule dispatch, migration receipts, replay tests and abortable activation rehearsal. |
@@ -117,7 +119,7 @@ Status meanings:
 | Canonical codec properties and malformed-input resistance | **Partial** | Property and truncation tests exist. | Add continuous cargo-fuzz targets for every wire/storage decoder. |
 | Continuous invariant, differential and metering fuzzing | **Missing** | No cargo-fuzz workspace or corpus exists. | Establish the three independent fuzz campaigns before broadening execution. |
 | Loom, Miri and Kani verification | **Missing** | No jobs or harnesses exist. | Add focused boundary/signer concurrency checks and arithmetic proofs. |
-| Sixty-day chaos testnet, two audits, contest and bounty | **Missing** | No runnable network exists. | These remain launch gates, not implementation substitutes. |
+| Sixty-day chaos testnet, two audits, contest and bounty | **Missing** | A real transport library exists, but there is no runnable node binary or testnet deployment. | These remain launch gates, not implementation substitutes. |
 
 ## Open product decisions
 
@@ -128,16 +130,21 @@ must not be treated as audited requirements.
 
 ## Next conformance gate
 
-The next milestone is a **bounded, metered, replayable state transition**.
-The hard encoded-block limit, per-transaction gas ceiling and MoveVM execution
-stop are complete. Remaining work, in order:
+The next milestone is one **runnable, crash-recoverable validator process**
+that joins a static network using the completed bounded transport. Remaining
+work, in order:
 
-1. embed genesis bytecode and remove ambient I/O from executor construction;
-2. measure and calibrate the Move schedule and the seven protocol-call charges;
-3. add invariant, differential, codec and metering fuzz targets plus the
-   consensus model;
-4. replace full-state cloning/root reconstruction with an incremental design
-   checked against the current reference implementation; and
-5. wire executor finalisation and restart to MDBX, then isolate the signer.
+1. wire executor finalisation and restart to MDBX in `chain-node`, including
+   restoration of the canonical block, state root and validator state;
+2. drive the consensus host, bounded mempool and block catch-up through
+   `TcpNetwork`, supplying a consensus verifier backed by the canonical
+   validator set;
+3. prove every handoff queue is bounded and disconnect peers after malformed,
+   unauthenticated or over-budget frames;
+4. run process-kill recovery, multi-host propagation, partition and reconnect
+   tests; and
+5. embed genesis bytecode, calibrate execution charges, and start the focused
+   model/fuzz campaigns before expanding the execution surface.
 
-Transport, RPC and observer work follows this gate.
+RPC, observer mode, discovery, snapshots, warp sync and pruning remain outside
+this gate.

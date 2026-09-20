@@ -3,15 +3,13 @@
 use std::fs;
 use std::path::Path;
 
-use blst::min_pk::SecretKey;
 use chain_consensus::host::{
     Clock, CommitLog, CommitRecord, Ports, StorageError, TransactionSource, Wal,
 };
-use chain_signer::Signer;
 use chain_types::{BlockHeight, Hash};
 
 use crate::commit_log::FileCommitLog;
-use crate::mark_store::{FileMarkStore, MarkError};
+use crate::remote_signer::RemoteSigner;
 use crate::signed_log::FileSignedLog;
 use crate::storage;
 use crate::wal::FileWal;
@@ -67,9 +65,9 @@ impl Wal for FileStorage {
     }
 }
 
-/// The four files under a node's directory. See the crate docs.
+/// The node-owned files. The signer mark is deliberately absent: it belongs
+/// to the separate signer process and its independently managed storage.
 pub struct NodeDisk {
-    pub mark: FileMarkStore,
     pub signed: FileSignedLog,
     pub storage: FileStorage,
 }
@@ -80,7 +78,6 @@ impl NodeDisk {
     pub fn open(dir: &Path, config: DiskConfig) -> Result<Self, StorageError> {
         fs::create_dir_all(dir).map_err(storage)?;
         Ok(Self {
-            mark: FileMarkStore::open(&dir.join("signer.mark")),
             signed: FileSignedLog::open(&dir.join("signed.log"))?,
             storage: FileStorage {
                 commits: FileCommitLog::open(&dir.join("commits.log"), config.commit_history)?,
@@ -89,20 +86,21 @@ impl NodeDisk {
         })
     }
 
-    /// The host's ports, with the signer loaded from its mark file.
+    /// The host's ports with a signer client supplied by the runtime. The node
+    /// disk never receives a consensus secret key or signer mark store.
     pub fn into_ports<T: TransactionSource, C: Clock>(
         self,
         source: T,
         clock: C,
-        secret_key: SecretKey,
-    ) -> Result<Ports<T, C, FileMarkStore, FileSignedLog, FileStorage>, MarkError> {
-        Ok(Ports {
+        signer: RemoteSigner,
+    ) -> Ports<T, C, RemoteSigner, FileSignedLog, FileStorage> {
+        Ports {
             source,
             clock,
-            signer: Signer::load(secret_key, self.mark)?,
+            signer,
             log: self.signed,
             storage: self.storage,
-        })
+        }
     }
 }
 
@@ -110,60 +108,18 @@ impl NodeDisk {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use blst::min_pk::SecretKey;
-    use chain_signer::{HighWaterMark, HighWaterMarkStore, Step};
-    use chain_types::{Round, Transaction};
-
     use super::*;
-
-    struct NoTransactions;
-
-    impl TransactionSource for NoTransactions {
-        fn candidates(&mut self, _max: usize) -> Vec<Transaction> {
-            Vec::new()
-        }
-        fn committed(&mut self, _block: &chain_engine_api::Block) {}
-    }
-
-    struct Clock0;
-
-    impl Clock for Clock0 {
-        fn now_ms(&self) -> u64 {
-            0
-        }
-    }
 
     #[test]
     fn opening_makes_the_directory_and_the_files_and_a_second_open_finds_them() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("a").join("node");
         NodeDisk::open(&nested, DiskConfig::default()).unwrap();
-        for file in ["signer.mark", "signed.log", "commits.log", "wal.log"] {
-            // The mark file appears with the first mark; the logs at once.
-            if file != "signer.mark" {
-                assert!(nested.join(file).exists(), "{file}");
-            }
+        for file in ["signed.log", "commits.log", "wal.log"] {
+            assert!(nested.join(file).exists(), "{file}");
         }
+        assert!(!nested.join("signer.mark").exists());
         NodeDisk::open(&nested, DiskConfig::default()).unwrap();
-    }
-
-    #[test]
-    fn a_signer_made_from_the_disk_leaves_its_mark_where_a_restart_finds_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let secret = SecretKey::key_gen(&[9; 32], &[]).unwrap();
-        let mut ports = NodeDisk::open(dir.path(), DiskConfig::default())
-            .unwrap()
-            .into_ports(NoTransactions, Clock0, secret)
-            .unwrap();
-        let at = HighWaterMark::new(chain_types::BlockHeight(3), Round(1), Step::Prevote);
-        ports
-            .signer
-            .sign(at, b"a vote", chain_types::bls::DST_VOTE)
-            .unwrap();
-        drop(ports);
-
-        let restarted = NodeDisk::open(dir.path(), DiskConfig::default()).unwrap();
-        assert_eq!(restarted.mark.load().unwrap(), Some(at));
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! `docs/spec.md`, "Keys, signing and slashing safety": the mark is
 //! "persisted and fsynced *before* any signature is returned", and it is
 //! refused, unconditionally, to move backwards. The file is one fixed-size
-//! record, replaced atomically — so a crash leaves the old mark or the new
-//! one, never a mixture — and checked on reading.
+//! record, replaced atomically with mode `0600` — so a crash leaves the old
+//! mark or the new one, never a mixture — and checked on reading.
 //!
 //! **A damaged mark file is an error, not "no mark".** Reading it as absent
 //! would tell the signer it had never signed, which is the one thing it must
@@ -146,6 +146,8 @@ impl HighWaterMarkStore for FileMarkStore {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     fn mark(height: u64, round: u64, step: Step) -> HighWaterMark {
@@ -172,6 +174,10 @@ mod tests {
             s.persist(m).unwrap();
             drop(s);
             assert_eq!(FileMarkStore::open(&path).load().unwrap(), Some(m));
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 

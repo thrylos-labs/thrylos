@@ -1346,7 +1346,11 @@ dependencies = [
 name = "chain-p2p"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "chain-consensus",
  "chain-types",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
 ]
 
 [[package]]

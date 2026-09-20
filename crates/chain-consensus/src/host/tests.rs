@@ -99,7 +99,8 @@ impl Engine for Lenient {
     }
 }
 
-type HostWith<D> = Host<Lenient, NoTransactions, FixedClock, InMemoryStore, MemorySignedLog, D>;
+type HostWith<D> =
+    Host<Lenient, NoTransactions, FixedClock, Signer<InMemoryStore>, MemorySignedLog, D>;
 
 type TestHost = HostWith<MemoryStorage>;
 

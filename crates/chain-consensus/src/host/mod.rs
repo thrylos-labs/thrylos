@@ -126,7 +126,7 @@ use std::time::Duration;
 
 use chain_engine_api::timestamp::{is_after_parent, is_within_clock_tolerance, proposal_timestamp};
 use chain_engine_api::{Block, ChainView, Engine, ExecutedBlock};
-use chain_signer::{HighWaterMark, HighWaterMarkStore, Signer, Step};
+use chain_signer::{ConsensusSigner, HighWaterMark, Step};
 use chain_types::beacon::{next_seed, verify_reveal};
 use chain_types::bls::{verify_aggregate, BlsSignature, DST_VOTE};
 use chain_types::codec::Encode;
@@ -271,14 +271,14 @@ struct HostError;
 /// Everything but the engine's own state, so that carrying out an effect
 /// (which needs `&mut Env`) can happen while the engine (`&mut State`) is
 /// mid-step.
-struct Env<X, T, C, S: HighWaterMarkStore, L, D> {
+struct Env<X, T, C, K: ConsensusSigner, L, D> {
     config: HostConfig,
     ctx: ThrylosContext,
     me: ConsensusAddress,
     exec: X,
     source: T,
     clock: C,
-    guard: GuardedSigner<S, L>,
+    guard: GuardedSigner<K, L>,
     storage: D,
 
     /// The height being run, its validators (with its seed) and that seed.
@@ -320,28 +320,28 @@ struct Env<X, T, C, S: HighWaterMarkStore, L, D> {
 /// What a host talks to besides the chain: where transactions come from,
 /// what time it is, and the validator's key with its record of what it has
 /// signed.
-pub struct Ports<T, C, S: HighWaterMarkStore, L, D> {
+pub struct Ports<T, C, K: ConsensusSigner, L, D> {
     pub source: T,
     pub clock: C,
-    pub signer: Signer<S>,
+    pub signer: K,
     pub log: L,
     /// The host's own history of what was decided; see [`CommitLog`].
     pub storage: D,
 }
 
 /// The host. See the module docs.
-pub struct Host<X, T, C, S: HighWaterMarkStore, L, D> {
+pub struct Host<X, T, C, K: ConsensusSigner, L, D> {
     consensus: State<ThrylosContext>,
     metrics: Metrics,
-    env: Env<X, T, C, S, L, D>,
+    env: Env<X, T, C, K, L, D>,
 }
 
-impl<X, T, C, S, L, D> Host<X, T, C, S, L, D>
+impl<X, T, C, K, L, D> Host<X, T, C, K, L, D>
 where
     X: Engine + ChainView,
     T: TransactionSource,
     C: Clock,
-    S: HighWaterMarkStore,
+    K: ConsensusSigner,
     L: SignedLog,
     D: Storage,
 {
@@ -354,7 +354,7 @@ where
         config: HostConfig,
         me: Address,
         exec: X,
-        ports: Ports<T, C, S, L, D>,
+        ports: Ports<T, C, K, L, D>,
         genesis_seed: Hash,
     ) -> Result<Self, HaltReason> {
         let Ports {
@@ -637,12 +637,12 @@ where
     }
 }
 
-impl<X, T, C, S, L, D> Env<X, T, C, S, L, D>
+impl<X, T, C, K, L, D> Env<X, T, C, K, L, D>
 where
     X: Engine + ChainView,
     T: TransactionSource,
     C: Clock,
-    S: HighWaterMarkStore,
+    K: ConsensusSigner,
     L: SignedLog,
     D: Storage,
 {

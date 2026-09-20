@@ -1,6 +1,5 @@
-//! A peer's identity on the gossip network. Opaque and local to this
-//! crate: it may end up derived from a peer's public key once real
-//! transport/discovery exists, but nothing here needs to know that.
+//! A peer's identity on the network: the exact 32-byte Ed25519 transport
+//! public key authenticated during the connection handshake.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PeerId([u8; 32]);

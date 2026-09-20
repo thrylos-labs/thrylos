@@ -21,8 +21,8 @@
 //! stuck at that height until it moves on. Safe, and the only cost is
 //! liveness. Losing the log entirely has the same result.
 
-use chain_signer::{HighWaterMark, HighWaterMarkStore, Signer, SignerError};
-use chain_types::bls::{BlsSignature, DST_VOTE};
+use chain_signer::{ConsensusSigner, HighWaterMark, SignerError};
+use chain_types::bls::BlsSignature;
 use chain_types::{BlockHeight, Hash};
 
 use super::ports::{SignedEntry, SignedLog, StorageError};
@@ -40,15 +40,15 @@ pub enum SigningRefusal {
     Log(StorageError),
 }
 
-/// A [`Signer`] that answers repeats from a [`SignedLog`]. See the module
+/// A [`ConsensusSigner`] that answers repeats from a [`SignedLog`]. See the module
 /// docs.
-pub struct GuardedSigner<S: HighWaterMarkStore, L> {
-    signer: Signer<S>,
+pub struct GuardedSigner<K: ConsensusSigner, L> {
+    signer: K,
     log: L,
 }
 
-impl<S: HighWaterMarkStore, L> GuardedSigner<S, L> {
-    pub const fn new(signer: Signer<S>, log: L) -> Self {
+impl<K: ConsensusSigner, L> GuardedSigner<K, L> {
+    pub const fn new(signer: K, log: L) -> Self {
         Self { signer, log }
     }
 
@@ -59,12 +59,12 @@ impl<S: HighWaterMarkStore, L> GuardedSigner<S, L> {
     }
 
     /// The signer's high-water mark.
-    pub const fn high_water_mark(&self) -> Option<HighWaterMark> {
+    pub fn high_water_mark(&self) -> Option<HighWaterMark> {
         self.signer.high_water_mark()
     }
 }
 
-impl<S: HighWaterMarkStore, L: SignedLog> GuardedSigner<S, L> {
+impl<K: ConsensusSigner, L: SignedLog> GuardedSigner<K, L> {
     /// Signs `bytes` (a vote or a proposal, under the vote domain) at
     /// `position`: the signature already made if this exact message was
     /// signed there before, a fresh one if nothing was, a refusal if the
@@ -83,7 +83,7 @@ impl<S: HighWaterMarkStore, L: SignedLog> GuardedSigner<S, L> {
         }
         let signature = self
             .signer
-            .sign(position, &bytes, DST_VOTE)
+            .sign(position, &bytes)
             .map_err(SigningRefusal::Signer)?;
         self.log
             .record(position, SignedEntry { bytes, signature })
@@ -99,7 +99,8 @@ mod tests {
     use super::*;
     use crate::host::ports::MemorySignedLog;
     use blst::min_pk::SecretKey;
-    use chain_signer::{InMemoryStore, Step};
+    use chain_signer::{InMemoryStore, Signer, Step};
+    use chain_types::bls::DST_VOTE;
     use chain_types::{BlsPublicKey, Round};
 
     fn secret() -> SecretKey {
@@ -110,7 +111,7 @@ mod tests {
         HighWaterMark::new(BlockHeight(height), Round(round), step)
     }
 
-    fn guarded() -> GuardedSigner<InMemoryStore, MemorySignedLog> {
+    fn guarded() -> GuardedSigner<Signer<InMemoryStore>, MemorySignedLog> {
         GuardedSigner::new(
             Signer::load(secret(), InMemoryStore::new()).unwrap(),
             MemorySignedLog::new(),

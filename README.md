@@ -6,7 +6,9 @@ The full technical spec, including the open decisions that still need answers be
 
 ## What is working today
 
-Thrylos is pre-genesis. **There is no runnable node yet**: nothing starts a network, opens a socket or serves an RPC request. What exists is the protocol's core logic, built as libraries and exercised by tests, including a simulated four-validator network in one process.
+Thrylos is pre-genesis. **There is no runnable node binary yet**. The authenticated
+TCP transport opens real sockets in loopback tests, while consensus is also
+exercised by a simulated four-validator network in one process. RPC is not built.
 
 ### Implemented and tested
 
@@ -18,21 +20,20 @@ Thrylos is pre-genesis. **There is no runnable node yet**: nothing starts a netw
 | **Native modules** (`chain-modules`) | Staking and delegation with share-price rewards, unbonding, double-sign slashing from evidence, fees, and parameter-only governance, all stored in chain state |
 | **Consensus** (`chain-consensus`) | Malachite's pure core integrated end to end: stake-weighted proposer selection from a randomness beacon, certificate verification, block judging before voting, a host that will not sign twice at a position, a write-ahead log with replay after a crash, and verified catch-up from peers for a node that missed a height |
 | **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits, checked by killing a process mid-write; a checksummed, torn-write-tolerant height log; and the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history, the signer's high-water mark), which the crash-restart tests run against |
-| **Signer logic** (`chain-signer`) | The high-water-mark state machine that refuses to sign at or below a position it has signed |
+| **Signer** (`chain-signer`, `chain-node`) | A separate `chain-signer` process owns the BLS key and fsynced high-water mark; the node uses a bounded authenticated Unix-socket protocol that exposes only consensus and beacon signing |
+| **P2P** (`chain-p2p`) | One mutual-Ed25519-authenticated TCP transport with session-bound signed frames for consensus, block catch-up and transaction submission; static trusted peers; hard frame, byte-rate and connection bounds enforced before decode |
 
 The consensus tests run four full validators, each with a real executor, against a simulated network that sends every message through the real wire encoding. They stage a silent proposer, a fast clock, a forged reveal, equivocation, a node that never receives blocks, and a restart of each node after each of the events it handles.
 
-### Libraries without a transport
+### Other runtime libraries
 
 | Area | What exists | What is missing |
 |---|---|---|
-| **P2P** (`chain-p2p`) | The ingress pipeline (size and rate limits, then decode, then signature check), token buckets, bounded queues, decaying peer scores, eclipse-resistant peer selection | An actual network transport; peer discovery |
 | **Mempool** (`chain-mempool`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals | Cleanup after a block commits |
 
 ### Not built yet
 
 * A node binary that wires these pieces together
-* The signer as a separate process, as the spec requires (its mark is durable and refuses to be moved back, but it runs inside the node)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
@@ -64,11 +65,11 @@ Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout a
 | `chain-engine-api` | Typed boundary between consensus and execution | A |
 | `chain-signer` | Remote signer, slash protection | A |
 | `chain-db` | Storage, pruning, snapshots | B |
-| `chain-p2p` | Gossip, peer scoring, discovery | B |
+| `chain-p2p` | Authenticated transport and bounded ingress | B |
 | `chain-mempool` | Tx admission, eviction, replacement | B |
 | `chain-rpc` | JSON-RPC, tracing | C |
 | `chain-genesis` | Genesis file parsing and the `chain-genesis` checker tool | C |
-| `chain-node` | The durable storage the consensus host keeps on disk, and where the node binary will be assembled (not in the spec's table) | B |
+| `chain-node` | Durable host storage, the remote-signer client and the separate signer process | B |
 
 Tier A crates must build byte-identical output on every machine. They carry `[lints] workspace = true` (see root `Cargo.toml` and `clippy.toml`), which forbids `unsafe`, `unwrap`/`expect`/`panic!`, indexing/slicing, integer division, float arithmetic, and non-deterministic collection types. Tier B/C crates are not held to that bar.
 
@@ -79,5 +80,15 @@ cargo build --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+The isolated signer is started with:
+
+```bash
+cargo run -p chain-node --bin chain-signer -- <socket> <key-file> <credential-file> <mark-file>
+```
+
+The BLS key and signer credential are separate raw 32-byte files and must have
+mode `0600`. The mark is created atomically with mode `0600`; the node receives
+only the socket path and signer credential.
 
 `deny.toml` and `.github/workflows/ci.yml` cover dependency bans, license checks, and the tier-A "no `rand`" rule.

@@ -8,12 +8,8 @@
 //! ```
 //!
 //! Generic over the message type (via `chain_types::codec::Decode`)
-//! and over verification (a caller-supplied closure): this crate
-//! carries no opinion on which concrete message — a consensus vote, a
-//! mempool transaction, a future discovery announcement — is being
-//! gossiped, or which key signed it. That coupling belongs to whoever
-//! wires a concrete transport to this pipeline, not to the pipeline
-//! itself.
+//! and over verification (a caller-supplied closure), so the same bounded
+//! pipeline remains usable outside the concrete transport.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -32,21 +28,6 @@ pub enum DropReason {
     Malformed,
     /// Decoded, but its signature does not verify.
     InvalidSignature,
-}
-
-impl DropReason {
-    /// A reasonable default peer-score penalty for this drop reason,
-    /// for callers that don't need a different policy: exceeding a
-    /// budget is cheap to do by accident (a burst of legitimate
-    /// traffic), a malformed message is more clearly not, and an
-    /// invalid signature is the least ambiguous sign of a bad peer.
-    pub const fn default_penalty(&self) -> i64 {
-        match self {
-            Self::OverBudget => -1,
-            Self::Malformed => -10,
-            Self::InvalidSignature => -50,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,22 +55,19 @@ impl IngressGate {
         }
     }
 
-    /// Runs `bytes` from `peer` through the full pipeline: size and
-    /// rate checks first (so an over-budget or oversized message is
-    /// never decoded at all), then strict decode, then `verify`.
-    /// `verify` only runs on something that already decoded cleanly.
-    pub fn admit<T: Decode>(
+    /// Reserve the declared frame length before allocating or decoding its
+    /// body. A transport reads only its fixed-size header before this call.
+    pub fn reserve(
         &mut self,
         peer: PeerId,
-        bytes: &[u8],
-        verify: impl FnOnce(&T) -> bool,
+        declared_bytes: usize,
         now: Instant,
-    ) -> Result<T, DropReason> {
-        if bytes.len() > self.limits.max_message_bytes {
+    ) -> Result<(), DropReason> {
+        if declared_bytes > self.limits.max_message_bytes {
             return Err(DropReason::OverBudget);
         }
 
-        let byte_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let byte_len = u64::try_from(declared_bytes).unwrap_or(u64::MAX);
         if !self.global_bucket.try_consume(byte_len, now) {
             return Err(DropReason::OverBudget);
         }
@@ -105,6 +83,21 @@ impl IngressGate {
         if !peer_bucket.try_consume(byte_len, now) {
             return Err(DropReason::OverBudget);
         }
+        Ok(())
+    }
+
+    /// Runs `bytes` from `peer` through the full pipeline: size and
+    /// rate checks first (so an over-budget or oversized message is
+    /// never decoded at all), then strict decode, then `verify`.
+    /// `verify` only runs on something that already decoded cleanly.
+    pub fn admit<T: Decode>(
+        &mut self,
+        peer: PeerId,
+        bytes: &[u8],
+        verify: impl FnOnce(&T) -> bool,
+        now: Instant,
+    ) -> Result<T, DropReason> {
+        self.reserve(peer, bytes.len(), now)?;
 
         let value: T = decode_exact(bytes).map_err(|_| DropReason::Malformed)?;
         if !verify(&value) {
@@ -234,5 +227,17 @@ mod tests {
         assert!(gate.admit::<Msg>(peer, &bytes, |_| true, now).is_ok());
         let second: Result<Msg, DropReason> = gate.admit(peer, &bytes, |_| true, now);
         assert_eq!(second, Err(DropReason::OverBudget));
+    }
+
+    #[test]
+    fn a_declared_length_is_rejected_before_a_body_exists() {
+        let mut small_limits = limits();
+        small_limits.max_message_bytes = 8;
+        let now = Instant::now();
+        let mut gate = IngressGate::new(small_limits, 4096, now);
+        assert_eq!(
+            gate.reserve(PeerId::from_bytes([7; 32]), 9, now),
+            Err(DropReason::OverBudget)
+        );
     }
 }

@@ -14,7 +14,7 @@
 //! [`AccountView`] is a typed seam, not a hard dependency on how a
 //! caller keeps account state: [`StateAccountView`] is the real
 //! implementation, backed by `chain-state`'s account model. Gossip/
-//! propagation (P2P admission ordering, peer scoring) is out of scope
+//! propagation (P2P admission ordering and peer handling) is out of scope
 //! here — that's `chain-p2p`'s side of `docs/spec.md`'s "P2P and
 //! mempool" section.
 

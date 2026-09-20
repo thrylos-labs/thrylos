@@ -30,6 +30,29 @@ pub enum SignerError {
     /// returned something malformed. Should be unreachable; surfaced
     /// rather than assumed impossible.
     MalformedSignature,
+    /// The separate signer process or its authenticated local protocol was
+    /// unavailable. Consensus must halt rather than sign locally or bypass
+    /// the durable mark.
+    Unavailable,
+}
+
+/// The narrow signing boundary used by consensus. Implementations may hold
+/// the key locally (tests and the signer process) or call a separate process;
+/// the node only needs these two fixed signing operations.
+pub trait ConsensusSigner {
+    fn high_water_mark(&self) -> Option<HighWaterMark>;
+
+    fn sign(
+        &mut self,
+        requested: HighWaterMark,
+        message: &[u8],
+    ) -> Result<BlsSignature, SignerError>;
+
+    fn sign_beacon(
+        &self,
+        height: chain_types::BlockHeight,
+        seed: &chain_types::Hash,
+    ) -> Result<BlsSignature, SignerError>;
 }
 
 /// A BLS consensus signer with double-sign protection, generic over
@@ -105,6 +128,28 @@ impl<S: HighWaterMarkStore> Signer<S> {
             .secret_key
             .sign(&message, chain_types::bls::DST_BEACON, &[]);
         BlsSignature::from_bytes(raw.to_bytes()).map_err(|_| SignerError::MalformedSignature)
+    }
+}
+
+impl<S: HighWaterMarkStore> ConsensusSigner for Signer<S> {
+    fn high_water_mark(&self) -> Option<HighWaterMark> {
+        Signer::high_water_mark(self)
+    }
+
+    fn sign(
+        &mut self,
+        requested: HighWaterMark,
+        message: &[u8],
+    ) -> Result<BlsSignature, SignerError> {
+        Signer::sign(self, requested, message, chain_types::bls::DST_VOTE)
+    }
+
+    fn sign_beacon(
+        &self,
+        height: chain_types::BlockHeight,
+        seed: &chain_types::Hash,
+    ) -> Result<BlsSignature, SignerError> {
+        Signer::sign_beacon(self, height, seed)
     }
 }
 

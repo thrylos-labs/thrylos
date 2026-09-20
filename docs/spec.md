@@ -56,7 +56,7 @@ The workspace splits on one line: crates whose output must be byte-identical on 
 | `chain-consensus` | BFT engine, fork choice, evidence detection | A | Halt or safety break |
 | `chain-engine-api` | Typed boundary between consensus and execution | A | Fork |
 | `chain-db` | Storage, pruning, snapshots | B | Halt, local corruption |
-| `chain-p2p` | Gossip, peer scoring, discovery | B | Halt via DoS |
+| `chain-p2p` | Authenticated transport and bounded ingress | B | Halt via DoS |
 | `chain-mempool` | Tx admission, eviction, replacement | B | DoS, censorship |
 | `chain-rpc` | JSON-RPC, tracing | C | Local only |
 | `chain-signer` | Remote signer, slash protection | A | Stake burn |
@@ -179,29 +179,45 @@ A 48-hour minimum timelock sits between passage and application, so a hostile or
 
 ## P2P and mempool
 
-Roughly a third of the codebase, and almost never in audit scope. Treat it as adversarial input handling throughout.
+This is Tier B rather than deterministic state-transition code, but it remains
+security-critical because a mistake can halt or isolate validators. Treat it as
+adversarial input handling throughout.
 
-Gossip validation order is fixed and non-negotiable: cheap structural checks, then signature verification, then forwarding. Never forward before verifying — a node that relays unverified messages is free amplification for an attacker.
+Ingress validation order is fixed and non-negotiable: cheap structural checks,
+then transport authentication, strict decode, protocol signature and semantic
+verification, then forwarding. Never forward before verifying — a node that
+relays unverified messages is free amplification for an attacker.
 
 ```
 flowchart LR
   A[Message in] --> B[Size + rate check]
-  B --> C[Strict decode]
-  C --> D[Signature verify]
-  D --> E[Forward + enqueue]
-  B -->|over budget| X[Drop, score peer]
-  C -->|malformed| X
-  D -->|invalid| X
+  B --> C[Session signature]
+  C --> D[Strict decode]
+  D --> E[Protocol verify]
+  E --> F[Forward + enqueue]
+  B -->|over budget| X[Reject]
+  C -->|invalid| X
+  D -->|malformed| X
+  E -->|invalid| X
 ```
 
 Bounds, all compiled in with no unbounded collection anywhere on the path:
 
 - Per-peer and global inbound byte budgets, token-bucket, enforced before decode.
-- Every queue is fixed-capacity with an explicit drop policy. No `Vec::push` in a loop driven by remote input.
+- Every queue and remotely driven collection has a compiled capacity and an
+  explicit overflow policy.
 - Message size caps per message type, checked against the declared length before allocation.
-- Peer scoring that decays, so a single bad message does not permanently ban an honest peer and a slow drip of bad messages still ends in disconnection.
+- A hard cap on simultaneous authenticated peers.
 
-Against eclipse attacks: outbound peers are selected with diversity requirements across IP subnets and ASNs, a fraction of slots is reserved for long-lived peers, and validators additionally hold a configured set of trusted peers. Discovery is signed and rate-limited.
+The first testnet uses one mutually authenticated TCP transport and a static
+operator-configured trusted-peer allowlist. There is no discovery protocol,
+second transport, ASN database or reputation system in v1. Static topology is
+operationally less flexible, but its authentication and failure modes are much
+smaller to audit. Add discovery or scoring only after testnet measurements show
+that a static topology cannot meet availability requirements. A fresh
+challenge-response transcript identifies each connection, and every frame is
+signed with its session identifier and sequence number so an authenticated
+connection cannot be spliced or replayed.
 
 Mempool admission charges full validation cost before accepting: signature, nonce, balance-covers-max-fee. Replacement requires a strict fee bump above a floor, so replacement cycling cannot be used as free bandwidth. Eviction is by effective fee with a per-sender cap on pending transactions.
 
@@ -339,6 +355,14 @@ Double-sign protection therefore lives in `chain-signer`, isolated from the node
 2. It refuses to sign anything at or below that mark, unconditionally, with no override flag and no reset command.
 3. It is a separate process with its own storage, so a node rollback, restore-from-snapshot or container restart cannot rewind it.
 4. Consensus keys are BLS with proof-of-possession, held only by the signer; the node never sees them.
+
+The first testnet uses one Unix-domain socket protocol. A 32-byte signer
+credential authenticates bounded requests and request-bound responses with
+keyed BLAKE3. The protocol exposes only vote/proposal signing under the fixed
+consensus domain, deterministic beacon signing and high-water-mark inspection.
+The signer rejects key or credential files readable by group or other users,
+and writes its mark with mode `0600`. Remote custody systems and consensus-key
+rotation are later operational work, not alternate v1 signing paths.
 
 Three key roles, never the same key:
 

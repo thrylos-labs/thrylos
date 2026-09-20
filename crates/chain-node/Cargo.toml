@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Node runtime pieces: the durable storage the consensus host keeps on disk"
+description = "Node runtime storage and isolated signer process"
 
 [lints]
 workspace = true
