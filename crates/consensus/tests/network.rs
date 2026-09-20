@@ -36,7 +36,10 @@ use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::native::{STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS};
 use chain_exec::Executor;
 use chain_modules::params::GENESIS_PARAM_VALUES;
-use chain_node::{DiskConfig, DurableEngine, FileMarkStore, FileSignedLog, FileStorage, NodeDisk};
+use chain_node::{
+    Actions, DiskConfig, DurableEngine, FileMarkStore, FileSignedLog, FileStorage, NodeDisk,
+    NodeRuntime, Recipient,
+};
 use chain_signer::{HighWaterMark, HighWaterMarkStore, InMemoryStore, Signer, Step};
 use chain_state::StateRoot;
 use chain_types::beacon::{genesis_seed, next_seed, verify_reveal};
@@ -418,19 +421,21 @@ impl ChainView for Chain {
     }
 }
 
-type TestHost =
-    Host<Chain, SharedSource, SimClock, Signer<SharedMark>, SharedSigned, SharedStorage>;
+/// A node: the production driver around a host. It derefs to the host, so a
+/// test reads and pokes the host directly; what the host then wants done is
+/// collected by [`Sim::drain`], through the runtime, as it is in a real node.
+type TestNode =
+    NodeRuntime<Chain, SharedSource, SimClock, Signer<SharedMark>, SharedSigned, SharedStorage>;
 
 // ---- the network -------------------------------------------------------------
 
 struct Sim {
-    nodes: Vec<TestHost>,
+    nodes: Vec<TestNode>,
     clocks: Vec<SimClock>,
     /// How far ahead of the true time each node's clock runs.
     skew: Vec<u64>,
     sources: Vec<SharedSource>,
     inbox: VecDeque<(usize, usize, Message)>,
-    timers: Vec<Vec<(Timeout, u64)>>,
     committed: Vec<Vec<Committed>>,
     evidence: Vec<Vec<DuplicateVoteEvidence>>,
     /// `(from, to, message)`: whether to deliver it.
@@ -506,7 +511,6 @@ impl Sim {
             skew: options.skew.clone(),
             sources: Vec::new(),
             inbox: VecDeque::new(),
-            timers: vec![Vec::new(); n],
             committed: vec![Vec::new(); n],
             evidence: vec![Vec::new(); n],
             filter: options.filter,
@@ -566,33 +570,37 @@ impl Sim {
                 .push(SimClock(Rc::new(Cell::new(start + options.skew[i]))));
             sim.sources.push(SharedSource::default());
             sim.disks.push(disk);
-            let host = sim.host_on(i, chain);
-            sim.nodes.push(host);
+            let node = sim.host_on(i, chain);
+            sim.nodes.push(node);
         }
+        // Start each host, leaving what it produces in its outbox for the
+        // first drain to collect, as for anything a test pokes it with.
         for node in &mut sim.nodes {
-            node.start();
+            Host::start(node);
         }
         sim
     }
 
     /// A host for node `i` on `chain`, with the disk the node has.
-    fn host_on(&self, i: usize, chain: Chain) -> TestHost {
+    fn host_on(&self, i: usize, chain: Chain) -> TestNode {
         let seed = u8::try_from(i).unwrap() + 1;
         let disk = self.disks[i].clone();
-        Host::new(
-            self.host_config,
-            operator_address(seed),
-            chain,
-            Ports {
-                source: self.sources[i].clone(),
-                clock: self.clocks[i].clone(),
-                signer: Signer::load(bls_secret(seed), disk.mark).unwrap(),
-                log: disk.signed,
-                storage: disk.storage,
-            },
-            genesis_seed(&self.config.hash()),
+        NodeRuntime::new(
+            Host::new(
+                self.host_config,
+                operator_address(seed),
+                chain,
+                Ports {
+                    source: self.sources[i].clone(),
+                    clock: self.clocks[i].clone(),
+                    signer: Signer::load(bls_secret(seed), disk.mark).unwrap(),
+                    log: disk.signed,
+                    storage: disk.storage,
+                },
+                genesis_seed(&self.config.hash()),
+            )
+            .unwrap(),
         )
-        .unwrap()
     }
 
     /// Node `i` crashes and starts again. Whatever it had produced and not
@@ -604,9 +612,8 @@ impl Sim {
     fn restart(&mut self, i: usize) {
         drop(self.nodes[i].take_outbox());
         self.disks[i].lose_unflushed();
-        self.timers[i].clear();
         let old = self.nodes.remove(i);
-        let chain = match old.into_chain() {
+        let chain = match old.into_host().into_chain() {
             Chain::Durable { engine, .. } => {
                 // The database allows one open writer: close it first.
                 drop(engine);
@@ -622,9 +629,9 @@ impl Sim {
             memory => memory,
         };
         self.disks[i].reopen();
-        let mut host = self.host_on(i, chain);
-        host.start();
-        self.nodes.insert(i, host);
+        let mut node = self.host_on(i, chain);
+        Host::start(&mut node);
+        self.nodes.insert(i, node);
         self.restarts += 1;
     }
 
@@ -632,39 +639,43 @@ impl Sim {
         self.nodes.len()
     }
 
-    /// Collects what node `i` wants done.
+    /// Collects what node `i` wants done, through its runtime.
     fn drain(&mut self, i: usize) {
-        let outbox = self.nodes[i].take_outbox();
-        for message in outbox.messages {
-            for to in 0..self.n() {
-                if to != i && (self.filter)(i, to, &message) {
-                    self.inbox.push_back((i, to, over_the_wire(&message)));
-                }
-            }
-        }
-        for (address, message) in outbox.directed {
-            let to = self.node_of(&address);
-            if to != i && (self.filter)(i, to, &message) {
-                self.inbox.push_back((i, to, over_the_wire(&message)));
-            }
-        }
-        for command in outbox.timers {
-            match command {
-                TimerCommand::Schedule { timeout, after } => {
-                    if timeout == Timeout::propose(malachite_core_types::Round::new(0)) {
-                        let height = self.nodes[i].height().0;
-                        *self.height_starts.entry((i, height)).or_default() += 1;
+        let actions = self.nodes[i].collect(self.now + self.skew[i]);
+        self.route(i, actions);
+    }
+
+    /// Carries out what node `i`'s runtime says the node wants done.
+    fn route(&mut self, i: usize, actions: Actions) {
+        for outgoing in actions.outgoing {
+            let recipients: Vec<usize> = match outgoing.to {
+                Recipient::All => (0..self.n()).filter(|to| *to != i).collect(),
+                Recipient::Validator(address) => {
+                    let to = self.node_of(&address);
+                    if to == i {
+                        Vec::new()
+                    } else {
+                        vec![to]
                     }
-                    self.timers[i].retain(|(t, _)| *t != timeout);
-                    let due = self.now + u64::try_from(after.as_millis()).unwrap();
-                    self.timers[i].push((timeout, due));
                 }
-                TimerCommand::Cancel(timeout) => self.timers[i].retain(|(t, _)| *t != timeout),
-                TimerCommand::CancelAll => self.timers[i].clear(),
+            };
+            for to in recipients {
+                if (self.filter)(i, to, &outgoing.message) {
+                    self.inbox
+                        .push_back((i, to, over_the_wire(&outgoing.message)));
+                }
             }
         }
-        self.committed[i].extend(outbox.committed);
-        self.evidence[i].extend(outbox.evidence);
+        for command in &actions.timers {
+            if let TimerCommand::Schedule { timeout, .. } = command {
+                if *timeout == Timeout::propose(malachite_core_types::Round::new(0)) {
+                    let height = self.nodes[i].height().0;
+                    *self.height_starts.entry((i, height)).or_default() += 1;
+                }
+            }
+        }
+        self.committed[i].extend(actions.committed);
+        self.evidence[i].extend(actions.evidence);
     }
 
     fn set_time(&mut self, now: u64) {
@@ -687,25 +698,17 @@ impl Sim {
         } else {
             // Nothing in flight: the next thing to happen, in time then node
             // order — a timer firing, or a node that has been behind long
-            // enough to ask for what it missed.
-            let timers = (0..self.n()).flat_map(|i| {
-                self.timers[i]
-                    .iter()
-                    .map(move |(t, due)| (*due, i, Some(*t)))
-            });
-            let wakes = (0..self.n()).filter_map(|i| {
-                let wake = self.nodes[i].next_wake_ms()?;
-                Some((wake.saturating_sub(self.skew[i]), i, None))
-            });
-            let (due, i, timeout) = timers.chain(wakes).min_by_key(|(due, i, _)| (*due, *i))?;
+            // enough to ask for what it missed. Each node's own runtime says
+            // when, in its clock; the network's time is that less its skew.
+            let (due, i) = (0..self.n())
+                .filter_map(|i| {
+                    let due = self.nodes[i].next_due_ms()?;
+                    Some((due.saturating_sub(self.skew[i]), i))
+                })
+                .min_by_key(|(due, i)| (*due, *i))?;
             self.set_time(self.now.max(due));
-            match timeout {
-                Some(timeout) => {
-                    self.timers[i].retain(|(t, _)| *t != timeout);
-                    self.nodes[i].handle_timeout(timeout);
-                }
-                None => self.nodes[i].tick(),
-            }
+            let fired = self.nodes[i].fire_next(self.now + self.skew[i]);
+            assert!(fired, "node {i} said something was due");
             i
         };
         self.events[node] += 1;
@@ -740,7 +743,7 @@ impl Sim {
                         .map(|c| (c.certificate.round, c.block.timestamp_millis))
                         .collect::<Vec<_>>(),
                     self.nodes[i].halted(),
-                    self.timers[i]
+                    self.nodes[i].timers()
                 )
             })
             .collect();
@@ -1901,5 +1904,48 @@ fn a_node_that_dies_after_recording_a_decision_but_before_committing_it_recovers
     assert_eq!(
         database_tip(&sim, victim),
         Some(sim.nodes[victim].chain().head().unwrap().height)
+    );
+}
+
+#[test]
+fn a_sync_request_and_its_answer_go_only_to_the_node_they_are_for() {
+    // Node 3 hears no blocks, so it asks for them; the runtime must send its
+    // request to one validator and each answer to node 3 alone, never to
+    // everyone.
+    let victim = 3;
+    let strays = Rc::new(Cell::new(0usize));
+    let requests = Rc::new(Cell::new(0usize));
+    let (stray_count, request_count) = (strays.clone(), requests.clone());
+    let mut options = Options::new(4);
+    options.filter = Box::new(move |from, to, message| match message {
+        Message::Block(_) => to != victim,
+        Message::SyncRequest(request) => {
+            request_count.set(request_count.get() + 1);
+            // Asked by the victim, of another node.
+            if request.requester != operator_address(u8::try_from(victim).unwrap() + 1)
+                || from != victim
+                || to == victim
+            {
+                stray_count.set(stray_count.get() + 1);
+            }
+            true
+        }
+        Message::SyncResponse(response) => {
+            // Delivered to the node it is addressed to, from another.
+            if response.requester != operator_address(u8::try_from(to).unwrap() + 1) || from == to {
+                stray_count.set(stray_count.get() + 1);
+            }
+            true
+        }
+        _ => true,
+    });
+    let mut sim = Sim::new(options);
+    sim.run_until(|s| s.heights_committed(victim) >= 3);
+    agree(&sim, 3);
+    assert!(requests.get() >= 1, "the victim did ask");
+    assert_eq!(
+        strays.get(),
+        0,
+        "no request or answer went to the wrong node"
     );
 }

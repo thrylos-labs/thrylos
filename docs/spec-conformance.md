@@ -143,7 +143,8 @@ work, in order:
    binary;
 2. drive the consensus host, bounded mempool and block catch-up through
    `TcpNetwork`, supplying a consensus verifier backed by the canonical
-   validator set;
+   validator set (the host driver, `NodeRuntime`, is done and runs the
+   simulation; the socket layer, the mempool hand-off and the binary remain);
 3. prove every handoff queue is bounded and disconnect peers after malformed,
    unauthenticated or over-budget frames;
 4. run process-kill recovery, multi-host propagation, partition and reconnect

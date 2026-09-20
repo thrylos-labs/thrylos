@@ -21,8 +21,8 @@ chain-genesis = { path = "../genesis", version = "0.1.0" }
 chain-signer = { path = "../signer", version = "0.1.0" }
 chain-state = { path = "../state", version = "0.1.0" }
 chain-types = { path = "../types", version = "0.1.0" }
+malachite-core-types.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
-malachite-core-types.workspace = true
 tempfile.workspace = true

@@ -8,6 +8,12 @@
 //! state kept in an MDBX database (`chain/` inside the node's directory),
 //! committed before the chain advances and restored, checked, on restart.
 //!
+//! [`NodeRuntime`] is the driver around the consensus host: it keeps the
+//! timers the host asks for, routes what it wants sent to whom, and wakes it
+//! for what it does on its own, given the time by its caller. It has no
+//! sockets and no threads, so the same code runs a real node and the
+//! in-process simulation the tests use.
+//!
 //! The node keeps three things beyond the chain itself, each with its own
 //! file under one directory ([`NodeDisk::open`]):
 //!
@@ -37,6 +43,7 @@ pub mod disk;
 pub mod durable_engine;
 pub mod mark_store;
 pub mod remote_signer;
+pub mod runtime;
 pub mod signed_log;
 pub mod wal;
 
@@ -45,6 +52,7 @@ pub use disk::{DiskConfig, FileStorage, NodeDisk};
 pub use durable_engine::{DurableEngine, OpenError};
 pub use mark_store::{FileMarkStore, MarkError};
 pub use remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential, SignerServer};
+pub use runtime::{Actions, NodeRuntime, Outgoing, Recipient, Timers};
 pub use signed_log::FileSignedLog;
 pub use wal::FileWal;
 
