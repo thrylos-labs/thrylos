@@ -100,7 +100,12 @@ struct Network {
 
 impl Network {
     /// Generates a network with the `devnet init` command, as a person would.
+    /// A network with a fast pace, so tests do not wait a second a block.
     fn generate(validators: usize) -> Self {
+        Self::generate_paced(validators, 100)
+    }
+
+    fn generate_paced(validators: usize, block_interval_ms: u64) -> Self {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("net");
         let base = free_base_port(u16::try_from(validators).unwrap());
@@ -112,6 +117,8 @@ impl Network {
             &validators.to_string(),
             "--base-port",
             &base.to_string(),
+            "--block-interval-ms",
+            &block_interval_ms.to_string(),
         ]);
         assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
         let nodes = nodes_in(&dir).unwrap();
@@ -559,6 +566,68 @@ fn every_process_killed_at_a_random_moment_over_and_over_starts_again_and_the_ch
     assert_one_chain(&network.nodes, target);
 }
 
+/// The block time the spec names, with nothing to wait for: one validator, and
+/// the default pace. Before the pace existed a node in this position committed
+/// blocks in a loop that never gave control back, reported nothing and could
+/// not be stopped at a height.
+#[test]
+fn a_network_of_one_validator_makes_a_block_a_second_and_stops_at_a_height() {
+    const HEIGHT: u64 = 4;
+    let network = Network::generate_paced(1, 1_000);
+    let started = Instant::now();
+    let output = network.start_until(HEIGHT);
+    let took = started.elapsed();
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(
+        stdout(&output).contains("reached height 4"),
+        "{}",
+        stdout(&output)
+    );
+
+    // The first block is at once and each after it a second on: three seconds
+    // to height four, not the fraction of one a chain with no pace would take.
+    assert!(
+        took >= Duration::from_millis(2_900),
+        "height {HEIGHT} in {took:?}: no pace"
+    );
+    // And the chain was stopped near the height, not left far ahead of it.
+    let tip = chain_on_disk(&network.nodes[0], HEIGHT).len();
+    assert_eq!(tip, usize::try_from(HEIGHT).unwrap());
+    let genesis = chain_genesis::load(&network.nodes[0].dir.join(GENESIS)).unwrap();
+    let engine = DurableEngine::open(&network.nodes[0].dir.join("data"), &genesis).unwrap();
+    let reached = engine.database().tip_height().unwrap().unwrap().0;
+    assert!(
+        reached <= HEIGHT + 2,
+        "it stopped at height {reached}, having been asked for {HEIGHT}"
+    );
+}
+
+/// The setting reaches the host: with a pace that is not the default, the blocks
+/// on the chain are that far apart, by their own timestamps.
+#[test]
+fn the_configured_block_interval_is_the_gap_between_the_blocks_on_the_chain() {
+    const HEIGHT: u64 = 9;
+    let network = Network::generate_paced(1, 300);
+    let output = network.start_until(HEIGHT);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    let blocks = chain_on_disk(&network.nodes[0], HEIGHT);
+    let mut gaps: Vec<u64> = blocks
+        .windows(2)
+        .map(|pair| pair[1].0.timestamp_millis - pair[0].0.timestamp_millis)
+        .collect();
+    gaps.sort_unstable();
+    // Never closer than the pace; and the usual gap is the pace plus the time a
+    // height takes to decide, not the default second (and not nothing). The
+    // first height is slower than the rest, which is why this is the median.
+    assert!(gaps[0] >= 300, "a gap of {} ms: {gaps:?}", gaps[0]);
+    let median = gaps[gaps.len() >> 1];
+    assert!(
+        (300..800).contains(&median),
+        "the median gap is {median} ms: {gaps:?}"
+    );
+}
+
 #[test]
 fn a_node_told_to_stop_by_closing_its_input_stops_cleanly_and_not_before() {
     let mut network = Network::generate(4);
@@ -710,8 +779,12 @@ fn the_devnet_commands_say_what_is_wrong_and_exit_accordingly() {
             "not supported",
         ),
         (
-            vec!["devnet", "init", dir, "--validators", "1"],
-            "one validator",
+            vec!["devnet", "init", dir, "--block-interval-ms", "0"],
+            "must not be zero",
+        ),
+        (
+            vec!["devnet", "init", dir, "--block-interval-ms", "soon"],
+            "wants a number",
         ),
         (
             vec!["devnet", "init", dir, "--validators", "500"],

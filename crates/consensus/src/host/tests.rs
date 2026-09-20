@@ -141,6 +141,11 @@ fn operator(seed: u8) -> PublicKey {
 
 /// Two validators, 1 and 2.
 fn genesis() -> GenesisConfig {
+    genesis_with(&[1, 2])
+}
+
+/// A genesis whose validators are the ones numbered in `numbers`.
+fn genesis_with(numbers: &[u8]) -> GenesisConfig {
     let validator = |n: u8| {
         let secret = secret_for(n);
         let key = BlsPublicKey::from_bytes(secret.sk_to_pk().to_bytes()).unwrap();
@@ -164,7 +169,7 @@ fn genesis() -> GenesisConfig {
             owner: operator(50),
             amount: 1_000,
         }],
-        vec![validator(1), validator(2)],
+        numbers.iter().map(|n| validator(*n)).collect(),
     )
     .unwrap()
 }
@@ -177,7 +182,12 @@ fn host_on<D: Storage>(
     storage: D,
 ) -> Result<HostWith<D>, HaltReason> {
     Host::new(
-        HostConfig::default(),
+        // No pace: these tests are about what a host does with a height, and
+        // step it by hand. The pace has tests of its own.
+        HostConfig {
+            min_block_interval_ms: 0,
+            ..HostConfig::default()
+        },
         Address::from_public_key(&operator(n)),
         chain,
         Ports {
@@ -283,6 +293,122 @@ fn a_block_the_host_was_never_given_is_invalid() {
     let host = host(GENESIS_TIME + 1);
     let verdict = host.env.judge(Hash::from_bytes([1; 32])).unwrap();
     assert_eq!(verdict.validity, Validity::Invalid);
+}
+
+// ---- the pace ------------------------------------------------------------------
+
+/// A clock a test moves.
+struct SharedClock(std::rc::Rc<std::cell::Cell<u64>>);
+
+impl Clock for SharedClock {
+    fn now_ms(&self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// A validator on a chain that has only it: nothing to wait for, so with no
+/// pace it would decide every height inside one call.
+fn alone(
+    pace_ms: u64,
+    time: &std::rc::Rc<std::cell::Cell<u64>>,
+) -> Host<Lenient, NoTransactions, SharedClock, Signer<InMemoryStore>, MemorySignedLog, MemoryStorage>
+{
+    let genesis = genesis_with(&[1]);
+    Host::new(
+        HostConfig {
+            min_block_interval_ms: pace_ms,
+            ..HostConfig::default()
+        },
+        Address::from_public_key(&operator(1)),
+        Lenient(Executor::from_genesis(&genesis).unwrap()),
+        Ports {
+            source: NoTransactions,
+            clock: SharedClock(time.clone()),
+            signer: Signer::load(secret_for(1), InMemoryStore::new()).unwrap(),
+            log: MemorySignedLog::new(),
+            storage: MemoryStorage::new(),
+        },
+        genesis_seed(&genesis.hash()),
+    )
+    .unwrap()
+}
+
+fn head_height<C: Clock>(
+    host: &Host<Lenient, NoTransactions, C, Signer<InMemoryStore>, MemorySignedLog, MemoryStorage>,
+) -> u64 {
+    host.chain().head().unwrap().height.0
+}
+
+#[test]
+fn a_validator_with_no_one_to_wait_for_commits_one_block_a_pace_and_hands_control_back() {
+    let time = std::rc::Rc::new(std::cell::Cell::new(GENESIS_TIME + 1));
+    let mut host = alone(1_000, &time);
+    host.start();
+
+    // It decided the first height on its own, and then stopped, saying when
+    // it will go on: without the pace it would not have come back at all.
+    assert_eq!(head_height(&host), 1);
+    assert_eq!(host.take_outbox().committed.len(), 1);
+    let mut due = time.get() + 1_000;
+    assert_eq!(host.next_wake_ms(), Some(due));
+
+    // Asked again before the time, it does nothing, however often.
+    for _ in 0..3 {
+        time.set(due - 1);
+        host.tick();
+    }
+    assert_eq!(head_height(&host), 1);
+
+    // Each time the pace has passed it commits exactly one more block.
+    for expected in 2..=6 {
+        time.set(due);
+        host.tick();
+        assert_eq!(head_height(&host), expected);
+        assert_eq!(host.take_outbox().committed.len(), 1);
+        due = time.get() + 1_000;
+        assert_eq!(host.next_wake_ms(), Some(due));
+    }
+    // And the blocks are that far apart, on the chain's own clock.
+    let head = host.chain().head().unwrap();
+    assert_eq!(head.timestamp_ms, GENESIS_TIME + 1 + 5_000);
+}
+
+#[test]
+fn a_host_waiting_out_the_pace_and_behind_wakes_for_whichever_comes_first() {
+    let time = std::rc::Rc::new(std::cell::Cell::new(GENESIS_TIME + 1));
+    let mut host = alone(1_000, &time);
+    host.start();
+    let start = time.get() + 1_000;
+    assert_eq!(host.next_wake_ms(), Some(start));
+
+    // Seen a peer past this height long enough ago that asking for what was
+    // missed comes due before the next height starts ...
+    host.env.lag.ahead.insert(Address::from_bytes([9; 32]), 99);
+    host.env.lag.since_ms = Some(time.get() - 5_000);
+    let asking = time.get() - 5_000 + host.env.config.sync_grace_ms;
+    assert!(asking < start);
+    assert_eq!(host.next_wake_ms(), Some(asking));
+
+    // ... and, seen only just now, after it.
+    host.env.lag.since_ms = Some(time.get() + 5_000);
+    assert!(time.get() + 5_000 + host.env.config.sync_grace_ms > start);
+    assert_eq!(host.next_wake_ms(), Some(start));
+}
+
+#[test]
+fn the_pace_is_the_setting_and_a_different_one_gives_a_different_gap() {
+    for pace in [250, 3_000] {
+        let time = std::rc::Rc::new(std::cell::Cell::new(GENESIS_TIME + 1));
+        let mut host = alone(pace, &time);
+        host.start();
+        assert_eq!(host.next_wake_ms(), Some(time.get() + pace));
+        time.set(time.get() + pace - 1);
+        host.tick();
+        assert_eq!(head_height(&host), 1, "not yet, at {pace}");
+        time.set(time.get() + 1);
+        host.tick();
+        assert_eq!(head_height(&host), 2, "then, at {pace}");
+    }
 }
 
 // ---- blocks that arrive ------------------------------------------------------

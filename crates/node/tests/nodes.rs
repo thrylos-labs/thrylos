@@ -156,7 +156,7 @@ fn provision_with(root: &Path, advanced: &[u8]) -> Vec<Provisioned> {
                   "signer": {{ "socket": "signer.sock", "credential": "signer.credential" }},
                   "peers": [{}],
                   "tuning": {{ "io_timeout_ms": 500, "reconnect_initial_ms": 20,
-                               "reconnect_max_ms": 250 }}
+                               "reconnect_max_ms": 250, "block_interval_ms": 50 }}
                 }}"#,
                 plan.listen,
                 format_address(&plan.operator()),

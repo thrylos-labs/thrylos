@@ -44,12 +44,10 @@ use chain_types::Address;
 /// peer, and a node keeps at most [`MAX_CONNECTED_PEERS`].
 pub const MAX_VALIDATORS: usize = MAX_CONNECTED_PEERS + 1;
 
-/// The fewest. A genesis with one validator is valid, but a node that has no
-/// one to wait for produces blocks without pausing and never returns to its
-/// event loop (`Host::pump` in `chain-consensus` runs a whole chain in one
-/// call), so it reports nothing and cannot be stopped at a height. Until that
-/// is fixed a network of one is not generated.
-pub const MIN_VALIDATORS: usize = 2;
+/// The fewest. One validator has no one to wait for, so its blocks come at the
+/// pace and no faster (`HostConfig::min_block_interval_ms`); that is why the
+/// pace may not be zero.
+pub const MIN_VALIDATORS: usize = 1;
 
 /// The first node's port unless told otherwise; the rest follow it.
 pub const DEFAULT_BASE_PORT: u16 = 26_656;
@@ -77,6 +75,8 @@ pub enum DevnetError {
     Validators(usize),
     /// The ports do not fit between `base` and 65535.
     Ports { base: u16, validators: usize },
+    /// The block interval is zero.
+    BlockInterval,
     /// The target directory exists and holds something.
     NotEmpty(PathBuf),
     /// The signer's socket would have a path too long to bind.
@@ -94,12 +94,6 @@ pub enum DevnetError {
 impl core::fmt::Display for DevnetError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Validators(1) => write!(
-                f,
-                "a network of one validator is not supported yet: a node with no one to \
-                 wait for produces blocks without ever returning to its event loop; use \
-                 {MIN_VALIDATORS} to {MAX_VALIDATORS}"
-            ),
             Self::Validators(count) => write!(
                 f,
                 "a network of {count} validators is not supported; use {MIN_VALIDATORS} to \
@@ -108,6 +102,11 @@ impl core::fmt::Display for DevnetError {
             Self::Ports { base, validators } => write!(
                 f,
                 "{validators} consecutive ports from {base} do not fit below 65536"
+            ),
+            Self::BlockInterval => write!(
+                f,
+                "the block interval must not be zero: a validator with no one to wait for \
+                 would commit blocks without end"
             ),
             Self::NotEmpty(path) => write!(
                 f,
@@ -254,7 +253,7 @@ fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), DevnetError> {
         .map_err(|error| io(path, error))
 }
 
-fn node_config_text(plan: &Plan, plans: &[Plan]) -> String {
+fn node_config_text(plan: &Plan, plans: &[Plan], block_interval_ms: u64) -> String {
     let peers: Vec<String> = plans
         .iter()
         .filter(|other| other.number != plan.number)
@@ -284,7 +283,8 @@ fn node_config_text(plan: &Plan, plans: &[Plan]) -> String {
   "network_key": "{NETWORK_KEY}",
   "validator": "{}",
   "signer": {{ "socket": "{SIGNER_SOCKET}", "credential": "{SIGNER_CREDENTIAL}" }},
-  "peers": [{peers}]
+  "peers": [{peers}],
+  "tuning": {{ "block_interval_ms": {block_interval_ms} }}
 }}
 "#,
         plan.listen,
@@ -293,7 +293,8 @@ fn node_config_text(plan: &Plan, plans: &[Plan]) -> String {
 }
 
 /// Writes a network of `validators` nodes into `dir`, the first listening on
-/// `base_port` on the loopback address and the rest on the ports after it.
+/// `base_port` on the loopback address and the rest on the ports after it, each
+/// pacing its blocks `block_interval_ms` apart.
 ///
 /// `dir` must not exist or must be empty. Either the whole network is written
 /// or nothing is.
@@ -301,7 +302,11 @@ pub fn generate(
     dir: &Path,
     validators: usize,
     base_port: u16,
+    block_interval_ms: u64,
 ) -> Result<Vec<DevnetNode>, DevnetError> {
+    if block_interval_ms == 0 {
+        return Err(DevnetError::BlockInterval);
+    }
     if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&validators) {
         return Err(DevnetError::Validators(validators));
     }
@@ -384,7 +389,7 @@ pub fn generate(
         )
     })?;
 
-    let written = write_network(&scratch, &plans, &genesis).and_then(|()| {
+    let written = write_network(&scratch, &plans, &genesis, block_interval_ms).and_then(|()| {
         // Onto an empty directory, if there is one; onto nothing otherwise.
         fs::rename(&scratch, &target).map_err(|error| io(&target, error))
     });
@@ -407,7 +412,12 @@ pub fn generate(
         .collect())
 }
 
-fn write_network(root: &Path, plans: &[Plan], genesis: &str) -> Result<(), DevnetError> {
+fn write_network(
+    root: &Path,
+    plans: &[Plan],
+    genesis: &str,
+    block_interval_ms: u64,
+) -> Result<(), DevnetError> {
     for plan in plans {
         let dir = root.join(format!("{DIRECTORY_PREFIX}{}", plan.number));
         fs::create_dir(&dir).map_err(|error| io(&dir, error))?;
@@ -423,7 +433,7 @@ fn write_network(root: &Path, plans: &[Plan], genesis: &str) -> Result<(), Devne
 
         write_new(
             &dir.join(NODE_CONFIG),
-            node_config_text(plan, plans).as_bytes(),
+            node_config_text(plan, plans, block_interval_ms).as_bytes(),
             0o644,
         )?;
     }
@@ -437,7 +447,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-    use crate::config::{read_network_key, NodeConfig};
+    use crate::config::{read_network_key, NodeConfig, DEFAULT_BLOCK_INTERVAL_MS};
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
@@ -446,7 +456,7 @@ mod tests {
     fn generated(validators: usize) -> (tempfile::TempDir, PathBuf, Vec<DevnetNode>) {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("net");
-        let nodes = generate(&dir, validators, 30_000).unwrap();
+        let nodes = generate(&dir, validators, 30_000, DEFAULT_BLOCK_INTERVAL_MS).unwrap();
         (root, dir, nodes)
     }
 
@@ -561,15 +571,20 @@ mod tests {
     }
 
     #[test]
-    fn the_smallest_network_lists_one_peer_each_and_the_largest_all_the_others() {
+    fn a_network_of_one_has_no_peers_and_the_largest_lists_all_the_others() {
         let (_root, _dir, nodes) = generated(MIN_VALIDATORS);
-        for node in &nodes {
-            let config = NodeConfig::load(&node.dir.join(NODE_CONFIG)).unwrap();
-            assert_eq!(config.peers.len(), MIN_VALIDATORS - 1);
-        }
+        assert_eq!(nodes.len(), 1);
+        let config = NodeConfig::load(&nodes[0].dir.join(NODE_CONFIG)).unwrap();
+        assert!(config.peers.is_empty());
 
         let root = tempfile::tempdir().unwrap();
-        let nodes = generate(&root.path().join("n"), MAX_VALIDATORS, 20_000).unwrap();
+        let nodes = generate(
+            &root.path().join("n"),
+            MAX_VALIDATORS,
+            20_000,
+            DEFAULT_BLOCK_INTERVAL_MS,
+        )
+        .unwrap();
         assert_eq!(nodes.len(), MAX_VALIDATORS);
         let config = NodeConfig::load(&nodes[MAX_VALIDATORS - 1].dir.join(NODE_CONFIG)).unwrap();
         assert_eq!(config.peers.len(), MAX_VALIDATORS - 1);
@@ -580,22 +595,47 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("net");
         for validators in [0, MAX_VALIDATORS + 1] {
-            let error = generate(&dir, validators, 30_000).unwrap_err().to_string();
+            let error = generate(&dir, validators, 30_000, DEFAULT_BLOCK_INTERVAL_MS)
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("not supported"), "{error}");
         }
-        // One is valid for a genesis but not yet for a running node, and the
-        // refusal says why.
-        let error = generate(&dir, 1, 30_000).unwrap_err().to_string();
-        assert!(
-            error.contains("one validator") && error.contains("event loop"),
-            "{error}"
-        );
         for (base, validators) in [(0, 4), (65_534, 4), (65_535, 2)] {
-            let error = generate(&dir, validators, base).unwrap_err().to_string();
+            let error = generate(&dir, validators, base, DEFAULT_BLOCK_INTERVAL_MS)
+                .unwrap_err()
+                .to_string();
             assert!(error.contains("do not fit"), "{base}+{validators}: {error}");
         }
-        assert!(generate(&dir, 4, 65_532).is_ok(), "the last four ports fit");
+        assert!(
+            generate(&dir, 4, 65_532, DEFAULT_BLOCK_INTERVAL_MS).is_ok(),
+            "the last four ports fit"
+        );
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn the_block_interval_is_written_into_every_configuration_and_may_not_be_zero() {
+        let (_root, _dir, nodes) = generated(2);
+        for node in &nodes {
+            let config = NodeConfig::load(&node.dir.join(NODE_CONFIG)).unwrap();
+            assert_eq!(
+                config.block_interval,
+                std::time::Duration::from_millis(DEFAULT_BLOCK_INTERVAL_MS)
+            );
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("net");
+        let nodes = generate(&dir, 2, 30_000, 250).unwrap();
+        for node in &nodes {
+            let config = NodeConfig::load(&node.dir.join(NODE_CONFIG)).unwrap();
+            assert_eq!(config.block_interval, std::time::Duration::from_millis(250));
+        }
+
+        let other = root.path().join("other");
+        let error = generate(&other, 2, 31_000, 0).unwrap_err().to_string();
+        assert!(error.contains("must not be zero"), "{error}");
+        assert!(!other.exists(), "nothing was written");
     }
 
     #[test]
@@ -604,7 +644,7 @@ mod tests {
         let dir = root.path().join("net");
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("precious.key"), b"do not touch").unwrap();
-        let error = generate(&dir, 4, 30_000).unwrap_err();
+        let error = generate(&dir, 4, 30_000, DEFAULT_BLOCK_INTERVAL_MS).unwrap_err();
         assert!(matches!(error, DevnetError::NotEmpty(_)), "{error}");
         assert_eq!(fs::read(dir.join("precious.key")).unwrap(), b"do not touch");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
@@ -618,7 +658,7 @@ mod tests {
         let file = root.path().join("file");
         fs::write(&file, b"x").unwrap();
         assert!(matches!(
-            generate(&file, 4, 30_000).unwrap_err(),
+            generate(&file, 4, 30_000, DEFAULT_BLOCK_INTERVAL_MS).unwrap_err(),
             DevnetError::NotEmpty(_)
         ));
         assert_eq!(fs::read(&file).unwrap(), b"x");
@@ -629,10 +669,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("net");
         fs::create_dir(&dir).unwrap();
-        generate(&dir, 2, 30_000).unwrap();
+        generate(&dir, 2, 30_000, DEFAULT_BLOCK_INTERVAL_MS).unwrap();
         assert!(dir.join("node2").join(NODE_CONFIG).is_file());
         let key = fs::read(dir.join("node1").join(NETWORK_KEY)).unwrap();
-        assert!(generate(&dir, 2, 30_000).is_err());
+        assert!(generate(&dir, 2, 30_000, DEFAULT_BLOCK_INTERVAL_MS).is_err());
         assert_eq!(fs::read(dir.join("node1").join(NETWORK_KEY)).unwrap(), key);
     }
 
@@ -640,7 +680,7 @@ mod tests {
     fn a_path_too_long_for_the_signer_socket_is_refused_with_nothing_left_behind() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("d".repeat(MAX_SOCKET_PATH));
-        let error = generate(&dir, 2, 30_000).unwrap_err();
+        let error = generate(&dir, 2, 30_000, DEFAULT_BLOCK_INTERVAL_MS).unwrap_err();
         assert!(
             matches!(error, DevnetError::SocketPathTooLong { .. }),
             "{error}"
@@ -658,7 +698,9 @@ mod tests {
         let stale = root.path().join(".net.partial");
         fs::create_dir(&stale).unwrap();
         fs::write(stale.join("x"), b"x").unwrap();
-        let error = generate(&dir, 2, 30_000).unwrap_err().to_string();
+        let error = generate(&dir, 2, 30_000, DEFAULT_BLOCK_INTERVAL_MS)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("earlier attempt"), "{error}");
         assert!(stale.join("x").exists());
         assert!(!dir.exists());
@@ -674,7 +716,7 @@ mod tests {
         let link = root.path().join("net");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let error = generate(&link, 4, 30_000).unwrap_err();
+        let error = generate(&link, 4, 30_000, DEFAULT_BLOCK_INTERVAL_MS).unwrap_err();
         assert!(matches!(error, DevnetError::Io { .. }), "{error}");
         assert!(
             !root.path().join(".net.partial").exists(),

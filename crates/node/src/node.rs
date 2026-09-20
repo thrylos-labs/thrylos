@@ -129,7 +129,11 @@ pub fn run_node(
         NodeDisk::open(&config.data_dir, DiskConfig::default()).map_err(RunError::Storage)?;
     let ports = disk.into_ports(NoTransactions, SystemClock, signer);
     let host = Host::new(
-        HostConfig::default(),
+        HostConfig {
+            min_block_interval_ms: u64::try_from(config.block_interval.as_millis())
+                .unwrap_or(u64::MAX),
+            ..HostConfig::default()
+        },
         config.validator,
         engine,
         ports,

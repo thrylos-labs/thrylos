@@ -5,7 +5,7 @@
 //!                                                     run the node
 //! chain-node network-key <file>                       make a transport key
 //! chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
-//!                                                     write a local network
+//!                          [--block-interval-ms <ms>] write a local network
 //! chain-node devnet start <dir> [--until-height <n>]  run a local network
 //! chain-node --help | --version
 //! ```
@@ -46,6 +46,7 @@ use std::sync::Arc;
 
 use chain_genesis::hex;
 use chain_node::config::create_network_key;
+use chain_node::config::DEFAULT_BLOCK_INTERVAL_MS;
 use chain_node::devnet::{generate, DEFAULT_BASE_PORT};
 use chain_node::event_loop::committed_line;
 use chain_node::launch::{launch, LaunchOptions};
@@ -56,6 +57,7 @@ const USAGE: &str = "usage:
   chain-node run <config.json> [--until-height <n>] [--stop-when-stdin-closes]
   chain-node network-key <file>
   chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
+                          [--block-interval-ms <ms>]
   chain-node devnet start <dir> [--until-height <n>]
   chain-node --help | --version";
 
@@ -185,18 +187,28 @@ fn flag_value<T: FromStr>(
 }
 
 fn devnet_init(dir: &str, flags: &[&str]) -> ExitCode {
-    let Some(pairs) = flag_pairs(flags, &["--validators", "--base-port"]) else {
+    let Some(pairs) = flag_pairs(
+        flags,
+        &["--validators", "--base-port", "--block-interval-ms"],
+    ) else {
         return usage_error();
     };
-    let (validators, base_port) = match (
+    let (validators, base_port, interval) = match (
         flag_value::<usize>(&pairs, "--validators", Some(4)),
         flag_value::<u16>(&pairs, "--base-port", Some(DEFAULT_BASE_PORT)),
+        flag_value::<u64>(
+            &pairs,
+            "--block-interval-ms",
+            Some(DEFAULT_BLOCK_INTERVAL_MS),
+        ),
     ) {
-        (Ok(Some(validators)), Ok(Some(base_port))) => (validators, base_port),
-        (Err(error), _) | (_, Err(error)) => return fail(error),
+        (Ok(Some(validators)), Ok(Some(base_port)), Ok(Some(interval))) => {
+            (validators, base_port, interval)
+        }
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => return fail(error),
         _ => return usage_error(),
     };
-    match generate(Path::new(dir), validators, base_port) {
+    match generate(Path::new(dir), validators, base_port, interval) {
         Ok(nodes) => {
             println!(
                 "INSECURE development network: every consensus key is derived from a public seed."

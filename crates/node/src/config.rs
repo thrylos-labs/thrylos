@@ -121,6 +121,7 @@ struct RawTuning {
     io_timeout_ms: Option<u64>,
     reconnect_initial_ms: Option<u64>,
     reconnect_max_ms: Option<u64>,
+    block_interval_ms: Option<u64>,
 }
 
 /// A peer the node keeps a connection to.
@@ -147,7 +148,13 @@ pub struct NodeConfig {
     pub network: PeerNetworkConfig,
     /// How long a peer may take over a handshake or a stalled frame.
     pub io_timeout: Duration,
+    /// How long the node waits after committing a block before it starts the
+    /// next height: the spec's "1s target" for block time.
+    pub block_interval: Duration,
 }
+
+/// The spec's block time target, and so the default pace.
+pub const DEFAULT_BLOCK_INTERVAL_MS: u64 = 1_000;
 
 fn resolve(base: &Path, path: PathBuf) -> PathBuf {
     if path.is_absolute() {
@@ -283,6 +290,13 @@ impl NodeConfig {
                 raw.tuning.io_timeout_ms,
                 Duration::from_secs(5),
             )?,
+            // Not zero: with no pace a validator with no one to wait for would
+            // commit blocks without end.
+            block_interval: millis(
+                "tuning.block_interval_ms",
+                raw.tuning.block_interval_ms,
+                Duration::from_millis(DEFAULT_BLOCK_INTERVAL_MS),
+            )?,
         })
     }
 }
@@ -396,6 +410,11 @@ mod tests {
         );
         assert_eq!(config.io_timeout, Duration::from_secs(5));
         assert_eq!(
+            config.block_interval,
+            Duration::from_secs(1),
+            "the spec's 1s"
+        );
+        assert_eq!(
             config.network.inbound_queue,
             PeerNetworkConfig::default().inbound_queue
         );
@@ -414,9 +433,11 @@ mod tests {
         let tuned = config_with(
             "",
             r#", "tuning": { "inbound_queue": 8, "outbound_queue": 4, "io_timeout_ms": 250,
-                             "reconnect_initial_ms": 10, "reconnect_max_ms": 100 }"#,
+                             "reconnect_initial_ms": 10, "reconnect_max_ms": 100,
+                             "block_interval_ms": 250 }"#,
         );
         let config = parse(&tuned).unwrap();
+        assert_eq!(config.block_interval, Duration::from_millis(250));
         assert_eq!(config.network.inbound_queue, 8);
         assert_eq!(config.network.outbound_queue, 4);
         assert_eq!(config.io_timeout, Duration::from_millis(250));
@@ -434,6 +455,10 @@ mod tests {
             (
                 r#", "tuning": { "io_timeout_ms": 0 }"#,
                 "tuning.io_timeout_ms",
+            ),
+            (
+                r#", "tuning": { "block_interval_ms": 0 }"#,
+                "tuning.block_interval_ms",
             ),
             (
                 r#", "tuning": { "reconnect_initial_ms": 500, "reconnect_max_ms": 100 }"#,

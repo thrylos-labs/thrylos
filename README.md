@@ -8,7 +8,7 @@ The full technical spec, including the open decisions that still need answers be
 
 The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
 
-A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It produces empty blocks (nothing can be sent to it yet):
+A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It produces empty blocks, one a second (nothing can be sent to it yet):
 
 ```bash
 cargo build -p chain-node --bins                       # the node and the signer, side by side
@@ -17,7 +17,7 @@ target/debug/chain-node devnet start /tmp/thrylos-devnet  # run them (Ctrl-C sto
 tail -f /tmp/thrylos-devnet/node1/node.log             # "committed block 1 (0 transactions)", ...
 ```
 
-`devnet init` takes `--validators <2 to 65>` (four by default; one is not generated yet, see "Known problems") and `--base-port <port>`, and refuses a directory that already holds anything. Keep its path short: a signer's Unix socket path may be at most 100 bytes, and it says so if yours is longer. **It is insecure by design**: every consensus key is derived from a public seed, exactly as in the development genesis below, so nothing on it can hold value. `devnet start --until-height <n>` runs until every node has committed that height, then stops them all cleanly and exits, which is how the tests use it. A node started later than the others can take a few seconds to catch up, and `start` waits for it.
+`devnet init` takes `--validators <1 to 65>` (four by default), `--base-port <port>` and `--block-interval-ms <ms>` (1000 by default, the spec's one-second target: after committing a block every node waits that long before starting the next height), and refuses a directory that already holds anything. Keep its path short: a signer's Unix socket path may be at most 100 bytes, and it says so if yours is longer. **It is insecure by design**: every consensus key is derived from a public seed, exactly as in the development genesis below, so nothing on it can hold value. `devnet start --until-height <n>` runs until every node has committed that height, then stops them all cleanly and exits, which is how the tests use it. A node started later than the others can take a few seconds to catch up, and `start` waits for it.
 
 The genesis tool works on its own too:
 
@@ -75,7 +75,6 @@ The consensus tests run four full validators, each with a real executor, against
 
 ### Known problems
 
-* **A network of one validator does not work.** With no one to wait for, a node commits blocks in a loop that never returns to its event loop, so it reports nothing and cannot be stopped at a height. `devnet init` refuses one validator until that is fixed.
 * **A node that starts later than the others can be slow to join.** When a local network starts, the first node sometimes has committed nothing when the others have committed five blocks. It caught up in every run where the chain kept going (24 of 24); why it starts slowly has not been looked into.
 
 ### Not built yet

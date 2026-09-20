@@ -98,6 +98,14 @@
 //! The runtime calls [`Host::tick`] when [`Host::next_wake_ms`] comes due;
 //! everything else is driven by messages.
 //!
+//! # Pace
+//!
+//! A committed block does not start the next height at once: the host waits
+//! [`HostConfig::min_block_interval_ms`] (the spec's 1 s target) and starts it
+//! from [`Host::tick`]. Without that, a height would begin the moment the last
+//! ended, and a validator with no one to wait for would commit blocks without
+//! end inside a single call.
+//!
 //! # What is not built
 //!
 //! - **Durable storage is not in this crate.** [`ports::Wal`],
@@ -194,6 +202,25 @@ pub struct HostConfig {
     pub sync_retry_ms: u64,
     /// **A choice.** The most decided blocks sent in one answer.
     pub sync_batch: usize,
+    /// The spec's "1s target" for block time (`docs/spec.md`, "Consensus":
+    /// "1s target, 2s timeout"), as a pace: after committing a block the host
+    /// waits this long, by its own clock, before it starts the next height.
+    ///
+    /// The wait comes *before* the height starts, in every node, so that the
+    /// propose timeout counts from the moment the height starts and keeps all
+    /// of its two seconds for the proposal to arrive; a wait inside the
+    /// proposer would take the pace out of that time. It is measured from the
+    /// node's own commit, not from the block's timestamp, so validators whose
+    /// clocks differ by seconds (which the timestamp rule tolerates) do not
+    /// drift apart in it.
+    ///
+    /// It is a pace and not a rule for validity: a block a validator proposes
+    /// sooner is still accepted, and a node that adopts blocks from a peer to
+    /// catch up starts its height at once, without waiting. `0` means no pace:
+    /// each height starts as soon as the last is committed, which is as fast as
+    /// the network lets consensus go, and without end for a validator that has
+    /// no one to wait for.
+    pub min_block_interval_ms: u64,
     /// **A choice.** The most received messages and blocks written to the
     /// write-ahead log for one height. Past it they are simply not
     /// remembered — after a restart the node may have to be told them again
@@ -217,6 +244,7 @@ impl Default for HostConfig {
             sync_grace_ms: 1_000,
             sync_retry_ms: 3_000,
             sync_batch: 16,
+            min_block_interval_ms: 1_000,
             max_wal_entries: 4096,
         }
     }
@@ -310,6 +338,8 @@ struct Env<X, T, C, K: ConsensusSigner, L, D> {
     /// Set when the engine decided a block this node could not commit
     /// itself; the height then stays open until a peer's answer closes it.
     awaiting_sync: bool,
+    /// When the next height starts, if the pace has it waiting to.
+    next_height_at_ms: Option<u64>,
     lag: Lag,
     future_blocks: BTreeMap<u64, Vec<ProposedBlock>>,
     queue: VecDeque<Input<ThrylosContext>>,
@@ -428,6 +458,7 @@ where
                 own_blocks: BTreeMap::new(),
                 judged_invalid: BTreeSet::new(),
                 awaiting_sync: false,
+                next_height_at_ms: None,
                 lag: Lag::default(),
                 future_blocks: BTreeMap::new(),
                 queue: VecDeque::new(),
@@ -537,24 +568,38 @@ where
         }
     }
 
-    /// Gives the host a chance to act on the passage of time: asking a peer
-    /// for what it missed, once it has been behind long enough. The runtime
-    /// should call it whenever [`Self::next_wake_ms`] comes due, and it is
-    /// harmless to call at any other time.
+    /// Gives the host a chance to act on the passage of time: starting the
+    /// next height once the pace allows ([`HostConfig::min_block_interval_ms`]),
+    /// and asking a peer for what it missed, once it has been behind long
+    /// enough. The runtime should call it whenever [`Self::next_wake_ms`]
+    /// comes due, and it is harmless to call at any other time.
     pub fn tick(&mut self) {
         if self.env.halted.is_some() {
             return;
+        }
+        if self
+            .env
+            .next_height_at_ms
+            .is_some_and(|due| self.env.clock.now_ms() >= due)
+        {
+            self.env.start_next_height();
+            self.pump();
+            self.env.flush_wal();
         }
         self.env.maybe_request_sync();
     }
 
     /// The time, on the host's clock, at which [`Self::tick`] next has
-    /// something to do; `None` when the node is not known to be behind.
+    /// something to do: the next height's start, or asking for what was
+    /// missed. `None` when neither is pending.
     pub fn next_wake_ms(&self) -> Option<u64> {
         if self.env.halted.is_some() {
             return None;
         }
-        self.env.next_sync_action_ms()
+        match (self.env.next_height_at_ms, self.env.next_sync_action_ms()) {
+            (Some(start), Some(sync)) => Some(start.min(sync)),
+            (start, sync) => start.or(sync),
+        }
     }
 
     /// A timer the host asked for has fired.
@@ -1322,8 +1367,19 @@ where
             return Ok(());
         }
         self.advance_state()?;
-        self.start_next_height();
+        self.begin_next_height();
         Ok(())
+    }
+
+    /// Starts the next height, or, if there is a pace, arranges for
+    /// [`Host::tick`] to start it once the pace has passed.
+    fn begin_next_height(&mut self) {
+        let pace = self.config.min_block_interval_ms;
+        if pace == 0 {
+            self.start_next_height();
+        } else {
+            self.next_height_at_ms = Some(self.clock.now_ms().saturating_add(pace));
+        }
     }
 
     /// Moves to the height after the chain's head, with the validators it
@@ -1368,6 +1424,7 @@ where
 
     /// Starts the engine on the height `advance_state` moved to.
     fn start_next_height(&mut self) {
+        self.next_height_at_ms = None;
         // The log forgets the heights before this one.
         if let Err(error) = self.storage.start_height(self.height) {
             self.halt(HaltReason::StorageFailed(error.0));

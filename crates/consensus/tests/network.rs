@@ -513,7 +513,12 @@ impl Options {
             advanced_signers: Vec::new(),
             divergent: Vec::new(),
             filter: Box::new(|_, _, _| true),
-            host: HostConfig::default(),
+            // No pace: the simulation's tests are about faults and catching up,
+            // and the pace has tests of its own.
+            host: HostConfig {
+                min_block_interval_ms: 0,
+                ..HostConfig::default()
+            },
             forgetful: false,
             files: false,
             crash_at: None,
@@ -1083,6 +1088,80 @@ fn a_node_cut_off_for_many_heights_catches_up_in_one_go_when_reconnected() {
     sim.run_until(|s| s.nodes[3].chain().head().unwrap().height >= target);
     agree(&sim, 6);
     assert_eq!(sim.nodes[3].seed(), sim.nodes[0].seed());
+}
+
+/// The setting the spec names: a block a second.
+fn paced() -> Options {
+    let mut options = Options::new(4);
+    options.host.min_block_interval_ms = 1_000;
+    options
+}
+
+#[test]
+fn with_a_pace_blocks_come_an_interval_apart_and_no_round_is_spent_waiting() {
+    let mut sim = Sim::new(paced());
+    sim.run_until(|s| s.all_committed(6));
+    let blocks = &sim.committed[0];
+    for pair in blocks.windows(2) {
+        let gap = pair[1].block.timestamp_millis - pair[0].block.timestamp_millis;
+        // At least the pace, and well short of the two seconds a proposal has
+        // to arrive in: the wait comes before the height starts, so it does not
+        // come out of that time.
+        assert!(
+            (1_000..2_000).contains(&gap),
+            "blocks {} and {} are {gap} ms apart",
+            pair[0].height,
+            pair[1].height
+        );
+    }
+    for committed in blocks {
+        assert_eq!(
+            committed.certificate.round,
+            malachite_core_types::Round::new(0),
+            "height {} needed a later round",
+            committed.height
+        );
+    }
+    agree(&sim, 6);
+}
+
+#[test]
+fn a_paced_node_cut_off_for_many_heights_catches_up_in_one_go_and_keeps_pace_after() {
+    let healed = Rc::new(Cell::new(false));
+    let flag = healed.clone();
+    let mut options = paced();
+    options.filter = Box::new(move |_, to, _| to != 3 || flag.get());
+    let mut sim = Sim::new(options);
+    sim.run_until(|s| (0..3).all(|i| s.heights_committed(i) >= 6));
+    assert_eq!(sim.nodes[3].chain().head().unwrap().height, BlockHeight(0));
+
+    healed.set(true);
+    sim.run_until(|s| s.heights_committed(3) >= 6);
+    let target = sim.nodes[0].chain().head().unwrap().height;
+    sim.run_until(|s| s.nodes[3].chain().head().unwrap().height >= target);
+    agree(&sim, 6);
+    // It rejoined the pace: a few more blocks with everyone, each a pace on.
+    sim.run_until(|s| s.all_committed(9));
+    agree(&sim, 9);
+}
+
+#[test]
+fn a_paced_network_that_is_keeping_up_never_asks_anyone_for_anything() {
+    // The pace and the wait before asking for what was missed are both a
+    // second: a node that starts a height a moment after the rest must not be
+    // taken for one that has missed something.
+    let asked = Rc::new(Cell::new(0usize));
+    let counter = asked.clone();
+    let mut options = paced();
+    options.filter = Box::new(move |_, _, message| {
+        if matches!(message, Message::SyncRequest(_)) {
+            counter.set(counter.get() + 1);
+        }
+        true
+    });
+    let mut sim = Sim::new(options);
+    sim.run_until(|s| s.all_committed(8));
+    assert_eq!(asked.get(), 0);
 }
 
 #[test]
