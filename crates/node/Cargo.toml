@@ -12,12 +12,12 @@ workspace = true
 [dependencies]
 blake3.workspace = true
 blst.workspace = true
-chain-consensus = { path = "../chain-consensus", version = "0.1.0" }
-chain-db = { path = "../chain-db", version = "0.1.0" }
-chain-signer = { path = "../chain-signer", version = "0.1.0" }
-chain-types = { path = "../chain-types", version = "0.1.0" }
+chain-consensus = { path = "../consensus", version = "0.1.0" }
+chain-db = { path = "../db", version = "0.1.0" }
+chain-signer = { path = "../signer", version = "0.1.0" }
+chain-types = { path = "../types", version = "0.1.0" }
 
 [dev-dependencies]
-chain-engine-api = { path = "../chain-engine-api", version = "0.1.0" }
+chain-engine-api = { path = "../engine-api", version = "0.1.0" }
 malachite-core-types.workspace = true
 tempfile.workspace = true

@@ -10,10 +10,10 @@ description = "BFT engine, fork choice, evidence detection"
 workspace = true
 
 [dependencies]
-chain-engine-api = { path = "../chain-engine-api", version = "0.1.0" }
-chain-signer = { path = "../chain-signer", version = "0.1.0" }
-chain-state = { path = "../chain-state", version = "0.1.0" }
-chain-types = { path = "../chain-types", version = "0.1.0" }
+chain-engine-api = { path = "../engine-api", version = "0.1.0" }
+chain-signer = { path = "../signer", version = "0.1.0" }
+chain-state = { path = "../state", version = "0.1.0" }
+chain-types = { path = "../types", version = "0.1.0" }
 malachite-core-consensus.workspace = true
 malachite-core-driver.workspace = true
 malachite-core-types.workspace = true
@@ -22,11 +22,11 @@ malachite-metrics.workspace = true
 [dev-dependencies]
 # A dev-dependency cycle on purpose: chain-node builds on this crate, and its
 # file-backed storage is what the restart tests run against.
-chain-node = { path = "../chain-node", version = "0.1.0" }
+chain-node = { path = "../node", version = "0.1.0" }
 tempfile.workspace = true
 blst.workspace = true
-chain-exec = { path = "../chain-exec", version = "0.1.0" }
-chain-modules = { path = "../chain-modules", version = "0.1.0" }
+chain-exec = { path = "../exec", version = "0.1.0" }
+chain-modules = { path = "../modules", version = "0.1.0" }
 ed25519-dalek.workspace = true
 proptest.workspace = true
 malachite-test.workspace = true

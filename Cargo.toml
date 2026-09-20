@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/chain-types",
-    "crates/chain-state",
-    "crates/chain-exec",
-    "crates/chain-modules",
-    "crates/chain-consensus",
-    "crates/chain-engine-api",
-    "crates/chain-signer",
-    "crates/chain-db",
-    "crates/chain-p2p",
-    "crates/chain-mempool",
-    "crates/chain-rpc",
-    "crates/chain-genesis",
-    "crates/chain-node",
+    "crates/types",
+    "crates/state",
+    "crates/exec",
+    "crates/modules",
+    "crates/consensus",
+    "crates/engine-api",
+    "crates/signer",
+    "crates/db",
+    "crates/p2p",
+    "crates/mempool",
+    "crates/rpc",
+    "crates/genesis",
+    "crates/node",
 ]
 
 [workspace.package]

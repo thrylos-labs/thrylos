@@ -320,6 +320,13 @@ impl Executor {
         compute_root(&self.state)
     }
 
+    /// The canonical flat state in key order. Persistence, replay and audit
+    /// harnesses use this to initialise an independently updated copy and
+    /// compare its root with the executor's simple full recomputation.
+    pub fn state_entries(&self) -> impl Iterator<Item = (&StateKey, &StateValue)> {
+        self.state.iter()
+    }
+
     pub const fn tip_block_hash(&self) -> Hash {
         self.tip_block_hash
     }

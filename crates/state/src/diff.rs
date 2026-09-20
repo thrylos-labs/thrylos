@@ -232,7 +232,8 @@ mod tests {
         ) {
             let mut replayed = old.clone();
             apply(&mut replayed, &diff(&old, &new));
-            proptest::prop_assert_eq!(replayed, new);
+            proptest::prop_assert_eq!(&replayed, &new);
+            proptest::prop_assert_eq!(crate::compute_root(&replayed), crate::compute_root(&new));
         }
     }
 }

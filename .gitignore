@@ -2,3 +2,13 @@
 **/*.rs.bk
 *.pdb
 .DS_Store
+
+# cargo-fuzz build output and generated inputs (fuzz/ is its own workspace)
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+
+# TLC model-checker output and the downloaded tool (see formal/consensus/README.md)
+/formal/consensus/states
+/formal/consensus/*.jar

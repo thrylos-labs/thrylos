@@ -10,8 +10,8 @@ description = "Tx admission, eviction, replacement"
 workspace = true
 
 [dependencies]
-chain-state = { path = "../chain-state", version = "0.1.0" }
-chain-types = { path = "../chain-types", version = "0.1.0" }
+chain-state = { path = "../state", version = "0.1.0" }
+chain-types = { path = "../types", version = "0.1.0" }
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
