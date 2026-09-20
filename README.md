@@ -8,7 +8,7 @@ The full technical spec, including the open decisions that still need answers be
 
 The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
 
-A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It produces empty blocks, one a second (nothing can be sent to it yet):
+A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It makes a block a second, empty unless a transaction is handed to a node (there is no way for you to do that yet: that is the RPC):
 
 ```bash
 cargo build -p chain-node --bins                       # the node and the signer, side by side
@@ -42,8 +42,11 @@ Fuzzing is described in [fuzz/README.md](fuzz/README.md) and the TLA+ consensus 
 Thrylos is pre-genesis. There is a `chain-node` binary that runs a validator: it
 reads a configuration file, opens or restores its chain from disk, reaches its
 signer, connects to its static peers and runs consensus, and `chain-node devnet`
-generates and runs a local network of them. **It carries no transactions yet**
-(it proposes empty blocks: no mempool is wired in) and has no RPC. Its tests run
+generates and runs a local network of them. Each node has a transaction pool:
+a transaction handed to it by a trusted peer is checked against the chain,
+passed on to the others, included by whichever validator proposes next and run
+on all of them. **Nothing you can run submits one yet**, because there is no
+RPC; the tests hand them over as a peer would. Its tests run
 four validators as separate processes, kill them with `SIGKILL` and start them
 again; nothing has yet run on more than one machine.
 
@@ -71,7 +74,7 @@ The consensus tests run four full validators, each with a real executor, against
 
 | Area | What exists | What is missing |
 |---|---|---|
-| **Mempool** (`chain-mempool`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals | Cleanup after a block commits |
+| **Mempool** (`chain-mempool`, `chain-node`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals, and cleanup after a block commits (what it executed, what its sender can no longer pay for, what has expired). In the node it is one pool that is both the host's source of transactions and the event loop's intake, reading accounts and the base fee from the same chain the host drives, and passing what is new to it on to every peer but the one it came from. Tested end to end: four running nodes, a transaction handed to one, a watcher that only a second node can have told, the counter it bumps run once on all four, and one sender's transactions included in order | Any way to submit one (no RPC), and gossip that is smarter than telling everyone |
 
 ### Known problems
 
@@ -79,7 +82,7 @@ The consensus tests run four full validators, each with a real executor, against
 
 ### Not built yet
 
-* Transactions on a running node: the mempool is not connected to the node, so it proposes empty blocks
+* A way to submit a transaction, and to see what became of it: nothing tells a sender that its transaction was refused (JSON-RPC is the next piece)
 * A run on separate machines (a local network of separate processes works)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released

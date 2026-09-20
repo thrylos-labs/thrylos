@@ -18,6 +18,7 @@ chain-db = { path = "../db", version = "0.1.0" }
 chain-engine-api = { path = "../engine-api", version = "0.1.0" }
 chain-exec = { path = "../exec", version = "0.1.0" }
 chain-genesis = { path = "../genesis", version = "0.1.0" }
+chain-mempool = { path = "../mempool", version = "0.1.0" }
 chain-p2p = { path = "../p2p", version = "0.1.0" }
 chain-text = { path = "../text", version = "0.1.0" }
 chain-signer = { path = "../signer", version = "0.1.0" }

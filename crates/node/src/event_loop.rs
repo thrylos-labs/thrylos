@@ -42,10 +42,13 @@ pub const MAX_BATCH: usize = 64;
 /// the stop flag again.
 pub const MAX_WAIT: Duration = Duration::from_millis(50);
 
-/// Where transactions from peers go. The mempool will be one; until it exists,
-/// [`DiscardTransactions`] is the other.
+/// Where transactions from peers go: the node's mempool, or
+/// [`DiscardTransactions`].
 pub trait TransactionIntake {
-    fn submit(&mut self, transaction: Transaction, now_ms: u64);
+    /// Offers a transaction that arrived from a peer. Returns it if it was new
+    /// and should be passed on to the node's other peers, `None` if it was
+    /// refused or already held (which is what stops it going round for ever).
+    fn submit(&mut self, transaction: Transaction, now_ms: u64) -> Option<Transaction>;
 }
 
 /// Drops every transaction: a node with no mempool yet.
@@ -53,7 +56,9 @@ pub trait TransactionIntake {
 pub struct DiscardTransactions;
 
 impl TransactionIntake for DiscardTransactions {
-    fn submit(&mut self, _transaction: Transaction, _now_ms: u64) {}
+    fn submit(&mut self, _transaction: Transaction, _now_ms: u64) -> Option<Transaction> {
+        None
+    }
 }
 
 /// Something the loop tells its owner about, as it happens.
@@ -168,7 +173,14 @@ where
                 let actions = match inbound.message {
                     NetworkMessage::Consensus(message) => self.runtime.on_message(message, now),
                     NetworkMessage::Transaction(transaction) => {
-                        self.intake.submit(transaction, now);
+                        // New to this node: on to everyone else, so it reaches
+                        // whichever validator proposes next, not only the one
+                        // it was handed to.
+                        if let Some(relay) = self.intake.submit(transaction, now) {
+                            let _ = self
+                                .network
+                                .send_except(inbound.from, &NetworkMessage::Transaction(relay));
+                        }
                         Actions::default()
                     }
                 };

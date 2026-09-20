@@ -323,17 +323,40 @@ impl PeerNetwork {
     /// the module docs for what happens when a queue is full.
     pub fn send(&self, to: &Recipient, message: &NetworkMessage) -> SendReport {
         let live = lock(&self.shared.live);
-        let mut report = SendReport::default();
         let peers: Vec<PeerId> = match to {
             Recipient::All => live.keys().copied().collect(),
             Recipient::Validator(address) => match self.shared.by_validator.get(address) {
                 Some(peer) => vec![*peer],
                 None => {
-                    report.unreachable = 1;
-                    return report;
+                    return SendReport {
+                        unreachable: 1,
+                        ..SendReport::default()
+                    };
                 }
             },
         };
+        self.queue_for(&live, peers, message)
+    }
+
+    /// Like [`Self::send`] to everyone, except `except`: for passing on what
+    /// arrived from that peer.
+    pub fn send_except(&self, except: PeerId, message: &NetworkMessage) -> SendReport {
+        let live = lock(&self.shared.live);
+        let peers: Vec<PeerId> = live
+            .keys()
+            .copied()
+            .filter(|peer| *peer != except)
+            .collect();
+        self.queue_for(&live, peers, message)
+    }
+
+    fn queue_for(
+        &self,
+        live: &BTreeMap<PeerId, Live>,
+        peers: Vec<PeerId>,
+        message: &NetworkMessage,
+    ) -> SendReport {
+        let mut report = SendReport::default();
         for peer in peers {
             let Some(connection) = live.get(&peer) else {
                 report.unreachable = report.unreachable.saturating_add(1);

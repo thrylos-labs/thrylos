@@ -21,14 +21,23 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use blst::min_pk::SecretKey;
+use chain_consensus::host::Message;
 use chain_engine_api::Block;
+use chain_exec::genesis::{
+    COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME, COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS,
+};
 use chain_node::{
     run_node, DurableEngine, FileMarkStore, NodeConfig, NodeEvent, SignerCredential, SignerServer,
 };
-use chain_p2p::NetworkIdentity;
+use chain_node::{PeerLink, PeerNetwork, PeerNetworkConfig, Recipient};
+use chain_p2p::{NetworkIdentity, NetworkMessage, TcpNetwork, TransportConfig, TrustedPeer};
 use chain_signer::{HighWaterMark, HighWaterMarkStore, Signer, Step};
 use chain_text::format_address;
-use chain_types::{Address, BlockHeight, Hash, Round};
+use chain_types::{
+    Address, BlockHeight, ChainId, Encode, GasAmount, GasPrice, Hash, MoveCall, PublicKey, Round,
+    SequenceNumber, Signature, Transaction, TransactionBody,
+};
+use ed25519_dalek::{Signer as _, SigningKey};
 
 const VALIDATORS: [u8; 4] = [1, 2, 3, 4];
 
@@ -85,6 +94,27 @@ fn provision(root: &Path) -> Vec<Provisioned> {
 /// Like [`provision`], with the signers of `advanced` already past every
 /// position the chain will ask them to sign at.
 fn provision_with(root: &Path, advanced: &[u8]) -> Vec<Provisioned> {
+    provision_full(root, advanced, &[])
+}
+
+/// A peer of one node that is not a validator: a client, with a transport key
+/// of its own that the node lists, and the address it listens on.
+#[derive(Clone, Copy)]
+struct ClientPlan {
+    /// The seed of the node that lists it.
+    node: u8,
+    seed: u8,
+    listen: SocketAddr,
+}
+
+impl ClientPlan {
+    fn identity(&self) -> NetworkIdentity {
+        NetworkIdentity::from_secret_bytes([self.seed; 32])
+    }
+}
+
+/// Like [`provision_with`], and each node also lists the clients planned for it.
+fn provision_full(root: &Path, advanced: &[u8], clients: &[ClientPlan]) -> Vec<Provisioned> {
     let plans: Vec<Plan> = VALIDATORS
         .iter()
         .map(|seed| Plan {
@@ -149,6 +179,14 @@ fn provision_with(root: &Path, advanced: &[u8]) -> Vec<Provisioned> {
                     )
                 })
                 .collect();
+            let mut peers = peers;
+            for client in clients.iter().filter(|c| c.node == plan.seed) {
+                peers.push(format!(
+                    r#"{{ "address": "{}", "public_key": "{}" }}"#,
+                    client.listen,
+                    chain_genesis::hex::encode(&client.identity().public_key())
+                ));
+            }
             let text = format!(
                 r#"{{
                   "data_dir": "data", "genesis": "genesis.json", "listen": "{}",
@@ -406,6 +444,195 @@ fn a_node_whose_signer_refuses_halts_and_says_why_while_the_others_carry_on() {
         "the halt was reported once"
     );
     assert_one_chain(&nodes[..3], HEIGHT);
+}
+
+// ---- transactions ------------------------------------------------------------------
+
+/// A client of `node`: a peer with a transport key the node lists, connected to
+/// nothing else, that can hand the node transactions and hears what it passes on.
+fn connect_client(client: &ClientPlan, node: &Provisioned) -> PeerNetwork {
+    let node_key = chain_node::config::read_network_key(&node.config.network_key)
+        .unwrap()
+        .public_key();
+    let peer = TrustedPeer::new(node.config.listen, node_key).unwrap();
+    let network = TcpNetwork::bind(
+        client.listen,
+        client.identity(),
+        vec![peer],
+        TransportConfig {
+            io_timeout: Duration::from_millis(500),
+            ..TransportConfig::default()
+        },
+        Arc::new(|_, _: &Message| true),
+    )
+    .unwrap();
+    let peers = PeerNetwork::start(
+        network,
+        vec![PeerLink {
+            peer,
+            validator: None,
+        }],
+        PeerNetworkConfig {
+            reconnect_initial: Duration::from_millis(20),
+            reconnect_max: Duration::from_millis(250),
+            ..PeerNetworkConfig::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        peers.wait_for_peers(1, Duration::from_secs(30)),
+        "the client never reached node {}",
+        node.seed
+    );
+    peers
+}
+
+/// A signed call to the genesis counter's `bump`, from a funded devnet account
+/// (seeds 101 to 104).
+fn bump(seed: u8, sequence: u64, amount: u64) -> Transaction {
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let body = TransactionBody {
+        chain_id: ChainId(chain_genesis::devnet::DEVNET_CHAIN_ID),
+        sender: PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes()).unwrap(),
+        sequence_number: SequenceNumber(sequence),
+        expiry: BlockHeight(1_000),
+        gas_limit: GasAmount(1_000),
+        max_fee_per_gas: GasPrice(1),
+        declared_inputs: vec![Address::from_bytes(INITIAL_COUNTER_ADDRESS.into_bytes())],
+        call: MoveCall {
+            module_address: Address::from_bytes(COUNTER_PACKAGE_ADDRESS.into_bytes()),
+            module_name: COUNTER_MODULE_NAME.as_bytes().to_vec(),
+            function_name: COUNTER_BUMP_FUNCTION.as_bytes().to_vec(),
+            type_arguments: Vec::new(),
+            arguments: vec![amount.to_le_bytes().to_vec()],
+        },
+    };
+    let mut bytes = Vec::new();
+    body.encode(&mut bytes);
+    Transaction {
+        body,
+        signature: Signature::from_ed25519_bytes(key.sign(&bytes).to_bytes()),
+    }
+}
+
+/// The next transaction `peers` is handed, up to `patience`.
+fn next_transaction(peers: &PeerNetwork, patience: Duration) -> Option<Transaction> {
+    let end = Instant::now() + patience;
+    while Instant::now() < end {
+        if let Some(inbound) = peers.recv_timeout(Duration::from_millis(100)) {
+            if let NetworkMessage::Transaction(transaction) = inbound.message {
+                return Some(transaction);
+            }
+        }
+    }
+    None
+}
+
+/// What a node's disk says the genesis counter is.
+fn counter_on_disk(node: &Provisioned) -> Option<u64> {
+    let genesis = chain_genesis::load(&node.config.genesis).unwrap();
+    let engine = DurableEngine::open(&node.config.data_dir, &genesis).unwrap();
+    engine.executor().read_counter()
+}
+
+#[test]
+fn a_transaction_handed_to_one_node_reaches_all_of_them_and_runs_once_on_each() {
+    // Enough blocks that the transaction, which is handed over a moment after
+    // the nodes start, is certain to arrive before they stop.
+    const HEIGHT: u64 = 60;
+    let root = tempfile::tempdir().unwrap();
+    let submitter = ClientPlan {
+        node: 1,
+        seed: 200,
+        listen: free_address(),
+    };
+    let watcher = ClientPlan {
+        node: 3,
+        seed: 201,
+        listen: free_address(),
+    };
+    let nodes = provision_full(root.path(), &[], &[submitter, watcher]);
+    let running: Vec<Running> = nodes.iter().map(|n| start(n, HEIGHT)).collect();
+
+    let submitting = connect_client(&submitter, &nodes[0]);
+    let watching = connect_client(&watcher, &nodes[2]);
+    let tx = bump(101, 0, 7);
+    submitting.send(&Recipient::All, &NetworkMessage::Transaction(tx.clone()));
+
+    // Node 3 was never handed it. It has it because node 1 passed it on, and
+    // it passes it on to its own peers, this one, in turn.
+    let relayed = next_transaction(&watching, Duration::from_secs(30));
+    assert_eq!(relayed, Some(tx.clone()), "the watcher was never sent it");
+    // And nobody sends it back round: it is not offered a second time.
+    assert_eq!(next_transaction(&watching, Duration::from_secs(1)), None);
+
+    for node in running {
+        node.finish(Duration::from_secs(90)).unwrap();
+    }
+
+    // It ran, on every node, once: the counter went up by exactly its amount.
+    for node in &nodes {
+        assert_eq!(counter_on_disk(node), Some(7), "node {}", node.seed);
+    }
+    // In exactly one block, the same on all four, with the same state after.
+    assert_one_chain(&nodes, HEIGHT);
+    let carrying: Vec<u64> = chain_on_disk(&nodes[0], HEIGHT)
+        .iter()
+        .filter(|(block, _)| block.transactions.contains(&tx))
+        .map(|(block, _)| block.height.0)
+        .collect();
+    assert_eq!(carrying.len(), 1, "in blocks {carrying:?}");
+}
+
+#[test]
+fn transactions_in_order_from_one_sender_are_all_included_in_that_order() {
+    const HEIGHT: u64 = 60;
+    let root = tempfile::tempdir().unwrap();
+    let submitter = ClientPlan {
+        node: 2,
+        seed: 200,
+        listen: free_address(),
+    };
+    let nodes = provision_full(root.path(), &[], &[submitter]);
+    let running: Vec<Running> = nodes.iter().map(|n| start(n, HEIGHT)).collect();
+    let submitting = connect_client(&submitter, &nodes[1]);
+
+    // Three from one account, and one each from two others, handed over at once.
+    let sent = [
+        bump(101, 0, 1),
+        bump(101, 1, 10),
+        bump(101, 2, 100),
+        bump(102, 0, 1_000),
+        bump(103, 0, 10_000),
+    ];
+    for tx in &sent {
+        submitting.send(&Recipient::All, &NetworkMessage::Transaction(tx.clone()));
+    }
+    for node in running {
+        node.finish(Duration::from_secs(90)).unwrap();
+    }
+
+    for node in &nodes {
+        assert_eq!(counter_on_disk(node), Some(11_111), "node {}", node.seed);
+    }
+    assert_one_chain(&nodes, HEIGHT);
+
+    // Every one is on the chain, and a sender's are in the order of their
+    // sequence numbers, which is the only order execution would accept.
+    let included: Vec<Transaction> = chain_on_disk(&nodes[0], HEIGHT)
+        .into_iter()
+        .flat_map(|(block, _)| block.transactions)
+        .collect();
+    assert_eq!(included.len(), sent.len());
+    for tx in &sent {
+        assert!(included.contains(tx));
+    }
+    let sequences: Vec<u64> = included
+        .iter()
+        .filter(|tx| tx.body.sender == sent[0].body.sender)
+        .map(|tx| tx.body.sequence_number.0)
+        .collect();
+    assert_eq!(sequences, vec![0, 1, 2]);
 }
 
 #[allow(dead_code)]

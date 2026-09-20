@@ -247,6 +247,46 @@ impl<A: AccountView> Mempool<A> {
         removed
     }
 
+    /// Forgets what a committed block made stale, and says how many
+    /// transactions that was.
+    ///
+    /// `touched` are the senders whose accounts the block changed (the ones
+    /// with a transaction in it): for each, a pending transaction below the
+    /// account's next sequence number has been executed (or superseded) and is
+    /// dropped, and so is one whose worst-case fee the balance no longer
+    /// covers. Every sender's transactions past their `expiry` at
+    /// `current_height` are dropped too, since time passes for all of them.
+    /// Anything else is left: a transaction is only removed for a reason the
+    /// chain now shows.
+    ///
+    /// Reads the accounts as they are *now*, so it is called after the block
+    /// has been finalised.
+    pub fn prune_after_commit(
+        &mut self,
+        touched: &[Address],
+        current_height: BlockHeight,
+    ) -> usize {
+        let before = self.size;
+        for sender in touched {
+            let next = self.accounts.next_sequence_number(sender);
+            let balance = self.accounts.balance(sender);
+            if let Some(by_sequence) = self.pending.get_mut(sender) {
+                by_sequence.retain(|sequence_number, tx| {
+                    let cost = u128::from(tx.body.gas_limit.0)
+                        .checked_mul(u128::from(tx.body.max_fee_per_gas.0));
+                    *sequence_number >= next && cost.is_some_and(|cost| cost <= balance)
+                });
+            }
+        }
+        for by_sequence in self.pending.values_mut() {
+            by_sequence.retain(|_, tx| current_height.0 <= tx.body.expiry.0);
+        }
+        self.pending
+            .retain(|_, by_sequence| !by_sequence.is_empty());
+        self.size = self.pending.values().map(BTreeMap::len).sum();
+        before.saturating_sub(self.size)
+    }
+
     /// Up to `limit` pending transactions, highest fee first, honouring
     /// per-sender sequence order: a sender's transaction at sequence
     /// `n + 1` is only ever offered once its `n` has been. This is the
@@ -373,6 +413,108 @@ mod tests {
             body,
             signature: Signature::from_ed25519_bytes(raw_sig.to_bytes()),
         }
+    }
+
+    fn pool_with(sender_seeds: &[u8], txs: Vec<Transaction>) -> Mempool<MockAccounts> {
+        let chain_id = ChainId(1);
+        let mut accounts = MockAccounts::new();
+        for seed in sender_seeds {
+            accounts =
+                accounts.with_balance(signed_tx(*seed, chain_id, 0, 1).sender_address(), 1_000_000);
+        }
+        let mut pool = Mempool::new(config(chain_id), accounts);
+        for tx in txs {
+            pool.admit(tx, BlockHeight(0)).unwrap();
+        }
+        pool
+    }
+
+    #[test]
+    fn a_commit_drops_what_it_executed_and_only_that() {
+        let chain_id = ChainId(1);
+        let mut pool = pool_with(
+            &[1, 2],
+            vec![
+                signed_tx(1, chain_id, 0, 5),
+                signed_tx(1, chain_id, 1, 5),
+                signed_tx(2, chain_id, 0, 5),
+            ],
+        );
+        let one = signed_tx(1, chain_id, 0, 5).sender_address();
+        let two = signed_tx(2, chain_id, 0, 5).sender_address();
+
+        // Sender one's first transaction was executed: its next sequence is 1.
+        pool.accounts.next_sequence.insert(one, SequenceNumber(1));
+        assert_eq!(pool.prune_after_commit(&[one], BlockHeight(1)), 1);
+        assert_eq!(pool.len(), 2);
+        assert!(!pool.contains(&one, SequenceNumber(0)));
+        assert!(
+            pool.contains(&one, SequenceNumber(1)),
+            "the one behind it stays"
+        );
+        assert!(
+            pool.contains(&two, SequenceNumber(0)),
+            "another sender's stays"
+        );
+    }
+
+    #[test]
+    fn a_commit_that_left_a_sender_unable_to_pay_drops_what_it_can_no_longer_cover() {
+        let chain_id = ChainId(1);
+        let mut pool = pool_with(
+            &[1],
+            vec![signed_tx(1, chain_id, 0, 5), signed_tx(1, chain_id, 1, 900)],
+        );
+        let one = signed_tx(1, chain_id, 0, 5).sender_address();
+        // Worst-case fees: 1_000 gas at 5 is 5_000, and at 900 is 900_000. A
+        // balance of 10_000 covers the first and not the second.
+        pool.accounts.balances.insert(one, 10_000);
+        assert_eq!(pool.prune_after_commit(&[one], BlockHeight(1)), 1);
+        assert!(pool.contains(&one, SequenceNumber(0)));
+        assert!(!pool.contains(&one, SequenceNumber(1)));
+    }
+
+    #[test]
+    fn a_sender_the_block_did_not_touch_is_not_re_examined_for_its_account_but_expiry_is_for_everyone(
+    ) {
+        let chain_id = ChainId(1);
+        let mut pool = pool_with(
+            &[1, 2],
+            vec![signed_tx(1, chain_id, 0, 5), signed_tx(2, chain_id, 0, 5)],
+        );
+        let one = signed_tx(1, chain_id, 0, 5).sender_address();
+        let two = signed_tx(2, chain_id, 0, 5).sender_address();
+        // Sender two is poorer now, but no block of theirs has committed, so
+        // nothing is checked for them.
+        pool.accounts.balances.insert(two, 0);
+        assert_eq!(pool.prune_after_commit(&[one], BlockHeight(1)), 0);
+        assert_eq!(pool.len(), 2);
+
+        // Expiry is 1_000: at height 1_000 they are still good, past it gone,
+        // whoever the block was from.
+        assert_eq!(pool.prune_after_commit(&[], BlockHeight(1_000)), 0);
+        assert_eq!(pool.prune_after_commit(&[], BlockHeight(1_001)), 2);
+        assert!(pool.is_empty());
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[test]
+    fn pruning_keeps_the_pool_consistent_with_what_it_holds() {
+        let chain_id = ChainId(1);
+        let mut pool = pool_with(
+            &[1],
+            vec![signed_tx(1, chain_id, 0, 5), signed_tx(1, chain_id, 1, 5)],
+        );
+        let one = signed_tx(1, chain_id, 0, 5).sender_address();
+        pool.accounts.next_sequence.insert(one, SequenceNumber(2));
+        assert_eq!(pool.prune_after_commit(&[one], BlockHeight(1)), 2);
+        assert!(pool.is_empty());
+        // Room again: a sender's slot is not left counted.
+        assert!(pool.candidate_transactions(10, 0).is_empty());
+        let fresh = signed_tx(1, chain_id, 2, 5);
+        pool.accounts.balances.insert(one, 1_000_000);
+        assert!(pool.admit(fresh, BlockHeight(1)).is_ok());
+        assert_eq!(pool.len(), 1);
     }
 
     fn config(chain_id: ChainId) -> MempoolConfig {

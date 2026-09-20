@@ -1341,6 +1341,7 @@ dependencies = [
  "chain-engine-api",
  "chain-exec",
  "chain-genesis",
+ "chain-mempool",
  "chain-p2p",
  "chain-signer",
  "chain-state",

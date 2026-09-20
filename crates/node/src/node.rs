@@ -28,10 +28,11 @@ use crate::clock::{now_ms, SystemClock};
 use crate::config::{read_network_key, ConfigError, NodeConfig};
 use crate::disk::{DiskConfig, NodeDisk};
 use crate::durable_engine::{DurableEngine, OpenError};
-use crate::event_loop::{DiscardTransactions, EventLoop, NodeEvent};
+use crate::event_loop::{EventLoop, NodeEvent};
 use crate::peer_network::{PeerLink, PeerNetwork};
 use crate::remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential};
 use crate::runtime::NodeRuntime;
+use crate::txpool::{NodeMempool, SharedEngine};
 use crate::verifier::SenderBoundVerifier;
 
 /// Why a node did not start, or why it stopped.
@@ -92,7 +93,9 @@ impl From<NetworkError> for RunError {
     }
 }
 
-/// A node with no mempool yet: it proposes empty blocks.
+/// A node with no transactions to offer: it proposes empty blocks. The node
+/// itself has a pool ([`NodeMempool`]); this is for a caller that wants a host
+/// without one.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoTransactions;
 
@@ -124,10 +127,13 @@ pub fn run_node(
         SignerCredential::read(&config.signer_credential)?,
         config.signer_timeout,
     )?;
-    let engine = DurableEngine::open(&config.data_dir, &genesis)?;
+    // The chain is shared with the transaction pool, which reads the accounts
+    // and the base fee that transactions are checked and chosen against.
+    let engine = SharedEngine::new(DurableEngine::open(&config.data_dir, &genesis)?);
+    let pool = NodeMempool::new(engine.clone(), genesis.chain_id());
     let disk =
         NodeDisk::open(&config.data_dir, DiskConfig::default()).map_err(RunError::Storage)?;
-    let ports = disk.into_ports(NoTransactions, SystemClock, signer);
+    let ports = disk.into_ports(pool.clone(), SystemClock, signer);
     let host = Host::new(
         HostConfig {
             min_block_interval_ms: u64::try_from(config.block_interval.as_millis())
@@ -168,7 +174,7 @@ pub fn run_node(
     )?;
     let peers = PeerNetwork::start(network, links, config.network)?;
 
-    let mut event_loop = EventLoop::new(NodeRuntime::new(host), peers, DiscardTransactions, now_ms);
+    let mut event_loop = EventLoop::new(NodeRuntime::new(host), peers, pool, now_ms);
     if let Some(height) = stop_at {
         event_loop = event_loop.stopping_at(height);
     }

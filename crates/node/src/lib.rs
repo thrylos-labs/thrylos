@@ -62,6 +62,7 @@ pub mod peer_network;
 pub mod remote_signer;
 pub mod runtime;
 pub mod signed_log;
+pub mod txpool;
 pub mod verifier;
 pub mod wal;
 
@@ -79,6 +80,7 @@ pub use peer_network::{
 pub use remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential, SignerServer};
 pub use runtime::{Actions, NodeRuntime, Outgoing, Recipient, Timers};
 pub use signed_log::FileSignedLog;
+pub use txpool::{NodeMempool, SharedEngine};
 pub use verifier::SenderBoundVerifier;
 pub use wal::FileWal;
 
