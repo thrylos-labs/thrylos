@@ -103,7 +103,7 @@ Status meanings:
 | Spec commitment | Status | Evidence | Work required |
 |---|---|---|---|
 | Size/rate check precedes strict decode and signature verification | **Conforms** | `TcpNetwork` reads the five-byte header, checks the per-type size cap and reserves global/per-peer budget before allocating the body; it then verifies the session-bound frame signature, strictly decodes, verifies transaction signatures and invokes the required consensus verifier. Tests prove an oversized declaration never reaches a verifier and a tampered frame never reaches message decoding. | Add malformed-frame fuzzing without changing this ordering. |
-| Every remote queue, allocation and loop has a domain-specific bound | **Partial** | Consensus and transaction frame allocations have separate hard caps, connections are capped at 64, catch-up is bounded by frame size, and the reusable queue is fixed-capacity. | Audit the eventual node event loop and mempool handoff once they are wired to the transport. |
+| Every remote queue, allocation and loop has a domain-specific bound | **Partial** | Consensus and transaction frame allocations have separate hard caps, connections are capped at 64, catch-up is bounded by frame size, and the reusable queue is fixed-capacity. `chain-node`'s `PeerNetwork` adds the queues around them, each with a stated policy and a test on real sockets: a bounded outgoing queue per peer where `send` never blocks and overflow is dropped and counted; one bounded incoming queue where a full queue stops the reader reading, so a slow consumer pushes back through TCP; at most 16 handshakes at once, the excess closed on arrival; timers capped at 256; at most 1,024 firings per driver call. | Audit the node event loop and mempool hand-off once they exist. Known limit: 16 silent connections fill the handshake slots for one I/O timeout, so a per-source limit or a shorter handshake timeout is still to add. |
 | One authenticated transport with static trusted peers and a hard peer limit | **Conforms** | `chain-p2p::TcpNetwork` uses mutual Ed25519 challenge-response authentication and signs every frame over both peers, the fresh session, type, length and sequence number. It rejects keys outside the static allowlist, duplicate peers and configurations above 64 connections. Real loopback tests cover authentication, tamper rejection and both frame types. | Run multi-host soak and partition tests; keep discovery and scoring out of v1 unless measurements require them. |
 | Mempool admission, replacement and eviction rules | **Partial** | Pool rules and state-backed account view are tested. | Remove committed/expired transactions and wire the pool to finalisation. |
 | Minimal JSON-RPC and tracing | **Missing** | `chain-rpc` is an empty placeholder. | Add only the calls required by the first applications and operators. |
@@ -143,8 +143,9 @@ work, in order:
    binary;
 2. drive the consensus host, bounded mempool and block catch-up through
    `TcpNetwork`, supplying a consensus verifier backed by the canonical
-   validator set (the host driver, `NodeRuntime`, is done and runs the
-   simulation; the socket layer, the mempool hand-off and the binary remain);
+   validator set (the host driver, `NodeRuntime`, and the socket layer,
+   `PeerNetwork`, are done; the event loop that joins them, the mempool
+   hand-off and the binary remain);
 3. prove every handoff queue is bounded and disconnect peers after malformed,
    unauthenticated or over-budget frames;
 4. run process-kill recovery, multi-host propagation, partition and reconnect

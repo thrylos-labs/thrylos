@@ -47,6 +47,7 @@ pub use peer_id::PeerId;
 pub use queue::{BoundedQueue, DropPolicy};
 pub use token_bucket::TokenBucket;
 pub use transport::{
-    ConsensusVerifier, NetworkError, NetworkIdentity, NetworkMessage, PeerConnection, TcpNetwork,
-    TransportConfig, TrustedPeer, MAX_CONNECTED_PEERS,
+    ConnectionCloser, ConsensusVerifier, NetworkError, NetworkIdentity, NetworkMessage,
+    PeerConnection, PeerReader, PeerWriter, PendingConnection, TcpNetwork, TransportConfig,
+    TrustedPeer, MAX_CONNECTED_PEERS,
 };

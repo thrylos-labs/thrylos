@@ -1340,6 +1340,7 @@ dependencies = [
  "chain-engine-api",
  "chain-exec",
  "chain-genesis",
+ "chain-p2p",
  "chain-signer",
  "chain-state",
  "chain-types",

@@ -14,6 +14,10 @@
 //! sockets and no threads, so the same code runs a real node and the
 //! in-process simulation the tests use.
 //!
+//! [`PeerNetwork`] is the node's connections to its peers: threads and bounded
+//! queues around `chain-p2p`'s authenticated transport, with sends that never
+//! block and a stated policy wherever a queue can fill.
+//!
 //! The node keeps three things beyond the chain itself, each with its own
 //! file under one directory ([`NodeDisk::open`]):
 //!
@@ -42,6 +46,7 @@ pub mod commit_log;
 pub mod disk;
 pub mod durable_engine;
 pub mod mark_store;
+pub mod peer_network;
 pub mod remote_signer;
 pub mod runtime;
 pub mod signed_log;
@@ -51,6 +56,9 @@ pub use commit_log::FileCommitLog;
 pub use disk::{DiskConfig, FileStorage, NodeDisk};
 pub use durable_engine::{DurableEngine, OpenError};
 pub use mark_store::{FileMarkStore, MarkError};
+pub use peer_network::{
+    Inbound, NetworkStats, PeerLink, PeerNetwork, PeerNetworkConfig, SendReport,
+};
 pub use remote_signer::{RemoteSigner, RemoteSignerError, SignerCredential, SignerServer};
 pub use runtime::{Actions, NodeRuntime, Outgoing, Recipient, Timers};
 pub use signed_log::FileSignedLog;
