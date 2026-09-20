@@ -313,7 +313,8 @@ impl Disk {
             return;
         };
         let opened = NodeDisk::open(dir.path(), DiskConfig::default()).unwrap();
-        *self.mark.0.borrow_mut() = MarkBackend::Files(opened.mark);
+        *self.mark.0.borrow_mut() =
+            MarkBackend::Files(FileMarkStore::open(&dir.path().join("signer.mark")));
         *self.signed.0.borrow_mut() = SignedBackend::Files(opened.signed);
         *self.storage.inner.borrow_mut() = StorageBackend::Files(opened.storage);
     }
