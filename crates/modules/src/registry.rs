@@ -278,6 +278,29 @@ pub enum RegistryError {
     CorruptState,
 }
 
+impl core::fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::AlreadyRegistered => f.write_str("the validator is already registered"),
+            Self::ConsensusKeyInUse => f.write_str("another validator already registered this consensus key"),
+            Self::InvalidProofOfPossession => f.write_str("the consensus key's proof of possession does not verify"),
+            Self::SelfStakeBelowMinimum => f.write_str("the self-stake is below the minimum"),
+            Self::UnknownValidator => f.write_str("no such validator"),
+            Self::ValidatorTombstoned => f.write_str("the validator was convicted of equivocation and cannot take new stake"),
+            Self::TooManyUnbondingEntries => f.write_str("too many open unbonding entries"),
+            Self::UnbondingSequenceExhausted => f.write_str("the unbonding sequence counter is exhausted"),
+            Self::Staking(error) => write!(f, "staking: {error}"),
+            Self::Evidence(error) => write!(f, "evidence: {error}"),
+            Self::Jail(error) => write!(f, "jailing: {error}"),
+            Self::Unjail(error) => write!(f, "unjailing: {error}"),
+            Self::SelfStakeTooLowToUnjail => f.write_str("the remaining self-stake is below the minimum, so the validator cannot rejoin the active set"),
+            Self::CorruptState => f.write_str("stored state is damaged: a record does not decode, or the indexes disagree"),
+        }
+    }
+}
+
+impl std::error::Error for RegistryError {}
+
 impl From<StakingError> for RegistryError {
     fn from(err: StakingError) -> Self {
         Self::Staking(err)
@@ -2277,5 +2300,50 @@ mod tests {
             reg.assert_invariants(),
             Err(RegistryError::Staking(StakingError::InvariantViolated))
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_registry_error_reads_as_a_sentence_and_wrapped_errors_keep_their_own() {
+        readable(&[
+            RegistryError::AlreadyRegistered,
+            RegistryError::ConsensusKeyInUse,
+            RegistryError::InvalidProofOfPossession,
+            RegistryError::SelfStakeBelowMinimum,
+            RegistryError::UnknownValidator,
+            RegistryError::ValidatorTombstoned,
+            RegistryError::TooManyUnbondingEntries,
+            RegistryError::UnbondingSequenceExhausted,
+            RegistryError::Staking(StakingError::ZeroAmount),
+            RegistryError::Evidence(EvidenceRejection::TooOld),
+            RegistryError::Jail(JailError::Tombstoned),
+            RegistryError::Unjail(UnjailError::NotJailed),
+            RegistryError::SelfStakeTooLowToUnjail,
+            RegistryError::CorruptState,
+        ]);
+        let message = RegistryError::Staking(StakingError::ZeroAmount).to_string();
+        assert_eq!(message, format!("staking: {}", StakingError::ZeroAmount));
     }
 }

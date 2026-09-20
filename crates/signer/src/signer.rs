@@ -36,6 +36,22 @@ pub enum SignerError {
     Unavailable,
 }
 
+impl core::fmt::Display for SignerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Regression { requested, mark } => write!(
+                f,
+                "refusing to sign at {requested}: it is at or below the last signed position, {mark}"
+            ),
+            Self::PersistenceFailed => f.write_str("could not durably record the new signing position, so nothing was signed"),
+            Self::MalformedSignature => f.write_str("the signing library returned a malformed signature"),
+            Self::Unavailable => f.write_str("the signer process is unavailable"),
+        }
+    }
+}
+
+impl std::error::Error for SignerError {}
+
 /// The narrow signing boundary used by consensus. Implementations may hold
 /// the key locally (tests and the signer process) or call a separate process;
 /// the node only needs these two fixed signing operations.
@@ -313,5 +329,57 @@ mod tests {
         let reveal = signer.sign_beacon(Height(9), &seed).unwrap();
         let message = chain_types::beacon::beacon_message(Height(9), &seed);
         assert!(verify_aggregate(&[&public], &message, DST_VOTE, &reveal).is_err());
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    use crate::high_water_mark::Step;
+    use chain_types::{BlockHeight, Round};
+
+    #[test]
+    fn a_refused_signature_names_both_positions() {
+        let requested = HighWaterMark::new(BlockHeight(5), Round(1), Step::Prevote);
+        let mark = HighWaterMark::new(BlockHeight(5), Round(2), Step::Precommit);
+        let message = SignerError::Regression { requested, mark }.to_string();
+        assert!(message.contains("height 5, round 1, prevote"), "{message}");
+        assert!(
+            message.contains("height 5, round 2, precommit"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn every_signer_error_reads_as_a_sentence() {
+        let position = HighWaterMark::new(BlockHeight(1), Round(0), Step::Propose);
+        readable(&[
+            SignerError::Regression {
+                requested: position,
+                mark: position,
+            },
+            SignerError::PersistenceFailed,
+            SignerError::MalformedSignature,
+            SignerError::Unavailable,
+        ]);
     }
 }

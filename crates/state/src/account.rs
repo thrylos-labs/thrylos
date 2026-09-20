@@ -48,6 +48,24 @@ pub enum AccountError {
     InsufficientBalance,
 }
 
+impl core::fmt::Display for AccountError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::SequenceNumberTooLow => f.write_str(
+                "sequence number is below the account's next one: already executed, or a replay",
+            ),
+            Self::SequenceNumberTooHigh => {
+                f.write_str("sequence number is above the account's next one: gaps are not allowed")
+            }
+            Self::InsufficientBalance => {
+                f.write_str("balance is below the worst-case fee, gas limit times max fee per gas")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AccountError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Account {
     pub balance: u128,
@@ -278,5 +296,37 @@ mod tests {
         };
         let after = account.apply_transaction(GasAmount(100), GasPrice(100));
         assert_eq!(after.balance, 0);
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_account_error_reads_as_a_sentence() {
+        readable(&[
+            AccountError::SequenceNumberTooLow,
+            AccountError::SequenceNumberTooHigh,
+            AccountError::InsufficientBalance,
+        ]);
     }
 }

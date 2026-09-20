@@ -73,6 +73,26 @@ pub enum StakingError {
     InvariantViolated,
 }
 
+impl core::fmt::Display for StakingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::ZeroAmount => f.write_str("the amount is zero"),
+            Self::DepositTooSmall => f.write_str(
+                "the deposit is too small: it would buy zero shares at the current price",
+            ),
+            Self::InsufficientShares => {
+                f.write_str("the withdrawal is larger than the shares held")
+            }
+            Self::Overflow => f.write_str("an arithmetic operation overflowed"),
+            Self::InvariantViolated => {
+                f.write_str("the staking ledger or its share-price identity is broken")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StakingError {}
+
 /// A single pool's totals: how many shares exist and how much stake backs
 /// them. Every holder's claim is `shares / total_shares` of the stake;
 /// the per-holder balances are kept outside, see the module docs.
@@ -729,5 +749,39 @@ mod tests {
             Err(StakingError::InvariantViolated),
             "a share too many"
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_staking_error_reads_as_a_sentence() {
+        readable(&[
+            StakingError::ZeroAmount,
+            StakingError::DepositTooSmall,
+            StakingError::InsufficientShares,
+            StakingError::Overflow,
+            StakingError::InvariantViolated,
+        ]);
     }
 }

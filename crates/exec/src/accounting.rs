@@ -48,6 +48,18 @@ pub enum AccountingError {
     Unbalanced,
 }
 
+impl core::fmt::Display for AccountingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::SupplyUnreadable => f.write_str("the recorded total supply is missing or unreadable"),
+            Self::Corrupt => f.write_str("a stored entry needed for the supply check is unreadable"),
+            Self::Unbalanced => f.write_str("the total supply differs from balances plus stake plus unbonding: value was created or lost"),
+        }
+    }
+}
+
+impl std::error::Error for AccountingError {}
+
 /// The total supply recorded in `state`.
 pub fn read_supply(state: &State) -> Option<u128> {
     decode_exact(state.get(&supply_key())?.as_bytes()).ok()
@@ -321,5 +333,37 @@ mod tests {
             StateValue::new(vec![1; 8]),
         );
         assert_eq!(check_block_conservation(&old, &new), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_accounting_error_reads_as_a_sentence() {
+        readable(&[
+            AccountingError::SupplyUnreadable,
+            AccountingError::Corrupt,
+            AccountingError::Unbalanced,
+        ]);
     }
 }

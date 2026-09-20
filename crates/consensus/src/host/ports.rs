@@ -169,6 +169,14 @@ impl CommitLog for MemoryCommitLog {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageError(pub String);
 
+impl core::fmt::Display for StorageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StorageError {}
+
 /// The host's write-ahead log: what changed its state during the height it
 /// is running, kept so that a restart can put it back.
 ///

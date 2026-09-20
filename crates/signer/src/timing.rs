@@ -18,6 +18,21 @@ pub enum TimingError {
     EvidenceAgeDoesNotExceedForkChoiceHorizon,
 }
 
+impl core::fmt::Display for TimingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnbondingDoesNotExceedEvidenceAge => {
+                f.write_str("the unbonding period must be longer than the maximum evidence age")
+            }
+            Self::EvidenceAgeDoesNotExceedForkChoiceHorizon => {
+                f.write_str("the maximum evidence age must be longer than the fork-choice horizon")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TimingError {}
+
 /// Check `unbonding_period > max_evidence_age > fork_choice_horizon`.
 /// All three must be expressed in the same unit (e.g. block heights, or
 /// seconds) — this function doesn't know or care which, only that the
@@ -81,5 +96,36 @@ mod tests {
             assert_slashing_window_ordering(21, 5, 14),
             Err(TimingError::EvidenceAgeDoesNotExceedForkChoiceHorizon)
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_timing_error_reads_as_a_sentence() {
+        readable(&[
+            TimingError::UnbondingDoesNotExceedEvidenceAge,
+            TimingError::EvidenceAgeDoesNotExceedForkChoiceHorizon,
+        ]);
     }
 }

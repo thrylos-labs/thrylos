@@ -121,6 +121,22 @@ pub enum AbortReason {
     Unauthorised,
 }
 
+impl core::fmt::Display for AbortReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnknownFunction => f.write_str("the call names a module or function that does not exist"),
+            Self::InvalidArguments => f.write_str("the call's arguments do not match what the function takes"),
+            Self::UndeclaredObjectAccess => f.write_str("the call touched an object it did not declare among its inputs"),
+            Self::ExecutionFailed => f.write_str("the Move VM aborted the call: an explicit abort or an arithmetic overflow"),
+            Self::InsufficientBalance => f.write_str("the call needed more coin than the sender had left after reserving the maximum fee"),
+            Self::StakingRefused => f.write_str("the staking module refused the call"),
+            Self::GovernanceRefused => f.write_str("the governance module refused the call"),
+            Self::EvidenceRefused => f.write_str("the evidence was not admitted"),
+            Self::Unauthorised => f.write_str("the caller is not allowed to make this call"),
+        }
+    }
+}
+
 /// What happened to one transaction that made it into an executed
 /// block. Either way the sender was charged gas and their sequence
 /// number advanced; only a [`Self::Success`] applied the call's own
@@ -193,5 +209,43 @@ mod tests {
         block.encode(&mut bytes);
         let undomained = chain_types::hash::hash_with_domain(DomainTag::TrieLeafV1, &bytes);
         assert_ne!(block.hash(), undomained);
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_abort_reason_reads_as_a_sentence() {
+        readable(&[
+            AbortReason::UnknownFunction,
+            AbortReason::InvalidArguments,
+            AbortReason::UndeclaredObjectAccess,
+            AbortReason::ExecutionFailed,
+            AbortReason::InsufficientBalance,
+            AbortReason::StakingRefused,
+            AbortReason::GovernanceRefused,
+            AbortReason::EvidenceRefused,
+            AbortReason::Unauthorised,
+        ]);
     }
 }

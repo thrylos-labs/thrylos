@@ -30,6 +30,16 @@ pub enum DropReason {
     InvalidSignature,
 }
 
+impl core::fmt::Display for DropReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OverBudget => f.write_str("over the message size cap or the byte budget"),
+            Self::Malformed => f.write_str("failed strict decoding"),
+            Self::InvalidSignature => f.write_str("the signature does not verify"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GossipLimits {
     pub max_message_bytes: usize,
@@ -239,5 +249,37 @@ mod tests {
             gate.reserve(PeerId::from_bytes([7; 32]), 9, now),
             Err(DropReason::OverBudget)
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_drop_reason_reads_as_a_sentence() {
+        readable(&[
+            DropReason::OverBudget,
+            DropReason::Malformed,
+            DropReason::InvalidSignature,
+        ]);
     }
 }

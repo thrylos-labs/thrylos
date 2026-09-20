@@ -161,6 +161,20 @@ pub enum Rejection {
     NotEnoughYes,
 }
 
+impl core::fmt::Display for Rejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::QuorumNotMet => {
+                f.write_str("the voting power that took part was below the quorum")
+            }
+            Self::Vetoed => f.write_str("veto votes exceeded the veto threshold"),
+            Self::NotEnoughYes => {
+                f.write_str("yes votes were not a strict majority of yes, no and veto")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyFailure {
     /// The change, merged onto the parameters as they stand at
@@ -2314,5 +2328,37 @@ mod tests {
             s.put(snapshot_key(id, &voter(1)), bytes);
         });
         assert_eq!(gov.assert_invariants(), Err(GovernanceError::CorruptState));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_governance_rejection_reads_as_a_sentence() {
+        readable(&[
+            Rejection::QuorumNotMet,
+            Rejection::Vetoed,
+            Rejection::NotEnoughYes,
+        ]);
     }
 }

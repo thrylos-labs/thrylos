@@ -98,6 +98,22 @@ pub enum RejectionReason {
     MalformedBlock,
 }
 
+impl core::fmt::Display for RejectionReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::WrongChainId => f.write_str("the transaction's chain ID is missing or is not this chain's"),
+            Self::InvalidSignature => f.write_str("the transaction's signature does not verify against its sender"),
+            Self::InvalidExpiry => f.write_str("the transaction has expired at this height, or expires too far ahead"),
+            Self::Rejected => f.write_str("the transaction failed a check against chain state: its sequence number or the sender's balance"),
+            Self::InvalidBlockHeight => f.write_str("the block's height is not exactly one more than its parent's"),
+            Self::InvalidBlockTimestamp => f.write_str("the block's timestamp is not after its parent's"),
+            Self::TransactionGasLimitExceeded => f.write_str("the transaction asks for more than a quarter of the block gas limit"),
+            Self::InvariantViolated => f.write_str("the block would break the supply invariant: value was created or lost"),
+            Self::MalformedBlock => f.write_str("the block is malformed or over a size limit"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockRejected {
     /// Index into the block's transaction list, when the rejection is
@@ -120,6 +136,20 @@ pub enum FinaliseErrorReason {
     /// The durable store did not commit the block. The in-memory canonical
     /// state must remain at its previous head when this is returned.
     StorageUnavailable,
+}
+
+impl core::fmt::Display for FinaliseErrorReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::StateRootMismatch => f.write_str(
+                "the executed block's state root differs from a fresh execution of the same block",
+            ),
+            Self::NotOnCanonicalChain => {
+                f.write_str("the block's parent is not the current chain head")
+            }
+            Self::StorageUnavailable => f.write_str("the durable store did not commit the block"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,5 +415,48 @@ mod tests {
                 reason: RejectionReason::InvalidSignature,
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_finalise_and_rejection_reason_reads_as_a_sentence() {
+        readable(&[
+            FinaliseErrorReason::StateRootMismatch,
+            FinaliseErrorReason::NotOnCanonicalChain,
+            FinaliseErrorReason::StorageUnavailable,
+        ]);
+        readable(&[
+            RejectionReason::WrongChainId,
+            RejectionReason::InvalidSignature,
+            RejectionReason::InvalidExpiry,
+            RejectionReason::Rejected,
+            RejectionReason::InvalidBlockHeight,
+            RejectionReason::InvalidBlockTimestamp,
+            RejectionReason::TransactionGasLimitExceeded,
+            RejectionReason::InvariantViolated,
+            RejectionReason::MalformedBlock,
+        ]);
     }
 }

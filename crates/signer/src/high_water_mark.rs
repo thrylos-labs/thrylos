@@ -27,6 +27,26 @@ pub struct HighWaterMark {
     pub step: Step,
 }
 
+impl core::fmt::Display for Step {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Propose => "propose",
+            Self::Prevote => "prevote",
+            Self::Precommit => "precommit",
+        })
+    }
+}
+
+impl core::fmt::Display for HighWaterMark {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "height {}, round {}, {}",
+            self.height.0, self.round.0, self.step
+        )
+    }
+}
+
 impl HighWaterMark {
     pub const fn new(height: BlockHeight, round: Round, step: Step) -> Self {
         Self {
@@ -40,6 +60,14 @@ impl HighWaterMark {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_position_reads_height_round_and_step() {
+        let position = HighWaterMark::new(BlockHeight(12), Round(3), Step::Precommit);
+        assert_eq!(position.to_string(), "height 12, round 3, precommit");
+        assert_eq!(Step::Propose.to_string(), "propose");
+        assert_eq!(Step::Prevote.to_string(), "prevote");
+    }
 
     #[test]
     fn height_dominates_round_and_step() {

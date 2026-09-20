@@ -109,6 +109,18 @@ pub enum SlashingError {
     NoBondedStake,
 }
 
+impl core::fmt::Display for SlashingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoBondedStake => {
+                f.write_str("there is no bonded stake, so no fraction of it is defined")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SlashingError {}
+
 fn ceil_div(numerator: U256, denominator: U256) -> Option<U256> {
     numerator
         .checked_add(denominator.checked_sub(U256::from(1u8))?)?
@@ -173,6 +185,29 @@ pub enum EvidenceRejection {
     CorruptState,
 }
 
+impl core::fmt::Display for EvidenceRejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Invalid(error) => write!(f, "not valid evidence of equivocation: {error}"),
+            Self::FromTheFuture => f.write_str("the infraction is dated in the future"),
+            Self::TooOld => f.write_str("the evidence is older than the maximum evidence age"),
+            Self::AlreadySlashed => f.write_str("the validator has already been convicted"),
+            Self::NoBondedStake => {
+                f.write_str("there is no bonded stake to measure the penalty against")
+            }
+            Self::NoStakeToSlash => f.write_str(
+                "the validator had no stake at the infraction, so there is nothing to slash",
+            ),
+            Self::StakeExceedsBonded => {
+                f.write_str("the validator's stake exceeds the total bonded: inconsistent state")
+            }
+            Self::CorruptState => f.write_str("a stored slashing record does not decode"),
+        }
+    }
+}
+
+impl std::error::Error for EvidenceRejection {}
+
 /// How much of one validator's stake to burn. A validator can appear
 /// more than once over time: once when first convicted, and again if
 /// later offenders raise the correlated rate and they are topped up.
@@ -201,6 +236,17 @@ pub enum JailError {
     CorruptState,
 }
 
+impl core::fmt::Display for JailError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Tombstoned => f.write_str("the validator is tombstoned"),
+            Self::CorruptState => f.write_str("a stored slashing record does not decode"),
+        }
+    }
+}
+
+impl std::error::Error for JailError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnjailError {
     NotJailed,
@@ -211,6 +257,21 @@ pub enum UnjailError {
     /// A record this module stored no longer decodes.
     CorruptState,
 }
+
+impl core::fmt::Display for UnjailError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotJailed => f.write_str("the validator is not jailed"),
+            Self::StillJailed { until_ms } => {
+                write!(f, "the validator is jailed until {until_ms} ms")
+            }
+            Self::Tombstoned => f.write_str("the validator is tombstoned and can never rejoin"),
+            Self::CorruptState => f.write_str("a stored slashing record does not decode"),
+        }
+    }
+}
+
+impl std::error::Error for UnjailError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SlashRecord {
@@ -1398,5 +1459,58 @@ mod tests {
             vec![addr_of(3)],
             "D was not topped up on account of a record that no longer counts"
         );
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_slashing_message_reads_as_a_sentence() {
+        readable(&[
+            EvidenceRejection::Invalid(EvidenceError::NotConflicting),
+            EvidenceRejection::FromTheFuture,
+            EvidenceRejection::TooOld,
+            EvidenceRejection::AlreadySlashed,
+            EvidenceRejection::NoBondedStake,
+            EvidenceRejection::NoStakeToSlash,
+            EvidenceRejection::StakeExceedsBonded,
+            EvidenceRejection::CorruptState,
+        ]);
+        readable(&[JailError::Tombstoned, JailError::CorruptState]);
+        readable(&[SlashingError::NoBondedStake]);
+        readable(&[
+            UnjailError::NotJailed,
+            UnjailError::StillJailed { until_ms: 5 },
+            UnjailError::Tombstoned,
+            UnjailError::CorruptState,
+        ]);
+    }
+
+    #[test]
+    fn a_jailed_validator_is_told_until_when_and_the_evidence_fault_is_named() {
+        let message = UnjailError::StillJailed { until_ms: 1_234 }.to_string();
+        assert!(message.contains("1234"), "{message}");
+        let message = EvidenceRejection::Invalid(EvidenceError::NotConflicting).to_string();
+        assert!(message.contains("do not conflict"), "{message}");
     }
 }

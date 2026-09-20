@@ -47,6 +47,22 @@ pub enum AdmissionError {
     PerSenderPendingLimitReached,
 }
 
+impl core::fmt::Display for AdmissionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::WrongChainId => f.write_str("the chain ID is missing or is not this chain's"),
+            Self::InvalidSignature => f.write_str("the signature does not verify against the sender"),
+            Self::InvalidExpiry => f.write_str("the transaction has expired, or expires too far ahead"),
+            Self::SequenceNumberTooLow => f.write_str("the sequence number is below the sender's next one: already executed"),
+            Self::InsufficientBalance => f.write_str("the sender's balance is below the worst-case fee, gas limit times max fee per gas"),
+            Self::ReplacementFeeTooLow => f.write_str("a transaction is already pending at this sequence number and the fee is not raised enough to replace it"),
+            Self::PerSenderPendingLimitReached => f.write_str("the sender already has the maximum number of pending transactions"),
+        }
+    }
+}
+
+impl std::error::Error for AdmissionError {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MempoolConfig {
     pub chain_id: ChainId,
@@ -652,5 +668,41 @@ mod tests {
         let candidates = pool.candidate_transactions(10, 5);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].body.sequence_number, SequenceNumber(0));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_admission_error_reads_as_a_sentence() {
+        readable(&[
+            AdmissionError::WrongChainId,
+            AdmissionError::InvalidSignature,
+            AdmissionError::InvalidExpiry,
+            AdmissionError::SequenceNumberTooLow,
+            AdmissionError::InsufficientBalance,
+            AdmissionError::ReplacementFeeTooLow,
+            AdmissionError::PerSenderPendingLimitReached,
+        ]);
     }
 }

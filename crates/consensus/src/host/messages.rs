@@ -166,3 +166,94 @@ pub enum HaltReason {
     /// The consensus engine reported an error it cannot continue past.
     Engine(String),
 }
+
+impl core::fmt::Display for HaltReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::SignerRefused(error) => write!(
+                f,
+                "the signer refused to sign, so the node stopped rather than risk signing twice: {error}"
+            ),
+            Self::ConflictingSignature(position) => write!(
+                f,
+                "asked to sign different bytes at {position}, which is already signed: refusing to equivocate"
+            ),
+            Self::ChainUnreadable => f.write_str("the committed chain state could not be read"),
+            Self::NoValidators => f.write_str("there is no validator to run consensus with"),
+            Self::CannotCommit { height } => write!(
+                f,
+                "consensus decided the block at height {} but this node could not commit it, so it has fallen out of step and must sync",
+                height.0
+            ),
+            Self::FinaliseFailed { height } => write!(
+                f,
+                "the chain refused the block this node executed at height {}",
+                height.0
+            ),
+            Self::StorageFailed(error) => write!(
+                f,
+                "storage failed, and the node stopped because it cannot remember what it is about to do: {error}"
+            ),
+            Self::SeedUnknown => f.write_str("no beacon seed is recorded for the next height, so the proposer cannot be determined"),
+            Self::Engine(error) => write!(f, "the consensus engine failed: {error}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    use chain_signer::Step;
+    use chain_types::Round;
+
+    #[test]
+    fn every_halt_reason_reads_as_a_sentence_and_says_what_it_needs_to() {
+        let position = HighWaterMark::new(BlockHeight(9), Round(2), Step::Precommit);
+        readable(&[
+            HaltReason::SignerRefused(SignerError::Unavailable),
+            HaltReason::ConflictingSignature(position),
+            HaltReason::ChainUnreadable,
+            HaltReason::NoValidators,
+            HaltReason::CannotCommit {
+                height: BlockHeight(42),
+            },
+            HaltReason::FinaliseFailed {
+                height: BlockHeight(42),
+            },
+            HaltReason::StorageFailed("disk full".into()),
+            HaltReason::SeedUnknown,
+            HaltReason::Engine("bad round".into()),
+        ]);
+        let cannot_commit = HaltReason::CannotCommit {
+            height: BlockHeight(42),
+        }
+        .to_string();
+        assert!(cannot_commit.contains("height 42"), "{cannot_commit}");
+        assert!(cannot_commit.contains("sync"), "{cannot_commit}");
+        assert!(HaltReason::StorageFailed("disk full".into())
+            .to_string()
+            .contains("disk full"));
+        assert!(HaltReason::ConflictingSignature(position)
+            .to_string()
+            .contains("height 9, round 2, precommit"));
+    }
+}

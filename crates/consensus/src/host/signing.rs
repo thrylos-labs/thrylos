@@ -40,6 +40,23 @@ pub enum SigningRefusal {
     Log(StorageError),
 }
 
+impl core::fmt::Display for SigningRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Signer(error) => write!(f, "the signer refused: {error}"),
+            Self::Conflicting(position) => {
+                write!(f, "different bytes were already signed at {position}")
+            }
+            Self::Log(error) => write!(
+                f,
+                "the signature could not be recorded, so it was not released: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SigningRefusal {}
+
 /// A [`ConsensusSigner`] that answers repeats from a [`SignedLog`]. See the module
 /// docs.
 pub struct GuardedSigner<K: ConsensusSigner, L> {
@@ -236,5 +253,45 @@ mod tests {
         g.sign(position(3, 0, Step::Propose), b"proposal".to_vec())
             .unwrap();
         assert_eq!(g.reveal(BlockHeight(3), &seed).unwrap(), reveal);
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// Every message reads as a sentence about the problem: not empty, not
+    /// the variant's Rust name, no trailing full stop, one line, and no two
+    /// variants alike.
+    fn readable<T: core::fmt::Display + core::fmt::Debug>(all: &[T]) {
+        let mut seen = Vec::new();
+        for value in all {
+            let message = value.to_string();
+            assert!(!message.is_empty(), "{value:?}");
+            assert!(
+                !message.ends_with('.') && !message.contains('\n'),
+                "{message}"
+            );
+            assert_ne!(message, format!("{value:?}"), "only the variant's name");
+            assert!(!seen.contains(&message), "two variants say {message:?}");
+            seen.push(message);
+        }
+    }
+
+    use chain_signer::Step;
+    use chain_types::Round;
+
+    #[test]
+    fn every_signing_refusal_reads_as_a_sentence() {
+        let position = HighWaterMark::new(BlockHeight(3), Round(0), Step::Prevote);
+        readable(&[
+            SigningRefusal::Signer(SignerError::Unavailable),
+            SigningRefusal::Conflicting(position),
+            SigningRefusal::Log(StorageError("disk full".into())),
+        ]);
+        let message = SigningRefusal::Conflicting(position).to_string();
+        assert!(message.contains("height 3, round 0, prevote"), "{message}");
+        let message = SigningRefusal::Log(StorageError("disk full".into())).to_string();
+        assert!(message.contains("disk full"), "{message}");
     }
 }
