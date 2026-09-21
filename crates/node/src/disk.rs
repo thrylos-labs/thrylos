@@ -14,23 +14,6 @@ use crate::signed_log::FileSignedLog;
 use crate::storage;
 use crate::wal::FileWal;
 
-/// How the files are kept.
-#[derive(Debug, Clone, Copy)]
-pub struct DiskConfig {
-    /// **A choice.** How many recent decided blocks the commit log keeps to
-    /// answer a peer that fell behind. Held in memory, so it is a bound on
-    /// how much.
-    pub commit_history: usize,
-}
-
-impl Default for DiskConfig {
-    fn default() -> Self {
-        Self {
-            commit_history: 256,
-        }
-    }
-}
-
 /// The host's own storage: its commit history and its write-ahead log.
 pub struct FileStorage {
     commits: FileCommitLog,
@@ -75,12 +58,12 @@ pub struct NodeDisk {
 impl NodeDisk {
     /// Opens (creating what is missing) the files in `dir`. Anything damaged
     /// fails here, before the node does anything.
-    pub fn open(dir: &Path, config: DiskConfig) -> Result<Self, StorageError> {
+    pub fn open(dir: &Path) -> Result<Self, StorageError> {
         fs::create_dir_all(dir).map_err(storage)?;
         Ok(Self {
             signed: FileSignedLog::open(&dir.join("signed.log"))?,
             storage: FileStorage {
-                commits: FileCommitLog::open(&dir.join("commits.log"), config.commit_history)?,
+                commits: FileCommitLog::open(&dir.join("commits.log"))?,
                 wal: FileWal::open(&dir.join("wal.log"))?,
             },
         })
@@ -114,22 +97,22 @@ mod tests {
     fn opening_makes_the_directory_and_the_files_and_a_second_open_finds_them() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("a").join("node");
-        NodeDisk::open(&nested, DiskConfig::default()).unwrap();
+        NodeDisk::open(&nested).unwrap();
         for file in ["signed.log", "commits.log", "wal.log"] {
             assert!(nested.join(file).exists(), "{file}");
         }
         assert!(!nested.join("signer.mark").exists());
-        NodeDisk::open(&nested, DiskConfig::default()).unwrap();
+        NodeDisk::open(&nested).unwrap();
     }
 
     #[test]
     fn a_damaged_file_stops_the_node_before_it_starts() {
         let dir = tempfile::tempdir().unwrap();
-        NodeDisk::open(dir.path(), DiskConfig::default()).unwrap();
+        NodeDisk::open(dir.path()).unwrap();
         std::fs::write(dir.path().join("wal.log"), b"garbage that is not a log").unwrap();
         // The write-ahead log is only read when a height begins, but the
         // others are read at once.
         std::fs::write(dir.path().join("signed.log"), b"garbage that is not a log").unwrap();
-        assert!(NodeDisk::open(dir.path(), DiskConfig::default()).is_err());
+        assert!(NodeDisk::open(dir.path()).is_err());
     }
 }

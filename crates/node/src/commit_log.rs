@@ -1,16 +1,10 @@
 //! The host's history of what the chain decided, on disk.
 //!
 //! Each record is the seed the block led to, then the block with its proof
-//! (`chain_consensus::wire`). A window of recent heights is kept — enough to
-//! answer a peer that has fallen a little behind, and to give a restarted
-//! host the seed for the height after its head, which is the newest record.
-//! A peer further behind than the window needs blocks from somewhere else:
-//! this log does not serve full history, and `chain-db` does not keep the
-//! proofs.
-//!
-//! The window is held in memory. It is pruned in one rewrite when it reaches
-//! twice its size, so the cost of forgetting is amortised over as many
-//! commits as the window holds.
+//! (`chain_consensus::wire`). Every height is retained for the first testnet,
+//! so a peer can catch up from genesis without snapshots or warp sync. The
+//! records are held in memory as well as on disk; pruning belongs with a
+//! future snapshot and sync design, not with this log in isolation.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -29,14 +23,12 @@ const SEED: usize = 32;
 pub struct FileCommitLog {
     log: HeightLog,
     records: BTreeMap<u64, (CommitRecord, Hash)>,
-    retain: usize,
 }
 
 impl FileCommitLog {
-    /// Opens the log at `path`, creating it if there is none, keeping the
-    /// most recent `retain` heights (at least one). A damaged log fails
-    /// here, not later.
-    pub fn open(path: &Path, retain: usize) -> Result<Self, StorageError> {
+    /// Opens the log at `path`, creating it if there is none. A damaged log
+    /// fails here, not later.
+    pub fn open(path: &Path) -> Result<Self, StorageError> {
         let mut log = HeightLog::open(path).map_err(storage)?;
         let mut records = BTreeMap::new();
         for (height, bytes) in log.retain_from(0).map_err(storage)? {
@@ -49,25 +41,7 @@ impl FileCommitLog {
             }
             records.insert(height, (record, Hash::from_bytes(seed)));
         }
-        Ok(Self {
-            log,
-            records,
-            retain: retain.max(1),
-        })
-    }
-
-    /// Forgets all but the newest `retain` heights, on disk and in memory.
-    fn prune(&mut self) -> Result<(), StorageError> {
-        if self.records.len() < self.retain.saturating_mul(2) {
-            return Ok(());
-        }
-        let excess = self.records.len().saturating_sub(self.retain);
-        let Some(first_kept) = self.records.keys().nth(excess).copied() else {
-            return Ok(());
-        };
-        self.log.retain_from(first_kept).map_err(storage)?;
-        self.records.retain(|height, _| *height >= first_kept);
-        Ok(())
+        Ok(Self { log, records })
     }
 }
 
@@ -81,7 +55,7 @@ impl CommitLog for FileCommitLog {
         self.log.flush().map_err(storage)?;
         self.records
             .insert(record.block.height.0, (record.clone(), seed_after));
-        self.prune()
+        Ok(())
     }
 
     fn range(&self, from: BlockHeight, max: usize) -> Vec<CommitRecord> {
@@ -157,13 +131,13 @@ mod tests {
     fn what_was_recorded_is_served_and_its_seed_found_after_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("commits.log");
-        let mut log = FileCommitLog::open(&path, 100).unwrap();
+        let mut log = FileCommitLog::open(&path).unwrap();
         for height in 1..=5 {
             log.record(&record(height), seed(height)).unwrap();
         }
         drop(log);
 
-        let log = FileCommitLog::open(&path, 100).unwrap();
+        let log = FileCommitLog::open(&path).unwrap();
         let served = log.range(BlockHeight(2), 10);
         assert_eq!(
             served.iter().map(|r| r.block.height.0).collect::<Vec<_>>(),
@@ -183,28 +157,30 @@ mod tests {
     }
 
     #[test]
-    fn a_window_of_recent_heights_is_kept_and_the_newest_never_forgotten() {
+    fn every_height_is_retained_on_disk_and_served_after_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("commits.log");
-        let mut log = FileCommitLog::open(&path, 3).unwrap();
-        for height in 1..=40 {
+        let mut log = FileCommitLog::open(&path).unwrap();
+        for height in 1..=300 {
             log.record(&record(height), seed(height)).unwrap();
-            assert!(log.records.len() < 6, "pruned at twice the window");
             assert_eq!(
                 log.seed_after(BlockHeight(height)),
                 Some(seed(height)),
-                "the newest seed is always there"
+                "every recorded seed remains available"
             );
         }
-        let kept = heights(&log);
-        assert!(kept.len() >= 3, "{kept:?}");
-        assert_eq!(kept.last(), Some(&40));
+        assert_eq!(heights(&log), (1..=300).collect::<Vec<_>>());
         drop(log);
 
-        // What was forgotten is gone from the disk too.
-        let log = FileCommitLog::open(&path, 3).unwrap();
-        assert_eq!(heights(&log), kept);
-        assert!(log.range(BlockHeight(1), 10).is_empty());
+        let log = FileCommitLog::open(&path).unwrap();
+        assert_eq!(heights(&log), (1..=300).collect::<Vec<_>>());
+        assert_eq!(
+            log.range(BlockHeight(1), 300)
+                .iter()
+                .map(|record| record.block.height.0)
+                .collect::<Vec<_>>(),
+            (1..=300).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -225,7 +201,7 @@ mod tests {
             raw.append(4, &bad).unwrap();
             raw.flush().unwrap();
             drop(raw);
-            assert!(FileCommitLog::open(&path, 10).is_err());
+            assert!(FileCommitLog::open(&path).is_err());
             std::fs::remove_file(&path).unwrap();
         }
     }

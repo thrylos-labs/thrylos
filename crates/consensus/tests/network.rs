@@ -37,8 +37,8 @@ use chain_exec::native::{STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS};
 use chain_exec::Executor;
 use chain_modules::params::GENESIS_PARAM_VALUES;
 use chain_node::{
-    Actions, DiskConfig, DurableEngine, FileMarkStore, FileSignedLog, FileStorage, NodeDisk,
-    NodeRuntime, Recipient,
+    Actions, DurableEngine, FileMarkStore, FileSignedLog, FileStorage, NodeDisk, NodeRuntime,
+    Recipient,
 };
 use chain_signer::{HighWaterMark, HighWaterMarkStore, InMemoryStore, Signer, Step};
 use chain_state::StateRoot;
@@ -341,7 +341,7 @@ impl Disk {
         let Some(dir) = &self.dir else {
             return;
         };
-        let opened = NodeDisk::open(dir.path(), DiskConfig::default()).unwrap();
+        let opened = NodeDisk::open(dir.path()).unwrap();
         *self.mark.0.borrow_mut() =
             MarkBackend::Files(FileMarkStore::open(&dir.path().join("signer.mark")));
         *self.signed.0.borrow_mut() = SignedBackend::Files(opened.signed);

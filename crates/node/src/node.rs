@@ -27,7 +27,7 @@ use chain_types::{BlockHeight, Transaction};
 
 use crate::clock::{now_ms, SystemClock};
 use crate::config::{read_network_key, ConfigError, NodeConfig};
-use crate::disk::{DiskConfig, NodeDisk};
+use crate::disk::NodeDisk;
 use crate::durable_engine::{DurableEngine, OpenError};
 use crate::event_loop::{EventLoop, NodeEvent};
 use crate::peer_network::{PeerLink, PeerNetwork};
@@ -136,8 +136,7 @@ pub fn run_node(
     // and the base fee that transactions are checked and chosen against.
     let engine = SharedEngine::new(DurableEngine::open(&config.data_dir, &genesis)?);
     let pool = NodeMempool::new(engine.clone(), genesis.chain_id());
-    let disk =
-        NodeDisk::open(&config.data_dir, DiskConfig::default()).map_err(RunError::Storage)?;
+    let disk = NodeDisk::open(&config.data_dir).map_err(RunError::Storage)?;
     let ports = disk.into_ports(pool.clone(), SystemClock, signer);
     let host = Host::new(
         HostConfig {

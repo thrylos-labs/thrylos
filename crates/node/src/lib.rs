@@ -31,7 +31,7 @@
 //! |---|---|---|---|
 //! | `signed.log` | `SignedLog` | the signatures made at the current height | the current height |
 //! | `wal.log` | `Wal` | what changed the host's state at the current height | the current height |
-//! | `commits.log` | `CommitLog` | recent decided blocks with their proofs, and the seed each led to | a window of recent heights |
+//! | `commits.log` | `CommitLog` | decided blocks with their proofs, and the seed each led to | every height |
 //!
 //! Every write that a safety argument rests on is `fsync`ed before the call
 //! returns: the remote signer persists its mark before releasing a signature;
@@ -73,7 +73,7 @@ pub mod wal;
 pub use clock::SystemClock;
 pub use commit_log::FileCommitLog;
 pub use config::{ConfigError, NodeConfig, PeerSpec};
-pub use disk::{DiskConfig, FileStorage, NodeDisk};
+pub use disk::{FileStorage, NodeDisk};
 pub use durable_engine::{DurableEngine, OpenError};
 pub use event_loop::{DiscardTransactions, EventLoop, NodeEvent, TransactionIntake};
 pub use mark_store::{FileMarkStore, MarkError};
