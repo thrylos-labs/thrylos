@@ -12,8 +12,6 @@
 //! (validator signing and aggregation) — those need a pairing-library
 //! choice first and belong in their own module once that's picked.
 
-use ed25519_dalek::Verifier;
-
 use crate::codec::{checked_add, slice_from, CodecError, Decode, Encode};
 
 /// A signature algorithm identifier. Currently only [`Scheme::Ed25519`]
@@ -58,11 +56,14 @@ pub struct PublicKey {
 
 impl PublicKey {
     /// Parse a compressed Ed25519 public key. Rejects anything that
-    /// isn't a valid curve point rather than accepting it and failing
-    /// later at verify time.
+    /// isn't a valid, non-small-order curve point rather than accepting
+    /// it and failing later (or weakening verification) at use time.
     pub fn from_ed25519_bytes(bytes: [u8; 32]) -> Result<Self, CodecError> {
         let inner = ed25519_dalek::VerifyingKey::from_bytes(&bytes)
             .map_err(|_| CodecError::InvalidValue)?;
+        if inner.is_weak() {
+            return Err(CodecError::InvalidValue);
+        }
         Ok(Self {
             scheme: Scheme::Ed25519,
             inner,
@@ -81,7 +82,7 @@ impl PublicKey {
 
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), SignatureError> {
         self.inner
-            .verify(message, &signature.inner)
+            .verify_strict(message, &signature.inner)
             .map_err(|_| SignatureError)
     }
 }
@@ -234,6 +235,28 @@ mod tests {
         buf.extend_from_slice(&invalid_bytes);
         assert_eq!(
             decode_exact::<PublicKey>(&buf),
+            Err(CodecError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn weak_small_order_public_key_is_rejected() {
+        // The compressed Edwards identity is a valid curve point, but it
+        // has small order and must never be accepted as an account key.
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let dalek_key = ed25519_dalek::VerifyingKey::from_bytes(&identity)
+            .expect("the Edwards identity has a valid compressed encoding");
+        assert!(dalek_key.is_weak());
+        assert_eq!(
+            PublicKey::from_ed25519_bytes(identity),
+            Err(CodecError::InvalidValue)
+        );
+
+        let mut encoded = vec![Scheme::Ed25519 as u8];
+        encoded.extend_from_slice(&identity);
+        assert_eq!(
+            decode_exact::<PublicKey>(&encoded),
             Err(CodecError::InvalidValue)
         );
     }

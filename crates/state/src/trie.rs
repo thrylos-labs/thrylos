@@ -5,6 +5,12 @@
 //! throughout, with a single, versioned domain-separation prefix per
 //! node type."
 //!
+//! The published root uses commitment version 2. V2 canonically encodes
+//! leaf key/value boundaries and wraps the derived node root in a
+//! `TrieRootV2` domain, so the root commits to the trie construction as
+//! well as its contents. The V1 domain tags remain reserved and must not
+//! be reinterpreted.
+//!
 //! A sparse binary trie keyed on `BLAKE3(state key)` rather than the raw
 //! key bytes: this normalises every key to a uniform 256-bit path and
 //! keeps an adversarially chosen key from skewing the tree. An isolated
@@ -21,11 +27,17 @@
 //! for v1 (`docs/spec.md`, "Scope and non-goals"). This only computes
 //! the root.
 
+use chain_types::codec::Encode;
 use chain_types::collections::BTreeMap;
 use chain_types::hash::{hash_with_domain, DomainTag};
 use chain_types::Hash;
 
 use crate::key_value::{StateKey, StateValue};
+
+/// The state-trie commitment scheme used by [`compute_root`] and
+/// [`empty_root`]. A change to path, leaf, branch, empty-node, or root
+/// semantics requires a new version and new domain tags.
+pub const TRIE_COMMITMENT_VERSION: u8 = 2;
 
 /// The trie root hash of a flat key-value state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,25 +78,32 @@ fn empty_subtree_table() -> Vec<Hash> {
 /// The root of a state with no entries at all.
 pub fn empty_root() -> StateRoot {
     let table = empty_subtree_table();
-    StateRoot(table.last().copied().unwrap_or_else(empty_leaf_sentinel))
+    commit_root(table.last().copied().unwrap_or_else(empty_leaf_sentinel))
 }
 
 fn leaf_hash(key: &StateKey, value: &StateValue) -> Hash {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(key.as_bytes());
-    bytes.extend_from_slice(value.as_bytes());
-    hash_with_domain(DomainTag::TrieLeafV1, &bytes)
+    key.encode(&mut bytes);
+    value.encode(&mut bytes);
+    hash_with_domain(DomainTag::TrieLeafV2, &bytes)
 }
 
 fn leaf_path(key: &StateKey) -> Hash {
-    hash_with_domain(DomainTag::TrieKeyPathV1, key.as_bytes())
+    hash_with_domain(DomainTag::TrieKeyPathV2, key.as_bytes())
 }
 
 fn branch_hash(left: &Hash, right: &Hash) -> Hash {
     let mut bytes = Vec::with_capacity(64);
     bytes.extend_from_slice(left.as_bytes());
     bytes.extend_from_slice(right.as_bytes());
-    hash_with_domain(DomainTag::TrieBranchV1, &bytes)
+    hash_with_domain(DomainTag::TrieBranchV2, &bytes)
+}
+
+fn commit_root(node_root: Hash) -> StateRoot {
+    StateRoot(hash_with_domain(
+        DomainTag::TrieRootV2,
+        node_root.as_bytes(),
+    ))
 }
 
 const BIT_MASKS: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
@@ -152,7 +171,7 @@ pub fn compute_root(state: &BTreeMap<StateKey, StateValue>) -> StateRoot {
         .collect();
 
     let empty_table = empty_subtree_table();
-    StateRoot(subtree_root(&entries, 0, &empty_table))
+    commit_root(subtree_root(&entries, 0, &empty_table))
 }
 
 #[cfg(test)]
@@ -182,13 +201,33 @@ mod tests {
     }
 
     #[test]
-    fn single_entry_root_equals_its_leaf_hash() {
+    fn single_entry_root_is_a_versioned_commitment_to_its_leaf_hash() {
         let state = state_of(&[(b"only-key", b"only-value")]);
-        let expected = leaf_hash(
+        let leaf = leaf_hash(
             &StateKey::new(b"only-key".to_vec()),
             &StateValue::new(b"only-value".to_vec()),
         );
+        let expected = hash_with_domain(DomainTag::TrieRootV2, leaf.as_bytes());
         assert_eq!(compute_root(&state).as_hash(), expected);
+        assert_ne!(compute_root(&state).as_hash(), leaf);
+    }
+
+    #[test]
+    fn leaf_encoding_has_an_unambiguous_key_value_boundary() {
+        let first = state_of(&[(b"a", b"bc")]);
+        let second = state_of(&[(b"ab", b"c")]);
+        assert_ne!(compute_root(&first), compute_root(&second));
+    }
+
+    #[test]
+    fn v2_does_not_reinterpret_the_v1_leaf_domain() {
+        let key = StateKey::new(b"key".to_vec());
+        let value = StateValue::new(b"value".to_vec());
+        let mut legacy_payload = Vec::new();
+        legacy_payload.extend_from_slice(key.as_bytes());
+        legacy_payload.extend_from_slice(value.as_bytes());
+        let v1_leaf = hash_with_domain(DomainTag::TrieLeafV1, &legacy_payload);
+        assert_ne!(leaf_hash(&key, &value), v1_leaf);
     }
 
     #[test]

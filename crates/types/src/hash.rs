@@ -69,6 +69,18 @@ pub enum DomainTag {
     /// The draw that picks a round's proposer from the seed
     /// (`chain-consensus`).
     ProposerDrawV1 = 8,
+    /// Trie commitment v2 leaf. Its payload is the canonical encoding
+    /// of a state key followed by the canonical encoding of its value,
+    /// so the key/value boundary is unambiguous.
+    TrieLeafV2 = 9,
+    /// Trie commitment v2 internal branch.
+    TrieBranchV2 = 10,
+    /// Trie commitment v2 state-key routing path.
+    TrieKeyPathV2 = 11,
+    /// The outer commitment to a complete trie root. This binds every
+    /// published state root to the v2 trie construction rather than only
+    /// to whichever node happens to occur at the top of the tree.
+    TrieRootV2 = 12,
 }
 
 /// Hash `payload` under `tag`'s domain-separation prefix.
@@ -84,6 +96,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn domain_tag_numbers_are_append_only() {
+        assert_eq!(DomainTag::TrieLeafV1 as u8, 0);
+        assert_eq!(DomainTag::TrieBranchV1 as u8, 1);
+        assert_eq!(DomainTag::BlockHeaderV1 as u8, 2);
+        assert_eq!(DomainTag::TransactionV1 as u8, 3);
+        assert_eq!(DomainTag::AddressV1 as u8, 4);
+        assert_eq!(DomainTag::TrieKeyPathV1 as u8, 5);
+        assert_eq!(DomainTag::GenesisConfigV1 as u8, 6);
+        assert_eq!(DomainTag::BeaconSeedV1 as u8, 7);
+        assert_eq!(DomainTag::ProposerDrawV1 as u8, 8);
+        assert_eq!(DomainTag::TrieLeafV2 as u8, 9);
+        assert_eq!(DomainTag::TrieBranchV2 as u8, 10);
+        assert_eq!(DomainTag::TrieKeyPathV2 as u8, 11);
+        assert_eq!(DomainTag::TrieRootV2 as u8, 12);
+    }
+
+    #[test]
     fn every_domain_tag_hashes_the_same_payload_differently() {
         let payload = b"one payload, every domain";
         let tags = [
@@ -96,6 +125,10 @@ mod tests {
             DomainTag::GenesisConfigV1,
             DomainTag::BeaconSeedV1,
             DomainTag::ProposerDrawV1,
+            DomainTag::TrieLeafV2,
+            DomainTag::TrieBranchV2,
+            DomainTag::TrieKeyPathV2,
+            DomainTag::TrieRootV2,
         ];
         let hashes: std::collections::BTreeSet<Hash> = tags
             .into_iter()

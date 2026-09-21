@@ -140,7 +140,7 @@ The standard library ships unmodified from upstream. User modules may be publish
 
 ## State, storage and sync
 
-State is a binary Merkle trie over a flat key-value store (MDBX or redb), with the flat layout as the source of truth and the trie derived. Hashing is BLAKE3 throughout, with a single, versioned domain-separation prefix per node type so that two different structures can never produce the same hash.
+State is a binary Merkle trie over a flat key-value store (MDBX or redb), with the flat layout as the source of truth and the trie derived. Hashing is BLAKE3 throughout, with a single, versioned domain-separation prefix per node type so that two different structures can never produce the same hash. The current trie commitment is V2: leaf payloads use the canonical length-prefixed encodings of both key and value, and the derived node root is wrapped in a `TrieRootV2` domain. Changing any path, leaf, branch, empty-node or root rule requires new domain tags and a new commitment version; an existing version is never reinterpreted.
 
 Three sync modes must produce byte-identical state roots at the same height:
 

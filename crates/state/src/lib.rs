@@ -37,4 +37,4 @@ pub mod trie;
 pub use account::{Account, AccountError};
 pub use diff::{apply, diff, StateChange, StateDiff};
 pub use key_value::{StateKey, StateValue};
-pub use trie::{compute_root, empty_root, StateRoot};
+pub use trie::{compute_root, empty_root, StateRoot, TRIE_COMMITMENT_VERSION};
