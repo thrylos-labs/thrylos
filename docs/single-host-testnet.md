@@ -27,6 +27,15 @@ target/debug/chain-node devnet check /tmp/thrylos-testnet
 target/debug/chain-node devnet bump /tmp/thrylos-testnet
 ```
 
+To browse the running network locally:
+
+```bash
+target/debug/chain-explorer /tmp/thrylos-testnet
+```
+
+Open `http://127.0.0.1:8080`. The explorer is read-only and listens on
+loopback. Use `--port <port>` if 8080 is already in use.
+
 For a soak, leave the network running and repeat `devnet check` periodically.
 Any `UNHEALTHY` result or process exit is a failure to investigate, not a
 condition to ignore. Stop the network with Ctrl-C and start the same directory
@@ -54,4 +63,3 @@ backend on the same host and let only that backend call a node RPC such as
 `http://127.0.0.1:26660`. Do not expose validator RPC ports directly to the
 internet. The explorer stays outside consensus and can be replaced without a
 chain upgrade.
-

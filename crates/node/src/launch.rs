@@ -390,6 +390,12 @@ fn next_steps(
         exe.display(),
         dir.display()
     ));
+    let explorer = exe.with_file_name(format!("chain-explorer{}", std::env::consts::EXE_SUFFIX));
+    lines.push(format!(
+        "  {} {}    # browse blocks, transactions, accounts and network health",
+        explorer.display(),
+        dir.display()
+    ));
     if let Some(log) = first_log {
         lines.push(format!(
             "  tail -f {}    # watch blocks being made",
@@ -454,6 +460,10 @@ mod tests {
             "{text}"
         );
         assert!(
+            text.contains("/opt/chain-explorer /tmp/thrylos-devnet"),
+            "{text}"
+        );
+        assert!(
             text.contains("tail -f /tmp/thrylos-devnet/node1/node.log"),
             "{text}"
         );
@@ -467,10 +477,11 @@ mod tests {
             .filter(|line| {
                 line.contains("devnet bump")
                     || line.contains("devnet check")
+                    || line.contains("chain-explorer")
                     || line.contains("tail -f")
             })
             .collect();
-        assert_eq!(commands.len(), 3, "{text}");
+        assert_eq!(commands.len(), 4, "{text}");
         for line in commands {
             // Everything after the `#` is a comment to the shell; nothing else
             // may follow the command's last argument.

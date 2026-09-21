@@ -76,6 +76,19 @@ target/debug/chain-node devnet check /tmp/thrylos-devnet
 
 This checks that the validators are still committing blocks and agree on the latest commit certificate.
 
+### 6. Open the explorer
+
+In another terminal:
+
+```bash
+target/debug/chain-explorer /tmp/thrylos-devnet
+```
+
+Then open `http://127.0.0.1:8080`. The explorer is read-only, shows network
+health, recent blocks and transactions, and can find a block height,
+transaction hash or `thry1…` account. Both the explorer and every validator RPC
+stay bound to this machine.
+
 ### Watch blocks
 
 ```bash
