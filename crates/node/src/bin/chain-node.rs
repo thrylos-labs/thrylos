@@ -8,6 +8,7 @@
 //!                          [--block-interval-ms <ms>] write a local network
 //! chain-node devnet start <dir> [--until-height <n>]  run a local network
 //! chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
+//! chain-node devnet check <dir>                       is it committing, and do the nodes agree?
 //!                                                     send a transaction to a running one
 //! chain-node --help | --version
 //! ```
@@ -52,6 +53,7 @@ use chain_node::config::create_network_key;
 use chain_node::config::DEFAULT_BLOCK_INTERVAL_MS;
 use chain_node::devnet::{generate, DEFAULT_BASE_PORT};
 use chain_node::event_loop::committed_line;
+use chain_node::health;
 use chain_node::launch::{launch, LaunchOptions};
 use chain_node::{run_node, NodeConfig, NodeEvent};
 use chain_types::BlockHeight;
@@ -63,6 +65,7 @@ const USAGE: &str = "usage:
                           [--block-interval-ms <ms>]
   chain-node devnet start <dir> [--until-height <n>]
   chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
+  chain-node devnet check <dir>
   chain-node --help | --version";
 
 fn fail(message: impl core::fmt::Display) -> ExitCode {
@@ -255,6 +258,26 @@ fn devnet_bump(dir: &str, flags: &[&str]) -> ExitCode {
     }
 }
 
+/// Exits 0 if the network is committing and its nodes agree, 1 if not.
+fn devnet_check(dir: &str) -> ExitCode {
+    match health::check(Path::new(dir)) {
+        Err(error) => fail(error),
+        Ok(found) => {
+            for note in &found.notes {
+                println!("{note}");
+            }
+            if found.problems.is_empty() {
+                println!("healthy");
+                return ExitCode::SUCCESS;
+            }
+            for problem in &found.problems {
+                eprintln!("problem: {problem}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn devnet_start(dir: &str, flags: &[&str]) -> ExitCode {
     let Some(pairs) = flag_pairs(flags, &["--until-height"]) else {
         return usage_error();
@@ -303,6 +326,7 @@ fn main() -> ExitCode {
         ["devnet", "init", dir, flags @ ..] => devnet_init(dir, flags),
         ["devnet", "start", dir, flags @ ..] => devnet_start(dir, flags),
         ["devnet", "bump", dir, flags @ ..] => devnet_bump(dir, flags),
+        ["devnet", "check", dir] => devnet_check(dir),
         _ => usage_error(),
     }
 }

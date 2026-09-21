@@ -57,6 +57,7 @@ pub mod devnet;
 pub mod disk;
 pub mod durable_engine;
 pub mod event_loop;
+pub mod health;
 pub mod launch;
 pub mod mark_store;
 pub mod node;

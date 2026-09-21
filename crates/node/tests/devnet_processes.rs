@@ -766,6 +766,126 @@ fn a_transaction_sent_with_devnet_bump_is_included_and_seen_from_another_node() 
     }
 }
 
+/// The spec's halt runbook, run: a network loses too many validators to commit,
+/// `devnet check` notices, the validators come back, and `devnet check` says the
+/// network is well again. (The runbook's later steps, patching and a signed
+/// release, are not something a test can do.)
+#[test]
+fn a_halted_network_is_detected_and_a_recovered_one_is_healthy() {
+    const RESTART: u64 = 100_000;
+    let mut network = Network::generate(4);
+    network.start_all(RESTART);
+    network.await_height(0, 3);
+    let dir = network.dir.to_str().unwrap().to_owned();
+
+    // Committing, and every node agrees where.
+    let well = run(&["devnet", "check", &dir]);
+    assert_eq!(
+        well.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&well),
+        stderr(&well)
+    );
+    assert!(stdout(&well).contains("healthy"), "{}", stdout(&well));
+    assert!(
+        stdout(&well).contains("agreed by 4 of 4 nodes"),
+        "{}",
+        stdout(&well)
+    );
+
+    // Two of four validators are under the two thirds it takes to commit. The
+    // other two go on running, and cannot commit anything more.
+    network.kill_node(2);
+    network.kill_node(3);
+    let stopped_at = network.height(0);
+    thread::sleep(chain_node::health::HALT_AFTER + Duration::from_secs(3));
+    let halted = run(&["devnet", "check", &dir]);
+    assert_eq!(
+        halted.status.code(),
+        Some(1),
+        "{}{}",
+        stdout(&halted),
+        stderr(&halted)
+    );
+    let complaint = stderr(&halted);
+    assert!(
+        complaint.contains("node 1 has committed nothing for"),
+        "{complaint}"
+    );
+    assert!(
+        complaint.contains("node 2 has committed nothing for"),
+        "{complaint}"
+    );
+    assert!(complaint.contains("node 3 is unreachable"), "{complaint}");
+    assert!(complaint.contains("node 4 is unreachable"), "{complaint}");
+    assert!(!stdout(&halted).contains("healthy"), "{}", stdout(&halted));
+    // The two that ran on still agree with each other where the chain stopped.
+    assert!(
+        stdout(&halted).contains("agreed by 2 of 4 nodes"),
+        "{}",
+        stdout(&halted)
+    );
+    assert!(
+        network.height(0) <= stopped_at + 1,
+        "it committed while halted"
+    );
+
+    // The validators come back, and the chain goes on, and the check agrees.
+    network.start_node(2, RESTART);
+    network.start_node(3, RESTART);
+    network.await_height(0, stopped_at + 3);
+    let end = Instant::now() + Duration::from_secs(60);
+    loop {
+        let now = run(&["devnet", "check", &dir]);
+        if now.status.code() == Some(0) {
+            assert!(
+                stdout(&now).contains("agreed by 4 of 4 nodes"),
+                "{}",
+                stdout(&now)
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "still not healthy: {}{}",
+            stdout(&now),
+            stderr(&now)
+        );
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+#[test]
+fn devnet_check_says_what_is_wrong_and_exits_accordingly() {
+    // A network nobody has started: every node is unreachable, and it says so.
+    let network = Network::generate(2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+    let output = run(&["devnet", "check", &dir]);
+    assert_eq!(output.status.code(), Some(1));
+    let complaint = stderr(&output);
+    assert!(complaint.contains("node 1 is unreachable"), "{complaint}");
+    assert!(complaint.contains("node 2 is unreachable"), "{complaint}");
+
+    let empty = tempfile::tempdir().unwrap();
+    let output = run(&["devnet", "check", empty.path().to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("no generated network"),
+        "{}",
+        stderr(&output)
+    );
+
+    for args in [
+        vec!["devnet", "check"],
+        vec!["devnet", "check", &dir, "--fast"],
+    ] {
+        let output = run(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&output).contains("usage:"), "{args:?}");
+    }
+}
+
 #[test]
 fn devnet_bump_says_what_is_wrong_and_exits_accordingly() {
     let network = Network::generate(2);

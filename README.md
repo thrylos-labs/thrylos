@@ -16,6 +16,7 @@ target/debug/chain-node devnet init /tmp/thrylos-devnet   # write four validator
 target/debug/chain-node devnet start /tmp/thrylos-devnet  # run them (Ctrl-C stops them)
 tail -f /tmp/thrylos-devnet/node1/node.log             # "committed block 1 (0 transactions)", ...
 target/debug/chain-node devnet bump /tmp/thrylos-devnet   # sign a transaction with a funded test account, send it over RPC, watch it get included
+target/debug/chain-node devnet check /tmp/thrylos-devnet  # is it committing, and do the nodes agree on the last commit certificate? exits 1 if not
 curl -s -d '{"jsonrpc":"2.0","id":1,"method":"status"}' http://127.0.0.1:26660   # node 1's RPC (`devnet init` prints them)
 ```
 
@@ -89,7 +90,7 @@ The consensus tests run four full validators, each with a real executor, against
 * More than 65 validators: the transport holds at most 64 peers, so a full mesh stops there. Past it a proposer cannot reach everyone directly, and blocks and votes would need relaying through other validators, which does not exist (the spec's set is 128)
 * Fuller receipts: a client can see whether its transaction succeeded or aborted and why, but not the gas it used or any events it emitted (neither is stored), and a chain database written before outcomes were kept has none for its old blocks
 * A run on separate machines (a local network of separate processes works)
-* JSON-RPC (`chain-rpc` is a placeholder)
+* Halt recovery past detection: `devnet check` finds a network that has stopped committing, or whose nodes disagree on the last certificate, but it does not check the certificates' signatures, roll a node back to an agreed height, or suspend slashing for the halt window (there is no downtime detection to suspend yet)
 * Downtime detection, so jailed validators can actually be released
 * Snapshots, pruning and warp sync
 * A calibrated gas schedule: metering is fuzzed against a provisional time-per-gas ceiling, but nothing is measured on reference hardware yet
