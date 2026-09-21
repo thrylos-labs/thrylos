@@ -2,7 +2,9 @@
 
 A single-client, Move-based proof-of-stake L1 in Rust, optimised for auditability over feature count.
 
-## Join our Discord Community [Join here](https://discord.gg/nT2Xcy4QB6)
+## Discord
+
+Join our Discord Community: [Join here](https://discord.gg/nT2Xcy4QB6)
 
 ## Try it today
 
