@@ -137,6 +137,13 @@ impl<A: AccountView> Mempool<A> {
         self.size == 0
     }
 
+    /// Every pending transaction, in no particular order. For a caller that
+    /// wants to find one it was told of by something other than its hash (a
+    /// block announced in compact form).
+    pub fn pending(&self) -> impl Iterator<Item = &Transaction> {
+        self.pending.values().flat_map(BTreeMap::values)
+    }
+
     pub fn contains(&self, sender: &Address, sequence_number: SequenceNumber) -> bool {
         self.pending
             .get(sender)
@@ -427,6 +434,32 @@ mod tests {
             pool.admit(tx, BlockHeight(0)).unwrap();
         }
         pool
+    }
+
+    #[test]
+    fn pending_lists_every_held_transaction_once_and_follows_the_pool() {
+        let chain_id = ChainId(1);
+        let mut pool = pool_with(
+            &[1, 2],
+            vec![
+                signed_tx(1, chain_id, 0, 5),
+                signed_tx(1, chain_id, 1, 5),
+                signed_tx(2, chain_id, 0, 5),
+            ],
+        );
+        assert_eq!(pool.pending().count(), 3);
+        let one = signed_tx(1, chain_id, 0, 5).sender_address();
+        pool.accounts.next_sequence.insert(one, SequenceNumber(1));
+        pool.prune_after_commit(&[one], BlockHeight(1));
+        let held: Vec<_> = pool
+            .pending()
+            .map(|tx| (tx.sender_address(), tx.body.sequence_number.0))
+            .collect();
+        assert_eq!(held.len(), 2);
+        assert!(!held.contains(&(one, 0)));
+        assert!(pool
+            .pending()
+            .all(|tx| pool.contains(&tx.sender_address(), tx.body.sequence_number)));
     }
 
     #[test]

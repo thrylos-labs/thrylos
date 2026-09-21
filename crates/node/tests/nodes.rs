@@ -664,6 +664,24 @@ fn a_transaction_sent_over_rpc_to_one_node_is_seen_included_and_agreed_on_over_r
         -32602
     );
 
+    // The block that carried it went out compact, and the others put it back
+    // together (from what they held, or after asking for what they did not).
+    let relay: Vec<serde_json::Value> = addresses
+        .iter()
+        .map(|address| rpc_ok(*address, "status", serde_json::json!({}))["blockRelay"].clone())
+        .collect();
+    let total = |field: &str| {
+        relay
+            .iter()
+            .map(|r| r[field].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert!(total("announcedCompact") >= 1, "{relay:?}");
+    assert!(
+        total("rebuiltFromPool") + total("rebuiltAfterRequest") >= 3,
+        "the other three each rebuilt the block: {relay:?}"
+    );
+
     // The pool emptied as the block committed.
     wait_until("the pool to empty", Duration::from_secs(30), || {
         rpc_ok(addresses[0], "status", serde_json::json!({}))["mempool"] == 0

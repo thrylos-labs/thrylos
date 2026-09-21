@@ -39,12 +39,14 @@
 pub mod ingress;
 pub mod peer_id;
 pub mod queue;
+pub mod relay;
 pub mod token_bucket;
 pub mod transport;
 
 pub use ingress::{DropReason, GossipLimits, IngressGate};
 pub use peer_id::PeerId;
 pub use queue::{BoundedQueue, DropPolicy};
+pub use relay::{BlockTransactions, CompactBlock, TransactionRequest};
 pub use token_bucket::TokenBucket;
 pub use transport::{
     ConnectionCloser, ConsensusVerifier, NetworkError, NetworkIdentity, NetworkMessage,

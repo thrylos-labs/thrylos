@@ -27,7 +27,11 @@ indexing_slicing = "deny"
 
 [dependencies]
 chain-consensus = { path = "../consensus", version = "0.1.0" }
+chain-engine-api = { path = "../engine-api", version = "0.1.0" }
 chain-types = { path = "../types", version = "0.1.0" }
 blake3.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
+
+[dev-dependencies]
+blst.workspace = true

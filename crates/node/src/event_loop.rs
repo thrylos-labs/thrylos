@@ -27,13 +27,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chain_consensus::host::{
-    Clock, CommitRecord, HaltReason, SignedLog, Storage, TransactionSource,
+    Clock, CommitRecord, HaltReason, Message, SignedLog, Storage, TransactionSource,
 };
 use chain_engine_api::{ChainView, Engine};
 use chain_p2p::NetworkMessage;
 use chain_signer::ConsensusSigner;
 use chain_types::{Address, BlockHeight, Transaction};
 
+use crate::block_relay::{BlockRelay, PendingTransactions, Received, RelayStats};
 use crate::peer_network::PeerNetwork;
 use crate::runtime::{Actions, NodeRuntime, Recipient};
 
@@ -46,7 +47,7 @@ pub const MAX_WAIT: Duration = Duration::from_millis(50);
 
 /// Where transactions from peers go: the node's mempool, or
 /// [`DiscardTransactions`].
-pub trait TransactionIntake {
+pub trait TransactionIntake: PendingTransactions {
     /// Offers a transaction that arrived from a peer. Returns it if it was new
     /// and should be passed on to the node's other peers, `None` if it was
     /// refused or already held (which is what stops it going round for ever).
@@ -56,6 +57,10 @@ pub trait TransactionIntake {
 /// Drops every transaction: a node with no mempool yet.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DiscardTransactions;
+
+impl PendingTransactions for DiscardTransactions {
+    fn for_each_pending(&self, _visit: &mut dyn FnMut(&Transaction)) {}
+}
 
 impl TransactionIntake for DiscardTransactions {
     fn submit(&mut self, _transaction: Transaction, _now_ms: u64) -> Option<Transaction> {
@@ -73,6 +78,8 @@ pub trait NodeFacts {
     fn commit_record(&self, height: BlockHeight) -> Option<CommitRecord>;
     /// Passes a transaction on to every peer.
     fn relay(&self, transaction: &Transaction);
+    /// What the block relay has done.
+    fn relay_stats(&self) -> RelayStats;
 }
 
 /// The node's RPC, from the loop's side: given the chance, between the other
@@ -85,6 +92,7 @@ pub trait RpcPort {
 struct LoopFacts<'a, X, T, C, K: ConsensusSigner, L, D> {
     runtime: &'a NodeRuntime<X, T, C, K, L, D>,
     network: &'a PeerNetwork,
+    relay: &'a BlockRelay,
 }
 
 impl<X, T, C, K, L, D> NodeFacts for LoopFacts<'_, X, T, C, K, L, D>
@@ -114,6 +122,10 @@ where
             &NetworkMessage::Transaction(transaction.clone()),
         );
     }
+
+    fn relay_stats(&self) -> RelayStats {
+        self.relay.stats()
+    }
 }
 
 /// Something the loop tells its owner about, as it happens.
@@ -138,6 +150,7 @@ pub struct EventLoop<X, T, C, K: ConsensusSigner, L, D, I, N> {
     now: N,
     stop_at: Option<BlockHeight>,
     rpc: Option<Box<dyn RpcPort>>,
+    relay: BlockRelay,
 }
 
 impl<X, T, C, K, L, D, I, N> EventLoop<X, T, C, K, L, D, I, N>
@@ -166,7 +179,13 @@ where
             now,
             stop_at: None,
             rpc: None,
+            relay: BlockRelay::new(),
         }
+    }
+
+    /// What the block relay has done so far.
+    pub const fn relay_stats(&self) -> RelayStats {
+        self.relay.stats()
     }
 
     /// Answers `rpc`'s clients from this loop, between everything else it does.
@@ -227,6 +246,7 @@ where
                 rpc.serve(&LoopFacts {
                     runtime: &self.runtime,
                     network: &self.network,
+                    relay: &self.relay,
                 });
             }
 
@@ -243,6 +263,33 @@ where
                 let now = (self.now)();
                 let actions = match inbound.message {
                     NetworkMessage::Consensus(message) => self.runtime.on_message(message, now),
+                    NetworkMessage::CompactBlock(compact) => {
+                        let received = self.relay.receive_compact(
+                            compact,
+                            inbound.from,
+                            self.network.validator_of(inbound.from),
+                            &self.intake,
+                            self.runtime.height().0,
+                        );
+                        self.after_relay(received, now)
+                    }
+                    NetworkMessage::TransactionRequest(request) => {
+                        let answer = self.relay.serve(
+                            &request,
+                            inbound.from,
+                            self.network.validator_of(inbound.from),
+                        );
+                        if let Some(answer) = answer {
+                            let _ = self
+                                .network
+                                .send_to(inbound.from, &NetworkMessage::BlockTransactions(answer));
+                        }
+                        Actions::default()
+                    }
+                    NetworkMessage::BlockTransactions(answer) => {
+                        let received = self.relay.receive_answer(answer, inbound.from);
+                        self.after_relay(received, now)
+                    }
                     NetworkMessage::Transaction(transaction) => {
                         // New to this node: on to everyone else, so it reaches
                         // whichever validator proposes next, not only the one
@@ -277,15 +324,34 @@ where
         until_due.clamp(Duration::from_millis(1), MAX_WAIT)
     }
 
+    /// What to do with what the relay made of something it was given: hand the
+    /// host a block, or send a request.
+    fn after_relay(&mut self, received: Received, now: u64) -> Actions {
+        match received {
+            Received::Block(proposed) => self.runtime.on_message(Message::Block(*proposed), now),
+            Received::Ask { peer, request } => {
+                let _ = self
+                    .network
+                    .send_to(peer, &NetworkMessage::TransactionRequest(request));
+                Actions::default()
+            }
+            Received::Nothing => Actions::default(),
+        }
+    }
+
     /// Sends what the runtime wants sent and reports what it wants known.
     /// Returns whether the configured stop height was reached.
     fn apply(&mut self, actions: Actions, report: &mut dyn FnMut(NodeEvent)) -> bool {
         for outgoing in actions.outgoing {
+            // A block for everyone goes out compact if it has transactions to
+            // leave out. Anything else goes as it is.
+            let message = match (&outgoing.to, outgoing.message) {
+                (Recipient::All, Message::Block(proposed)) => self.relay.announce(&proposed),
+                (_, message) => NetworkMessage::Consensus(message),
+            };
             // A message that could not be sent (nobody connected, a full queue)
             // is counted by the network; consensus and sync tolerate the loss.
-            let _ = self
-                .network
-                .send(&outgoing.to, &NetworkMessage::Consensus(outgoing.message));
+            let _ = self.network.send(&outgoing.to, &message);
         }
         let mut reached = false;
         for committed in &actions.committed {

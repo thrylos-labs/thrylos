@@ -338,6 +338,12 @@ impl PeerNetwork {
         self.queue_for(&live, peers, message)
     }
 
+    /// Queues `message` for one peer.
+    pub fn send_to(&self, peer: PeerId, message: &NetworkMessage) -> SendReport {
+        let live = lock(&self.shared.live);
+        self.queue_for(&live, vec![peer], message)
+    }
+
     /// Like [`Self::send`] to everyone, except `except`: for passing on what
     /// arrived from that peer.
     pub fn send_except(&self, except: PeerId, message: &NetworkMessage) -> SendReport {

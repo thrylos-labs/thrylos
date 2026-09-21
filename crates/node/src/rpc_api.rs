@@ -86,6 +86,7 @@ impl NodeApi {
             "peers": facts.connected_peers(),
             "mempool": self.pool.len(),
             "halted": facts.halted(),
+            "blockRelay": relay_json(facts.relay_stats()),
         }))
     }
 
@@ -213,6 +214,21 @@ impl RpcPort for NodeApi {
     }
 }
 
+/// How well block relay is working: a node that is mostly asking for what it is
+/// missing is one whose pool is not keeping up.
+fn relay_json(stats: crate::block_relay::RelayStats) -> Value {
+    json!({
+        "announcedCompact": stats.announced_compact,
+        "announcedWhole": stats.announced_whole,
+        "rebuiltFromPool": stats.rebuilt_from_pool,
+        "requestsMade": stats.requests_made,
+        "transactionsRequested": stats.transactions_requested,
+        "rebuiltAfterRequest": stats.rebuilt_after_request,
+        "requestsAnswered": stats.requests_answered,
+        "setAside": stats.set_aside,
+    })
+}
+
 /// The name of the rule a transaction broke, stable for a client to switch on.
 const fn reason(error: AdmissionError) -> &'static str {
     match error {
@@ -305,6 +321,10 @@ mod tests {
 
         fn relay(&self, transaction: &Transaction) {
             self.relayed.borrow_mut().push(transaction.clone());
+        }
+
+        fn relay_stats(&self) -> crate::block_relay::RelayStats {
+            crate::block_relay::RelayStats::default()
         }
     }
 

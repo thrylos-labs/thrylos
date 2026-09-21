@@ -26,6 +26,10 @@ use chain_types::codec::{decode_exact, Encode};
 use chain_types::Transaction;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
+use crate::relay::{
+    BlockTransactions, CompactBlock, TransactionRequest, MAX_BLOCK_TRANSACTIONS_FRAME_BYTES,
+    MAX_RELAY_CONTROL_FRAME_BYTES,
+};
 use crate::{DropReason, GossipLimits, IngressGate, PeerId};
 
 const PROTOCOL_MAGIC: [u8; 8] = *b"THRYNET1";
@@ -34,6 +38,9 @@ const SESSION_DOMAIN: &[u8] = b"THRYLOS-NETWORK-SESSION-V1";
 const FRAME_DOMAIN: &[u8] = b"THRYLOS-NETWORK-FRAME-V1";
 const CONSENSUS_FRAME: u8 = 0;
 const TRANSACTION_FRAME: u8 = 1;
+const COMPACT_BLOCK_FRAME: u8 = 2;
+const TRANSACTION_REQUEST_FRAME: u8 = 3;
+const BLOCK_TRANSACTIONS_FRAME: u8 = 4;
 const FRAME_HEADER_BYTES: usize = 5;
 const HELLO_BYTES: usize = 72;
 const SIGNATURE_BYTES: usize = 64;
@@ -197,6 +204,12 @@ where
 pub enum NetworkMessage {
     Consensus(Message),
     Transaction(Transaction),
+    /// A block announced without its transactions (see [`crate::relay`]).
+    CompactBlock(CompactBlock),
+    /// Asks the sender of a compact block for what the receiver could not find.
+    TransactionRequest(TransactionRequest),
+    /// The answer to a [`Self::TransactionRequest`].
+    BlockTransactions(BlockTransactions),
 }
 
 impl NetworkMessage {
@@ -207,6 +220,21 @@ impl NetworkMessage {
                 let mut bytes = Vec::new();
                 transaction.encode(&mut bytes);
                 (TRANSACTION_FRAME, bytes)
+            }
+            Self::CompactBlock(compact) => {
+                let mut bytes = Vec::new();
+                compact.encode(&mut bytes);
+                (COMPACT_BLOCK_FRAME, bytes)
+            }
+            Self::TransactionRequest(request) => {
+                let mut bytes = Vec::new();
+                request.encode(&mut bytes);
+                (TRANSACTION_REQUEST_FRAME, bytes)
+            }
+            Self::BlockTransactions(answer) => {
+                let mut bytes = Vec::new();
+                answer.encode(&mut bytes);
+                (BLOCK_TRANSACTIONS_FRAME, bytes)
             }
         }
     }
@@ -670,6 +698,19 @@ fn read_frame(
                 .map_err(|_| NetworkError::InvalidSignature)?;
             NetworkMessage::Transaction(transaction)
         }
+        COMPACT_BLOCK_FRAME => {
+            NetworkMessage::CompactBlock(decode_exact(&body).map_err(|_| NetworkError::Malformed)?)
+        }
+        TRANSACTION_REQUEST_FRAME => NetworkMessage::TransactionRequest(
+            decode_exact(&body).map_err(|_| NetworkError::Malformed)?,
+        ),
+        // Not checked transaction by transaction here: the ones a receiver asked
+        // for go into a block that is executed, signatures and all, before it is
+        // voted on, and checking ten thousand signatures on the reading thread
+        // would be most of a round.
+        BLOCK_TRANSACTIONS_FRAME => NetworkMessage::BlockTransactions(
+            decode_exact(&body).map_err(|_| NetworkError::Malformed)?,
+        ),
         _ => return Err(NetworkError::Malformed),
     };
     Ok(message)
@@ -679,6 +720,8 @@ fn maximum_for_kind(kind: u8) -> Option<usize> {
     match kind {
         CONSENSUS_FRAME => Some(MAX_CONSENSUS_FRAME_BYTES),
         TRANSACTION_FRAME => Some(MAX_TRANSACTION_FRAME_BYTES),
+        COMPACT_BLOCK_FRAME | TRANSACTION_REQUEST_FRAME => Some(MAX_RELAY_CONTROL_FRAME_BYTES),
+        BLOCK_TRANSACTIONS_FRAME => Some(MAX_BLOCK_TRANSACTIONS_FRAME_BYTES),
         _ => None,
     }
 }
@@ -892,8 +935,8 @@ mod tests {
 
     use chain_consensus::host::{Message, SyncRequest, SyncResponse};
     use chain_types::{
-        Address, BlockHeight, ChainId, GasAmount, GasPrice, MoveCall, PublicKey, SequenceNumber,
-        Signature as ChainSignature, TransactionBody,
+        Address, BlockHeight, ChainId, GasAmount, GasPrice, Hash, MoveCall, PublicKey,
+        SequenceNumber, Signature as ChainSignature, TransactionBody,
     };
 
     use super::*;
@@ -1239,6 +1282,130 @@ mod tests {
         let a_connection = a.connect(b_peer).unwrap();
         let b_connection = acceptor.join().unwrap();
         (a, a_connection, b, b_connection)
+    }
+
+    #[test]
+    fn the_relay_frames_cross_an_authenticated_connection_and_arrive_as_they_were_sent() {
+        use crate::relay::tests::{proposed, transaction};
+        let (_a, mut a_connection, _b, mut b_connection) = pair(Duration::from_secs(5));
+        let compact = CompactBlock::announce(&proposed(30), [3; 8]);
+        let request = TransactionRequest {
+            block_hash: compact.block_hash,
+            indexes: vec![1, 7, 29],
+        };
+        let answer = BlockTransactions {
+            block_hash: compact.block_hash,
+            transactions: vec![transaction(1), transaction(7)],
+        };
+        a_connection
+            .send(&NetworkMessage::CompactBlock(compact.clone()))
+            .unwrap();
+        a_connection
+            .send(&NetworkMessage::TransactionRequest(request.clone()))
+            .unwrap();
+        a_connection
+            .send(&NetworkMessage::BlockTransactions(answer.clone()))
+            .unwrap();
+        match b_connection.receive().unwrap() {
+            NetworkMessage::CompactBlock(got) => assert_eq!(got, compact),
+            other => panic!("{other:?}"),
+        }
+        match b_connection.receive().unwrap() {
+            NetworkMessage::TransactionRequest(got) => assert_eq!(got, request),
+            other => panic!("{other:?}"),
+        }
+        match b_connection.receive().unwrap() {
+            NetworkMessage::BlockTransactions(got) => assert_eq!(got, answer),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_blocks_worth_of_transactions_fits_its_frame_though_it_is_over_a_transaction_frames_cap() {
+        use crate::relay::tests::transaction;
+        let (_a, mut a_connection, _b, mut b_connection) = pair(Duration::from_secs(20));
+        let one = transaction(1);
+        let mut bytes = Vec::new();
+        one.encode(&mut bytes);
+        // Enough that it is more than a transaction frame may be, and less than
+        // the frame answers are given.
+        let count = (MAX_TRANSACTION_FRAME_BYTES + 512 * 1024) / bytes.len();
+        let answer = BlockTransactions {
+            block_hash: Hash::from_bytes([1; 32]),
+            transactions: vec![one; count],
+        };
+        let sender = std::thread::spawn(move || {
+            a_connection
+                .send(&NetworkMessage::BlockTransactions(answer))
+                .unwrap();
+            a_connection
+        });
+        match b_connection.receive().unwrap() {
+            NetworkMessage::BlockTransactions(got) => assert_eq!(got.transactions.len(), count),
+            other => panic!("{other:?}"),
+        }
+        drop(sender.join().unwrap());
+    }
+
+    #[test]
+    fn each_relay_frame_is_refused_past_its_own_cap_before_its_body_is_read() {
+        for (kind, cap) in [
+            (COMPACT_BLOCK_FRAME, MAX_RELAY_CONTROL_FRAME_BYTES),
+            (TRANSACTION_REQUEST_FRAME, MAX_RELAY_CONTROL_FRAME_BYTES),
+            (BLOCK_TRANSACTIONS_FRAME, MAX_BLOCK_TRANSACTIONS_FRAME_BYTES),
+        ] {
+            let (_a, mut a_connection, _b, mut b_connection) = pair(Duration::from_secs(5));
+            let server = std::thread::spawn(move || b_connection.receive().unwrap_err());
+            let mut header = [0u8; FRAME_HEADER_BYTES];
+            header[0] = kind;
+            header[1..].copy_from_slice(&u32::try_from(cap + 1).unwrap().to_be_bytes());
+            a_connection.stream.write_all(&header).unwrap();
+            a_connection.stream.flush().unwrap();
+            assert!(
+                matches!(server.join().unwrap(), NetworkError::FrameTooLarge),
+                "frame kind {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relay_frame_that_is_not_what_it_says_is_refused_as_malformed() {
+        let (_a, mut a_connection, _b, mut b_connection) = pair(Duration::from_secs(5));
+        // A signed, well-framed body of nonsense, sent as each kind.
+        for kind in [
+            COMPACT_BLOCK_FRAME,
+            TRANSACTION_REQUEST_FRAME,
+            BLOCK_TRANSACTIONS_FRAME,
+        ] {
+            assert!(
+                decode_frame_body_for_test(kind, &[1, 2, 3]).is_err(),
+                "kind {kind}"
+            );
+        }
+        // The connection itself is unharmed by frames that decode fine.
+        a_connection
+            .send(&NetworkMessage::TransactionRequest(TransactionRequest {
+                block_hash: Hash::from_bytes([2; 32]),
+                indexes: Vec::new(),
+            }))
+            .unwrap();
+        assert!(b_connection.receive().is_ok());
+    }
+
+    /// What decoding a frame's body as `kind` says, without a connection.
+    fn decode_frame_body_for_test(kind: u8, body: &[u8]) -> Result<(), ()> {
+        match kind {
+            COMPACT_BLOCK_FRAME => decode_exact::<CompactBlock>(body)
+                .map(|_| ())
+                .map_err(|_| ()),
+            TRANSACTION_REQUEST_FRAME => decode_exact::<TransactionRequest>(body)
+                .map(|_| ())
+                .map_err(|_| ()),
+            BLOCK_TRANSACTIONS_FRAME => decode_exact::<BlockTransactions>(body)
+                .map(|_| ())
+                .map_err(|_| ()),
+            _ => Err(()),
+        }
     }
 
     #[test]

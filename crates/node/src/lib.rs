@@ -48,6 +48,7 @@
 #![forbid(unsafe_code)]
 
 mod atomic;
+pub mod block_relay;
 pub mod client;
 pub mod clock;
 pub mod commit_log;

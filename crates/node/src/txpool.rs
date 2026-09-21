@@ -35,6 +35,7 @@ use chain_mempool::{AccountView, AdmissionError, Mempool, MempoolConfig};
 use chain_state::StateRoot;
 use chain_types::{Address, BlockHeight, ChainId, Hash, SequenceNumber, Transaction};
 
+use crate::block_relay::PendingTransactions;
 use crate::durable_engine::DurableEngine;
 use crate::event_loop::TransactionIntake;
 
@@ -202,6 +203,12 @@ impl TransactionSource for NodeMempool {
         self.pool
             .borrow_mut()
             .prune_after_commit(&senders, block.height);
+    }
+}
+
+impl PendingTransactions for NodeMempool {
+    fn for_each_pending(&self, visit: &mut dyn FnMut(&Transaction)) {
+        self.pool.borrow().pending().for_each(visit);
     }
 }
 
