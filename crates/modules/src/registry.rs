@@ -116,8 +116,10 @@ use crate::store::{
     atomically, be64, load, prefix_end, read_be64, save, tag, Corrupt, Overlay, ReadStore, Store,
 };
 
-/// `docs/spec.md`, "Consensus": "Active validator set: 128, by stake".
-pub const MAX_ACTIVE_VALIDATORS: usize = 128;
+/// The largest active set the launch transport can carry as a full mesh:
+/// one local validator plus at most 64 authenticated peers. Raising this
+/// requires vote and block relay, not merely changing this constant.
+pub const MAX_ACTIVE_VALIDATORS: usize = 65;
 
 /// **A choice** (Cosmos' own): how many unbonding entries one staker can
 /// have open against one validator at once.

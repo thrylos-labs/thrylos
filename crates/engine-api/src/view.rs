@@ -9,7 +9,7 @@
 //! deterministic: two nodes at the same head see the same answers.
 
 use chain_state::StateRoot;
-use chain_types::{Address, BlockHeight, BlsPublicKey, Hash};
+use chain_types::{Address, BlockHeight, BlsPublicKey, ChainId, Hash};
 
 use crate::engine::BlockLimits;
 
@@ -50,6 +50,9 @@ impl std::error::Error for ChainViewError {}
 
 /// A read-only view of the committed chain. See the module docs.
 pub trait ChainView {
+    /// The network domain every consensus signature must commit to.
+    fn chain_id(&self) -> ChainId;
+
     /// The last committed block.
     fn head(&self) -> Result<Head, ChainViewError>;
 

@@ -71,7 +71,7 @@ BFT proof-of-stake with single-slot deterministic finality: a committed block is
 
 | Parameter | Value | Why this value |
 |---|---|---|
-| Active validator set | 128, by stake | Quadratic vote gossip stays cheap; set fits in one message |
+| Active validator set | 65, by stake for the first testnet | Matches one local validator plus the authenticated transport's 64 remote-peer full mesh; raise only with measured vote and block relay |
 | Block time | 1s target, 2s timeout | Timeout > 3x observed p99 propagation |
 | Finality | 1 block, 2/3+ stake | No reorg assumptions downstream |
 | Proposer selection | VRF, stake-weighted | Schedule is unpredictable in advance, so proposers cannot be targeted for DDoS |

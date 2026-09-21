@@ -91,6 +91,10 @@ impl IngressGate {
             )
         });
         if !peer_bucket.try_consume(byte_len, now) {
+            // The two budgets are one reservation. A peer that has exhausted
+            // its own allowance must not be able to burn the allowance shared
+            // by honest peers merely by sending more rejected frames.
+            self.global_bucket.refund(byte_len);
             return Err(DropReason::OverBudget);
         }
         Ok(())
@@ -225,6 +229,28 @@ mod tests {
         assert!(first.is_ok());
         let second: Result<Msg, DropReason> = gate.admit(peer, &bytes, |_| true, now);
         assert_eq!(second, Err(DropReason::OverBudget));
+    }
+
+    #[test]
+    fn a_peer_rejected_by_its_own_budget_does_not_spend_the_global_budget() {
+        let mut tight_limits = limits();
+        tight_limits.per_peer_bucket_capacity = 4;
+        tight_limits.per_peer_refill_per_second = 0;
+        let now = Instant::now();
+        let mut gate = IngressGate::new(tight_limits, 8, now);
+        let greedy = PeerId::from_bytes([8u8; 32]);
+        let honest = PeerId::from_bytes([9u8; 32]);
+        let bytes = encoded(&Msg(1));
+
+        assert!(gate.admit::<Msg>(greedy, &bytes, |_| true, now).is_ok());
+        assert_eq!(
+            gate.admit::<Msg>(greedy, &bytes, |_| true, now),
+            Err(DropReason::OverBudget)
+        );
+        assert!(
+            gate.admit::<Msg>(honest, &bytes, |_| true, now).is_ok(),
+            "the rejected peer must not consume the honest peer's global share"
+        );
     }
 
     #[test]

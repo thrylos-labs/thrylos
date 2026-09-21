@@ -6,7 +6,9 @@
 //! resolver trait, just with more pieces here.
 
 use chain_types::codec::{CodecError, Encode};
-use chain_types::{Address as ChainAddress, BlockHeight, BlsPublicKey, BlsSignature, Hash};
+use chain_types::{
+    Address as ChainAddress, BlockHeight, BlsPublicKey, BlsSignature, ChainId, Hash,
+};
 use malachite_core_types::{NilOrVal, Round, VotingPower};
 
 use crate::context::ThrylosContext;
@@ -186,6 +188,7 @@ impl malachite_core_types::ValidatorSet<ThrylosContext> for ConsensusValidatorSe
 /// signs and checks the exact same bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsensusVote {
+    pub chain_id: ChainId,
     pub height: ConsensusHeight,
     pub round: Round,
     pub value_id: NilOrVal<Hash>,
@@ -212,6 +215,7 @@ impl ConsensusVote {
     /// signature.)
     pub fn to_vote(&self) -> chain_types::Vote {
         chain_types::Vote {
+            chain_id: self.chain_id,
             height: self.height.0,
             round: chain_types::Round(round_as_u64(self.round)),
             value: match self.value_id {
@@ -285,6 +289,7 @@ impl malachite_core_types::Vote<ThrylosContext> for ConsensusVote {
 /// round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsensusProposal {
+    pub chain_id: ChainId,
     pub height: ConsensusHeight,
     pub round: Round,
     pub value: ConsensusValue,
@@ -295,6 +300,7 @@ pub struct ConsensusProposal {
 impl Encode for ConsensusProposal {
     fn encode(&self, out: &mut Vec<u8>) {
         SIGNING_TAG_PROPOSAL.encode(out);
+        self.chain_id.encode(out);
         self.height.0.encode(out);
         round_as_u64(self.round).encode(out);
         self.value.0.encode(out);

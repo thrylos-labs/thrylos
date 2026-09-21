@@ -53,7 +53,9 @@
 //! # What is not built
 //!
 //! Gas: a protocol call is charged its declared `gas_limit` and is not yet
-//! metered. Move bytecode uses the VM meter separately. Several calls here do work that grows with the
+//! metered. Move bytecode uses the VM meter separately. A conservative
+//! intrinsic floor and per-block call cap in the executor bound this work
+//! until measured schedules replace them. Several calls here do work that grows with the
 //! state (the proposal snapshot reads the whole active set; a slash reads
 //! every unbonding entry of the offender), so metering them by measurement
 //! — the spec's rule for every native — is required before this carries
@@ -88,6 +90,12 @@ pub const UNJAIL: &str = "unjail";
 pub const SUBMIT_EVIDENCE: &str = "submit_evidence";
 pub const SUBMIT_PROPOSAL: &str = "submit_proposal";
 pub const VOTE: &str = "vote";
+
+/// Conservative intrinsic gas for any protocol-native call until each call
+/// has a measured schedule. Checked before the call performs any work.
+pub const MIN_PROTOCOL_CALL_GAS: u64 = 1_000;
+/// Independent bound on unmetered protocol-native calls in one block.
+pub const MAX_PROTOCOL_CALLS_PER_BLOCK: usize = 64;
 
 type State = BTreeMap<StateKey, StateValue>;
 type Changes = Vec<(StateKey, Option<StateValue>)>;
@@ -243,6 +251,14 @@ pub(crate) fn call(
         return Some(result);
     }
     None
+}
+
+/// Whether the transaction targets a reserved protocol-native package. This
+/// is intentionally package-level: an unknown function in a reserved package
+/// still consumes one bounded native-call slot.
+pub(crate) fn is_protocol_call(tx: &Transaction) -> bool {
+    let package = *tx.body.call.module_address.as_bytes();
+    package == STAKING_PACKAGE_ADDRESS || package == GOVERNANCE_PACKAGE_ADDRESS
 }
 
 // ---- staking -------------------------------------------------------------

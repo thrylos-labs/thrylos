@@ -35,7 +35,7 @@
 use chain_types::bls::{verify_aggregate, BlsSignature, DST_VOTE};
 use chain_types::codec::Encode;
 use chain_types::collections::BTreeSet;
-use chain_types::Hash;
+use chain_types::{ChainId, Hash};
 use malachite_core_consensus::ThresholdParams;
 use malachite_core_types::{
     CertificateError, CommitCertificate, NilOrVal, PolkaCertificate, Round, RoundCertificate,
@@ -83,6 +83,7 @@ fn power_needed(threshold: ThresholdParam, total: VotingPower) -> VotingPower {
 }
 
 fn check(
+    chain_id: ChainId,
     height: ConsensusHeight,
     round: Round,
     set: &ConsensusValidatorSet,
@@ -99,6 +100,7 @@ fn check(
             return Err(Fault::Duplicate(*entry.address));
         }
         let vote = ConsensusVote {
+            chain_id,
             height,
             round,
             value_id: entry.value_id,
@@ -156,6 +158,7 @@ pub fn verify_commit_certificate(
     certificate: &CommitCertificate<ThrylosContext>,
     set: &ConsensusValidatorSet,
     params: ThresholdParams,
+    chain_id: ChainId,
 ) -> Result<(), Error> {
     let entries: Vec<Entry<'_>> = certificate
         .commit_signatures
@@ -168,6 +171,7 @@ pub fn verify_commit_certificate(
         })
         .collect();
     check(
+        chain_id,
         certificate.height,
         certificate.round,
         set,
@@ -189,6 +193,7 @@ pub fn verify_polka_certificate(
     certificate: &PolkaCertificate<ThrylosContext>,
     set: &ConsensusValidatorSet,
     params: ThresholdParams,
+    chain_id: ChainId,
 ) -> Result<(), Error> {
     let entries: Vec<Entry<'_>> = certificate
         .polka_signatures
@@ -201,6 +206,7 @@ pub fn verify_polka_certificate(
         })
         .collect();
     check(
+        chain_id,
         certificate.height,
         certificate.round,
         set,
@@ -223,6 +229,7 @@ pub fn verify_round_certificate(
     certificate: &RoundCertificate<ThrylosContext>,
     set: &ConsensusValidatorSet,
     params: ThresholdParams,
+    chain_id: ChainId,
 ) -> Result<(), Error> {
     let threshold = match certificate.cert_type {
         RoundCertificateType::Skip => params.honest,
@@ -248,6 +255,7 @@ pub fn verify_round_certificate(
         })
         .collect();
     check(
+        chain_id,
         certificate.height,
         certificate.round,
         set,

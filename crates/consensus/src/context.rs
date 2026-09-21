@@ -6,6 +6,7 @@
 //! [`crate::proposer`], seeded by randomness the previous block fixed
 //! (`chain_types::beacon`) and carried on the validator set for the height.
 
+use chain_types::ChainId;
 use malachite_core_types::{LinearTimeouts, NilOrVal, Round};
 
 use crate::proposer::proposer_index;
@@ -16,17 +17,23 @@ use crate::types::{
 };
 
 #[derive(Debug, Clone)]
-pub struct ThrylosContext;
+pub struct ThrylosContext {
+    chain_id: ChainId,
+}
 
 impl ThrylosContext {
-    pub const fn new() -> Self {
-        Self
+    pub const fn new(chain_id: ChainId) -> Self {
+        Self { chain_id }
+    }
+
+    pub const fn chain_id(&self) -> ChainId {
+        self.chain_id
     }
 }
 
 impl Default for ThrylosContext {
     fn default() -> Self {
-        Self::new()
+        Self::new(ChainId(0))
     }
 }
 
@@ -89,6 +96,7 @@ impl malachite_core_types::Context for ThrylosContext {
         address: Self::Address,
     ) -> Self::Proposal {
         ConsensusProposal {
+            chain_id: self.chain_id,
             height,
             round,
             value,
@@ -105,6 +113,7 @@ impl malachite_core_types::Context for ThrylosContext {
         address: Self::Address,
     ) -> Self::Vote {
         ConsensusVote {
+            chain_id: self.chain_id,
             height,
             round,
             value_id,
@@ -122,6 +131,7 @@ impl malachite_core_types::Context for ThrylosContext {
         address: Self::Address,
     ) -> Self::Vote {
         ConsensusVote {
+            chain_id: self.chain_id,
             height,
             round,
             value_id,

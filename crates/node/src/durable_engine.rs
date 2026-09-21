@@ -253,6 +253,10 @@ impl Engine for DurableEngine {
 }
 
 impl ChainView for DurableEngine {
+    fn chain_id(&self) -> chain_types::ChainId {
+        ChainView::chain_id(&self.executor)
+    }
+
     fn head(&self) -> Result<Head, ChainViewError> {
         ChainView::head(&self.executor)
     }

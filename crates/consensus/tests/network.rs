@@ -430,6 +430,10 @@ impl Engine for Chain {
 }
 
 impl ChainView for Chain {
+    fn chain_id(&self) -> ChainId {
+        ChainView::chain_id(&**self)
+    }
+
     fn head(&self) -> Result<Head, ChainViewError> {
         ChainView::head(&**self)
     }

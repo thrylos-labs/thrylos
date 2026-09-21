@@ -118,6 +118,10 @@ pub struct PreparedFinalisation {
 }
 
 impl Executor {
+    pub const fn chain_id(&self) -> ChainId {
+        self.chain_id
+    }
+
     /// Validate and re-execute a finalisation without advancing canonical
     /// in-memory state. A durable host commits `executed.state_diff` and the
     /// block atomically after this succeeds, then installs this value.
@@ -567,6 +571,7 @@ impl Executor {
         };
 
         let mut gas_used: u64 = 0;
+        let mut protocol_calls = 0usize;
         let mut outcomes = Vec::with_capacity(block.transactions.len());
         for (index, tx) in block.transactions.iter().enumerate() {
             if tx.body.gas_limit.0 > transaction_gas_ceiling {
@@ -574,6 +579,15 @@ impl Executor {
                     transaction_index: u32::try_from(index).ok(),
                     reason: RejectionReason::TransactionGasLimitExceeded,
                 });
+            }
+            if native::is_protocol_call(tx) {
+                protocol_calls = protocol_calls.saturating_add(1);
+                if protocol_calls > native::MAX_PROTOCOL_CALLS_PER_BLOCK {
+                    return Err(BlockRejected {
+                        transaction_index: u32::try_from(index).ok(),
+                        reason: RejectionReason::MalformedBlock,
+                    });
+                }
             }
             let applied = self.apply_transaction(state, tx, index, &ctx)?;
             gas_used = gas_used.saturating_add(applied.gas_used);
@@ -669,6 +683,11 @@ impl Executor {
         // not merely cheap. A proposer filters these out.
         if tx.body.max_fee_per_gas.0 < base_fee {
             return Err(reject(RejectionReason::Rejected));
+        }
+        if native::is_protocol_call(tx)
+            && tx.body.gas_limit.0 < native::MIN_PROTOCOL_CALL_GAS
+        {
+            return Err(reject(RejectionReason::TransactionGasLimitExceeded));
         }
 
         let (outcome, gas_used) = match self.execute_call(state, tx, ctx) {
@@ -958,6 +977,10 @@ fn decode_u64_arg(bytes: &[u8]) -> Option<u64> {
 }
 
 impl ChainView for Executor {
+    fn chain_id(&self) -> ChainId {
+        self.chain_id()
+    }
+
     fn head(&self) -> Result<Head, ChainViewError> {
         Ok(Head {
             height: BlockHeight(self.head_height().ok_or(ChainViewError)?),

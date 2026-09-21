@@ -395,6 +395,7 @@ where
             storage,
         } = ports;
         let head = exec.head().map_err(|_| HaltReason::ChainUnreadable)?;
+        let chain_id = exec.chain_id();
         let infos = exec
             .validator_set()
             .map_err(|_| HaltReason::ChainUnreadable)?;
@@ -413,7 +414,7 @@ where
         let me = ConsensusAddress(me);
 
         let consensus = State::new(
-            ThrylosContext::new(),
+            ThrylosContext::new(chain_id),
             ConsensusHeight(height),
             validators.clone(),
             Params {
@@ -436,7 +437,7 @@ where
             metrics: Metrics::new(),
             env: Env {
                 config,
-                ctx: ThrylosContext::new(),
+                ctx: ThrylosContext::new(chain_id),
                 me,
                 exec,
                 source,
@@ -859,16 +860,23 @@ where
                 r.resume_with(valid)
             }
             Effect::VerifyCommitCertificate(certificate, set, params, r) => {
-                r.resume_with(verify_commit_certificate(&certificate, &set, params))
+                r.resume_with(verify_commit_certificate(
+                    &certificate,
+                    &set,
+                    params,
+                    self.ctx.chain_id(),
+                ))
             }
             Effect::VerifyExtendedCommitCertificate(certificate, set, params, _policy, r) => r
                 .resume_with(verify_commit_certificate(
                     &certificate.trim_vote_extensions(),
                     &set,
                     params,
+                    self.ctx.chain_id(),
                 )),
             Effect::VerifyPolkaCertificate(certificate, set, params, r) => {
-                let result = verify_polka_certificate(&certificate, &set, params);
+                let result =
+                    verify_polka_certificate(&certificate, &set, params, self.ctx.chain_id());
                 if result.is_ok() && certificate.height.0 == self.height {
                     let message = Message::Liveness(LivenessMsg::PolkaCertificate(certificate));
                     self.log(&Entry::Message(message), true)?;
@@ -876,7 +884,8 @@ where
                 r.resume_with(result)
             }
             Effect::VerifyRoundCertificate(certificate, set, params, r) => {
-                let result = verify_round_certificate(&certificate, &set, params);
+                let result =
+                    verify_round_certificate(&certificate, &set, params, self.ctx.chain_id());
                 if result.is_ok() && certificate.height.0 == self.height {
                     let message = Message::Liveness(LivenessMsg::SkipRoundCertificate(certificate));
                     self.log(&Entry::Message(message), true)?;
@@ -927,6 +936,13 @@ where
         signed: &SignedMessage<ThrylosContext, ConsensusMsg<ThrylosContext>>,
         public_key: &chain_types::BlsPublicKey,
     ) -> Result<bool, HostError> {
+        let chain_id = match &signed.message {
+            ConsensusMsg::Vote(vote) => vote.chain_id,
+            ConsensusMsg::Proposal(proposal) => proposal.chain_id,
+        };
+        if chain_id != self.ctx.chain_id() {
+            return Ok(false);
+        }
         let bytes = match &signed.message {
             ConsensusMsg::Vote(vote) => encoded(vote),
             ConsensusMsg::Proposal(proposal) => encoded(proposal),
@@ -1630,7 +1646,13 @@ where
         }
         // A quorum of this height's validators precommitted exactly this
         // block...
-        if verify_commit_certificate(&certificate, &self.validators, self.config.threshold).is_err()
+        if verify_commit_certificate(
+            &certificate,
+            &self.validators,
+            self.config.threshold,
+            self.ctx.chain_id(),
+        )
+        .is_err()
         {
             return Adopted::Rejected;
         }

@@ -99,6 +99,10 @@ impl Engine for SharedEngine {
 }
 
 impl ChainView for SharedEngine {
+    fn chain_id(&self) -> chain_types::ChainId {
+        ChainView::chain_id(&*self.0.borrow())
+    }
+
     fn head(&self) -> Result<Head, ChainViewError> {
         ChainView::head(&*self.0.borrow())
     }

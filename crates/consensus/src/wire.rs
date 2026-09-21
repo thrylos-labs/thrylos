@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use chain_engine_api::Block;
 use chain_types::codec::{decode_field, CodecError, Decode, Encode};
-use chain_types::{Address, BlockHeight, BlsSignature, Hash};
+use chain_types::{Address, BlockHeight, BlsSignature, ChainId, Hash};
 use malachite_core_consensus::{LivenessMsg, SignedConsensusMsg};
 use malachite_core_types::{
     CommitCertificate, CommitSignature, NilOrVal, PolkaCertificate, PolkaSignature, Round,
@@ -123,6 +123,7 @@ impl<'a> Reader<'a> {
 
     fn signed_vote(&mut self) -> Result<SignedVote<ThrylosContext>, CodecError> {
         let vote = ConsensusVote {
+            chain_id: self.take::<ChainId>()?,
             height: self.height()?,
             round: self.round()?,
             value_id: self.nil_or_value()?,
@@ -135,6 +136,7 @@ impl<'a> Reader<'a> {
 
     fn signed_proposal(&mut self) -> Result<SignedProposal<ThrylosContext>, CodecError> {
         let proposal = ConsensusProposal {
+            chain_id: self.take::<ChainId>()?,
             height: self.height()?,
             round: self.round()?,
             value: ConsensusValue(self.take()?),
@@ -263,6 +265,7 @@ fn put_count(out: &mut Vec<u8>, count: usize) {
 
 fn put_signed_vote(out: &mut Vec<u8>, vote: &SignedVote<ThrylosContext>) {
     let message = &vote.message;
+    message.chain_id.encode(out);
     put_height(out, message.height);
     put_round(out, message.round);
     put_nil_or_value(out, &message.value_id);
@@ -273,6 +276,7 @@ fn put_signed_vote(out: &mut Vec<u8>, vote: &SignedVote<ThrylosContext>) {
 
 fn put_signed_proposal(out: &mut Vec<u8>, proposal: &SignedProposal<ThrylosContext>) {
     let message = &proposal.message;
+    message.chain_id.encode(out);
     put_height(out, message.height);
     put_round(out, message.round);
     message.value.0.encode(out);

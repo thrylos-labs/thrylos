@@ -20,7 +20,7 @@ pub const DEVNET_VALIDATORS: u8 = 4;
 pub const DEVNET_ACCOUNTS: u8 = 4;
 /// The most validators [`config_with_validators`] makes: validator seeds run
 /// from 1, and the funded accounts start at seed 101.
-pub const DEVNET_MAX_VALIDATORS: u8 = 100;
+pub const DEVNET_MAX_VALIDATORS: u8 = 65;
 
 fn invalid(what: &str) -> ParseError {
     ParseError::Invalid {

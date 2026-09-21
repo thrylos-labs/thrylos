@@ -15,7 +15,7 @@ use crate::address::Address;
 use crate::bls::{verify_aggregate, BlsPublicKey, BlsSignature, DST_VOTE};
 use crate::codec::{decode_field, CodecError, Decode, Encode};
 use crate::hash::Hash;
-use crate::ids::{BlockHeight, Round};
+use crate::ids::{BlockHeight, ChainId, Round};
 
 /// Leading byte of every vote's signing bytes: domain separation from
 /// every other BLS-signed message, so no other structure's encoding can
@@ -33,6 +33,7 @@ pub enum VoteKind {
 /// (`Some(hash)`) or for nothing (`None`, a nil vote).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vote {
+    pub chain_id: ChainId,
     pub height: BlockHeight,
     pub round: Round,
     pub value: Option<Hash>,
@@ -52,6 +53,7 @@ impl Vote {
 impl Encode for Vote {
     fn encode(&self, out: &mut Vec<u8>) {
         VOTE_SIGNING_TAG.encode(out);
+        self.chain_id.encode(out);
         self.height.encode(out);
         self.round.encode(out);
         match self.value {
@@ -72,6 +74,7 @@ impl Decode for Vote {
         if tag != VOTE_SIGNING_TAG {
             return Err(CodecError::InvalidValue);
         }
+        let (chain_id, offset) = decode_field::<ChainId>(input, offset)?;
         let (height, offset) = decode_field::<BlockHeight>(input, offset)?;
         let (round, offset) = decode_field::<Round>(input, offset)?;
         let (has_value, offset) = decode_field::<bool>(input, offset)?;
@@ -85,6 +88,7 @@ impl Decode for Vote {
         let (validator, offset) = decode_field::<Address>(input, offset)?;
         Ok((
             Self {
+                chain_id,
                 height,
                 round,
                 value,
@@ -103,6 +107,8 @@ impl Decode for Vote {
 /// Why a piece of [`DuplicateVoteEvidence`] is not evidence of anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceError {
+    /// At least one vote was signed for another chain.
+    WrongChain,
     /// The two votes are from different validators.
     DifferentValidators,
     /// The two votes are for different heights, rounds, or vote kinds —
@@ -118,6 +124,7 @@ pub enum EvidenceError {
 impl core::fmt::Display for EvidenceError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
+            Self::WrongChain => "a vote was signed for another chain",
             Self::DifferentValidators => "the two votes are from different validators",
             Self::DifferentSlot => "the two votes are for different heights, rounds or kinds",
             Self::NotConflicting => "the two votes do not conflict",
@@ -156,6 +163,7 @@ impl DuplicateVoteEvidence {
     /// not change what they did wrong.
     pub fn same_offence_as(&self, other: &Self) -> bool {
         self.validator() == other.validator()
+            && self.vote_a.chain_id == other.vote_a.chain_id
             && self.vote_a.height == other.vote_a.height
             && self.vote_a.round == other.vote_a.round
             && self.vote_a.kind == other.vote_a.kind
@@ -164,8 +172,15 @@ impl DuplicateVoteEvidence {
     /// Checks that this really is equivocation by the holder of
     /// `public_key`. Cheap structural checks first, signatures last, so
     /// garbage is refused before any pairing is computed.
-    pub fn verify(&self, public_key: &BlsPublicKey) -> Result<(), EvidenceError> {
+    pub fn verify(
+        &self,
+        public_key: &BlsPublicKey,
+        expected_chain_id: ChainId,
+    ) -> Result<(), EvidenceError> {
         let (a, b) = (&self.vote_a, &self.vote_b);
+        if a.chain_id != expected_chain_id || b.chain_id != expected_chain_id {
+            return Err(EvidenceError::WrongChain);
+        }
         if a.validator != b.validator {
             return Err(EvidenceError::DifferentValidators);
         }

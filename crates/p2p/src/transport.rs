@@ -369,6 +369,12 @@ pub struct PendingConnection {
 }
 
 impl PendingConnection {
+    /// The source IP of this TCP connection. The node uses it to keep one
+    /// unauthenticated source from occupying every handshake worker.
+    pub fn remote_ip(&self) -> Result<std::net::IpAddr, NetworkError> {
+        Ok(self.stream.peer_addr()?.ip())
+    }
+
     /// Runs the handshake, which may take up to the I/O timeout, and admits
     /// the peer if its key is in the trusted set and it is not already
     /// connected.

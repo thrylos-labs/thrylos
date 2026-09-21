@@ -60,6 +60,8 @@ use crate::runtime::Recipient;
 
 /// The most connections that may be mid-handshake at once.
 pub const MAX_PENDING_HANDSHAKES: usize = 16;
+/// The share of the unauthenticated handshake pool one source IP may hold.
+pub const MAX_PENDING_HANDSHAKES_PER_IP: usize = 4;
 
 /// How often a waiting thread looks at the shutdown flag.
 const POLL: Duration = Duration::from_millis(25);
@@ -174,6 +176,7 @@ struct Shared {
     /// Threads still running, so shutdown can wait for them.
     running: (Mutex<usize>, Condvar),
     pending_handshakes: AtomicUsize,
+    pending_handshakes_by_ip: Mutex<BTreeMap<IpAddr, usize>>,
     connections_made: AtomicU64,
     dropped_outgoing: AtomicU64,
     refused_handshakes: AtomicU64,
@@ -282,6 +285,7 @@ impl PeerNetwork {
             next_connection: AtomicU64::new(0),
             running: (Mutex::new(0), Condvar::new()),
             pending_handshakes: AtomicUsize::new(0),
+            pending_handshakes_by_ip: Mutex::new(BTreeMap::new()),
             connections_made: AtomicU64::new(0),
             dropped_outgoing: AtomicU64::new(0),
             refused_handshakes: AtomicU64::new(0),
@@ -488,8 +492,11 @@ fn accept_loop(shared: &Arc<Shared>) {
 
 /// Authenticates `pending` on its own short-lived thread, if there is room.
 fn begin_handshake(shared: &Arc<Shared>, pending: PendingConnection) {
-    if shared.pending_handshakes.fetch_add(1, Ordering::AcqRel) >= MAX_PENDING_HANDSHAKES {
-        shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+    let Ok(source) = pending.remote_ip() else {
+        shared.failed_handshakes.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    if !reserve_handshake(shared, source) {
         shared.refused_handshakes.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -503,11 +510,43 @@ fn begin_handshake(shared: &Arc<Shared>, pending: PendingConnection) {
                 handshaker.failed_handshakes.fetch_add(1, Ordering::Relaxed);
             }
         }
-        handshaker.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+        release_handshake(&handshaker, source);
     });
     if spawned.is_err() {
-        shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+        release_handshake(shared, source);
     }
+}
+
+fn reserve_handshake(shared: &Shared, source: IpAddr) -> bool {
+    if shared.pending_handshakes.fetch_add(1, Ordering::AcqRel) >= MAX_PENDING_HANDSHAKES {
+        shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+        return false;
+    }
+
+    let mut by_ip = lock(&shared.pending_handshakes_by_ip);
+    let count = by_ip.entry(source).or_default();
+    if *count >= MAX_PENDING_HANDSHAKES_PER_IP {
+        if *count == 0 {
+            by_ip.remove(&source);
+        }
+        drop(by_ip);
+        shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+        return false;
+    }
+    *count = count.saturating_add(1);
+    true
+}
+
+fn release_handshake(shared: &Shared, source: IpAddr) {
+    let mut by_ip = lock(&shared.pending_handshakes_by_ip);
+    if let Some(count) = by_ip.get_mut(&source) {
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            by_ip.remove(&source);
+        }
+    }
+    drop(by_ip);
+    shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
 }
 
 fn dial_loop(shared: &Arc<Shared>, peer: PeerId) {

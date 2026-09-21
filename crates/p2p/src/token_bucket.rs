@@ -53,6 +53,12 @@ impl TokenBucket {
         }
     }
 
+    /// Returns tokens to the bucket after a reservation made as part of a
+    /// larger atomic admission check could not be completed.
+    pub fn refund(&mut self, amount: u64) {
+        self.tokens = self.tokens.saturating_add(amount).min(self.capacity);
+    }
+
     pub const fn tokens(&self) -> u64 {
         self.tokens
     }
@@ -111,5 +117,15 @@ mod tests {
                 "10/sec matches the refill rate exactly"
             );
         }
+    }
+
+    #[test]
+    fn a_refund_restores_tokens_without_exceeding_capacity() {
+        let now = Instant::now();
+        let mut bucket = TokenBucket::new(100, 0, now);
+        assert!(bucket.try_consume(40, now));
+        bucket.refund(40);
+        bucket.refund(1);
+        assert_eq!(bucket.tokens(), 100);
     }
 }

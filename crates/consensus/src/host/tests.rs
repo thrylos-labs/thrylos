@@ -44,6 +44,10 @@ const GENESIS_TIME: u64 = 1_700_000_000_000;
 struct Lenient(Executor);
 
 impl ChainView for Lenient {
+    fn chain_id(&self) -> chain_types::ChainId {
+        ChainView::chain_id(&self.0)
+    }
+
     fn head(&self) -> Result<Head, ChainViewError> {
         ChainView::head(&self.0)
     }
