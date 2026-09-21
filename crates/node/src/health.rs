@@ -24,6 +24,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -48,6 +49,8 @@ pub struct Certificate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeState {
     pub number: usize,
+    /// Where this node's RPC listens.
+    pub rpc: SocketAddr,
     /// Why it could not be asked, if it could not.
     pub unreachable: Option<String>,
     /// When its newest block was made, in milliseconds since the Unix epoch.
@@ -102,15 +105,17 @@ pub fn assess(states: &[NodeState], now_ms: u64) -> Assessment {
     for state in states {
         let number = state.number;
         if let Some(why) = &state.unreachable {
-            found
-                .problems
-                .push(format!("node {number} is unreachable: {why}"));
+            found.problems.push(format!(
+                "node {number} is unreachable (RPC {}): {why}",
+                state.rpc
+            ));
             continue;
         }
         let age = Duration::from_millis(now_ms.saturating_sub(state.block_time_ms));
         let height = state.latest.as_ref().map_or(0, |cert| cert.height);
         found.notes.push(format!(
-            "node {number}: height {height}, newest block {}s old",
+            "node {number} (RPC {}): height {height}, newest block {}s old",
+            state.rpc,
             age.as_secs()
         ));
         if let Some(reason) = &state.halted {
@@ -188,6 +193,7 @@ fn certificate(commit: &Value) -> Option<Certificate> {
 fn read(number: usize, client: &RpcClient) -> NodeState {
     let mut state = NodeState {
         number,
+        rpc: client.address,
         unreachable: None,
         block_time_ms: 0,
         halted: None,
@@ -271,6 +277,7 @@ mod tests {
     fn node(number: usize, height: u64, age_s: u64) -> NodeState {
         NodeState {
             number,
+            rpc: format!("127.0.0.1:{}", 30_000 + number).parse().unwrap(),
             unreachable: None,
             block_time_ms: NOW - age_s * 1000,
             halted: None,
@@ -284,6 +291,11 @@ mod tests {
         let found = assess(&[node(1, 12, 1), node(2, 12, 1), node(3, 12, 2)], NOW);
         assert_eq!(found.problems, Vec::<String>::new());
         assert_eq!(found.notes.len(), 4);
+        assert!(
+            found.notes[0].contains("node 1 (RPC 127.0.0.1:30001)"),
+            "{:?}",
+            found.notes
+        );
         assert!(
             found.notes[3].contains("recovery point: height 12, block b12, state root r12")
                 && found.notes[3].contains("agreed by 3 of 3"),
@@ -315,7 +327,8 @@ mod tests {
         gone.unreachable = Some("connection refused".into());
         let found = assess(&[node(1, 12, 1), node(2, 12, 1), gone], NOW);
         assert_eq!(found.problems.len(), 1);
-        assert!(found.problems[0].contains("node 3 is unreachable: connection refused"));
+        assert!(found.problems[0]
+            .contains("node 3 is unreachable (RPC 127.0.0.1:30003): connection refused"));
         assert!(
             found.notes.iter().any(|n| n.contains("agreed by 2 of 3")),
             "{:?}",

@@ -823,6 +823,17 @@ fn a_halted_network_is_detected_and_a_recovered_one_is_healthy() {
         "{}",
         stdout(&well)
     );
+    for node in &network.nodes {
+        let rpc = NodeConfig::load(&node.config())
+            .unwrap()
+            .rpc_listen
+            .unwrap();
+        assert!(
+            stdout(&well).contains(&format!("node {} (RPC {rpc})", node.number)),
+            "{}",
+            stdout(&well)
+        );
+    }
 
     // Two of four validators are under the two thirds it takes to commit. The
     // other two go on running, and cannot commit anything more.
@@ -904,6 +915,16 @@ fn devnet_check_says_what_is_wrong_and_exits_accordingly() {
     let complaint = stderr(&output);
     assert!(complaint.contains("node 1 is unreachable"), "{complaint}");
     assert!(complaint.contains("node 2 is unreachable"), "{complaint}");
+    for node in &network.nodes {
+        let rpc = NodeConfig::load(&node.config())
+            .unwrap()
+            .rpc_listen
+            .unwrap();
+        assert!(
+            complaint.contains(&format!("node {} is unreachable (RPC {rpc})", node.number)),
+            "{complaint}"
+        );
+    }
     // Nothing answered at all, so it says how to start the network...
     let program = env!("CARGO_BIN_EXE_chain-node");
     assert!(
