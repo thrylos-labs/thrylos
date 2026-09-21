@@ -237,10 +237,12 @@ impl Engine for DurableEngine {
         executed: &ExecutedBlock,
     ) -> Result<(), FinaliseError> {
         let prepared = self.executor.prepare_finalisation(block, executed)?;
-        if let Err(error) =
-            self.db
-                .commit_block(block, executed.state_root.as_hash(), &executed.state_diff)
-        {
+        if let Err(error) = self.db.commit_block(
+            block,
+            executed.state_root.as_hash(),
+            &executed.state_diff,
+            &executed.outcomes,
+        ) {
             self.last_storage_error = Some(error);
             return Err(FinaliseError {
                 reason: FinaliseErrorReason::StorageUnavailable,

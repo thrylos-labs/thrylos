@@ -20,6 +20,7 @@
 
 use crate::address::Address;
 use crate::codec::{decode_field, CodecError, Decode, Encode};
+use crate::hash::{hash_with_domain, DomainTag, Hash};
 use crate::ids::{BlockHeight, ChainId, GasAmount, GasPrice, SequenceNumber};
 use crate::keys::{PublicKey, Signature, SignatureError};
 
@@ -167,6 +168,15 @@ impl Transaction {
         Address::from_public_key(&self.body.sender)
     }
 
+    /// The transaction's identifier: the domain-separated hash of its canonical
+    /// encoding, signature included. What a client is told when it submits one,
+    /// and what the chain indexes it by.
+    pub fn hash(&self) -> Hash {
+        let mut bytes = Vec::new();
+        self.encode(&mut bytes);
+        hash_with_domain(DomainTag::TransactionV1, &bytes)
+    }
+
     /// Not yet past `expiry`, and — when called at submission time with
     /// the height the transaction was submitted at — not set further
     /// ahead than [`MAX_EXPIRY_HORIZON`]. As `current_height` advances
@@ -211,6 +221,26 @@ mod tests {
             type_arguments: Vec::new(),
             arguments: vec![2u64.to_le_bytes().to_vec(), 40u64.to_le_bytes().to_vec()],
         }
+    }
+
+    #[test]
+    fn a_transactions_hash_covers_the_signature_and_every_field() {
+        let one = signed_transaction(1, Vec::new());
+        assert_eq!(one.hash(), signed_transaction(1, Vec::new()).hash());
+        assert_ne!(one.hash(), signed_transaction(2, Vec::new()).hash());
+        assert_ne!(
+            one.hash(),
+            signed_transaction(1, vec![Address::from_bytes([4; 32])]).hash()
+        );
+        let mut resigned = one.clone();
+        resigned.signature = signed_transaction(2, Vec::new()).signature;
+        assert_ne!(one.hash(), resigned.hash(), "the signature is part of it");
+        let mut bytes = Vec::new();
+        one.encode(&mut bytes);
+        assert_eq!(
+            one.hash(),
+            hash_with_domain(DomainTag::TransactionV1, &bytes)
+        );
     }
 
     fn signed_transaction(seed: u8, declared_inputs: Vec<Address>) -> Transaction {

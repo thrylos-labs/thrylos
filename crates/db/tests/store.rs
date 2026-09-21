@@ -1,7 +1,12 @@
 //! Read-back and atomicity of `Db::commit_block` against a real MDBX
 //! environment on disk (a `tempfile::tempdir`, not an in-memory stub).
 
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::cast_possible_truncation,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing
+)]
 
 use chain_db::Db;
 use chain_engine_api::Block;
@@ -42,7 +47,7 @@ fn commit_and_read_back_a_block_root_and_state() {
     let block = block_at(1);
     let root = Hash::from_bytes([7u8; 32]);
     let diff = diff_with(&[(1, 10), (2, 20)]);
-    db.commit_block(&block, root, &diff).unwrap();
+    db.commit_block(&block, root, &diff, &[]).unwrap();
 
     assert_eq!(db.tip_height().unwrap(), Some(BlockHeight(1)));
     assert_eq!(db.get_block(BlockHeight(1)).unwrap(), Some(block));
@@ -67,12 +72,14 @@ fn a_second_block_s_diff_only_overwrites_the_keys_it_touches() {
         &block_at(1),
         Hash::from_bytes([1u8; 32]),
         &diff_with(&[(1, 10), (2, 20)]),
+        &[],
     )
     .unwrap();
     db.commit_block(
         &block_at(2),
         Hash::from_bytes([2u8; 32]),
         &diff_with(&[(2, 99)]),
+        &[],
     )
     .unwrap();
 
@@ -109,6 +116,7 @@ fn reopening_the_same_path_sees_everything_already_committed() {
             &block_at(1),
             Hash::from_bytes([3u8; 32]),
             &diff_with(&[(5, 50)]),
+            &[],
         )
         .unwrap();
     }
@@ -137,10 +145,15 @@ fn a_diff_that_deletes_a_key_removes_it_and_leaves_the_others() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
     let root = Hash::from_bytes([1u8; 32]);
-    db.commit_block(&block_at(1), root, &diff_with(&[(1, 10), (2, 20), (3, 30)]))
-        .unwrap();
+    db.commit_block(
+        &block_at(1),
+        root,
+        &diff_with(&[(1, 10), (2, 20), (3, 30)]),
+        &[],
+    )
+    .unwrap();
 
-    db.commit_block(&block_at(2), root, &deleting(&[2]))
+    db.commit_block(&block_at(2), root, &deleting(&[2]), &[])
         .unwrap();
 
     let get = |byte: u8| db.get_state_value(&StateKey::new(vec![byte])).unwrap();
@@ -154,10 +167,10 @@ fn deleting_a_key_the_store_never_held_is_not_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
     let root = Hash::from_bytes([1u8; 32]);
-    db.commit_block(&block_at(1), root, &diff_with(&[(1, 10)]))
+    db.commit_block(&block_at(1), root, &diff_with(&[(1, 10)]), &[])
         .unwrap();
 
-    db.commit_block(&block_at(2), root, &deleting(&[9]))
+    db.commit_block(&block_at(2), root, &deleting(&[9]), &[])
         .unwrap();
 
     assert_eq!(db.tip_height().unwrap(), Some(BlockHeight(2)));
@@ -172,11 +185,11 @@ fn a_deleted_key_can_be_written_again_later() {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).unwrap();
     let root = Hash::from_bytes([1u8; 32]);
-    db.commit_block(&block_at(1), root, &diff_with(&[(4, 40)]))
+    db.commit_block(&block_at(1), root, &diff_with(&[(4, 40)]), &[])
         .unwrap();
-    db.commit_block(&block_at(2), root, &deleting(&[4]))
+    db.commit_block(&block_at(2), root, &deleting(&[4]), &[])
         .unwrap();
-    db.commit_block(&block_at(3), root, &diff_with(&[(4, 41)]))
+    db.commit_block(&block_at(3), root, &diff_with(&[(4, 41)]), &[])
         .unwrap();
     assert_eq!(
         db.get_state_value(&StateKey::new(vec![4])).unwrap(),
@@ -191,7 +204,7 @@ fn block_commits_are_contiguous_and_cannot_replace_history() {
     let root = Hash::from_bytes([1u8; 32]);
 
     let skipped = db
-        .commit_block(&block_at(2), root, &StateDiff::empty())
+        .commit_block(&block_at(2), root, &StateDiff::empty(), &[])
         .unwrap_err();
     assert!(matches!(
         skipped,
@@ -201,10 +214,10 @@ fn block_commits_are_contiguous_and_cannot_replace_history() {
         }
     ));
 
-    db.commit_block(&block_at(1), root, &StateDiff::empty())
+    db.commit_block(&block_at(1), root, &StateDiff::empty(), &[])
         .unwrap();
     let replacement = db
-        .commit_block(&block_at(1), root, &StateDiff::empty())
+        .commit_block(&block_at(1), root, &StateDiff::empty(), &[])
         .unwrap_err();
     assert!(matches!(
         replacement,
@@ -292,6 +305,7 @@ fn blocks_committed_without_a_genesis_also_refuse_one() {
         &block_at(1),
         Hash::from_bytes([7; 32]),
         &diff_with(&[(1, 1)]),
+        &[],
     )
     .unwrap();
     let genesis = entries(&[(b"a", b"1")]);
@@ -312,7 +326,7 @@ fn blocks_apply_on_top_of_the_genesis_state_including_deletions() {
 
     let after = entries(&[(b"keep", b"k"), (b"change", b"new"), (b"added", b"fresh")]);
     let diff = chain_state::diff(&genesis, &after);
-    db.commit_block(&block_at(1), Hash::from_bytes([5; 32]), &diff)
+    db.commit_block(&block_at(1), Hash::from_bytes([5; 32]), &diff, &[])
         .unwrap();
 
     assert_eq!(db.load_state().unwrap(), after);
@@ -332,7 +346,12 @@ fn the_first_block_after_genesis_must_be_height_one() {
     db.initialise(GENESIS_HASH, GENESIS_ROOT, &entries(&[(b"a", b"1")]))
         .unwrap();
     let err = db
-        .commit_block(&block_at(2), Hash::from_bytes([1; 32]), &StateDiff::empty())
+        .commit_block(
+            &block_at(2),
+            Hash::from_bytes([1; 32]),
+            &StateDiff::empty(),
+            &[],
+        )
         .unwrap_err();
     assert!(matches!(err, DbError::NonSequentialCommit { .. }), "{err}");
 }
@@ -421,7 +440,7 @@ fn the_key_limit_is_exact_and_is_an_error_not_a_panic() {
         too_long.insert(StateKey::new(vec![8; length]), StateValue::new(vec![2]));
         let diff = chain_state::diff(&at_the_limit, &too_long);
         assert_eq!(
-            db.commit_block(&block_at(1), Hash::from_bytes([1; 32]), &diff),
+            db.commit_block(&block_at(1), Hash::from_bytes([1; 32]), &diff, &[]),
             Err(DbError::KeyTooLarge { length })
         );
         assert_eq!(db.tip_height().unwrap(), None, "nothing was committed");
@@ -437,7 +456,214 @@ fn the_key_limit_is_exact_and_is_an_error_not_a_panic() {
     );
     let diff = chain_state::diff(&with_long_key, &at_the_limit);
     assert!(matches!(
-        db.commit_block(&block_at(1), Hash::from_bytes([1; 32]), &diff),
+        db.commit_block(&block_at(1), Hash::from_bytes([1; 32]), &diff, &[]),
         Err(DbError::KeyTooLarge { .. })
     ));
+}
+
+// ---- outcomes and the transaction index -------------------------------------------------
+
+mod receipts {
+    use chain_db::DbError;
+    use chain_engine_api::{AbortReason, TransactionOutcome};
+    use chain_types::{
+        Address, ChainId, Encode, GasAmount, GasPrice, MoveCall, PublicKey, SequenceNumber,
+        Signature, Transaction, TransactionBody,
+    };
+    use ed25519_dalek::{Signer, SigningKey};
+
+    use super::*;
+
+    /// A distinct, validly signed transaction for each `n`.
+    fn transaction(n: u64) -> Transaction {
+        let key = SigningKey::from_bytes(&[1 + (n % 100) as u8; 32]);
+        let body = TransactionBody {
+            chain_id: ChainId(1),
+            sender: PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes()).unwrap(),
+            sequence_number: SequenceNumber(n),
+            expiry: BlockHeight(100),
+            gas_limit: GasAmount(1_000),
+            max_fee_per_gas: GasPrice(1),
+            declared_inputs: Vec::new(),
+            call: MoveCall {
+                module_address: Address::from_bytes([2; 32]),
+                module_name: b"m".to_vec(),
+                function_name: b"f".to_vec(),
+                type_arguments: Vec::new(),
+                arguments: vec![n.to_le_bytes().to_vec()],
+            },
+        };
+        let mut bytes = Vec::new();
+        body.encode(&mut bytes);
+        Transaction {
+            body,
+            signature: Signature::from_ed25519_bytes(key.sign(&bytes).to_bytes()),
+        }
+    }
+
+    fn block_of(height: u64, numbers: std::ops::Range<u64>) -> Block {
+        Block {
+            transactions: numbers.map(transaction).collect(),
+            ..block_at(height)
+        }
+    }
+
+    const OK: TransactionOutcome = TransactionOutcome::Success;
+    const ABORT: TransactionOutcome = TransactionOutcome::Aborted(AbortReason::ExecutionFailed);
+    const REFUSED: TransactionOutcome = TransactionOutcome::Aborted(AbortReason::StakingRefused);
+
+    #[test]
+    fn what_became_of_each_transaction_and_where_it_is_read_back_and_survive_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = block_of(1, 0..5);
+        let second = block_of(2, 5..7);
+        {
+            let db = Db::open(dir.path()).unwrap();
+            db.commit_block(
+                &first,
+                Hash::from_bytes([1; 32]),
+                &StateDiff::empty(),
+                &[OK, ABORT, OK, REFUSED, OK],
+            )
+            .unwrap();
+            db.commit_block(
+                &second,
+                Hash::from_bytes([2; 32]),
+                &StateDiff::empty(),
+                &[ABORT, OK],
+            )
+            .unwrap();
+        }
+        let db = Db::open(dir.path()).unwrap();
+        assert_eq!(
+            db.get_outcomes(BlockHeight(1)).unwrap(),
+            Some(vec![OK, ABORT, OK, REFUSED, OK])
+        );
+        assert_eq!(
+            db.get_outcomes(BlockHeight(2)).unwrap(),
+            Some(vec![ABORT, OK])
+        );
+        for (block, height) in [(&first, 1), (&second, 2)] {
+            for (index, transaction) in block.transactions.iter().enumerate() {
+                assert_eq!(
+                    db.find_transaction(&transaction.hash()).unwrap(),
+                    Some((BlockHeight(height), index as u32)),
+                    "block {height}, position {index}"
+                );
+            }
+        }
+        // Not a transaction this chain has, and not a block it has.
+        assert_eq!(db.find_transaction(&transaction(99).hash()).unwrap(), None);
+        assert_eq!(db.get_outcomes(BlockHeight(3)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_block_with_no_transactions_records_no_outcomes_and_says_so_as_empty_not_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        db.commit_block(
+            &block_at(1),
+            Hash::from_bytes([1; 32]),
+            &StateDiff::empty(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(db.get_outcomes(BlockHeight(1)).unwrap(), Some(Vec::new()));
+        assert_eq!(db.get_outcomes(BlockHeight(2)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_database_that_has_recorded_nothing_answers_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        assert_eq!(db.get_outcomes(BlockHeight(1)).unwrap(), None);
+        assert_eq!(db.find_transaction(&transaction(0).hash()).unwrap(), None);
+    }
+
+    #[test]
+    fn outcomes_that_do_not_line_up_with_the_block_are_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let block = block_of(1, 0..3);
+        for outcomes in [vec![], vec![OK, OK], vec![OK; 4]] {
+            assert_eq!(
+                db.commit_block(
+                    &block,
+                    Hash::from_bytes([1; 32]),
+                    &StateDiff::empty(),
+                    &outcomes
+                ),
+                Err(DbError::OutcomesMismatch {
+                    transactions: 3,
+                    outcomes: outcomes.len()
+                })
+            );
+        }
+        assert_eq!(db.tip_height().unwrap(), None);
+        assert_eq!(db.get_block(BlockHeight(1)).unwrap(), None);
+        assert_eq!(db.get_outcomes(BlockHeight(1)).unwrap(), None);
+        for transaction in &block.transactions {
+            assert_eq!(db.find_transaction(&transaction.hash()).unwrap(), None);
+        }
+        // And the right number is accepted afterwards.
+        db.commit_block(
+            &block,
+            Hash::from_bytes([1; 32]),
+            &StateDiff::empty(),
+            &[OK; 3],
+        )
+        .unwrap();
+        assert_eq!(db.get_outcomes(BlockHeight(1)).unwrap(), Some(vec![OK; 3]));
+    }
+
+    #[test]
+    fn a_commit_that_fails_part_way_leaves_no_outcomes_and_no_index_behind() {
+        use chain_db::schema::MAX_KEY_BYTES;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).unwrap();
+        let block = block_of(1, 0..3);
+
+        // The diff's key is over the limit, which is found only after the
+        // block, its outcomes and its index have been put into the transaction.
+        let mut oversized = chain_types::collections::BTreeMap::new();
+        oversized.insert(
+            StateKey::new(vec![1; MAX_KEY_BYTES + 1]),
+            StateValue::new(vec![1]),
+        );
+        let diff = chain_state::diff(&chain_types::collections::BTreeMap::new(), &oversized);
+        assert!(matches!(
+            db.commit_block(&block, Hash::from_bytes([1; 32]), &diff, &[OK, OK, OK]),
+            Err(DbError::KeyTooLarge { .. })
+        ));
+        assert_eq!(db.tip_height().unwrap(), None);
+        assert_eq!(db.get_outcomes(BlockHeight(1)).unwrap(), None);
+        for transaction in &block.transactions {
+            assert_eq!(db.find_transaction(&transaction.hash()).unwrap(), None);
+        }
+
+        // A block that does not follow the tip is refused the same way.
+        db.commit_block(
+            &block_at(1),
+            Hash::from_bytes([1; 32]),
+            &StateDiff::empty(),
+            &[],
+        )
+        .unwrap();
+        let skipping = block_of(3, 10..12);
+        assert!(matches!(
+            db.commit_block(
+                &skipping,
+                Hash::from_bytes([3; 32]),
+                &StateDiff::empty(),
+                &[OK, OK]
+            ),
+            Err(DbError::NonSequentialCommit { .. })
+        ));
+        assert_eq!(db.get_outcomes(BlockHeight(3)).unwrap(), None);
+        assert_eq!(
+            db.find_transaction(&skipping.transactions[0].hash())
+                .unwrap(),
+            None
+        );
+    }
 }

@@ -3,7 +3,7 @@
 //! Tier C. Failure if wrong: Local only.
 //! See `docs/spec.md`, "Crate layout and trust tiers".
 //!
-//! The interface a node offers to the machine it runs on: five JSON-RPC 2.0
+//! The interface a node offers to the machine it runs on: six JSON-RPC 2.0
 //! methods over a small, bounded, loopback-only HTTP server. [`call`] is the
 //! protocol (what may be asked, how it is read and answered) and [`server`] is
 //! the transport. Nothing here knows about a chain: a request becomes a

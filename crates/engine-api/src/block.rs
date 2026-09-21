@@ -121,6 +121,69 @@ pub enum AbortReason {
     Unauthorised,
 }
 
+impl AbortReason {
+    /// Every reason, for whoever must go through them all.
+    pub const ALL: [Self; 9] = [
+        Self::UnknownFunction,
+        Self::InvalidArguments,
+        Self::UndeclaredObjectAccess,
+        Self::ExecutionFailed,
+        Self::InsufficientBalance,
+        Self::StakingRefused,
+        Self::GovernanceRefused,
+        Self::EvidenceRefused,
+        Self::Unauthorised,
+    ];
+
+    /// The number this reason is stored as, from 1. Written out rather than
+    /// taken from the variant's position, so that reordering the enum cannot
+    /// silently change what an old record means. Never reuse a number.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::UnknownFunction => 1,
+            Self::InvalidArguments => 2,
+            Self::UndeclaredObjectAccess => 3,
+            Self::ExecutionFailed => 4,
+            Self::InsufficientBalance => 5,
+            Self::StakingRefused => 6,
+            Self::GovernanceRefused => 7,
+            Self::EvidenceRefused => 8,
+            Self::Unauthorised => 9,
+        }
+    }
+
+    /// The reason stored as `code`, if it is one this version knows.
+    pub const fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::UnknownFunction,
+            2 => Self::InvalidArguments,
+            3 => Self::UndeclaredObjectAccess,
+            4 => Self::ExecutionFailed,
+            5 => Self::InsufficientBalance,
+            6 => Self::StakingRefused,
+            7 => Self::GovernanceRefused,
+            8 => Self::EvidenceRefused,
+            9 => Self::Unauthorised,
+            _ => return None,
+        })
+    }
+
+    /// The name a client is shown: the variant's own.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::UnknownFunction => "UnknownFunction",
+            Self::InvalidArguments => "InvalidArguments",
+            Self::UndeclaredObjectAccess => "UndeclaredObjectAccess",
+            Self::ExecutionFailed => "ExecutionFailed",
+            Self::InsufficientBalance => "InsufficientBalance",
+            Self::StakingRefused => "StakingRefused",
+            Self::GovernanceRefused => "GovernanceRefused",
+            Self::EvidenceRefused => "EvidenceRefused",
+            Self::Unauthorised => "Unauthorised",
+        }
+    }
+}
+
 impl core::fmt::Display for AbortReason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -145,6 +208,27 @@ impl core::fmt::Display for AbortReason {
 pub enum TransactionOutcome {
     Success,
     Aborted(AbortReason),
+}
+
+impl TransactionOutcome {
+    /// One byte, for storing: 0 for success, else the abort reason's code.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Success => 0,
+            Self::Aborted(reason) => reason.code(),
+        }
+    }
+
+    /// The outcome stored as `code`, if this version knows it.
+    pub const fn from_code(code: u8) -> Option<Self> {
+        if code == 0 {
+            return Some(Self::Success);
+        }
+        match AbortReason::from_code(code) {
+            Some(reason) => Some(Self::Aborted(reason)),
+            None => None,
+        }
+    }
 }
 
 /// The deterministic result of executing a [`Block`] on top of a given
@@ -231,6 +315,40 @@ mod display_tests {
             assert_ne!(message, format!("{value:?}"), "only the variant's name");
             assert!(!seen.contains(&message), "two variants say {message:?}");
             seen.push(message);
+        }
+    }
+
+    #[test]
+    fn every_outcome_has_its_own_stable_code_that_reads_back() {
+        let mut outcomes = vec![TransactionOutcome::Success];
+        outcomes.extend(AbortReason::ALL.map(TransactionOutcome::Aborted));
+        let mut codes: Vec<u8> = outcomes.iter().map(|o| o.code()).collect();
+        for outcome in &outcomes {
+            assert_eq!(
+                TransactionOutcome::from_code(outcome.code()),
+                Some(*outcome)
+            );
+        }
+        codes.sort_unstable();
+        assert_eq!(
+            codes,
+            (0..=9).collect::<Vec<u8>>(),
+            "distinct, and 0 is success"
+        );
+        // Numbers that were never given out read as nothing, not as something.
+        for code in 10..=255u8 {
+            assert_eq!(TransactionOutcome::from_code(code), None, "{code}");
+        }
+        // Pinned, so that a renumbering is a deliberate act: these are on disk.
+        assert_eq!(AbortReason::UnknownFunction.code(), 1);
+        assert_eq!(AbortReason::ExecutionFailed.code(), 4);
+        assert_eq!(AbortReason::Unauthorised.code(), 9);
+    }
+
+    #[test]
+    fn every_abort_reason_has_a_name_that_is_its_variant() {
+        for reason in AbortReason::ALL {
+            assert_eq!(reason.name(), format!("{reason:?}"));
         }
     }
 

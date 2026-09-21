@@ -682,6 +682,123 @@ fn a_transaction_sent_over_rpc_to_one_node_is_seen_included_and_agreed_on_over_r
         "the other three each rebuilt the block: {relay:?}"
     );
 
+    // The first transaction succeeded, and every node says so, in the same place.
+    let found_block = found;
+    let mut places = std::collections::BTreeSet::new();
+    for address in &addresses {
+        let found = rpc_ok(*address, "transaction", serde_json::json!({ "hash": hash }));
+        assert_eq!(found["status"], "included", "{found}");
+        assert_eq!(found["outcome"], serde_json::json!({ "status": "success" }));
+        assert_eq!(found["height"], serde_json::json!(found_block));
+        assert_eq!(found["blockHash"], reference["hash"]);
+        places.insert((
+            found["height"].to_string(),
+            found["index"].to_string(),
+            found["blockHash"].to_string(),
+        ));
+    }
+    assert_eq!(
+        places.len(),
+        1,
+        "every node puts it in the same place: {places:?}"
+    );
+
+    // One that aborts (the counter is at 7, and this adds the most a counter
+    // holds) is still included and still charged, and every node says that it
+    // aborted, and why, and in which block.
+    let aborting = bump(101, 1, u64::MAX);
+    let mut aborting_bytes = Vec::new();
+    aborting.encode(&mut aborting_bytes);
+    let aborting_hash = chain_rpc::call::transaction_hash(&aborting).to_string();
+    let sent = rpc_ok(
+        addresses[1],
+        "send_transaction",
+        serde_json::json!({ "transaction": chain_rpc::hex::encode(&aborting_bytes) }),
+    );
+    assert_eq!(sent["hash"], aborting_hash);
+    let mut places = std::collections::BTreeSet::new();
+    for address in &addresses {
+        wait_until(
+            "the aborting transaction to be included",
+            Duration::from_secs(60),
+            || {
+                rpc(
+                    *address,
+                    "transaction",
+                    serde_json::json!({ "hash": aborting_hash }),
+                )
+                .get("result")
+                .is_some_and(|found| found["status"] == "included")
+            },
+        );
+        let found = rpc_ok(
+            *address,
+            "transaction",
+            serde_json::json!({ "hash": aborting_hash }),
+        );
+        assert_eq!(found["outcome"]["status"], "aborted", "{found}");
+        assert_eq!(found["outcome"]["reason"], "ExecutionFailed");
+        assert!(!found["outcome"]["message"].as_str().unwrap().is_empty());
+        places.insert((
+            found["height"].to_string(),
+            found["index"].to_string(),
+            found["blockHash"].to_string(),
+        ));
+    }
+    assert_eq!(
+        places.len(),
+        1,
+        "every node puts it in the same place: {places:?}"
+    );
+    // The block says how many aborted, and the account says it was charged for it.
+    let aborted_at = rpc_ok(
+        addresses[3],
+        "transaction",
+        serde_json::json!({ "hash": aborting_hash }),
+    )["height"]
+        .as_u64()
+        .unwrap();
+    let block = rpc_ok(
+        addresses[3],
+        "block",
+        serde_json::json!({ "height": aborted_at, "full": true }),
+    );
+    assert_eq!(block["abortedCount"], 1, "{block}");
+    let listed = block["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["hash"] == aborting_hash)
+        .unwrap();
+    assert_eq!(listed["outcome"]["status"], "aborted");
+    let account = rpc_ok(
+        addresses[3],
+        "account",
+        serde_json::json!({ "address": format_address(&sender) }),
+    );
+    assert_eq!(
+        account["nextSequenceNumber"], 2,
+        "an abort spends the sequence number too"
+    );
+
+    // What was never sent is not found, and a bad hash is a bad parameter.
+    assert_eq!(
+        rpc_error(
+            addresses[0],
+            "transaction",
+            serde_json::json!({ "hash": "ab".repeat(32) })
+        )["code"],
+        -32001
+    );
+    assert_eq!(
+        rpc_error(
+            addresses[0],
+            "transaction",
+            serde_json::json!({ "hash": "abcd" })
+        )["code"],
+        -32602
+    );
+
     // The pool emptied as the block committed.
     wait_until("the pool to empty", Duration::from_secs(30), || {
         rpc_ok(addresses[0], "status", serde_json::json!({}))["mempool"] == 0

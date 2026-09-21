@@ -33,6 +33,18 @@ pub enum DbError {
     KeyTooLarge {
         length: usize,
     },
+    /// A block was committed with a different number of outcomes than it has
+    /// transactions. Refused before anything is written: a record that does not
+    /// line up with its block would answer every later question wrongly.
+    OutcomesMismatch {
+        transactions: usize,
+        outcomes: usize,
+    },
+    /// A stored outcome byte that this version does not know: a record written by
+    /// something else, or damaged.
+    UnknownOutcome {
+        code: u8,
+    },
 }
 
 impl core::fmt::Display for DbError {
@@ -53,6 +65,19 @@ impl core::fmt::Display for DbError {
                 "a state key of {length} bytes is over the {}-byte limit",
                 crate::schema::MAX_KEY_BYTES
             ),
+            Self::OutcomesMismatch {
+                transactions,
+                outcomes,
+            } => write!(
+                f,
+                "a block of {transactions} transactions was given {outcomes} outcomes"
+            ),
+            Self::UnknownOutcome { code } => {
+                write!(
+                    f,
+                    "a stored transaction outcome, {code}, is not one this version knows"
+                )
+            }
         }
     }
 }

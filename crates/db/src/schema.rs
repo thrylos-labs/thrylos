@@ -21,6 +21,12 @@ pub const BLOCKS_TABLE: &str = "blocks";
 pub const STATE_TABLE: &str = "state";
 pub const ROOTS_TABLE: &str = "roots";
 pub const META_TABLE: &str = "meta";
+/// What became of each transaction of each block: one byte a transaction, at
+/// the block's height (see `chain_engine_api::TransactionOutcome::code`).
+pub const OUTCOMES_TABLE: &str = "outcomes";
+/// Where each committed transaction is: its hash, to the height of its block
+/// and its position in it (see [`position_value`]).
+pub const TRANSACTIONS_TABLE: &str = "transactions";
 
 /// The single fixed key in [`META_TABLE`] holding the height of the
 /// most recently committed block.
@@ -46,6 +52,24 @@ pub const MAX_KEY_BYTES: usize = 1_024;
 
 pub fn height_key(height: BlockHeight) -> [u8; 8] {
     height.0.to_be_bytes()
+}
+
+/// A transaction's place: its block's height, then its position in the block,
+/// both big-endian.
+pub fn position_value(height: BlockHeight, index: u32) -> [u8; 12] {
+    let mut value = [0u8; 12];
+    value[..8].copy_from_slice(&height.0.to_be_bytes());
+    value[8..].copy_from_slice(&index.to_be_bytes());
+    value
+}
+
+pub fn position_from_bytes(bytes: &[u8]) -> Option<(BlockHeight, u32)> {
+    let height: [u8; 8] = bytes.get(..8)?.try_into().ok()?;
+    let index: [u8; 4] = bytes.get(8..)?.try_into().ok()?;
+    Some((
+        BlockHeight(u64::from_be_bytes(height)),
+        u32::from_be_bytes(index),
+    ))
 }
 
 pub fn height_from_bytes(bytes: &[u8]) -> Option<BlockHeight> {

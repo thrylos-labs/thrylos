@@ -47,7 +47,7 @@ signer, connects to its static peers and runs consensus, and `chain-node devnet`
 generates and runs a local network of them. Each node has a transaction pool:
 a transaction handed to it, by RPC or by a trusted peer, is checked against
 the chain, passed on to the others, included by whichever validator proposes next
-and run on all of them. A local RPC (five calls, loopback only) reports the chain
+and run on all of them. A local RPC (six calls, loopback only) reports the chain
 and takes transactions. Its tests run
 four validators as separate processes, kill them with `SIGKILL` and start them
 again; nothing has yet run on more than one machine.
@@ -77,7 +77,7 @@ The consensus tests run four full validators, each with a real executor, against
 
 | Area | What exists | What is missing |
 |---|---|---|
-| **RPC** (`chain-rpc`, `chain-node`) | Five JSON-RPC 2.0 calls over a small HTTP server that only listens on the loopback and is bounded everywhere (workers, backlog, header and body size, time limits, queue to the node): `status`, `block`, `commit`, `account`, `send_transaction`. Answered on the event loop's own thread, a bounded number per pass, so a burst cannot hold up consensus. A refused transaction comes back with the name of the rule it broke. Tested with four real nodes over HTTP (a transaction sent to one, seen included and agreed on at another, with the commit certificate and every refusal) and with the real `devnet bump` command against running processes | Receipts and a transaction index (a client cannot see that a transaction *failed*, only whether it was included), subscriptions, tracing |
+| **RPC** (`chain-rpc`, `chain-node`) | Six JSON-RPC 2.0 calls over a small HTTP server that only listens on the loopback and is bounded everywhere (workers, backlog, header and body size, time limits, queue to the node): `status`, `block`, `commit`, `account`, `send_transaction` and `transaction` (pending, or in which block and whether it succeeded or aborted, and why: the chain keeps each block's outcomes and an index from transaction hash to position, written in the same atomic commit as the block). Answered on the event loop's own thread, a bounded number per pass, so a burst cannot hold up consensus. A refused transaction comes back with the name of the rule it broke. Tested with four real nodes over HTTP (a transaction sent to one, seen included and agreed on at another, with the commit certificate and every refusal) and with the real `devnet bump` command against running processes, including a transaction that aborts (every node reports the same outcome and place; the command exits 1 and says why) | Gas used per transaction and events, outcomes for blocks committed before they were kept, subscriptions, tracing |
 | **Mempool** (`chain-mempool`, `chain-node`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals, and cleanup after a block commits (what it executed, what its sender can no longer pay for, what has expired). In the node it is one pool that is both the host's source of transactions and the event loop's intake, reading accounts and the base fee from the same chain the host drives, and passing what is new to it on to every peer but the one it came from. Tested end to end: four running nodes, a transaction handed to one, a watcher that only a second node can have told, the counter it bumps run once on all four, and one sender's transactions included in order | Gossip that is smarter than telling everyone |
 
 ### Known problems
@@ -87,7 +87,7 @@ The consensus tests run four full validators, each with a real executor, against
 ### Not built yet
 
 * More than 65 validators: the transport holds at most 64 peers, so a full mesh stops there. Past it a proposer cannot reach everyone directly, and blocks and votes would need relaying through other validators, which does not exist (the spec's set is 128)
-* Receipts: a client can see that its transaction was included, not whether it succeeded in execution (there is no transaction index, and outcomes are not stored)
+* Fuller receipts: a client can see whether its transaction succeeded or aborted and why, but not the gas it used or any events it emitted (neither is stored), and a chain database written before outcomes were kept has none for its old blocks
 * A run on separate machines (a local network of separate processes works)
 * JSON-RPC (`chain-rpc` is a placeholder)
 * Downtime detection, so jailed validators can actually be released

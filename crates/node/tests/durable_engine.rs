@@ -310,7 +310,12 @@ fn a_finalisation_the_database_refuses_leaves_the_chain_where_it_was() {
     };
     engine
         .database()
-        .commit_block(&intruder, Hash::from_bytes([9; 32]), &StateDiff::empty())
+        .commit_block(
+            &intruder,
+            Hash::from_bytes([9; 32]),
+            &StateDiff::empty(),
+            &[],
+        )
         .unwrap();
 
     let second = next_block(&engine, blocks[1].clone());
@@ -361,7 +366,7 @@ fn blocks_with_no_record_of_a_genesis_are_refused() {
             timestamp_millis: 5,
             transactions: Vec::new(),
         };
-        db.commit_block(&block, Hash::from_bytes([2; 32]), &StateDiff::empty())
+        db.commit_block(&block, Hash::from_bytes([2; 32]), &StateDiff::empty(), &[])
             .unwrap();
     }
     let error = refused(DurableEngine::open(dir.path(), &config()));
@@ -404,7 +409,8 @@ fn a_tip_block_the_state_does_not_reflect_is_refused() {
             timestamp_millis: config().genesis_time_ms() + 1_000,
             transactions: Vec::new(),
         };
-        db.commit_block(&block, root, &StateDiff::empty()).unwrap();
+        db.commit_block(&block, root, &StateDiff::empty(), &[])
+            .unwrap();
     }
     let error = refused(DurableEngine::open(dir.path(), &config()));
     assert!(matches!(error, OpenError::Damaged(_)), "{error}");
@@ -431,6 +437,7 @@ fn a_tip_block_recorded_at_another_time_than_the_state_says_is_refused() {
             &disguised,
             executed.state_root.as_hash(),
             &executed.state_diff,
+            &executed.outcomes,
         )
         .unwrap();
     }

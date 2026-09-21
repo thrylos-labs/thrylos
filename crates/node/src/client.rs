@@ -23,6 +23,7 @@ use chain_exec::genesis::{
 };
 use chain_rpc::call::transaction_hash;
 use chain_rpc::hex;
+use chain_rpc::RpcError;
 use chain_text::format_address;
 use chain_types::{
     Address, BlockHeight, ChainId, Encode, GasAmount, GasPrice, MoveCall, PublicKey,
@@ -52,6 +53,13 @@ pub enum ClientError {
     Setup(String),
     /// The transaction was sent and not seen included in time.
     NotIncluded { hash: String },
+    /// The transaction was included, and aborted when it ran.
+    Aborted {
+        hash: String,
+        height: u64,
+        reason: String,
+        message: String,
+    },
 }
 
 impl core::fmt::Display for ClientError {
@@ -70,6 +78,16 @@ impl core::fmt::Display for ClientError {
                 Ok(())
             }
             Self::Setup(message) => write!(f, "{message}"),
+            Self::Aborted {
+                hash,
+                height,
+                reason,
+                message,
+            } => write!(
+                f,
+                "transaction {hash} was included in block {height} and aborted: {message} \
+                 ({reason}); it was still charged its fee and used its sequence number"
+            ),
             Self::NotIncluded { hash } => write!(
                 f,
                 "transaction {hash} was sent, and was not seen in a block within {} seconds: \
@@ -249,23 +267,17 @@ pub fn bump(
         sent["status"].as_str().unwrap_or("?")
     ));
 
-    // Watch for the block: from the height the chain was at when it was sent.
-    let mut next = head.saturating_add(1);
+    // Ask what became of it until it is in a block. Not finding it at first is
+    // not an error: it is on its way.
     let started = Instant::now();
     while started.elapsed() < INCLUSION_PATIENCE {
-        let latest = client.call("status", &json!({}))?["latest"]["height"]
-            .as_u64()
-            .unwrap_or(0);
-        while next <= latest {
-            let block = client.call("block", &json!({ "height": next }))?;
-            let listed = block["transactions"]
-                .as_array()
-                .is_some_and(|list| list.iter().any(|item| item.as_str() == Some(&hash)));
-            if listed {
+        match client.call("transaction", &json!({ "hash": hash })) {
+            Ok(found) if found["status"] == "included" => {
                 say(format!(
-                    "included in block {next} ({}), state root {}",
-                    block["hash"].as_str().unwrap_or("?"),
-                    block["stateRoot"].as_str().unwrap_or("?")
+                    "included in block {} ({}), position {}",
+                    found["height"],
+                    found["blockHash"].as_str().unwrap_or("?"),
+                    found["index"]
                 ));
                 let after =
                     client.call("account", &json!({ "address": format_address(&sender) }))?;
@@ -273,9 +285,27 @@ pub fn bump(
                     "account {account} is now at sequence {}",
                     after["nextSequenceNumber"]
                 ));
-                return Ok(());
+                let outcome = &found["outcome"];
+                return match outcome["status"].as_str() {
+                    Some("success") => {
+                        say("it succeeded".to_owned());
+                        Ok(())
+                    }
+                    Some("aborted") => Err(ClientError::Aborted {
+                        hash,
+                        height: found["height"].as_u64().unwrap_or(0),
+                        reason: outcome["reason"].as_str().unwrap_or("?").to_owned(),
+                        message: outcome["message"].as_str().unwrap_or("").to_owned(),
+                    }),
+                    _ => {
+                        say("its outcome was not recorded by this node".to_owned());
+                        Ok(())
+                    }
+                };
             }
-            next = next.saturating_add(1);
+            Ok(_) => {}
+            Err(ClientError::Rpc { code, .. }) if code == RpcError::NOT_FOUND => {}
+            Err(other) => return Err(other),
         }
         std::thread::sleep(Duration::from_millis(100));
     }

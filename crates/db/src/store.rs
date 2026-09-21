@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use chain_engine_api::Block;
+use chain_engine_api::{Block, TransactionOutcome};
 use chain_state::{StateChange, StateDiff, StateKey, StateValue};
 use chain_types::codec::{decode_exact, Encode};
 use chain_types::collections::BTreeMap;
@@ -15,8 +15,9 @@ use libmdbx::{
 
 use crate::error::DbError;
 use crate::schema::{
-    height_from_bytes, height_key, BLOCKS_TABLE, GENESIS_HASH_KEY, MAX_KEY_BYTES, META_TABLE,
-    ROOTS_TABLE, STATE_TABLE, TIP_HEIGHT_KEY,
+    height_from_bytes, height_key, position_from_bytes, position_value, BLOCKS_TABLE,
+    GENESIS_HASH_KEY, MAX_KEY_BYTES, META_TABLE, OUTCOMES_TABLE, ROOTS_TABLE, STATE_TABLE,
+    TIP_HEIGHT_KEY, TRANSACTIONS_TABLE,
 };
 
 /// Refuses a key the store will not write. See [`MAX_KEY_BYTES`].
@@ -60,7 +61,7 @@ impl Db {
     pub fn open(path: &Path) -> Result<Self, DbError> {
         let mut builder = Environment::builder();
         builder
-            .set_max_dbs(4)
+            .set_max_dbs(6)
             .set_flags(EnvironmentFlags {
                 mode: Mode::ReadWrite {
                     sync_mode: SyncMode::Durable,
@@ -76,7 +77,9 @@ impl Db {
     }
 
     /// Persists `block`, the state root it produced, and `diff` — the
-    /// keys its execution actually wrote — as one MDBX write
+    /// keys its execution actually wrote — and what became of each of its
+    /// transactions (`outcomes`, one for each, in order), with an index from
+    /// each transaction's hash to where it is, as one MDBX write
     /// transaction. Nothing here is visible to a reader, and nothing
     /// is durable, until this returns `Ok`; a crash any time before
     /// that leaves the store exactly as it was before the call, since
@@ -89,13 +92,22 @@ impl Db {
         block: &Block,
         state_root: Hash,
         diff: &StateDiff,
+        outcomes: &[TransactionOutcome],
     ) -> Result<(), DbError> {
+        if outcomes.len() != block.transactions.len() {
+            return Err(DbError::OutcomesMismatch {
+                transactions: block.transactions.len(),
+                outcomes: outcomes.len(),
+            });
+        }
         let txn = self.env.begin_rw_sync()?;
 
         let blocks_db = txn.create_db(Some(BLOCKS_TABLE), DatabaseFlags::empty())?;
         let roots_db = txn.create_db(Some(ROOTS_TABLE), DatabaseFlags::empty())?;
         let state_db = txn.create_db(Some(STATE_TABLE), DatabaseFlags::empty())?;
         let meta_db = txn.create_db(Some(META_TABLE), DatabaseFlags::empty())?;
+        let outcomes_db = txn.create_db(Some(OUTCOMES_TABLE), DatabaseFlags::empty())?;
+        let transactions_db = txn.create_db(Some(TRANSACTIONS_TABLE), DatabaseFlags::empty())?;
 
         let committed_tip: Option<Vec<u8>> = txn.get(meta_db.dbi(), TIP_HEIGHT_KEY)?;
         let expected = match committed_tip.as_deref().and_then(height_from_bytes) {
@@ -128,6 +140,22 @@ impl Db {
             state_root.as_bytes(),
             WriteFlags::UPSERT,
         )?;
+        let codes: Vec<u8> = outcomes.iter().map(|outcome| outcome.code()).collect();
+        txn.put(
+            outcomes_db,
+            height_key(block.height),
+            codes,
+            WriteFlags::UPSERT,
+        )?;
+        for (index, transaction) in block.transactions.iter().enumerate() {
+            let index = u32::try_from(index).unwrap_or(u32::MAX);
+            txn.put(
+                transactions_db,
+                transaction.hash().as_bytes(),
+                position_value(block.height, index),
+                WriteFlags::UPSERT,
+            )?;
+        }
         for (key, change) in diff.iter() {
             check_key(key)?;
             match change {
@@ -265,6 +293,46 @@ impl Db {
             return Ok(None);
         };
         Ok(Some(decode_exact(&bytes)?))
+    }
+
+    /// What became of each transaction of the block at `height`, in order.
+    /// `None` when none was recorded: no such block, or one committed before
+    /// outcomes were kept.
+    pub fn get_outcomes(
+        &self,
+        height: BlockHeight,
+    ) -> Result<Option<Vec<TransactionOutcome>>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(OUTCOMES_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), &height_key(height))?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        bytes
+            .iter()
+            .map(|code| {
+                TransactionOutcome::from_code(*code).ok_or(DbError::UnknownOutcome { code: *code })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    /// Where the transaction with this hash was committed: its block's height
+    /// and its position in the block. `None` if it was not, or was committed
+    /// before transactions were indexed.
+    pub fn find_transaction(&self, hash: &Hash) -> Result<Option<(BlockHeight, u32)>, DbError> {
+        let txn = self.env.begin_ro_sync()?;
+        let db = match txn.open_db(Some(TRANSACTIONS_TABLE)) {
+            Ok(db) => db,
+            Err(MdbxError::NotFound) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let bytes: Option<Vec<u8>> = txn.get(db.dbi(), hash.as_bytes())?;
+        Ok(bytes.as_deref().and_then(position_from_bytes))
     }
 
     pub fn get_state_value(&self, key: &StateKey) -> Result<Option<StateValue>, DbError> {

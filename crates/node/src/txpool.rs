@@ -159,6 +159,16 @@ impl NodeMempool {
         }
     }
 
+    /// Whether the pool holds the transaction with this hash. Looks at each one
+    /// held (the pool is keyed by sender, not hash), so it is for the occasional
+    /// question of a client and not for anything a peer can make it ask.
+    pub fn holds(&self, hash: &chain_types::Hash) -> bool {
+        self.pool
+            .borrow()
+            .pending()
+            .any(|transaction| transaction.hash() == *hash)
+    }
+
     /// How many transactions are pending.
     pub fn len(&self) -> usize {
         self.pool.borrow().len()
@@ -250,6 +260,18 @@ pub(crate) mod testing {
     /// A signed call to the genesis counter's `bump`, from the devnet account
     /// with this seed (101 to 104 are funded).
     pub(crate) fn bump(seed: u8, chain_id: u64, sequence: u64, max_fee: u64) -> Transaction {
+        bump_by(seed, chain_id, sequence, max_fee, 1)
+    }
+
+    /// A call to the counter's `bump` that adds `amount`: with a large one, a
+    /// call that overflows it and aborts.
+    pub(crate) fn bump_by(
+        seed: u8,
+        chain_id: u64,
+        sequence: u64,
+        max_fee: u64,
+        amount: u64,
+    ) -> Transaction {
         let key = SigningKey::from_bytes(&[seed; 32]);
         let sender = PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes()).unwrap();
         let body = TransactionBody {
@@ -265,7 +287,7 @@ pub(crate) mod testing {
                 module_name: COUNTER_MODULE_NAME.as_bytes().to_vec(),
                 function_name: COUNTER_BUMP_FUNCTION.as_bytes().to_vec(),
                 type_arguments: Vec::new(),
-                arguments: vec![1u64.to_le_bytes().to_vec()],
+                arguments: vec![amount.to_le_bytes().to_vec()],
             },
         };
         let mut bytes = Vec::new();

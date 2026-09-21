@@ -14,6 +14,13 @@
 //! store afterward, not just by reasoning about MDBX's documented
 //! guarantees.
 //!
+//! Each commit also records what became of each transaction in the block
+//! (`chain_engine_api::TransactionOutcome`: succeeded, or aborted and why) and
+//! an index from a transaction's hash to its block and position, in the same
+//! transaction, so neither can disagree with the block that holds it. Neither is
+//! part of the state root: they are what a node saw when it executed, kept for
+//! whoever asks. A block committed before they were kept has neither, and says so.
+//!
 //! [`Db::initialise`] records where the chain starts (the genesis hash, the
 //! root at height 0 and the whole genesis state), because a block commit
 //! writes only what the block changes; [`Db::load_state`] reads the whole

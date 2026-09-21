@@ -1,4 +1,4 @@
-//! The node's answers to its RPC: what each of the five methods says, from the
+//! The node's answers to its RPC: what each of the six methods says, from the
 //! chain, the pool and the loop.
 //!
 //! [`NodeApi`] runs on the event loop's thread (the loop hands it the chance
@@ -8,7 +8,7 @@
 //! consensus.
 
 use chain_consensus::host::CommitRecord;
-use chain_engine_api::{ChainView, Head};
+use chain_engine_api::{ChainView, Head, TransactionOutcome};
 use chain_mempool::AdmissionError;
 use chain_rpc::call::transaction_hash;
 use chain_rpc::hex;
@@ -60,6 +60,7 @@ impl NodeApi {
             Call::Commit { height } => self.commit(*height, facts),
             Call::Account { address } => self.account(address),
             Call::SendTransaction { transaction } => self.send(transaction, facts),
+            Call::Transaction { hash } => self.transaction(hash),
         }
     }
 
@@ -132,10 +133,12 @@ impl NodeApi {
                 )))
             };
         };
+        let outcomes = self.outcomes(height, block.transactions.len())?;
         let transactions: Vec<Value> = block
             .transactions
             .iter()
-            .map(|transaction| {
+            .enumerate()
+            .map(|(index, transaction)| {
                 if full {
                     let mut bytes = Vec::new();
                     transaction.encode(&mut bytes);
@@ -144,6 +147,7 @@ impl NodeApi {
                         "sender": format_address(&transaction.sender_address()),
                         "sequenceNumber": transaction.body.sequence_number.0,
                         "encoded": hex::encode(&bytes),
+                        "outcome": outcomes.as_ref().and_then(|all| all.get(index)).map(|o| outcome_json(*o)),
                     })
                 } else {
                     json!(transaction_hash(transaction).to_string())
@@ -157,8 +161,63 @@ impl NodeApi {
             "timestampMs": block.timestamp_millis,
             "stateRoot": state_root.to_string(),
             "transactionCount": block.transactions.len(),
+            // How many of them aborted: null for a block whose outcomes were
+            // not kept (one committed before they were).
+            "abortedCount": outcomes.as_ref().map(|all| {
+                all.iter().filter(|o| matches!(o, TransactionOutcome::Aborted(_))).count()
+            }),
             "transactions": transactions,
         }))
+    }
+
+    /// What became of each of the block's transactions, if that was recorded.
+    fn outcomes(
+        &self,
+        height: BlockHeight,
+        transactions: usize,
+    ) -> Result<Option<Vec<TransactionOutcome>>, RpcError> {
+        let outcomes = self
+            .engine
+            .with(|engine| engine.database().get_outcomes(height))
+            .map_err(|_| RpcError::unavailable("the chain database cannot be read"))?;
+        match outcomes {
+            Some(all) if all.len() != transactions => Err(RpcError::unavailable(
+                "the recorded outcomes of this block do not match its transactions",
+            )),
+            other => Ok(other),
+        }
+    }
+
+    /// What became of one transaction: in a block, and how it went, or waiting
+    /// in the pool.
+    fn transaction(&self, hash: &Hash) -> Reply {
+        let unreadable = |_| RpcError::unavailable("the chain database cannot be read");
+        let found = self
+            .engine
+            .with(|engine| engine.database().find_transaction(hash))
+            .map_err(unreadable)?;
+        if let Some((height, index)) = found {
+            let (block, _) = self.stored(height)?.ok_or_else(|| {
+                RpcError::unavailable("the index names a block that is not stored")
+            })?;
+            let at = locate(&block, index, hash)?;
+            let outcomes = self.outcomes(height, block.transactions.len())?;
+            return Ok(json!({
+                "hash": hash.to_string(),
+                "status": "included",
+                "height": height.0,
+                "index": index,
+                "blockHash": block.hash().to_string(),
+                "outcome": outcomes.as_ref().and_then(|all| all.get(at)).map(|o| outcome_json(*o)),
+            }));
+        }
+        if self.pool.holds(hash) {
+            return Ok(json!({ "hash": hash.to_string(), "status": "pending" }));
+        }
+        Err(RpcError::not_found(
+            "no such transaction is waiting here or in a block: it may never have arrived, \
+             or it expired or was dropped from the pool, which leaves no trace",
+        ))
     }
 
     fn commit(&self, height: Option<u64>, facts: &dyn NodeFacts) -> Reply {
@@ -211,6 +270,33 @@ impl RpcPort for NodeApi {
             let reply = self.answer(&pending.call, facts);
             pending.answer(reply);
         }
+    }
+}
+
+/// The position in `block` that the index gave for the transaction with this
+/// hash, checked: the block must hold that transaction there. An index that
+/// disagrees with its block is damage, and is said to be, not answered from.
+fn locate(block: &chain_engine_api::Block, index: u32, hash: &Hash) -> Result<usize, RpcError> {
+    let at = usize::try_from(index).unwrap_or(usize::MAX);
+    match block.transactions.get(at) {
+        Some(transaction) if transaction.hash() == *hash => Ok(at),
+        _ => Err(RpcError::unavailable(
+            "the index and the block it names disagree",
+        )),
+    }
+}
+
+/// What became of a transaction that ran: it succeeded, or it aborted, which
+/// still charged its sender and advanced their sequence number but applied none of
+/// its effects.
+fn outcome_json(outcome: TransactionOutcome) -> Value {
+    match outcome {
+        TransactionOutcome::Success => json!({ "status": "success" }),
+        TransactionOutcome::Aborted(reason) => json!({
+            "status": "aborted",
+            "reason": reason.name(),
+            "message": reason.to_string(),
+        }),
     }
 }
 
@@ -287,7 +373,7 @@ mod tests {
     use chain_rpc::{RpcError, Server, ServerConfig};
 
     use super::*;
-    use crate::txpool::testing::{bump, chain, commit, DEVNET_CHAIN};
+    use crate::txpool::testing::{bump, bump_by, chain, commit, DEVNET_CHAIN};
 
     /// What the loop would tell the API, with the relaying recorded.
     struct Facts {
@@ -549,6 +635,173 @@ mod tests {
             &facts,
         ));
         assert_eq!(account["nextSequenceNumber"], 1);
+    }
+
+    /// The first call overflows the counter's start of 0 only if it is the second
+    /// of two: MAX, then 1. So the first succeeds and the second aborts.
+    fn a_block_of_one_success_and_one_abort(f: &Fixture) -> (Transaction, Transaction) {
+        let succeeds = bump_by(101, DEVNET_CHAIN, 0, 1, u64::MAX);
+        let aborts = bump_by(102, DEVNET_CHAIN, 0, 1, 1);
+        commit(&f.engine, vec![succeeds.clone(), aborts.clone()]);
+        (succeeds, aborts)
+    }
+
+    #[test]
+    fn a_transaction_is_pending_then_included_and_says_whether_it_succeeded_or_aborted() {
+        let f = fixture();
+        let facts = Facts::new();
+        let ask = |tx: &Transaction| f.api.answer(&Call::Transaction { hash: tx.hash() }, &facts);
+        let succeeds = bump_by(101, DEVNET_CHAIN, 0, 1, u64::MAX);
+        let aborts = bump_by(102, DEVNET_CHAIN, 0, 1, 1);
+
+        // Not heard of.
+        let unknown = ask(&succeeds).unwrap_err();
+        assert_eq!(unknown.code, RpcError::NOT_FOUND);
+
+        // Sent, and waiting: and one that the pool holds does not make another
+        // that it does not hold appear.
+        let send = |tx: &Transaction| {
+            f.api
+                .answer(
+                    &Call::SendTransaction {
+                        transaction: Box::new(tx.clone()),
+                    },
+                    &facts,
+                )
+                .unwrap();
+        };
+        send(&succeeds);
+        assert_eq!(ask(&aborts).unwrap_err().code, RpcError::NOT_FOUND);
+        send(&aborts);
+        let pending = ok(ask(&succeeds));
+        assert_eq!(pending["status"], "pending");
+        assert_eq!(pending["hash"], succeeds.hash().to_string());
+        assert!(pending.get("height").is_none());
+
+        // Committed, in one block, in the order sent.
+        let block = commit(&f.engine, vec![succeeds.clone(), aborts.clone()]);
+        let done = ok(ask(&succeeds));
+        assert_eq!(done["status"], "included");
+        assert_eq!(
+            (done["height"].clone(), done["index"].clone()),
+            (json!(1), json!(0))
+        );
+        assert_eq!(done["blockHash"], block.hash().to_string());
+        assert_eq!(done["outcome"], json!({ "status": "success" }));
+
+        let failed = ok(ask(&aborts));
+        assert_eq!(
+            failed["status"], "included",
+            "an abort is still included, and charged"
+        );
+        assert_eq!(failed["index"], 1);
+        assert_eq!(failed["outcome"]["status"], "aborted");
+        assert_eq!(failed["outcome"]["reason"], "ExecutionFailed");
+        assert!(!failed["outcome"]["message"].as_str().unwrap().is_empty());
+
+        // Both spent their sequence numbers, the aborted one too.
+        for tx in [&succeeds, &aborts] {
+            let account = ok(f.api.answer(
+                &Call::Account {
+                    address: tx.sender_address(),
+                },
+                &facts,
+            ));
+            assert_eq!(account["nextSequenceNumber"], 1);
+        }
+    }
+
+    #[test]
+    fn a_block_says_how_many_of_its_transactions_aborted_and_which() {
+        let f = fixture();
+        let facts = Facts::new();
+        let (succeeds, aborts) = a_block_of_one_success_and_one_abort(&f);
+
+        let listed = ok(f.api.answer(
+            &Call::Block {
+                height: Some(1),
+                full: false,
+            },
+            &facts,
+        ));
+        assert_eq!(listed["abortedCount"], 1);
+        assert_eq!(
+            listed["transactions"],
+            json!([succeeds.hash().to_string(), aborts.hash().to_string()])
+        );
+
+        let full = ok(f.api.answer(
+            &Call::Block {
+                height: Some(1),
+                full: true,
+            },
+            &facts,
+        ));
+        assert_eq!(full["transactions"][0]["outcome"]["status"], "success");
+        assert_eq!(full["transactions"][1]["outcome"]["status"], "aborted");
+        assert_eq!(
+            full["transactions"][1]["outcome"]["reason"],
+            "ExecutionFailed"
+        );
+    }
+
+    #[test]
+    fn a_block_with_no_aborts_counts_none_and_an_empty_block_none_either() {
+        let f = fixture();
+        let facts = Facts::new();
+        commit(&f.engine, vec![bump(101, DEVNET_CHAIN, 0, 1)]);
+        commit(&f.engine, Vec::new());
+        for height in [1, 2] {
+            let block = ok(f.api.answer(
+                &Call::Block {
+                    height: Some(height),
+                    full: true,
+                },
+                &facts,
+            ));
+            assert_eq!(block["abortedCount"], 0, "height {height}");
+        }
+    }
+
+    #[test]
+    fn an_index_entry_that_does_not_match_its_block_is_refused_not_answered_from() {
+        let block = chain_engine_api::Block {
+            parent_block_hash: Hash::from_bytes([0; 32]),
+            height: BlockHeight(1),
+            timestamp_millis: 1,
+            transactions: vec![bump(101, DEVNET_CHAIN, 0, 1), bump(102, DEVNET_CHAIN, 0, 1)],
+        };
+        let (first, second) = (block.transactions[0].hash(), block.transactions[1].hash());
+        assert_eq!(locate(&block, 0, &first).unwrap(), 0);
+        assert_eq!(locate(&block, 1, &second).unwrap(), 1);
+        for (index, hash) in [
+            (1, first),                     // another transaction is there
+            (0, second),                    // and the other way
+            (2, first),                     // past the end
+            (u32::MAX, first),              // far past it
+            (0, Hash::from_bytes([9; 32])), // not in the block at all
+        ] {
+            let error = locate(&block, index, &hash).unwrap_err();
+            assert_eq!(error.code, RpcError::UNAVAILABLE, "{index}");
+            assert!(error.message.contains("disagree"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_transaction_that_was_never_here_is_not_found_and_says_what_that_can_mean() {
+        let f = fixture();
+        let facts = Facts::new();
+        let error = f
+            .api
+            .answer(
+                &Call::Transaction {
+                    hash: Hash::from_bytes([5; 32]),
+                },
+                &facts,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, RpcError::NOT_FOUND);
+        assert!(error.message.contains("expired"), "{error}");
     }
 
     #[test]

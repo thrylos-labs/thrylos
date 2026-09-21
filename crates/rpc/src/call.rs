@@ -1,6 +1,6 @@
 //! The JSON-RPC 2.0 messages: what is asked, and how the answer is written.
 //!
-//! Five methods, and only these (`docs/spec.md` does not name any; these are what
+//! Six methods, and only these (`docs/spec.md` does not name any; these are what
 //! its gates need of an interface):
 //!
 //! | Method | Params | Why it exists |
@@ -10,14 +10,14 @@
 //! | `commit` | `height` (default: the latest) | "Every node publishes its last commit certificate": the recovery point |
 //! | `account` | `address` | The next sequence number and the balance a client needs to build a valid transaction |
 //! | `send_transaction` | `transaction`: the canonical encoding, in hex | Submitting one |
+//! | `transaction` | `hash`: 64 hex digits | What became of one: still pending, or in which block, and whether it succeeded or aborted and why |
 //!
 //! Parameters are a JSON object, or absent. Addresses are `thry1…`, hashes and
 //! byte strings are hex, and a token amount is a decimal string in base units
 //! (JSON numbers cannot hold one). A request is read strictly: an unknown
 //! member is an error, so a misspelt parameter cannot quietly take its default.
 
-use chain_types::hash::{hash_with_domain, DomainTag};
-use chain_types::{decode_exact, Address, Encode, Hash, Transaction};
+use chain_types::{decode_exact, Address, Hash, Transaction};
 use serde_json::{json, Map, Value};
 
 use crate::hex;
@@ -29,9 +29,7 @@ pub const MAX_TRANSACTION_BYTES: usize = 256 * 1024;
 /// encoding, signature included. It is what `send_transaction` returns and what
 /// `block` lists.
 pub fn transaction_hash(transaction: &Transaction) -> Hash {
-    let mut bytes = Vec::new();
-    transaction.encode(&mut bytes);
-    hash_with_domain(DomainTag::TransactionV1, &bytes)
+    transaction.hash()
 }
 
 /// What a client asks the node.
@@ -42,6 +40,7 @@ pub enum Call {
     Commit { height: Option<u64> },
     Account { address: Address },
     SendTransaction { transaction: Box<Transaction> },
+    Transaction { hash: Hash },
 }
 
 /// An error in JSON-RPC's shape. The codes from -32768 to -32000 are the
@@ -288,9 +287,21 @@ fn call_from(method: &str, mut params: Map<String, Value>) -> Result<Call, RpcEr
                 transaction: Box::new(transaction),
             })
         }
+        "transaction" => {
+            let text = string_param(&mut params, "hash")?;
+            nothing_else(params)?;
+            let bytes = hex::decode(&text)
+                .map_err(|error| RpcError::invalid_params(format!("`hash` {error}")))?;
+            let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+                RpcError::invalid_params("`hash` is 32 bytes: 64 hexadecimal digits")
+            })?;
+            Ok(Call::Transaction {
+                hash: Hash::from_bytes(bytes),
+            })
+        }
         other => Err(RpcError::new(
             RpcError::METHOD_NOT_FOUND,
-            format!("no method `{other}`; there are status, block, commit, account and send_transaction"),
+            format!("no method `{other}`; there are status, block, commit, account, send_transaction and transaction"),
         )),
     }
 }
@@ -368,6 +379,21 @@ mod tests {
                 r#"{{"jsonrpc":"2.0","id":"a","method":"account","params":{{"address":"{text}"}}}}"#
             )),
             Call::Account { address }
+        );
+        let hash = Hash::from_bytes([0xab; 32]);
+        assert_eq!(
+            call(&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"transaction","params":{{"hash":"{hash}"}}}}"#
+            )),
+            Call::Transaction { hash }
+        );
+        // Capital letters are the same digits.
+        assert_eq!(
+            call(&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"transaction","params":{{"hash":"{}"}}}}"#,
+                hash.to_string().to_uppercase()
+            )),
+            Call::Transaction { hash }
         );
     }
 
@@ -447,6 +473,26 @@ mod tests {
             ),
             (
                 r#"{"jsonrpc":"2.0","id":1,"method":"block","params":{"hieght":3}}"#,
+                RpcError::INVALID_PARAMS,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"method":"transaction"}"#,
+                RpcError::INVALID_PARAMS,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"method":"transaction","params":{"hash":"abcd"}}"#,
+                RpcError::INVALID_PARAMS,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"method":"transaction","params":{"hash":"zz"}}"#,
+                RpcError::INVALID_PARAMS,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"method":"transaction","params":{"hash":7}}"#,
+                RpcError::INVALID_PARAMS,
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":1,"method":"transaction","params":{"hash":"00","txid":1}}"#,
                 RpcError::INVALID_PARAMS,
             ),
             (

@@ -40,6 +40,7 @@ fn a_transaction_killed_before_commit_leaves_no_trace() {
             &block_at(1),
             Hash::from_bytes([1u8; 32]),
             &StateDiff::empty(),
+            &[],
         )
         .unwrap();
     }

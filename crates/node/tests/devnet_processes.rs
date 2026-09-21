@@ -692,6 +692,53 @@ fn a_transaction_sent_with_devnet_bump_is_included_and_seen_from_another_node() 
         stdout(&second)
     );
 
+    // A third adds the most a counter can hold, which overflows it: it is
+    // included and charged, and the command says that it aborted and exits 1.
+    let third = run(&[
+        "devnet",
+        "bump",
+        &dir,
+        "--node",
+        "2",
+        "--account",
+        "2",
+        "--amount",
+        "18446744073709551615",
+    ]);
+    assert_eq!(
+        third.status.code(),
+        Some(1),
+        "{}{}",
+        stdout(&third),
+        stderr(&third)
+    );
+    assert!(
+        stdout(&third).contains("included in block"),
+        "{}",
+        stdout(&third)
+    );
+    assert!(
+        stdout(&third).contains("is now at sequence 3"),
+        "{}",
+        stdout(&third)
+    );
+    let complaint = stderr(&third);
+    assert!(
+        complaint.contains("aborted") && complaint.contains("ExecutionFailed"),
+        "{complaint}"
+    );
+    assert!(complaint.contains("still charged"), "{complaint}");
+    assert!(
+        !stdout(&third).contains("it succeeded"),
+        "{}",
+        stdout(&third)
+    );
+    assert!(
+        stdout(&first).contains("it succeeded"),
+        "{}",
+        stdout(&first)
+    );
+
     // And node 4, which was not the one it was sent to, agrees over its own RPC.
     let sender =
         chain_types::Address::from_public_key(&chain_genesis::devnet::ed25519(102).unwrap());
@@ -708,10 +755,13 @@ fn a_transaction_sent_with_devnet_bump_is_included_and_seen_from_another_node() 
                 &serde_json::json!({ "address": chain_text::format_address(&sender) }),
             )
             .unwrap();
-        if account["nextSequenceNumber"] == 2 {
+        if account["nextSequenceNumber"] == 3 {
             break;
         }
-        assert!(Instant::now() < end, "node 4 never saw both: {account}");
+        assert!(
+            Instant::now() < end,
+            "node 4 never saw all three: {account}"
+        );
         thread::sleep(Duration::from_millis(100));
     }
 }
