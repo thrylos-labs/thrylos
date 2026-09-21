@@ -2,25 +2,29 @@
 
 A single-client, Move-based proof-of-stake L1 in Rust, optimised for auditability over feature count.
 
-The full technical spec, including the open decisions that still need answers before genesis, is at [docs/spec.md](docs/spec.md). Its implementation status and evidence are tracked in the [spec-conformance ledger](docs/spec-conformance.md). Read the Requirements and Open decisions sections first — most of the parameters in this repo are defaults to be argued with, not settled decisions.
+## Join our Discord Community [Join here](https://discord.gg/nT2Xcy4QB6)
 
 ## Try it today
 
-The Rust toolchain is pinned in `rust-toolchain.toml`, so `rustup` installs the right one on first use.
-
-A local network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. It makes a block a second, empty unless you send it a transaction:
+Spin up the network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. 
 
 ```bash
+
+# Build and run
 cargo build -p chain-node --bins                       # the node and the signer, side by side
 target/debug/chain-node devnet init /tmp/thrylos-devnet   # write four validators' files, on 127.0.0.1
 target/debug/chain-node devnet start /tmp/thrylos-devnet  # run them (Ctrl-C stops them)
+
+# Log
 tail -f /tmp/thrylos-devnet/node1/node.log             # "committed block 1 (0 transactions)", ...
+
+# Debug
 target/debug/chain-node devnet bump /tmp/thrylos-devnet   # sign a transaction with a funded test account, send it over RPC, watch it get included
 target/debug/chain-node devnet check /tmp/thrylos-devnet  # is it committing, and do the nodes agree on the last commit certificate? exits 1 if not
+
+# Status
 curl -s -d '{"jsonrpc":"2.0","id":1,"method":"status"}' http://127.0.0.1:26660   # node 1's RPC (`devnet init` prints them)
 ```
-
-`devnet init` takes `--validators <1 to 65>` (four by default), `--base-port <port>` and `--block-interval-ms <ms>` (1000 by default, the spec's one-second target: after committing a block every node waits that long before starting the next height), and refuses a directory that already holds anything. Keep its path short: a signer's Unix socket path may be at most 100 bytes, and it says so if yours is longer. Each node serves a JSON-RPC on the loopback address only, in the ports after the peer ports: `status`, `block`, `commit`, `account` and `send_transaction` (see `chain-rpc`; addresses are `thry1…`, amounts are decimal strings in base units, hashes are hex). `devnet bump [--node n] [--account 1-4] [--amount n]` uses it as a client. **It is insecure by design**: every consensus key is derived from a public seed, exactly as in the development genesis below, so nothing on it can hold value. `devnet start --until-height <n>` runs until every node has committed that height, then stops them all cleanly and exits, which is how the tests use it. A node started later than the others can take a few seconds to catch up, and `start` waits for it.
 
 The genesis tool works on its own too:
 
