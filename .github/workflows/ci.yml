@@ -81,7 +81,13 @@ jobs:
           path: ${{ runner.tool_cache }}/cargo-fuzz
           key: cargo-fuzz-${{ runner.os }}-${{ env.CARGO_FUZZ_VERSION }}
       - name: Install cargo-fuzz
+        # Built with the pinned toolchain, not the job's nightly: cargo-fuzz's
+        # locked dependencies (rustix 0.36) do not compile on a current nightly.
+        # Only running the fuzzers needs nightly.
+        env:
+          RUSTUP_TOOLCHAIN: 1.92.0
         run: |
+          rustup toolchain install 1.92.0 --profile minimal
           echo "${{ runner.tool_cache }}/cargo-fuzz/bin" >> "$GITHUB_PATH"
           cargo install --root "${{ runner.tool_cache }}/cargo-fuzz" \
             --version "$CARGO_FUZZ_VERSION" cargo-fuzz --locked
