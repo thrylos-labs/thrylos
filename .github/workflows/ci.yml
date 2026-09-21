@@ -65,6 +65,11 @@ jobs:
       matrix:
         target: [codecs, state_transitions, protocol_calls, metering_ratio]
     env:
+      # cargo-fuzz needs a nightly compiler (`-Zsanitizer=address`), and the
+      # repository's rust-toolchain.toml pins 1.92.0, which the toolchain
+      # installed below would otherwise lose to. This variable overrides the pin
+      # for this job only.
+      RUSTUP_TOOLCHAIN: nightly
       CARGO_FUZZ_VERSION: 0.12.0
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && 600 || 30 }}
       THRYLOS_MAX_NS_PER_GAS: 1000000
