@@ -109,6 +109,20 @@ mod tests {
     }
 
     #[test]
+    fn the_default_devnet_matches_the_golden_vectors() {
+        let config = config().unwrap();
+        let report = crate::check::report(&config).unwrap();
+        assert_eq!(
+            report.genesis_hash.to_string(),
+            "4eac90c8f0cd020fc76f3681e04aed0d024c28810617f7dd579eba5bfca56962"
+        );
+        assert_eq!(
+            report.state_root.to_string(),
+            "01a59d75a2a76b1a16b0a306074f04d8b12882c53fe6d5fc97a2bdd5b5930fa9"
+        );
+    }
+
+    #[test]
     fn any_count_from_one_to_the_limit_is_a_valid_genesis_with_the_same_accounts() {
         let four = config().unwrap();
         for count in [1, 2, 7, DEVNET_MAX_VALIDATORS] {

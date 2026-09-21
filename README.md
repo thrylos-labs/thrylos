@@ -98,6 +98,12 @@ target/debug/chain-node --help
 
 for the complete CLI.
 
+For a longer single-machine run, restart testing, compatibility vectors and
+the safe boundary for a local explorer, see
+[`docs/single-host-testnet.md`](docs/single-host-testnet.md). The fixed hashes
+and encodings are recorded in
+[`docs/compatibility-vectors.md`](docs/compatibility-vectors.md).
+
 ## Contributing
 
 Thrylos is early, and several important parts of the system are intentionally unfinished.

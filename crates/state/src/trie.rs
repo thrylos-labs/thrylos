@@ -196,8 +196,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_root_is_deterministic() {
-        assert_eq!(empty_root(), empty_root());
+    fn v2_empty_root_matches_the_golden_vector() {
+        assert_eq!(
+            empty_root().as_hash().to_string(),
+            "565219c4b409726ea0ed96963220f6397dababec294808e1e9143bdc02ea7165"
+        );
     }
 
     #[test]
@@ -217,6 +220,15 @@ mod tests {
         let first = state_of(&[(b"a", b"bc")]);
         let second = state_of(&[(b"ab", b"c")]);
         assert_ne!(compute_root(&first), compute_root(&second));
+    }
+
+    #[test]
+    fn v2_populated_root_matches_the_golden_vector() {
+        let state = state_of(&[(b"a", b"bc")]);
+        assert_eq!(
+            compute_root(&state).as_hash().to_string(),
+            "442b5be0d7fb2680b5ee6d1edbe9d1460a81f07b8051a0e38293067d1f20cd0b"
+        );
     }
 
     #[test]

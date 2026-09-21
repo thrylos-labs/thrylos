@@ -213,6 +213,10 @@ mod tests {
     use crate::keys::Signature;
     use ed25519_dalek::{Signer, SigningKey};
 
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     fn test_call() -> MoveCall {
         MoveCall {
             module_address: Address::from_bytes([9u8; 32]),
@@ -286,6 +290,53 @@ mod tests {
     #[test]
     fn signature_verifies_on_an_untampered_transaction() {
         let tx = signed_transaction(3, vec![]);
+        assert!(tx.verify_signature().is_ok());
+    }
+
+    #[test]
+    fn signed_transaction_matches_the_golden_vector() {
+        let tx = signed_transaction(3, vec![]);
+        let mut signature = Vec::new();
+        tx.signature.encode(&mut signature);
+        let mut encoded = Vec::new();
+        tx.encode(&mut encoded);
+        assert_eq!(
+            hex(&tx.body.sender.ed25519_bytes()),
+            "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+        );
+        assert_eq!(
+            hex(&tx.signing_bytes()),
+            concat!(
+                "010000000000000000ed4928c628d1c2c6eae90338905995612959273a5c63f936",
+                "36c14614ac8737d10000000000000000e803000000000000a0860100000000000500",
+                "00000000000000000000090909090909090909090909090909090909090909090909",
+                "09090909090909090a00000063616c63756c61746f72030000006164640000000002",
+                "000000080000000200000000000000080000002800000000000000"
+            )
+        );
+        assert_eq!(
+            hex(&signature),
+            concat!(
+                "00bd306e296c88b3d37978f25ba623cf0290422f010424e6d4206b8e0a6c7b9b1f",
+                "b81a5e6a7a122816b4b3485b40a774d6f40d40f203045b14fb97ac3cb39a3b0f"
+            )
+        );
+        assert_eq!(
+            hex(&encoded),
+            concat!(
+                "010000000000000000ed4928c628d1c2c6eae90338905995612959273a5c63f936",
+                "36c14614ac8737d10000000000000000e803000000000000a0860100000000000500",
+                "00000000000000000000090909090909090909090909090909090909090909090909",
+                "09090909090909090a00000063616c63756c61746f72030000006164640000000002",
+                "00000008000000020000000000000008000000280000000000000000bd306e296c88",
+                "b3d37978f25ba623cf0290422f010424e6d4206b8e0a6c7b9b1fb81a5e6a7a1228",
+                "16b4b3485b40a774d6f40d40f203045b14fb97ac3cb39a3b0f"
+            )
+        );
+        assert_eq!(
+            tx.hash().to_string(),
+            "0dc266dc581c11506279e4daaefb44b70eeea24ed87e5f9577a9bd1a53cb8cd3"
+        );
         assert!(tx.verify_signature().is_ok());
     }
 
