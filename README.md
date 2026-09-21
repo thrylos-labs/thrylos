@@ -4,8 +4,6 @@
 
 **Status:** Pre-genesis · Active development · Contributors welcome
 
-`Rust` · `MoveVM` · `BFT consensus` · `Proof of Stake` · `P2P` · `Fuzzing` · `TLA+`
-
 ## Join the community
 
 💬 **Discord:** https://discord.gg/nT2Xcy4QB6
