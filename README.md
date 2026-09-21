@@ -1,144 +1,129 @@
 # Thrylos
 
-A single-client, Move-based proof-of-stake L1 in Rust, optimised for auditability over feature count.
+**A Move-based proof-of-stake L1 written in Rust, optimised for auditability over feature count.**
 
-## Discord
+**Status:** Pre-genesis · Active development · Contributors welcome
 
-Join our Discord Community: [Join here](https://discord.gg/nT2Xcy4QB6)
+`Rust` · `MoveVM` · `BFT consensus` · `Proof of Stake` · `P2P` · `Fuzzing` · `TLA+`
 
-## Try it today
+## Join the community
 
-Spin up the network of four validators runs on your machine, each a `chain-node` process with its own `chain-signer` process holding its key. 
+💬 **Discord:** https://discord.gg/nT2Xcy4QB6
+
+Thrylos is an experimental Layer 1 blockchain built around a simple idea:
+
+> Keep the consensus-critical surface small enough that developers can reason about it, test it, and audit it.
+
+Rather than inventing a new VM, consensus protocol or cryptography stack, Thrylos reuses proven components where possible and focuses on deterministic execution, explicit bounds, crash recovery and adversarial testing.
+
+The architecture is still evolving. If you work on Rust, distributed systems, consensus, networking, Move, formal verification or developer tooling, contributions are welcome.
+
+## What works today
+
+Thrylos already runs as a local multi-validator network.
+
+* ✅ Four-validator local devnet
+* ✅ MoveVM execution
+* ✅ BFT consensus
+* ✅ Proof-of-stake validator set
+* ✅ Separate validator signer with slash protection
+* ✅ Crash recovery and write-ahead logging
+* ✅ Authenticated P2P networking
+* ✅ Transaction mempool and propagation
+* ✅ JSON-RPC
+* ✅ Compact block relay
+* ✅ Fuzz testing
+* ✅ TLA+ consensus model
+* ✅ Deterministic consensus-critical crates
+
+Tests deliberately kill validators and signers with `SIGKILL`, restart them from disk and verify that the network converges back onto the same chain without repeating signed consensus positions.
+
+## Try Thrylos locally
+
+### 1. Build
 
 ```bash
-
-# Build and run
-cargo build -p chain-node --bins                       # the node and the signer, side by side
-target/debug/chain-node devnet init /tmp/thrylos-devnet   # write four validators' files, on 127.0.0.1
-target/debug/chain-node devnet start /tmp/thrylos-devnet  # run them (Ctrl-C stops them)
-
-# Log
-tail -f /tmp/thrylos-devnet/node1/node.log             # "committed block 1 (0 transactions)", ...
-
-# Debug
-target/debug/chain-node devnet bump /tmp/thrylos-devnet   # sign a transaction with a funded test account, send it over RPC, watch it get included
-target/debug/chain-node devnet check /tmp/thrylos-devnet  # is it committing, and do the nodes agree on the last commit certificate? exits 1 if not
-
-# Status
-curl -s -d '{"jsonrpc":"2.0","id":1,"method":"status"}' http://127.0.0.1:26660   # node 1's RPC (`devnet init` prints them)
+cargo build -p chain-node --bins
 ```
 
-`chain-node --help` says what each command does, and `devnet start` prints each node's RPC address and what to try next.
-
-The genesis tool works on its own too:
+### 2. Create a four-validator devnet
 
 ```bash
-cargo run -p chain-genesis -- devnet > devnet.json   # a four-validator development genesis
-cargo run -p chain-genesis -- check devnet.json      # validate it: hash, state root, supply, parameters, validator set
+target/debug/chain-node devnet init /tmp/thrylos-devnet
 ```
 
-Addresses are written `thry1…` (bech32m: a mistyped character is always caught), and amounts are shown in tokens (`THRY`, nine decimal places; the chain itself counts in base units, and genesis files stay in base units). The tool converts and checks both:
+### 3. Start it
 
 ```bash
-cargo run -p chain-genesis -- address <ed25519-public-key-hex>   # the thry1… address of a key
-cargo run -p chain-genesis -- verify-address thry1…              # was it copied correctly? says what is wrong if not
+target/debug/chain-node devnet start /tmp/thrylos-devnet
 ```
 
-`chain-genesis hash <file>` prints only the genesis hash, and `address --hex` prints the raw bytes. Beyond that, the tests are the way in: `cargo test --workspace`.
+The command prints the RPC address for each validator and suggested commands to try next.
 
-Fuzzing is described in [fuzz/README.md](fuzz/README.md) and the TLA+ consensus model in [formal/consensus/README.md](formal/consensus/README.md).
+### 4. Send a transaction
 
-## What is working today
+In another terminal:
 
-Thrylos is pre-genesis. There is a `chain-node` binary that runs a validator: it
-reads a configuration file, opens or restores its chain from disk, reaches its
-signer, connects to its static peers and runs consensus, and `chain-node devnet`
-generates and runs a local network of them. Each node has a transaction pool:
-a transaction handed to it, by RPC or by a trusted peer, is checked against
-the chain, passed on to the others, included by whichever validator proposes next
-and run on all of them. A local RPC (six calls, loopback only) reports the chain
-and takes transactions. Its tests run
-four validators as separate processes, kill them with `SIGKILL` and start them
-again; nothing has yet run on more than one machine.
+```bash
+target/debug/chain-node devnet bump /tmp/thrylos-devnet
+```
 
-### Implemented and tested
+This signs a transaction using a funded development account, submits it over RPC and waits for it to be included.
 
-| Area | What exists |
-|---|---|
-| **Types and encoding** (`chain-types`) | Canonical, strict byte encoding with round-trip and malformed-input tests; domain-separated hashing; Ed25519 accounts; BLS12-381 validator keys with proof-of-possession; the randomness beacon used to pick proposers |
-| **State** (`chain-state`) | Account model and state root; the state diff a block produces |
-| **Execution** (`chain-exec`) | Block executor around MoveVM (Mysten's `external-crates/move`, pinned by revision, not patched); hard encoded-block and per-transaction gas bounds; metered Move execution; transaction validity rules; fee accounting; a per-block supply-conservation check; epoch hooks; genesis configuration and the `chain-genesis` file tool |
-| **Native modules** (`chain-modules`) | Staking and delegation with share-price rewards, unbonding, double-sign slashing from evidence, fees, and parameter-only governance, all stored in chain state |
-| **Consensus** (`chain-consensus`) | Malachite's pure core integrated end to end: stake-weighted proposer selection from a randomness beacon, certificate verification, block judging before voting, a host that will not sign twice at a position, a write-ahead log with replay after a crash, and verified catch-up from peers for a node that missed a height |
-| **Storage** (`chain-db`, `chain-node`) | MDBX block and state store with atomic per-block commits and a recorded genesis; a checksummed, torn-write-tolerant height log; the file-backed storage the consensus host keeps (write-ahead log, record of what it signed, commit history); and `DurableEngine`, which commits each block to the database before the chain advances and restores the chain on restart, refusing a database from another genesis or one that fails its root and audit checks. Checked by killing a committing process, and by a four-validator crash sweep that reloads every node's chain from disk |
-| **Signer** (`chain-signer`, `chain-node`) | The high-water-mark state machine that refuses to sign at or below a position it has signed, and a separate `chain-signer` process that alone holds the consensus key and its mark and answers over an authenticated Unix socket. The node's ports accept only that client, never a key, and tests kill and restart each side to check the mark never rewinds |
-| **Peer network** (`chain-node`, `chain-p2p`) | `PeerNetwork` keeps a node connected to its static peers over real sockets: the lower peer ID dials, redials back off and reset, handshakes run on a bounded pool of short threads so a silent stranger holds up only one, and every queue is bounded with a stated overflow policy (`send` never blocks). The transport gained split reader and writer halves, a quiet-link-safe read, and a closer. Tested on loopback: routing across four nodes, transactions, a node leaving and returning on the same port, quiet links staying up, strangers kept out, and prompt shutdown |
-| **Node** (`chain-node`) | The `chain-node` binary and the library behind it: a JSON configuration (unknown fields refused, secrets in private files), `run_node`, which assembles a node in the order that fails earliest (signer before any file is created), an event loop that joins the peer network to the driver, and a filter that rejects a vote, proposal or catch-up request naming a different author than the peer it arrived from. Tested by starting four nodes from configuration files, killing and restarting one from its disk while the others carry on, and a node whose signer refuses halting with the reason while the rest finish the chain. `chain-node devnet init` writes the files of a local network (an insecure development genesis for one to 65 validators, fresh transport keys and signer credentials each time, nothing ever overwritten), and `devnet start` runs it as a signer process and a node process per validator, stopping the nodes cleanly through their standard input. Tested by running four real `chain-signer` and `chain-node` processes to a height, then, killing one node with `SIGKILL` at a random moment and starting it again, then killing that node and its signer together and starting both again, then killing every signer and node at random moments eight times over, and checking that all four end on one chain and the victim never repeats a height |
-| **Block relay** (`chain-p2p`, `chain-node`) | A block with transactions is announced to peers in compact form (its header, its hash and an eight-byte identifier per transaction) instead of being sent whole; a receiver puts it back together from the transactions it already holds, asks the proposer for any it lacks, checks the result against the announced hash and hands the host an ordinary block. New frame kinds with their own hard size caps, and a relay that is bounded and takes announcements only from the validator named as proposer. At the four MiB cap a proposer uploads 16.6 MiB to 127 peers instead of 508 MiB (0.14 s against 4.3 s at 1 Gbps), measured over real authenticated sockets | Relaying through other validators (the transport holds 64 peers, so more than 65 validators is not a full mesh), answers from any validator that has the block, propagation measured across real networks |
-| **Node driver** (`chain-node`) | `NodeRuntime`: the driver around the consensus host, with no sockets or threads. It keeps the host's timers, routes its outbox to everyone or to one validator, and wakes it for its own catch-up requests, all in time supplied by the caller. The four-validator simulation runs on it |
-| **Text forms** (`chain-text`) | Checksummed `thry1…` addresses (bech32m: every single-character typo is caught) and `THRY` amounts (nine decimal places, exact, refusing ambiguous input), used by the `chain-genesis` tool. Presentation only: the chain still counts raw address bytes and base units |
-| **P2P** (`chain-p2p`) | One mutual-Ed25519-authenticated TCP transport with session-bound signed frames for consensus, block catch-up and transaction submission; static trusted peers; hard frame, byte-rate and connection bounds enforced before decode |
-| **Verification** | cargo-fuzz targets for the wire and storage decoders, state transitions, the seven protocol calls and metering cost per gas (smoke-run in CI, longer scheduled runs), and a TLA+ model of one consensus height (safety, and liveness after synchrony) that CI runs through TLC. The model is an abstraction: cryptography, encoding, proposer selection and crash durability stay in the Rust tests |
+### 5. Check the network
 
-The consensus tests run four full validators, each with a real executor, against a simulated network that sends every message through the real wire encoding. They stage a silent proposer, a fast clock, a forged reveal, equivocation, a node that never receives blocks, and a restart of each node after each of the events it handles.
+```bash
+target/debug/chain-node devnet check /tmp/thrylos-devnet
+```
 
-### Other runtime libraries
+This checks that the validators are still committing blocks and agree on the latest commit certificate.
 
-| Area | What exists | What is missing |
-|---|---|---|
-| **RPC** (`chain-rpc`, `chain-node`) | Six JSON-RPC 2.0 calls over a small HTTP server that only listens on the loopback and is bounded everywhere (workers, backlog, header and body size, time limits, queue to the node): `status`, `block`, `commit`, `account`, `send_transaction` and `transaction` (pending, or in which block and whether it succeeded or aborted, and why: the chain keeps each block's outcomes and an index from transaction hash to position, written in the same atomic commit as the block). Answered on the event loop's own thread, a bounded number per pass, so a burst cannot hold up consensus. A refused transaction comes back with the name of the rule it broke. Tested with four real nodes over HTTP (a transaction sent to one, seen included and agreed on at another, with the commit certificate and every refusal) and with the real `devnet bump` command against running processes, including a transaction that aborts (every node reports the same outcome and place; the command exits 1 and says why) | Gas used per transaction and events, outcomes for blocks committed before they were kept, subscriptions, tracing |
-| **Mempool** (`chain-mempool`, `chain-node`) | Admission rules, fee-bump replacement, per-sender eviction, fee-ordered selection for proposals, and cleanup after a block commits (what it executed, what its sender can no longer pay for, what has expired). In the node it is one pool that is both the host's source of transactions and the event loop's intake, reading accounts and the base fee from the same chain the host drives, and passing what is new to it on to every peer but the one it came from. Tested end to end: four running nodes, a transaction handed to one, a watcher that only a second node can have told, the counter it bumps run once on all four, and one sender's transactions included in order | Gossip that is smarter than telling everyone |
+### Watch blocks
 
-### Known problems
+```bash
+tail -f /tmp/thrylos-devnet/node1/node.log
+```
 
-* **A node that starts later than the others can be slow to join.** When a local network starts, the first node sometimes has committed nothing when the others have committed five blocks. It caught up in every run where the chain kept going (24 of 24); why it starts slowly has not been looked into.
+### Query the RPC
 
-### Not built yet
+```bash
+curl -s \
+  -d '{"jsonrpc":"2.0","id":1,"method":"status"}' \
+  http://127.0.0.1:26660
+```
 
-* More than 65 validators: the transport holds at most 64 peers, so a full mesh stops there. Past it a proposer cannot reach everyone directly, and blocks and votes would need relaying through other validators, which does not exist (the spec's set is 128)
-* Fuller receipts: a client can see whether its transaction succeeded or aborted and why, but not the gas it used or any events it emitted (neither is stored), and a chain database written before outcomes were kept has none for its old blocks
-* A run on separate machines (a local network of separate processes works)
-* Halt recovery past detection: `devnet check` finds a network that has stopped committing, or whose nodes disagree on the last certificate, but it does not check the certificates' signatures, roll a node back to an agreed height, or suspend slashing for the halt window (there is no downtime detection to suspend yet)
-* Downtime detection, so jailed validators can actually be released
-* Snapshots, pruning and warp sync
-* A calibrated gas schedule: metering is fuzzed against a provisional time-per-gas ceiling, but nothing is measured on reference hardware yet
-* Observer (non-validator) nodes
-* The rest of the developer workflow: deploying a Move module (the transaction format carries calls, and there is no publish path yet), and signing tools other than the devnet's own `bump`
+Run:
 
-### Size and audit scope
+```bash
+target/debug/chain-node --help
+```
 
-Line counts are not a target. Audit scope is tracked by trust tier, dependency revision, boundary size, enforced bounds and verification evidence in the [conformance ledger](docs/spec-conformance.md), which also says, requirement by requirement, what is done, partial or missing.
+for the complete CLI.
 
-### What "no unsafe, no panics" covers
+## Contributing
 
-The lints apply to the crates in this repository. Dependencies (MoveVM, Malachite, `blst`) are upstream code held to no such rules. Tier A also has a few documented `assert!`s where a function's signature leaves no other way to say "this cannot happen."
+Thrylos is early, and several important parts of the system are intentionally unfinished.
 
-The architecture and parameters are **not final**.
+That makes this a good time to get involved.
 
-## Layout
+We'd especially like contributions from people interested in:
 
-Workspace crates under `crates/`, split by trust tier (see spec, "Crate layout and trust tiers"). Each directory is named for what it does; its Cargo package carries a `chain-` prefix (`crates/db` is `chain-db`), so `cargo test -p chain-db` and `use chain_db::…` are unchanged.
+* Rust
+* distributed systems
+* consensus
+* peer-to-peer networking
+* storage engines
+* Move / MoveVM
+* fuzzing
+* formal verification
+* protocol testing
+* developer tooling
 
-| Directory | Role | Tier |
-|---|---|---|
-| `types` | Consensus-critical types, canonical SSZ-style codec | A |
-| `state` | Merkle state trie, account model | A |
-| `exec` | Block executor wrapping MoveVM | A |
-| `modules` | Staking, rewards, fees, governance, evidence | A |
-| `consensus` | BFT engine, fork choice, evidence detection | A |
-| `engine-api` | Typed boundary between consensus and execution | A |
-| `signer` | Remote signer, slash protection | A |
-| `db` | Storage, pruning, snapshots | B |
-| `p2p` | Authenticated transport and bounded ingress | B |
-| `mempool` | Tx admission, eviction, replacement | B |
-| `rpc` | JSON-RPC, tracing | C |
-| `genesis` | Genesis file parsing and the `chain-genesis` checker tool | C |
-| `node` | The durable storage the consensus host keeps on disk, and where the node binary will be assembled (not in the spec's table) | B |
-| `text` | How people read and write addresses (`thry1…`) and amounts (`THRY`); presentation only (not in the spec's table) | C |
+Take a look at the open issues and Discussions, or find something in the architecture you disagree with and challenge it.
 
-Tier A crates must build byte-identical output on every machine. They carry `[lints] workspace = true` (see root `Cargo.toml` and `clippy.toml`), which forbids `unsafe`, `unwrap`/`expect`/`panic!`, indexing/slicing, integer division, float arithmetic, and non-deterministic collection types. Tier B/C crates are not held to that bar.
+Good technical criticism is a contribution too.
 
-## Building
+### Build and test everything
 
 ```bash
 cargo build --workspace
@@ -146,4 +131,238 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-`deny.toml` and `.github/workflows/ci.yml` cover dependency bans, license checks, and the tier-A "no `rand`" rule.
+Fuzzing is documented in [`fuzz/README.md`](fuzz/README.md).
+
+The TLA+ consensus model lives in [`formal/consensus`](formal/consensus).
+
+## Design philosophy
+
+Thrylos is intentionally opinionated about its trust surface.
+
+### Reuse instead of invent
+
+Novel VMs, consensus protocols and cryptography all create additional audit surface.
+
+Thrylos therefore uses:
+
+* MoveVM for smart-contract execution
+* Malachite for BFT consensus
+* BLS12-381 validator signatures
+* Ed25519 for accounts and transport identities
+* BLAKE3 for hashing
+
+These dependencies are pinned and treated as part of the security boundary.
+
+### Determinism should be enforced
+
+Consensus-critical code should not rely on developers remembering what is safe.
+
+Tier A crates use strict linting and CI rules that restrict things such as:
+
+* `unsafe`
+* `unwrap` / `expect`
+* `panic!`
+* floating-point arithmetic
+* non-deterministic collections
+* wall-clock time
+* ambient randomness
+
+Consensus-critical output should be byte-identical across machines.
+
+### Everything remotely controlled should be bounded
+
+Network frames, queues, block sizes, transaction sizes, peer counts and other attacker-influenced resources have explicit limits.
+
+Unbounded growth in a validator is treated as a protocol risk, not an implementation detail.
+
+## Architecture
+
+The workspace is divided by trust tier.
+
+| Directory    | Role                                            | Tier |
+| ------------ | ----------------------------------------------- | ---- |
+| `types`      | Consensus-critical types and canonical encoding | A    |
+| `state`      | Merkle state and account model                  | A    |
+| `exec`       | Block execution around MoveVM                   | A    |
+| `modules`    | Staking, rewards, fees, governance and evidence | A    |
+| `consensus`  | BFT consensus and certificate verification      | A    |
+| `engine-api` | Consensus/execution boundary                    | A    |
+| `signer`     | Consensus signer and slash protection           | A    |
+| `db`         | Persistent storage                              | B    |
+| `p2p`        | Authenticated transport and ingress limits      | B    |
+| `mempool`    | Transaction admission and selection             | B    |
+| `rpc`        | JSON-RPC                                        | C    |
+| `genesis`    | Genesis configuration and tooling               | C    |
+| `node`       | Validator runtime                               | B    |
+| `text`       | Human-readable addresses and THRY amounts       | C    |
+
+Tier A code is consensus-critical.
+
+A bug there can create a fork, halt the chain or lose funds, so its rules are intentionally stricter.
+
+## Execution
+
+Thrylos integrates MoveVM directly rather than creating a custom Move dialect.
+
+Execution currently supports:
+
+* metered Move calls
+* explicit transaction gas limits
+* block gas limits
+* declared object access
+* transaction rollback on Move abort
+* fee accounting
+* state-root verification
+* supply-conservation checks
+* staking and governance protocol calls
+
+User module publishing is not yet implemented.
+
+Modules will be immutable in v1.
+
+## Consensus
+
+Thrylos uses a BFT proof-of-stake design with deterministic finality.
+
+Current consensus features include:
+
+* stake-weighted proposer selection
+* BLS12-381 validator signatures
+* proof-of-possession checking
+* commit certificates
+* equivocation detection
+* write-ahead logging
+* crash recovery
+* peer catch-up
+* separate validator signing process
+
+A committed block is intended to be final rather than part of a probabilistic fork-choice chain.
+
+## Networking
+
+Validators currently use mutually authenticated TCP connections to a static set of trusted peers.
+
+The networking stack includes:
+
+* Ed25519-authenticated peers
+* session-bound signed frames
+* bounded incoming and outgoing queues
+* connection limits
+* frame-size limits
+* byte-rate limits
+* reconnect backoff
+* transaction propagation
+* block catch-up
+* compact block relay
+
+The first testnet is intentionally keeping discovery and reputation systems out of scope.
+
+## Storage and crash recovery
+
+Blocks and state are stored using MDBX.
+
+Each block is committed atomically with its resulting state.
+
+The node verifies stored state when restarting and refuses to continue if the database does not match the expected genesis or state root.
+
+Tests repeatedly kill nodes while they are running and verify that recovery occurs at a valid block boundary.
+
+## RPC
+
+The node currently exposes six JSON-RPC methods:
+
+* `status`
+* `block`
+* `commit`
+* `account`
+* `send_transaction`
+* `transaction`
+
+The RPC server is currently intended for local use and listens on loopback.
+
+## Genesis tooling
+
+Generate a development genesis:
+
+```bash
+cargo run -p chain-genesis -- devnet > devnet.json
+```
+
+Validate it:
+
+```bash
+cargo run -p chain-genesis -- check devnet.json
+```
+
+Generate the human-readable address for an Ed25519 public key:
+
+```bash
+cargo run -p chain-genesis -- address <ed25519-public-key-hex>
+```
+
+Verify an address:
+
+```bash
+cargo run -p chain-genesis -- verify-address thry1…
+```
+
+Thrylos addresses use **bech32m** and begin with `thry1…`.
+
+The native token ticker is **THRY**, with nine decimal places.
+
+## Verification
+
+Thrylos treats testing and verification as part of the protocol design.
+
+Current verification work includes:
+
+* malformed-input codec tests
+* state-transition fuzzing
+* protocol-call fuzzing
+* gas-metering fuzzing
+* real-socket networking tests
+* validator crash/restart tests
+* signer crash/restart tests
+* four-validator consensus simulations
+* TLA+ safety and liveness modelling
+
+The consensus test suite includes scenarios such as silent proposers, equivocation, forged randomness reveals, validators missing blocks, validator restarts and network catch-up.
+
+## Known limitations
+
+Thrylos is pre-genesis and should not be treated as production-ready.
+
+Known gaps include:
+
+* validator networking beyond the current full-mesh limit
+* real multi-machine testnet operation
+* snapshots, pruning and warp sync
+* calibrated gas pricing on reference hardware
+* observer/non-validator nodes
+* downtime detection
+* fuller transaction receipts and events
+* Move module publishing
+* general developer signing/build tooling
+* recovery tooling for a halted network
+
+These are active areas for development rather than hidden limitations.
+
+## Specification
+
+The full technical specification is available at [`docs/spec.md`](docs/spec.md).
+
+Implementation status is tracked separately in [`docs/spec-conformance.md`](docs/spec-conformance.md).
+
+The architecture and protocol parameters are **not final**.
+
+Many current values are defaults intended to be challenged rather than permanent decisions.
+
+## Community
+
+💬 **Discord:** https://discord.gg/nT2Xcy4QB6
+
+You can also start a conversation in GitHub Discussions.
+
+If something looks wrong, unclear or unnecessarily complicated, open an issue.
+
+**Thrylos is being built in the open.**

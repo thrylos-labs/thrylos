@@ -67,6 +67,20 @@ pub struct Assessment {
     pub notes: Vec<String>,
     /// What is wrong. The network is healthy when there is nothing here.
     pub problems: Vec<String>,
+    /// No node could be reached at all, which usually means the network is not
+    /// running (or not up yet) and is worth saying how to start.
+    pub nobody_answered: bool,
+}
+
+impl Assessment {
+    /// The whole finding in one line: `healthy`, or how many things are wrong.
+    pub fn verdict(&self) -> String {
+        match self.problems.len() {
+            0 => "healthy".to_owned(),
+            1 => "unhealthy: 1 problem".to_owned(),
+            count => format!("unhealthy: {count} problems"),
+        }
+    }
 }
 
 /// The height every reachable node has a certificate for: the lowest of the
@@ -81,7 +95,10 @@ pub fn recovery_height(states: &[NodeState]) -> Option<u64> {
 
 /// What the states amount to at time `now_ms`. See the module docs.
 pub fn assess(states: &[NodeState], now_ms: u64) -> Assessment {
-    let mut found = Assessment::default();
+    let mut found = Assessment {
+        nobody_answered: !states.is_empty() && states.iter().all(|s| s.unreachable.is_some()),
+        ..Assessment::default()
+    };
     for state in states {
         let number = state.number;
         if let Some(why) = &state.unreachable {
@@ -303,6 +320,39 @@ mod tests {
             found.notes.iter().any(|n| n.contains("agreed by 2 of 3")),
             "{:?}",
             found.notes
+        );
+    }
+
+    #[test]
+    fn the_verdict_is_one_line_that_says_healthy_or_how_many_things_are_wrong() {
+        assert_eq!(assess(&[node(1, 12, 1)], NOW).verdict(), "healthy");
+        assert_eq!(assess(&[], NOW).verdict(), "healthy", "nothing to be wrong");
+        let mut gone = node(2, 0, 0);
+        gone.unreachable = Some("refused".into());
+        assert_eq!(
+            assess(&[node(1, 12, 1), gone.clone()], NOW).verdict(),
+            "unhealthy: 1 problem"
+        );
+        let mut gone_too = gone.clone();
+        gone_too.number = 3;
+        assert_eq!(
+            assess(&[node(1, 12, 1), gone, gone_too], NOW).verdict(),
+            "unhealthy: 2 problems"
+        );
+    }
+
+    #[test]
+    fn nobody_answered_is_only_when_every_node_is_unreachable() {
+        let down = |number| NodeState {
+            unreachable: Some("refused".into()),
+            ..node(number, 0, 0)
+        };
+        assert!(assess(&[down(1), down(2)], NOW).nobody_answered);
+        assert!(!assess(&[down(1), node(2, 12, 1)], NOW).nobody_answered);
+        assert!(!assess(&[node(1, 12, 1)], NOW).nobody_answered);
+        assert!(
+            !assess(&[], NOW).nobody_answered,
+            "no nodes is not no answers"
         );
     }
 

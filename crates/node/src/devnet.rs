@@ -118,8 +118,10 @@ impl core::fmt::Display for DevnetError {
             Self::SocketPathTooLong { path, length } => write!(
                 f,
                 "the signer socket {} would be {length} bytes long, and a Unix socket \
-                 path may be at most {MAX_SOCKET_PATH}; choose a shorter directory",
-                path.display()
+                 path may be at most {MAX_SOCKET_PATH}: {} bytes too many. Choose a \
+                 shorter directory, for example /tmp/thrylos-devnet",
+                path.display(),
+                length.saturating_sub(MAX_SOCKET_PATH)
             ),
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
             Self::Genesis(error) => write!(f, "genesis: {error}"),
@@ -714,7 +716,27 @@ mod tests {
             matches!(error, DevnetError::SocketPathTooLong { .. }),
             "{error}"
         );
-        assert!(error.to_string().contains("shorter directory"), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("shorter directory"), "{message}");
+        assert!(
+            message.contains("for example /tmp/thrylos-devnet"),
+            "{message}"
+        );
+        // It says how far over the limit it is, and the example is under it.
+        let DevnetError::SocketPathTooLong { length, .. } = error else {
+            unreachable!()
+        };
+        assert!(
+            message.contains(&format!("{} bytes too many", length - MAX_SOCKET_PATH)),
+            "{message}"
+        );
+        let example = Path::new("/tmp/thrylos-devnet")
+            .join(format!("{DIRECTORY_PREFIX}{MAX_VALIDATORS}"))
+            .join(SIGNER_SOCKET);
+        assert!(
+            example.as_os_str().len() <= MAX_SOCKET_PATH,
+            "the suggestion must work"
+        );
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
     }
 

@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chain_genesis::hex;
-use chain_node::client;
+use chain_node::client::{self, ClientError};
 use chain_node::config::create_network_key;
 use chain_node::config::DEFAULT_BLOCK_INTERVAL_MS;
 use chain_node::devnet::{generate, DEFAULT_BASE_PORT};
@@ -116,6 +116,19 @@ The commands:
 fn fail(message: impl core::fmt::Display) -> ExitCode {
     eprintln!("error: {message}");
     ExitCode::FAILURE
+}
+
+/// What to add when nothing answered: how to start the network, in a command
+/// that can be pasted as it is.
+fn not_running_hint(dir: &str) -> String {
+    let program = std::env::current_exe().map_or_else(
+        |_| "chain-node".to_owned(),
+        |path| path.display().to_string(),
+    );
+    format!(
+        "is the network running? Start it with: {program} devnet start {dir} \
+         (a network takes a few seconds to come up)"
+    )
 }
 
 fn usage_error() -> ExitCode {
@@ -299,7 +312,14 @@ fn devnet_bump(dir: &str, flags: &[&str]) -> ExitCode {
         println!("{line}");
     }) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => fail(error),
+        Err(error) => {
+            let nothing_answered = matches!(error, ClientError::Unreachable { .. });
+            let failed = fail(error);
+            if nothing_answered {
+                eprintln!("{}", not_running_hint(dir));
+            }
+            failed
+        }
     }
 }
 
@@ -312,12 +332,17 @@ fn devnet_check(dir: &str) -> ExitCode {
                 println!("{note}");
             }
             if found.problems.is_empty() {
-                println!("healthy");
+                println!("{}", found.verdict());
                 return ExitCode::SUCCESS;
             }
             for problem in &found.problems {
                 eprintln!("problem: {problem}");
             }
+            if found.nobody_answered {
+                eprintln!("{}", not_running_hint(dir));
+            }
+            // The last line: the whole finding in one.
+            eprintln!("{}", found.verdict());
             ExitCode::FAILURE
         }
     }

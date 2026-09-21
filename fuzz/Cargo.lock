@@ -780,6 +780,7 @@ dependencies = [
 name = "chain-signer"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "blst",
  "chain-types",
 ]

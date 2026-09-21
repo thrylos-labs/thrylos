@@ -41,6 +41,9 @@ pub const INCLUSION_PATIENCE: Duration = Duration::from_secs(60);
 /// Why a call, or the command built on it, did not work.
 #[derive(Debug)]
 pub enum ClientError {
+    /// Nothing answered at the node's RPC address: the network is not running,
+    /// or is not up yet.
+    Unreachable { address: SocketAddr, reason: String },
     /// The network, or the server's HTTP, misbehaved.
     Transport(String),
     /// The node answered with a JSON-RPC error.
@@ -65,6 +68,9 @@ pub enum ClientError {
 impl core::fmt::Display for ClientError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Unreachable { address, reason } => {
+                write!(f, "cannot reach the RPC at {address}: {reason}")
+            }
             Self::Transport(message) => write!(f, "{message}"),
             Self::Rpc {
                 code,
@@ -122,11 +128,9 @@ impl RpcClient {
         let body =
             json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
         let mut stream = TcpStream::connect_timeout(&self.address, Duration::from_secs(5))
-            .map_err(|error| {
-                ClientError::Transport(format!(
-                    "cannot reach the RPC at {}: {error} (is the network running?)",
-                    self.address
-                ))
+            .map_err(|error| ClientError::Unreachable {
+                address: self.address,
+                reason: error.to_string(),
             })?;
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
@@ -325,7 +329,33 @@ pub fn bump(
 
 #[cfg(test)]
 mod tests {
-    use super::balance_text;
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use std::net::TcpListener;
+
+    use super::{balance_text, ClientError, RpcClient};
+
+    #[test]
+    fn a_node_that_is_not_listening_is_unreachable_and_the_error_names_where_it_looked() {
+        // An address that was free a moment ago and has nothing on it now.
+        let address = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let error = RpcClient { address }
+            .call("status", &serde_json::json!({}))
+            .unwrap_err();
+        assert!(
+            matches!(&error, ClientError::Unreachable { address: at, .. } if *at == address),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("cannot reach the RPC at {address}: ")),
+            "{error}"
+        );
+    }
 
     #[test]
     fn a_balance_is_shown_in_tokens_and_not_in_base_units() {

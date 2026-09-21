@@ -812,7 +812,12 @@ fn a_halted_network_is_detected_and_a_recovered_one_is_healthy() {
         stdout(&well),
         stderr(&well)
     );
-    assert!(stdout(&well).contains("healthy"), "{}", stdout(&well));
+    assert_eq!(
+        stdout(&well).lines().last(),
+        Some("healthy"),
+        "{}",
+        stdout(&well)
+    );
     assert!(
         stdout(&well).contains("agreed by 4 of 4 nodes"),
         "{}",
@@ -845,6 +850,14 @@ fn a_halted_network_is_detected_and_a_recovered_one_is_healthy() {
     assert!(complaint.contains("node 3 is unreachable"), "{complaint}");
     assert!(complaint.contains("node 4 is unreachable"), "{complaint}");
     assert!(!stdout(&halted).contains("healthy"), "{}", stdout(&halted));
+    // Two nodes are still answering, so the network is up and it does not tell
+    // anyone to start it; the last line is the whole finding.
+    assert!(!complaint.contains("Start it with"), "{complaint}");
+    assert_eq!(
+        complaint.lines().last(),
+        Some("unhealthy: 4 problems"),
+        "{complaint}"
+    );
     // The two that ran on still agree with each other where the chain stopped.
     assert!(
         stdout(&halted).contains("agreed by 2 of 4 nodes"),
@@ -891,6 +904,18 @@ fn devnet_check_says_what_is_wrong_and_exits_accordingly() {
     let complaint = stderr(&output);
     assert!(complaint.contains("node 1 is unreachable"), "{complaint}");
     assert!(complaint.contains("node 2 is unreachable"), "{complaint}");
+    // Nothing answered at all, so it says how to start the network...
+    let program = env!("CARGO_BIN_EXE_chain-node");
+    assert!(
+        complaint.contains(&format!("Start it with: {program} devnet start {dir}")),
+        "{complaint}"
+    );
+    // ...and the last thing it says is the whole finding.
+    assert_eq!(
+        complaint.lines().last(),
+        Some("unhealthy: 2 problems"),
+        "{complaint}"
+    );
 
     let empty = tempfile::tempdir().unwrap();
     let output = run(&["devnet", "check", empty.path().to_str().unwrap()]);
@@ -921,6 +946,15 @@ fn devnet_bump_says_what_is_wrong_and_exits_accordingly() {
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output).contains("cannot reach the RPC"),
+        "{}",
+        stderr(&output)
+    );
+    // And how to put it right, in a command that can be pasted as it is.
+    let program = env!("CARGO_BIN_EXE_chain-node");
+    let hint = format!("is the network running? Start it with: {program} devnet start {dir}");
+    assert!(stderr(&output).contains(&hint), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("a few seconds"),
         "{}",
         stderr(&output)
     );
