@@ -1,12 +1,12 @@
 //! The set of flat-state changes one block's execution produced.
 //!
 //! `chain_engine_api::Engine::execute_block` currently computes a fresh
-//! [`crate::StateRoot`] from a full clone of the flat state (see
-//! `chain-exec`'s `Executor`) rather than tracking writes incrementally
-//! — this module's [`diff`] recovers the same information after the
-//! fact, by comparing the state before and after, so a caller (namely
-//! `chain-db`) can persist and later replay just what changed, without
-//! `chain-exec` itself needing to change how it executes.
+//! [`crate::StateRoot`] from one bounded snapshot of the flat state (see
+//! `chain-exec`'s `Executor`) rather than tracking writes incrementally.
+//! This module's [`diff`] recovers the same information after the fact, so a
+//! caller (namely `chain-db`) can persist and later replay just what changed.
+//! Finalisation applies that verified diff and does not execute or clone the
+//! state again.
 //!
 //! A change is either a write or a deletion. Deletion arrived with the
 //! native modules: an unbonding entry that has matured, or a share

@@ -1,9 +1,8 @@
 //! Minimal governance. `docs/spec.md`, "Native modules: staking, fees and
 //! governance": "Parameter changes only. No arbitrary code execution, no
-//! treasury, no upgradable modules." It exists for two reasons: "a
-//! permissionless, pseudonymous validator set has no other way to
-//! coordinate a fork activation, and a mispriced gas-schedule entry would
-//! otherwise be a permanent denial of service."
+//! treasury, no upgradable modules." It gives validator operators a
+//! deterministic way to coordinate a fork activation, and keeps a mispriced
+//! gas-schedule entry from becoming a permanent denial of service.
 //!
 //! Two kinds of proposal, and nothing else: a [`ParamChange`] and a
 //! named fork's activation height. Every proposal moves through the same

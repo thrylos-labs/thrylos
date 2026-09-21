@@ -13,6 +13,7 @@ use blst::min_pk::SecretKey;
 use chain_engine_api::{
     AbortReason, Block, BlockLimits, Engine, ExecutedBlock, TransactionOutcome,
 };
+use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::hooks::{reward_for, EPOCH_BLOCKS};
 use chain_exec::native::{
     GOVERNANCE_MODULE_NAME, GOVERNANCE_PACKAGE_ADDRESS, REGISTER_VALIDATOR, STAKE,
@@ -340,7 +341,7 @@ fn registering_moves_the_stake_and_the_dead_shares_into_the_pool_and_charges_the
 }
 
 #[test]
-fn registering_below_the_minimum_or_twice_or_with_a_bad_proof_aborts_and_costs_only_the_fee() {
+fn invalid_registration_or_registration_after_bootstrap_aborts_and_costs_only_the_fee() {
     let mut chain = Chain::new();
     let mut operator = Actor::new(1);
     chain.fund(&operator, 10 * MIN_STAKE);
@@ -370,8 +371,8 @@ fn registering_below_the_minimum_or_twice_or_with_a_bad_proof_aborts_and_costs_o
     let again = operator.register(2, MIN_STAKE);
     assert_eq!(
         chain.run(again),
-        aborted(AbortReason::StakingRefused),
-        "already registered"
+        aborted(AbortReason::Unauthorised),
+        "validator membership is frozen after bootstrap"
     );
     chain.audit();
 }
@@ -621,12 +622,12 @@ fn only_a_validator_in_the_active_set_can_propose_and_only_one_in_the_snapshot_c
     let vote = outsider.governance(VOTE, vec![0u64.to_le_bytes().to_vec(), vec![0]]);
     assert_eq!(chain.run(vote), aborted(AbortReason::GovernanceRefused));
 
-    // A validator that registers *after* the proposal was opened is not in
-    // its snapshot either.
+    // First-testnet membership is fixed at genesis, so an outsider cannot
+    // join after the proposal (or after launch at all).
     let mut late = Actor::new(3);
     chain.fund(&late, 10 * MIN_STAKE);
     let register = late.register(3, MIN_STAKE);
-    assert_eq!(chain.run(register), SUCCESS);
+    assert_eq!(chain.run(register), aborted(AbortReason::Unauthorised));
     let late_vote = late.governance(VOTE, vec![0u64.to_le_bytes().to_vec(), vec![0]]);
     assert_eq!(
         chain.run(late_vote),
@@ -701,14 +702,44 @@ fn governed_parameters_govern_execution_a_lowered_gas_limit_refuses_a_block_it_a
 
 /// Two validators (operator seeds 1 and 2), the first with `first_stake`.
 fn chain_with_two_validators(first_stake: u128) -> (Chain, Actor, Actor) {
-    let mut chain = Chain::new();
-    let mut first = Actor::new(1);
-    let mut second = Actor::new(2);
-    chain.fund(&first, 10 * first_stake);
-    chain.fund(&second, 100 * MIN_STAKE);
-    let register_first = first.register(1, first_stake);
-    let register_second = second.register(2, 30 * MIN_STAKE);
-    chain.block(vec![register_first, register_second]);
+    let first = Actor::new(1);
+    let second = Actor::new(2);
+    let make_validator = |actor: &Actor, seed, self_stake| {
+        let (consensus_key, proof_of_possession) = bls_identity(seed);
+        GenesisValidator {
+            operator: actor.public(),
+            consensus_key,
+            proof_of_possession,
+            self_stake,
+        }
+    };
+    let config = GenesisConfig::new(
+        ChainId(1),
+        START_MS,
+        GENESIS_PARAM_VALUES,
+        vec![
+            Allocation {
+                owner: first.public(),
+                amount: 10 * first_stake,
+            },
+            Allocation {
+                owner: second.public(),
+                amount: 100 * MIN_STAKE,
+            },
+        ],
+        vec![
+            make_validator(&first, 1, first_stake),
+            make_validator(&second, 2, 30 * MIN_STAKE),
+        ],
+    )
+    .unwrap();
+    let mut chain = Chain {
+        executor: Executor::from_genesis(&config).unwrap(),
+        now_ms: START_MS,
+    };
+    // Evidence at height 1 needs the chain-owned time checkpoint created by
+    // that height; validator registration itself is already in genesis.
+    chain.block(Vec::new());
     (chain, first, second)
 }
 
@@ -721,8 +752,8 @@ fn evidence_of_equivocation_burns_stake_removes_the_validator_and_lowers_the_sup
         .executor
         .with_registry(|r| r.total_pooled_stake().unwrap());
 
-    // The equivocation happened at height 1 (the block that registered
-    // them); it is reported a few blocks later.
+    // The equivocation happened at height 1; it is reported a few blocks
+    // later.
     let evidence = equivocation(1, first.address(), 1);
     let mut bytes = Vec::new();
     evidence.encode(&mut bytes);

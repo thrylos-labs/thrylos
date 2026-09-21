@@ -23,7 +23,7 @@ use chain_engine_api::Block;
 use chain_p2p::{NetworkError, TcpNetwork, TransportConfig, TrustedPeer};
 use chain_rpc::{Server, ServerConfig, ServerError};
 use chain_types::beacon::genesis_seed;
-use chain_types::{BlockHeight, Transaction};
+use chain_types::{Address, BlockHeight, Transaction};
 
 use crate::clock::{now_ms, SystemClock};
 use crate::config::{read_network_key, ConfigError, NodeConfig};
@@ -43,6 +43,9 @@ pub enum RunError {
     Config(ConfigError),
     /// The genesis file could not be read or is not valid.
     Genesis(String),
+    /// The local validator and its authenticated validator peers do not
+    /// exactly cover the validator membership fixed in genesis.
+    Topology(String),
     /// The chain could not be started or restored.
     Chain(OpenError),
     /// The node's own files could not be opened.
@@ -62,6 +65,7 @@ impl core::fmt::Display for RunError {
         match self {
             Self::Config(error) => write!(f, "{error}"),
             Self::Genesis(error) => write!(f, "genesis: {error}"),
+            Self::Topology(error) => write!(f, "validator topology: {error}"),
             Self::Chain(error) => write!(f, "{error}"),
             Self::Storage(error) => write!(f, "the node's files: {error}"),
             Self::Signer(error) => write!(f, "the signer: {error}"),
@@ -98,6 +102,38 @@ impl From<NetworkError> for RunError {
     }
 }
 
+fn check_validator_topology(
+    local: Address,
+    peers: &[crate::config::PeerSpec],
+    validators: &[Address],
+) -> Result<(), RunError> {
+    if !validators.contains(&local) {
+        return Err(RunError::Topology(format!(
+            "this node's validator {} is not in genesis",
+            chain_text::format_address(&local)
+        )));
+    }
+    for peer in peers {
+        if let Some(validator) = peer.validator {
+            if !validators.contains(&validator) {
+                return Err(RunError::Topology(format!(
+                    "configured peer {} is not a genesis validator",
+                    chain_text::format_address(&validator)
+                )));
+            }
+        }
+    }
+    for validator in validators {
+        if *validator != local && !peers.iter().any(|peer| peer.validator == Some(*validator)) {
+            return Err(RunError::Topology(format!(
+                "genesis validator {} has no authenticated peer",
+                chain_text::format_address(validator)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A node with no transactions to offer: it proposes empty blocks. The node
 /// itself has a pool ([`NodeMempool`]); this is for a caller that wants a host
 /// without one.
@@ -123,6 +159,12 @@ pub fn run_node(
 ) -> Result<(), RunError> {
     let genesis = chain_genesis::load(&config.genesis)
         .map_err(|error| RunError::Genesis(error.to_string()))?;
+    let validators: Vec<Address> = genesis
+        .validators()
+        .iter()
+        .map(|validator| Address::from_public_key(&validator.operator))
+        .collect();
+    check_validator_topology(config.validator, &config.peers, &validators)?;
     let identity = read_network_key(&config.network_key)?;
 
     // The signer first: a node that cannot sign must not start, and finding
@@ -205,4 +247,61 @@ pub fn run_node(
         event_loop = event_loop.stopping_at(height);
     }
     event_loop.run(stop, report).map_err(RunError::Halted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PeerSpec;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn address(byte: u8) -> Address {
+        Address::from_bytes([byte; 32])
+    }
+
+    fn peer(byte: u8, validator: Option<Address>) -> PeerSpec {
+        PeerSpec {
+            address: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                10_000u16.saturating_add(u16::from(byte)),
+            ),
+            public_key: [byte; 32],
+            validator,
+        }
+    }
+
+    #[test]
+    fn validator_peers_must_exactly_cover_the_other_genesis_validators() {
+        let validators = [address(1), address(2), address(3)];
+        let complete = [
+            peer(2, Some(address(2))),
+            peer(3, Some(address(3))),
+            peer(9, None),
+        ];
+        assert!(check_validator_topology(address(1), &complete, &validators).is_ok());
+
+        let missing = [peer(2, Some(address(2)))];
+        assert!(matches!(
+            check_validator_topology(address(1), &missing, &validators),
+            Err(RunError::Topology(problem)) if problem.contains("has no authenticated peer")
+        ));
+
+        let outsider = [
+            peer(2, Some(address(2))),
+            peer(3, Some(address(3))),
+            peer(4, Some(address(4))),
+        ];
+        assert!(matches!(
+            check_validator_topology(address(1), &outsider, &validators),
+            Err(RunError::Topology(problem)) if problem.contains("is not a genesis validator")
+        ));
+    }
+
+    #[test]
+    fn the_local_validator_must_be_in_genesis() {
+        assert!(matches!(
+            check_validator_topology(address(9), &[], &[address(1)]),
+            Err(RunError::Topology(problem)) if problem.contains("is not in genesis")
+        ));
+    }
 }

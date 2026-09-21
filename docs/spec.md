@@ -1,6 +1,6 @@
 # Thrylos — technical spec
 
-Last amended 2026-09-19
+Last amended 2026-09-21
 
 Implementation status and evidence are tracked separately in
 [`spec-conformance.md`](spec-conformance.md). This document defines the
@@ -18,7 +18,7 @@ The weakest part of this document, placed first so it stays visible. Almost ever
 | 128 validators | Nobody yet | Decentralisation claims, and vote gossip cost at larger sizes |
 | Single-slot finality | Design choice, defensible | Deletes fork choice. This one earns its place |
 | MoveVM | Design choice, defensible | Contract-level bug classes return |
-| Permissionless validator entry | Design choice, defensible | The chain becomes permissioned, which changes what it is |
+| Genesis-fixed validator membership for the first testnet | Static authenticated transport | On-chain admission would activate validators the peer allowlist cannot authenticate |
 
 The blanks are the finding. Fill them by naming the first three applications and the person who wants each one, then check every row against what those applications actually need. Several will change; the L1 assumption itself may not survive.
 
@@ -164,7 +164,7 @@ These modules hold the funds, so they get the invariant-testing budget. Fees and
 
 **Fees.** EIP-1559 on one dynamic dimension: compute. A fixed gas price plus permissionless submission is a spam economy — an attacker fills every block at constant cost and the only remedy is a fork. A base fee that rises under load prices that attack out without a governance vote. Persistent state growth pays the fixed one-time deposit described above; bandwidth has no separate price at launch. Dynamic state and bandwidth fee dimensions return only if measurement shows they are needed.
 
-**Governance, minimal.** Parameter changes only. No arbitrary code execution, no treasury, no upgradable modules. It exists for two reasons the deletion pass exposed: a permissionless, pseudonymous validator set has no other way to coordinate a fork activation, and a mispriced gas-schedule entry would otherwise be a permanent denial of service.
+**Governance, minimal.** Parameter changes only. No arbitrary code execution, no treasury, no upgradable modules. It gives validator operators a deterministic way to coordinate a fork activation, and prevents a mispriced gas-schedule entry from becoming a permanent denial of service.
 
 Every parameter carries a compiled-in clamp, checked at application time, and a proposal outside the clamp fails rather than passing and bricking the chain:
 
@@ -307,7 +307,7 @@ Replay-from-genesis alone is not safe. A node syncing from nothing can be fed an
 
 Signed transactions reach staking and governance through seven frozen protocol calls, dispatched by reserved package and module names and changed only by a fork:
 
-- `register_validator(consensus_key, proof_of_possession, self_stake)`
+- `register_validator(consensus_key, proof_of_possession, self_stake)` (development-chain bootstrap only; a production genesis already contains its complete validator set)
 - `stake(validator, amount)`
 - `unstake(validator, shares)` (begins the unbonding period)
 - `unjail()`
@@ -317,7 +317,7 @@ Signed transactions reach staking and governance through seven frozen protocol c
 
 These are protocol calls handled at the executor boundary, not custom MoveVM native functions callable from arbitrary bytecode. That smaller boundary avoids representing validator administration, evidence and governance capabilities as a second set of Move resources before there is an application requirement for contract-level composability. Rewards compound into the staking share price and are realised by unstaking, so a separate `claim_rewards` call would duplicate accounting state. Consensus reads the validator set through the read-only engine view rather than a transaction call.
 
-Each state-changing call is metered by measurement and carries its own fuzz target. Nothing else crosses the boundary: no caller-supplied clock, no ambient randomness and no arbitrary native dispatch.
+Each state-changing call has deterministic gas accounting and bounded work. The first-testnet implementation charges one fixed amount on success, burns the declared budget on abort, caps calls per block, caps registered validators at 65 and caps open unbonding entries per validator at 512. Reference-hardware measurement must replace the fixed charge before economic calibration is considered complete. Nothing else crosses the boundary: no caller-supplied clock, no ambient randomness and no arbitrary native dispatch.
 
 ## Halt recovery
 
@@ -424,7 +424,8 @@ Each of these changes the spec materially and none has a defensible default.
 
 - [ ] **Do you need an L1 at all?** A rollup or appchain on an existing stack removes most of the surface above. This spec is only correct if sovereignty is a real requirement.
 - [ ] **MEV policy.** Public mempool with an explicit "we do not prevent this", an in-protocol builder slot, or encrypted ordering. Not deciding means the market decides for you, usually badly.
-- [ ] **Validator entry.** Permissionless by stake, or permissioned at launch with a published path to opening up.
+- [x] **First-testnet validator entry.** Permissioned and fixed in genesis, matching the static authenticated peer allowlist.
+- [ ] **Post-testnet validator admission.** Publish a transport/key-rotation design before enabling on-chain entry; the bootstrap call must not silently become that mechanism.
 - [ ] **Token and inflation schedule.** Drives the security budget and therefore the cost of attacking the chain.
 - [ ] **Bridge design and value cap.** The single largest historical loss category. Needs its own document.
 - [ ] **Emergency powers.** Is there a pause, who holds it, and does it expire? A pause that never expires is a permanent trust assumption; no pause at all means the first live incident is unrecoverable.

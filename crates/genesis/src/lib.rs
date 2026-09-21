@@ -89,6 +89,8 @@ pub fn describe(err: &GenesisConfigError) -> String {
         | GenesisConfigError::Registry { operator, .. } => Some(operator),
         GenesisConfigError::Parameters(_)
         | GenesisConfigError::NoValidators
+        | GenesisConfigError::TooManyValidators
+        | GenesisConfigError::StateLimitExceeded
         | GenesisConfigError::SupplyOverflow => None,
     };
     match address {

@@ -22,7 +22,7 @@
 //!
 //! | package | function | arguments | effect |
 //! |---|---|---|---|
-//! | `staking` | `register_validator` | consensus key, proof of possession, self-stake `u128` | registers the sender as a validator |
+//! | `staking` | `register_validator` | consensus key, proof of possession, self-stake `u128` | bootstraps the first validator on a development chain |
 //! | `staking` | `stake` | validator address, amount `u128` | delegates |
 //! | `staking` | `unstake` | validator address, shares `u128` | begins unbonding |
 //! | `staking` | `unjail` | none | the sender's validator rejoins |
@@ -50,16 +50,15 @@
 //! pays and their sequence number still advances); only damage to the
 //! state itself rejects the block.
 //!
-//! # What is not built
+//! # Bounded work and gas
 //!
-//! Gas: a protocol call is charged its declared `gas_limit` and is not yet
-//! metered. Move bytecode uses the VM meter separately. A conservative
-//! intrinsic floor and per-block call cap in the executor bound this work
-//! until measured schedules replace them. Several calls here do work that grows with the
-//! state (the proposal snapshot reads the whole active set; a slash reads
-//! every unbonding entry of the offender), so metering them by measurement
-//! — the spec's rule for every native — is required before this carries
-//! real value.
+//! A successful protocol call pays a fixed conservative charge; an abort
+//! burns its full declared budget. The executor also caps protocol calls per
+//! block. Work that depends on state is bounded independently: validator
+//! scans stop at the fixed first-testnet validator ceiling and evidence can
+//! inspect at most the fixed per-validator unbonding ceiling. A measured
+//! per-operation schedule can replace the conservative fixed charge later
+//! without first having to close an unbounded-work path.
 
 use chain_engine_api::AbortReason;
 use chain_modules::governance::{ProposalId, ProposalKind, VoteChoice};
@@ -91,10 +90,10 @@ pub const SUBMIT_EVIDENCE: &str = "submit_evidence";
 pub const SUBMIT_PROPOSAL: &str = "submit_proposal";
 pub const VOTE: &str = "vote";
 
-/// Conservative intrinsic gas for any protocol-native call until each call
-/// has a measured schedule. Checked before the call performs any work.
+/// Conservative fixed gas for any successful protocol-native call until
+/// each operation has a measured schedule. Checked before work begins.
 pub const MIN_PROTOCOL_CALL_GAS: u64 = 1_000;
-/// Independent bound on unmetered protocol-native calls in one block.
+/// Independent bound on protocol-native calls in one block.
 pub const MAX_PROTOCOL_CALLS_PER_BLOCK: usize = 64;
 
 type State = BTreeMap<StateKey, StateValue>;
@@ -212,11 +211,10 @@ fn debit_sender(
     Ok(())
 }
 
-fn effects(tx: &Transaction, changes: Changes) -> CallEffects {
+fn effects(_tx: &Transaction, changes: Changes) -> CallEffects {
     CallEffects {
         changes,
-        // Unmetered: see the module docs.
-        gas_used: tx.body.gas_limit.0,
+        gas_used: MIN_PROTOCOL_CALL_GAS,
     }
 }
 
@@ -289,6 +287,15 @@ fn register_validator(
     let cost = self_stake
         .checked_add(DEAD_SHARES)
         .ok_or(AbortReason::InvalidArguments)?;
+
+    // Production chains start with their complete validator set in genesis.
+    // The native entry point remains only so `Executor::genesis` can bootstrap
+    // a one-validator development chain; after that first registration,
+    // membership is frozen to match the first testnet's static authenticated
+    // transport topology.
+    if StakingRegistry::new(StateView::new(state)).validator_count() != 0 {
+        return Err(AbortReason::Unauthorised.into());
+    }
 
     let sender = tx.sender_address();
     let ((), mut changes) = run(state, |overlay| {

@@ -240,6 +240,8 @@ A committed block is intended to be final rather than part of a probabilistic fo
 
 Validators currently use mutually authenticated TCP connections to a static set of trusted peers.
 
+For the first testnet, that same validator membership is fixed in genesis and capped at 65. A node refuses to start unless its local validator and authenticated validator peers exactly cover genesis membership. The transaction-level registration call can bootstrap only an empty development chain; it cannot add a validator after launch.
+
 The networking stack includes:
 
 * Ed25519-authenticated peers
@@ -333,6 +335,7 @@ Thrylos is pre-genesis and should not be treated as production-ready.
 Known gaps include:
 
 * validator networking beyond the current full-mesh limit
+* post-testnet dynamic validator admission and peer key rotation
 * real multi-machine testnet operation
 * snapshots, pruning and warp sync
 * calibrated gas pricing on reference hardware

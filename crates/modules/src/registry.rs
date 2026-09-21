@@ -35,15 +35,9 @@
 //! halfway — leaves nothing behind. The chain's own executor does the
 //! same one level up, discarding an aborted transaction's writes.
 //!
-//! Some reads are scans and cost as much as their subject is large:
-//! [`StakingRegistry::active_set`] and the totals read every validator,
-//! and a slash reads every unbonding entry of the offender. None of that
-//! is per-transaction: the active set is read when consensus needs it and
-//! a slash follows evidence. But a slash's cost grows with the number of
-//! open entries against one validator, which a delegator can raise by
-//! opening entries of one unit each (bounded per staker, not in total);
-//! a minimum unstake amount, or slashing entries lazily, would bound it.
-//! Neither is built.
+//! Some reads scan every validator or every unbonding entry of one
+//! validator. Both dimensions have consensus-enforced hard caps below, so
+//! no transaction or consensus read can turn them into unbounded work.
 //!
 //! # Unbonding stays slashable
 //!
@@ -78,12 +72,10 @@
 //!
 //! # Bounded
 //!
-//! Unbonding entries are capped per (staker, validator) pair
-//! ([`MAX_UNBONDING_ENTRIES_PER_PAIR`]) and [`StakingRegistry::process`]
-//! matures at most [`MAX_MATURING_PER_CALL`] per call, so no block does
-//! unbounded work however many entries pile up. The number of *registered
-//! validators* is not capped: entry is permissionless (`docs/spec.md`),
-//! and the cost that deters spam is the minimum self-stake.
+//! Registered validators, unbonding entries per validator and entries
+//! matured per block are all capped. The first testnet admits validators
+//! only through genesis; the registry keeps its own cap as defence in depth
+//! and for any later admission mechanism.
 //!
 //! # Deliberately not here
 //!
@@ -121,9 +113,20 @@ use crate::store::{
 /// requires vote and block relay, not merely changing this constant.
 pub const MAX_ACTIVE_VALIDATORS: usize = 65;
 
+/// The registry-wide validator cap. It deliberately equals the first
+/// testnet's active-set/full-mesh ceiling: keeping inactive registrations
+/// around would otherwise make every active-set and total-stake read grow
+/// without bound.
+pub const MAX_REGISTERED_VALIDATORS: usize = MAX_ACTIVE_VALIDATORS;
+
 /// **A choice** (Cosmos' own): how many unbonding entries one staker can
 /// have open against one validator at once.
 pub const MAX_UNBONDING_ENTRIES_PER_PAIR: usize = 7;
+
+/// The most open unbonding entries one validator may have across all
+/// stakers. Evidence processing reads and may rewrite every one of them, so
+/// the per-pair cap alone is not a sufficient work bound.
+pub const MAX_UNBONDING_ENTRIES_PER_VALIDATOR: usize = 512;
 
 /// **A choice.** The most entries [`StakingRegistry::process`] matures in
 /// one call; the rest wait for the next.
@@ -254,6 +257,7 @@ pub struct SlashApplied {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryError {
     AlreadyRegistered,
+    TooManyValidators,
     /// Another validator already registered this consensus key.
     ConsensusKeyInUse,
     /// The proof of possession does not verify: registering a key needs
@@ -284,6 +288,7 @@ impl core::fmt::Display for RegistryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::AlreadyRegistered => f.write_str("the validator is already registered"),
+            Self::TooManyValidators => f.write_str("the registry has reached its validator limit"),
             Self::ConsensusKeyInUse => f.write_str("another validator already registered this consensus key"),
             Self::InvalidProofOfPossession => f.write_str("the consensus key's proof of possession does not verify"),
             Self::SelfStakeBelowMinimum => f.write_str("the self-stake is below the minimum"),
@@ -462,7 +467,9 @@ impl<S: ReadStore> StakingRegistry<S> {
 
     /// How many validators are registered. A scan; see the module docs.
     pub fn validator_count(&self) -> usize {
-        self.store.scan_prefix(&[tag::VALIDATOR], usize::MAX).len()
+        self.store
+            .scan_prefix(&[tag::VALIDATOR], MAX_REGISTERED_VALIDATORS + 1)
+            .len()
     }
 
     pub fn is_registered(&self, id: &ValidatorId) -> bool {
@@ -503,8 +510,13 @@ impl<S: ReadStore> StakingRegistry<S> {
 
     /// Every validator, decoded, in id order.
     fn all_validators(&self) -> Result<Vec<(ValidatorId, Validator)>, Corrupt> {
-        self.store
-            .scan_prefix(&[tag::VALIDATOR], usize::MAX)
+        let entries = self
+            .store
+            .scan_prefix(&[tag::VALIDATOR], MAX_REGISTERED_VALIDATORS + 1);
+        if entries.len() > MAX_REGISTERED_VALIDATORS {
+            return Err(Corrupt);
+        }
+        entries
             .into_iter()
             .map(|(key, bytes)| {
                 let id = key
@@ -647,8 +659,15 @@ impl<S: ReadStore> StakingRegistry<S> {
         id: &ValidatorId,
         infraction_ms: u64,
     ) -> Result<(Vec<(u64, UnbondingEntry)>, u128), Corrupt> {
+        let indexed = self.store.scan_prefix(
+            &by_validator_prefix(id),
+            MAX_UNBONDING_ENTRIES_PER_VALIDATOR + 1,
+        );
+        if indexed.len() > MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
+            return Err(Corrupt);
+        }
         let mut entries = Vec::new();
-        for (index_key, _) in self.store.scan_prefix(&by_validator_prefix(id), usize::MAX) {
+        for (index_key, _) in indexed {
             // `UNBONDING_BY_VALIDATOR ‖ id (32) ‖ seq (8)`
             let seq = index_key.get(33..).and_then(read_be64).ok_or(Corrupt)?;
             let entry = self.entry(seq)?.ok_or(Corrupt)?;
@@ -721,6 +740,9 @@ impl<S: Store> StakingRegistry<S> {
     ) -> Result<(), RegistryError> {
         if self.is_registered(&id) {
             return Err(RegistryError::AlreadyRegistered);
+        }
+        if self.validator_count() >= MAX_REGISTERED_VALIDATORS {
+            return Err(RegistryError::TooManyValidators);
         }
         if self.store.get(&consensus_key_key(&consensus_key)).is_some() {
             return Err(RegistryError::ConsensusKeyInUse);
@@ -824,6 +846,17 @@ impl<S: Store> StakingRegistry<S> {
         let mut validator = self.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
         let open = self.open_entries(&staker, id)?;
         if usize::try_from(open).map_or(true, |open| open >= MAX_UNBONDING_ENTRIES_PER_PAIR) {
+            return Err(RegistryError::TooManyUnbondingEntries);
+        }
+        if self
+            .store
+            .scan_prefix(
+                &by_validator_prefix(id),
+                MAX_UNBONDING_ENTRIES_PER_VALIDATOR,
+            )
+            .len()
+            >= MAX_UNBONDING_ENTRIES_PER_VALIDATOR
+        {
             return Err(RegistryError::TooManyUnbondingEntries);
         }
 
@@ -1317,6 +1350,27 @@ mod tests {
         assert_eq!(register_with(&mut reg, MIN_SELF_STAKE), Ok(()));
     }
 
+    #[test]
+    fn registration_stops_at_the_registry_wide_validator_cap() {
+        let mut reg = new_registry();
+        for seed in 0..MAX_REGISTERED_VALIDATORS {
+            let seed = u8::try_from(seed).unwrap();
+            reg.store.put(validator_key(&id_of(seed)), Vec::new());
+        }
+        let sk = secret(200);
+        assert_eq!(
+            reg.register_validator(
+                &params(),
+                id_of(200),
+                operator_of(200),
+                public(&sk),
+                &proof_of_possession(&sk),
+                MIN_SELF_STAKE,
+            ),
+            Err(RegistryError::TooManyValidators)
+        );
+    }
+
     // ---- delegating and unbonding --------------------------------------
 
     #[test]
@@ -1439,6 +1493,22 @@ mod tests {
     }
 
     #[test]
+    fn open_unbonding_entries_are_also_capped_across_a_validator() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        for seq in 0..MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
+            reg.store.put(
+                by_validator_key(&id_of(1), u64::try_from(seq).unwrap()),
+                Vec::new(),
+            );
+        }
+        assert_eq!(
+            reg.begin_unstake(&params(), &id_of(1), staker(1), 1, T0),
+            Err(RegistryError::TooManyUnbondingEntries)
+        );
+    }
+
+    #[test]
     fn maturing_is_bounded_per_call_and_the_rest_wait() {
         let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
@@ -1550,17 +1620,15 @@ mod tests {
     }
 
     #[test]
-    fn the_active_set_is_capped_at_128_by_stake() {
+    fn the_active_set_cannot_exceed_the_transport_s_registry_cap() {
         let mut reg = new_registry();
-        for seed in 0..130u8 {
+        for seed in 0..u8::try_from(MAX_REGISTERED_VALIDATORS).unwrap() {
             register(&mut reg, seed, 1_000 + u128::from(seed));
         }
         let set = reg.active_set(&params()).unwrap();
         assert_eq!(set.len(), MAX_ACTIVE_VALIDATORS);
-        // The two smallest (seeds 0 and 1) missed the cut.
-        assert!(!ids(&set).contains(&id_of(0)));
-        assert!(!ids(&set).contains(&id_of(1)));
-        assert_eq!(set.first().unwrap().id, id_of(129));
+        assert_eq!(set.first().unwrap().id, id_of(64));
+        assert_eq!(set.last().unwrap().id, id_of(0));
     }
 
     #[test]
@@ -2358,6 +2426,7 @@ mod display_tests {
     fn every_registry_error_reads_as_a_sentence_and_wrapped_errors_keep_their_own() {
         readable(&[
             RegistryError::AlreadyRegistered,
+            RegistryError::TooManyValidators,
             RegistryError::ConsensusKeyInUse,
             RegistryError::InvalidProofOfPossession,
             RegistryError::SelfStakeBelowMinimum,

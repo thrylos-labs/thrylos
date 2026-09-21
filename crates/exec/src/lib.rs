@@ -67,9 +67,12 @@
 //!   next block. Last of all the block is checked to have neither created
 //!   nor destroyed value; one that did is rejected as
 //!   `RejectionReason::InvariantViolated`, halting the chain at it.
-//! - Native protocol calls are not metered — they are charged their declared
-//!   gas limit — and some do work that grows with the state (see [`native`]).
-//!   Metering them by measurement is required before this carries real value.
+//! - Native protocol calls have a deterministic fixed charge on success (an
+//!   abort burns the declared budget) and a hard per-block count. Every
+//!   state-dependent scan they can trigger is independently capped: the
+//!   validator registry and each validator's unbonding queue have protocol
+//!   ceilings. Reference-hardware calibration is still required before the
+//!   fixed charge is treated as economic pricing rather than a safety bound.
 //! - Declared-input enforcement for the object case is an abort when
 //!   the counter isn't declared, and structural underneath that: Sui's
 //!   Move has no ambient lookup by address, so `bump` can only touch the

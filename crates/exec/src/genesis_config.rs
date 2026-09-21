@@ -47,7 +47,7 @@
 
 use chain_modules::params::{GovernedParams, ParamError, ParamValues};
 use chain_modules::registry::RegistryError;
-use chain_modules::DEAD_SHARES;
+use chain_modules::{DEAD_SHARES, MAX_REGISTERED_VALIDATORS};
 use chain_types::bls::BlsSignature;
 use chain_types::codec::{decode_field, CodecError, Decode, Encode};
 use chain_types::collections::BTreeSet;
@@ -93,6 +93,12 @@ pub enum GenesisConfigError {
     Parameters(ParamError),
     /// No validators: the chain could not produce a block.
     NoValidators,
+    /// More validators than the first-testnet transport and bounded registry
+    /// can carry.
+    TooManyValidators,
+    /// The materialised genesis state exceeds the execution protocol's
+    /// entry or byte ceiling.
+    StateLimitExceeded,
     /// An allocation of nothing.
     ZeroAllocation { owner: Address },
     /// The same account is allocated to twice.
@@ -121,6 +127,13 @@ impl core::fmt::Display for GenesisConfigError {
         match self {
             Self::Parameters(err) => write!(f, "parameters: {err}"),
             Self::NoValidators => f.write_str("at least one validator is required"),
+            Self::TooManyValidators => write!(
+                f,
+                "at most {MAX_REGISTERED_VALIDATORS} validators may be present at genesis"
+            ),
+            Self::StateLimitExceeded => {
+                f.write_str("the genesis state exceeds the protocol state-size limit")
+            }
             Self::ZeroAllocation { .. } => f.write_str("an allocation of zero"),
             Self::DuplicateAllocation { .. } => f.write_str("an account is allocated to twice"),
             Self::DuplicateValidator { .. } => f.write_str("a validator operator is listed twice"),
@@ -189,6 +202,9 @@ impl GenesisConfig {
         GovernedParams::new(parameters).map_err(GenesisConfigError::Parameters)?;
         if validators.is_empty() {
             return Err(GenesisConfigError::NoValidators);
+        }
+        if validators.len() > MAX_REGISTERED_VALIDATORS {
+            return Err(GenesisConfigError::TooManyValidators);
         }
 
         let mut supply = 0u128;
@@ -470,6 +486,16 @@ mod tests {
         );
         let bare = config(vec![], vec![validator(1, MIN)]).unwrap();
         assert_eq!(bare.total_supply(), MIN + DEAD_SHARES);
+    }
+
+    #[test]
+    fn genesis_cannot_exceed_the_first_testnet_validator_cap() {
+        let repeated = validator(1, MIN);
+        let validators = vec![repeated; MAX_REGISTERED_VALIDATORS + 1];
+        assert_eq!(
+            config(vec![], validators),
+            Err(GenesisConfigError::TooManyValidators)
+        );
     }
 
     #[test]

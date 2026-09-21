@@ -2,7 +2,8 @@
 //! `chain_engine_api::Engine`. See `crate`'s doc comment for exactly
 //! what this pass covers and what's deferred.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, VecDeque};
 
 use chain_engine_api::timestamp::is_after_parent;
 use chain_engine_api::{
@@ -14,9 +15,9 @@ use chain_modules::fees::{next_base_fee, GENESIS_BASE_FEE};
 use chain_modules::params::GENESIS_PARAM_VALUES;
 use chain_modules::{
     ActiveValidator, Governance, GovernedParams, ParamError, ParamValues, StakingRegistry,
-    ValidatorId, DEAD_SHARES,
+    ValidatorId, DEAD_SHARES, MAX_ACTIVE_VALIDATORS,
 };
-use chain_state::{compute_root, StateKey, StateRoot, StateValue};
+use chain_state::{compute_root, StateChange, StateDiff, StateKey, StateRoot, StateValue};
 use chain_types::codec::{CodecError, Encode};
 use chain_types::{Address, BlockHeight, ChainId, GasAmount, GasPrice, Hash, Transaction};
 use move_core_types::identifier::Identifier;
@@ -92,11 +93,106 @@ pub const GENESIS_HEIGHT: u64 = 0;
 /// [`crate::genesis_config::GenesisConfig`].
 pub const GENESIS_TIMESTAMP_MILLIS: u64 = 0;
 
+/// Consensus-enforced ceilings for the flat state. Execution currently
+/// derives a block from a full in-memory snapshot, so these limits turn that
+/// work from a function of unbounded chain history into a bounded protocol
+/// cost. Raising either is a network upgrade, not a local tuning knob.
+pub const MAX_STATE_ENTRIES: usize = 100_000;
+pub const MAX_STATE_BYTES: usize = 64 * 1024 * 1024;
+
+/// One compact authentication record per possible first-testnet proposer.
+/// Unlike retaining full execution results, this stays small even when every
+/// candidate has a block-sized write set.
+const MAX_CACHED_EXECUTIONS: usize = MAX_ACTIVE_VALIDATORS;
+
+const fn state_dimensions_within_limits(entries: usize, bytes: usize) -> bool {
+    entries <= MAX_STATE_ENTRIES && bytes <= MAX_STATE_BYTES
+}
+
+fn state_within_limits(state: &BTreeMap<StateKey, StateValue>) -> bool {
+    if !state_dimensions_within_limits(state.len(), 0) {
+        return false;
+    }
+    let bytes = state.iter().try_fold(0usize, |total, (key, value)| {
+        total
+            .checked_add(key.as_bytes().len())?
+            .checked_add(value.as_bytes().len())
+    });
+    bytes.is_some_and(|bytes| state_dimensions_within_limits(state.len(), bytes))
+}
+
+fn credit_account_state(
+    state: &mut BTreeMap<StateKey, StateValue>,
+    address: Address,
+    amount: u128,
+) -> Result<(), CodecError> {
+    let mut account = chain_state::account::read_account(state, address)?;
+    account.balance = account.balance.saturating_add(amount);
+    chain_state::account::write_account(state, address, account);
+    let supply = read_supply(state).unwrap_or(0);
+    write_supply(state, supply.saturating_add(amount));
+    Ok(())
+}
+
+fn hash_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(bytes);
+}
+
+/// A compact commitment to every field finalisation trusts. It is local-only
+/// (never a wire or consensus format), with its own BLAKE3 derivation context
+/// so it cannot be confused with any protocol hash.
+fn execution_fingerprint(executed: &ExecutedBlock) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new_derive_key("thrylos.execution-cache.v1");
+    hasher.update(executed.state_root.as_hash().as_bytes());
+    hasher.update(&executed.gas_used.to_le_bytes());
+    hasher.update(
+        &u64::try_from(executed.state_diff.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for (key, change) in executed.state_diff.iter() {
+        hash_bytes(&mut hasher, key.as_bytes());
+        match change {
+            StateChange::Put(value) => {
+                hasher.update(&[1]);
+                hash_bytes(&mut hasher, value.as_bytes());
+            }
+            StateChange::Delete => {
+                hasher.update(&[0]);
+            }
+        }
+    }
+    hasher.update(
+        &u64::try_from(executed.outcomes.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    for outcome in &executed.outcomes {
+        hasher.update(&[outcome.code()]);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+#[derive(Clone, Copy)]
+struct CachedExecution {
+    parent_block_hash: Hash,
+    parent_state_root: StateRoot,
+    block_hash: Hash,
+    fingerprint: [u8; 32],
+}
+
 pub struct Executor {
     chain_id: ChainId,
     state: BTreeMap<StateKey, StateValue>,
+    state_root: StateRoot,
     tip_block_hash: Hash,
     runtime: MoveRuntime,
+    /// Compact commitments to recently checked candidates. Keeping hashes,
+    /// rather than block-sized write sets, bounds proposal-churn memory while
+    /// allowing an earlier candidate to become certified after a later one
+    /// was executed.
+    executions: RefCell<VecDeque<CachedExecution>>,
     /// Test-only: something to do to the state after the block's hooks,
     /// standing in for a module that misbehaves, so the check that must
     /// catch it can be shown to.
@@ -107,13 +203,14 @@ pub struct Executor {
 /// A fully checked next state, kept opaque so callers can persist the block
 /// before allowing the executor's in-memory canonical head to advance.
 ///
-/// [`Executor::prepare_finalisation`] performs every deterministic check and
-/// re-execution. [`Executor::apply_prepared_finalisation`] only installs the
-/// resulting state after confirming the executor has not moved meanwhile.
+/// [`Executor::prepare_finalisation`] checks that this exact result came from
+/// this executor. [`Executor::apply_prepared_finalisation`] applies its
+/// already-verified write set after confirming the executor has not moved.
 pub struct PreparedFinalisation {
     parent_block_hash: Hash,
     parent_state_root: StateRoot,
-    state: BTreeMap<StateKey, StateValue>,
+    state_root: StateRoot,
+    state_diff: StateDiff,
     block_hash: Hash,
 }
 
@@ -122,9 +219,11 @@ impl Executor {
         self.chain_id
     }
 
-    /// Validate and re-execute a finalisation without advancing canonical
+    /// Validate a previously executed result without advancing canonical
     /// in-memory state. A durable host commits `executed.state_diff` and the
-    /// block atomically after this succeeds, then installs this value.
+    /// block atomically after this succeeds, then installs this value. The
+    /// result must still be in this executor's bounded execution cache;
+    /// finalisation never re-executes a block.
     pub fn prepare_finalisation(
         &self,
         block: &Block,
@@ -142,19 +241,21 @@ impl Executor {
             });
         }
 
-        let mut scratch = self.state.clone();
-        let (gas_used, outcomes) =
-            self.apply_block(&mut scratch, block)
-                .map_err(|_| FinaliseError {
-                    reason: FinaliseErrorReason::StateRootMismatch,
-                })?;
-        let recomputed_root = compute_root(&scratch);
-        let recomputed_diff = chain_state::diff(&self.state, &scratch);
-        if recomputed_root != executed.state_root
-            || gas_used != executed.gas_used
-            || recomputed_diff != executed.state_diff
-            || outcomes != executed.outcomes
-        {
+        let block_hash = block.hash();
+        let fingerprint = execution_fingerprint(executed);
+        let cached = self
+            .executions
+            .borrow()
+            .iter()
+            .rev()
+            .find(|candidate| {
+                candidate.parent_block_hash == self.tip_block_hash
+                    && candidate.parent_state_root == self.state_root
+                    && candidate.block_hash == block_hash
+                    && candidate.fingerprint == fingerprint
+            })
+            .copied();
+        if cached.is_none() {
             return Err(FinaliseError {
                 reason: FinaliseErrorReason::StateRootMismatch,
             });
@@ -162,9 +263,10 @@ impl Executor {
 
         Ok(PreparedFinalisation {
             parent_block_hash: self.tip_block_hash,
-            parent_state_root: self.state_root(),
-            state: scratch,
-            block_hash: block.hash(),
+            parent_state_root: self.state_root,
+            state_root: executed.state_root,
+            state_diff: executed.state_diff.clone(),
+            block_hash,
         })
     }
 
@@ -176,14 +278,16 @@ impl Executor {
         prepared: PreparedFinalisation,
     ) -> Result<(), FinaliseError> {
         if self.tip_block_hash != prepared.parent_block_hash
-            || self.state_root() != prepared.parent_state_root
+            || self.state_root != prepared.parent_state_root
         {
             return Err(FinaliseError {
                 reason: FinaliseErrorReason::NotOnCanonicalChain,
             });
         }
-        self.state = prepared.state;
+        chain_state::apply(&mut self.state, &prepared.state_diff);
+        self.state_root = prepared.state_root;
         self.tip_block_hash = prepared.block_hash;
+        self.executions.get_mut().clear();
         Ok(())
     }
 
@@ -207,12 +311,12 @@ impl Executor {
         )?;
 
         for allocation in config.allocations() {
-            executor
-                .credit_account(
-                    Address::from_public_key(&allocation.owner),
-                    allocation.amount,
-                )
-                .map_err(|err| ExecutorError::Modules(err.to_string()))?;
+            credit_account_state(
+                &mut executor.state,
+                Address::from_public_key(&allocation.owner),
+                allocation.amount,
+            )
+            .map_err(|err| ExecutorError::Modules(err.to_string()))?;
         }
         for validator in config.validators() {
             let operator = Address::from_public_key(&validator.operator);
@@ -249,6 +353,13 @@ impl Executor {
                 "the supply is not what the genesis configuration creates".to_owned(),
             ));
         }
+        if !state_within_limits(&executor.state) {
+            return Err(ExecutorError::GenesisConfig(
+                GenesisConfigError::StateLimitExceeded,
+            ));
+        }
+        executor.state_root = compute_root(&executor.state);
+        executor.executions.get_mut().clear();
         Ok(executor)
     }
 
@@ -305,11 +416,14 @@ impl Executor {
         Governance::new(StateStore::new(&mut state))
             .init_genesis(params)
             .map_err(|err| ExecutorError::Modules(err.to_string()))?;
+        let state_root = compute_root(&state);
         Ok(Self {
             chain_id,
             state,
+            state_root,
             tip_block_hash: tip,
             runtime: Self::new_runtime()?,
+            executions: RefCell::new(VecDeque::new()),
             #[cfg(test)]
             fault: None,
         })
@@ -347,6 +461,11 @@ impl Executor {
         tip_block_hash: Hash,
         expected_root: StateRoot,
     ) -> Result<Self, ExecutorError> {
+        if !state_within_limits(&state) {
+            return Err(ExecutorError::Restore(
+                "the state exceeds the protocol's entry or byte limit",
+            ));
+        }
         if compute_root(&state) != expected_root {
             return Err(ExecutorError::Restore(
                 "the state does not hash to the recorded root",
@@ -358,8 +477,10 @@ impl Executor {
         let executor = Self {
             chain_id,
             state,
+            state_root: expected_root,
             tip_block_hash,
             runtime: Self::new_runtime()?,
+            executions: RefCell::new(VecDeque::new()),
             #[cfg(test)]
             fault: None,
         };
@@ -375,13 +496,13 @@ impl Executor {
         Ok(executor)
     }
 
-    pub fn state_root(&self) -> StateRoot {
-        compute_root(&self.state)
+    pub const fn state_root(&self) -> StateRoot {
+        self.state_root
     }
 
     /// The canonical flat state in key order. Persistence, replay and audit
     /// harnesses use this to initialise an independently updated copy and
-    /// compare its root with the executor's simple full recomputation.
+    /// compare its root with the executor's cached canonical root.
     pub fn state_entries(&self) -> impl Iterator<Item = (&StateKey, &StateValue)> {
         self.state.iter()
     }
@@ -436,11 +557,14 @@ impl Executor {
     ///
     /// Coin allocated this way is new supply, and is recorded as such.
     pub fn credit_account(&mut self, address: Address, amount: u128) -> Result<(), CodecError> {
-        let mut account = chain_state::account::read_account(&self.state, address)?;
-        account.balance = account.balance.saturating_add(amount);
-        chain_state::account::write_account(&mut self.state, address, account);
-        let supply = read_supply(&self.state).unwrap_or(0);
-        write_supply(&mut self.state, supply.saturating_add(amount));
+        let previous = self.state.clone();
+        credit_account_state(&mut self.state, address, amount)?;
+        if !state_within_limits(&self.state) {
+            self.state = previous;
+            return Err(CodecError::LengthTooLarge);
+        }
+        self.state_root = compute_root(&self.state);
+        self.executions.get_mut().clear();
         Ok(())
     }
 
@@ -1080,8 +1204,7 @@ impl Engine for Executor {
                 reason: RejectionReason::MalformedBlock,
             });
         }
-        if parent_state_root != self.state_root() || block.parent_block_hash != self.tip_block_hash
-        {
+        if parent_state_root != self.state_root || block.parent_block_hash != self.tip_block_hash {
             return Err(BlockRejected {
                 transaction_index: None,
                 reason: RejectionReason::MalformedBlock,
@@ -1090,12 +1213,32 @@ impl Engine for Executor {
 
         let mut scratch = self.state.clone();
         let (gas_used, outcomes) = self.apply_block(&mut scratch, block)?;
-        Ok(ExecutedBlock {
+        if !state_within_limits(&scratch) {
+            return Err(BlockRejected {
+                transaction_index: None,
+                reason: RejectionReason::MalformedBlock,
+            });
+        }
+        let executed = ExecutedBlock {
             state_root: compute_root(&scratch),
             gas_used,
             state_diff: chain_state::diff(&self.state, &scratch),
             outcomes,
-        })
+        };
+        let block_hash = block.hash();
+        let cached = CachedExecution {
+            parent_block_hash: self.tip_block_hash,
+            parent_state_root: self.state_root,
+            block_hash,
+            fingerprint: execution_fingerprint(&executed),
+        };
+        let mut executions = self.executions.borrow_mut();
+        executions.retain(|candidate| candidate.block_hash != block_hash);
+        if executions.len() == MAX_CACHED_EXECUTIONS {
+            executions.pop_front();
+        }
+        executions.push_back(cached);
+        Ok(executed)
     }
 
     fn finalise_block(
@@ -1113,6 +1256,9 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static BLOCK_APPLICATIONS: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn value_created_or_lost_is_the_invariant_rejection_and_damage_is_not() {
@@ -1185,6 +1331,59 @@ mod tests {
             timestamp_millis: 1_000,
             transactions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn finalisation_applies_the_cached_write_set_without_reexecuting() {
+        BLOCK_APPLICATIONS.store(0, Ordering::SeqCst);
+        let mut executor = faulty(|_| {
+            BLOCK_APPLICATIONS.fetch_add(1, Ordering::SeqCst);
+        });
+        let block = empty_block(&executor);
+        let executed = executor
+            .execute_block(executor.state_root(), &block)
+            .unwrap();
+        assert_eq!(BLOCK_APPLICATIONS.load(Ordering::SeqCst), 1);
+        executor.finalise_block(&block, &executed).unwrap();
+        assert_eq!(BLOCK_APPLICATIONS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_later_candidate_does_not_displace_an_earlier_one_that_becomes_certified() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        let first = empty_block(&executor);
+        let mut later = first.clone();
+        later.timestamp_millis = later.timestamp_millis.saturating_add(1);
+
+        let executed_first = executor
+            .execute_block(executor.state_root(), &first)
+            .unwrap();
+        executor
+            .execute_block(executor.state_root(), &later)
+            .unwrap();
+        executor.finalise_block(&first, &executed_first).unwrap();
+
+        assert_eq!(executor.tip_block_hash(), first.hash());
+        assert_eq!(
+            executor.head_timestamp_millis(),
+            Some(first.timestamp_millis)
+        );
+    }
+
+    #[test]
+    fn state_entry_and_payload_limits_include_the_boundary_but_not_one_past_it() {
+        assert!(state_dimensions_within_limits(
+            MAX_STATE_ENTRIES,
+            MAX_STATE_BYTES
+        ));
+        assert!(!state_dimensions_within_limits(
+            MAX_STATE_ENTRIES + 1,
+            MAX_STATE_BYTES
+        ));
+        assert!(!state_dimensions_within_limits(
+            MAX_STATE_ENTRIES,
+            MAX_STATE_BYTES + 1
+        ));
     }
 
     #[test]

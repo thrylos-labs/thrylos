@@ -42,7 +42,8 @@ pub use governance::{
 pub use params::{GovernedParams, ParamChange, ParamError, ParamValues, GENESIS_PARAM_VALUES};
 pub use registry::{
     coin_held_by_entry, ActiveValidator, Matured, RegistryError, SlashApplied, StakingRegistry,
-    ValidatorId, MAX_ACTIVE_VALIDATORS, MAX_MATURING_PER_CALL, MAX_UNBONDING_ENTRIES_PER_PAIR,
+    ValidatorId, MAX_ACTIVE_VALIDATORS, MAX_MATURING_PER_CALL, MAX_REGISTERED_VALIDATORS,
+    MAX_UNBONDING_ENTRIES_PER_PAIR, MAX_UNBONDING_ENTRIES_PER_VALIDATOR,
 };
 pub use slashing::{
     slash_bps, EvidenceRejection, SlashOrder, SlashingTracker, ValidatorStatus, BASE_SLASH_BPS,

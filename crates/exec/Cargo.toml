@@ -11,6 +11,7 @@ description = "Block executor wrapping MoveVM"
 workspace = true
 
 [dependencies]
+blake3.workspace = true
 chain-engine-api = { path = "../engine-api", version = "0.1.0" }
 chain-modules = { path = "../modules", version = "0.1.0" }
 chain-state = { path = "../state", version = "0.1.0" }

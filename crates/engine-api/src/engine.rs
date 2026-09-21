@@ -125,9 +125,9 @@ pub struct BlockRejected {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinaliseErrorReason {
-    /// `executed` doesn't match what a fresh `execute_block` of the same
-    /// `block` and parent would produce. Should be unreachable in a
-    /// correct caller; surfaced rather than trusted blindly because a
+    /// `executed` doesn't match the result this engine cached when it ran
+    /// `execute_block` for the same block and parent. Should be unreachable
+    /// in a correct caller; surfaced rather than trusted blindly because a
     /// reachable panic here would be a chain halt (`docs/spec.md`,
     /// "Determinism rules").
     StateRootMismatch,
@@ -142,7 +142,7 @@ impl core::fmt::Display for FinaliseErrorReason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::StateRootMismatch => f.write_str(
-                "the executed block's state root differs from a fresh execution of the same block",
+                "the executed block differs from the cached execution of the same block",
             ),
             Self::NotOnCanonicalChain => {
                 f.write_str("the block's parent is not the current chain head")
