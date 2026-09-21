@@ -8,8 +8,8 @@
 //!                          [--block-interval-ms <ms>] write a local network
 //! chain-node devnet start <dir> [--until-height <n>]  run a local network
 //! chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
-//! chain-node devnet check <dir>                       is it committing, and do the nodes agree?
 //!                                                     send a transaction to a running one
+//! chain-node devnet check <dir>                       is it committing, and do the nodes agree?
 //! chain-node --help | --version
 //! ```
 //!
@@ -66,6 +66,51 @@ const USAGE: &str = "usage:
   chain-node devnet start <dir> [--until-height <n>]
   chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
   chain-node devnet check <dir>
+  chain-node --help | --version
+
+`chain-node --help` says what each command does.";
+
+const HELP: &str = "chain-node runs a Thrylos validator, and can start a small local network of
+them to try. The local network's keys are public test keys: never use it for
+anything real.
+
+To try it (four validators on this machine; keep the path short):
+
+  chain-node devnet init /tmp/thrylos-devnet
+  chain-node devnet start /tmp/thrylos-devnet      Ctrl-C stops it
+
+and then, in another terminal:
+
+  chain-node devnet bump /tmp/thrylos-devnet       send a transaction
+  chain-node devnet check /tmp/thrylos-devnet      is it committing?
+
+The commands:
+
+  chain-node run <config.json> [--until-height <n>] [--stop-when-stdin-closes]
+      Run one node from its configuration file. It keeps running until it is
+      stopped, or until its chain reaches the height given.
+
+  chain-node network-key <file>
+      Make a node's network key, and print the public key its peers must list.
+
+  chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
+                          [--block-interval-ms <ms>]
+      Write the files of a local network. <dir> must be new or empty. By
+      default that is 4 validators (up to 65) making a block every 1000 ms.
+
+  chain-node devnet start <dir> [--until-height <n>]
+      Run that network: one node and one signer for each validator. It says
+      where each node's log and RPC are, and what to try next.
+
+  chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
+      Send one transaction to a running network from a funded test account, and
+      say whether it succeeded. It adds <amount> (1 by default) to a test
+      counter; <node> (1 by default) is the node it is sent to.
+
+  chain-node devnet check <dir>
+      Ask every node whether it is committing, and whether they agree on the
+      last block. It exits 1 if anything is wrong, and says what.
+
   chain-node --help | --version";
 
 fn fail(message: impl core::fmt::Display) -> ExitCode {
@@ -314,7 +359,7 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["-h" | "--help"] => {
-            println!("{USAGE}");
+            println!("{HELP}");
             ExitCode::SUCCESS
         }
         ["-V" | "--version"] => {

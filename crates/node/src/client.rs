@@ -200,6 +200,17 @@ pub fn signed_counter_bump(
     Ok(Transaction { body, signature })
 }
 
+/// A balance as the RPC gives it (a decimal string of base units) as a person
+/// reads it: `1,000 THRY`.
+fn balance_text(base_units: Option<&str>) -> String {
+    base_units
+        .and_then(|text| text.parse::<u128>().ok())
+        .map_or_else(
+            || "an unknown balance".to_owned(),
+            chain_text::format_amount,
+        )
+}
+
 /// What `devnet bump` reports as it goes.
 pub type Say<'a> = &'a mut dyn FnMut(String);
 
@@ -242,9 +253,9 @@ pub fn bump(
         .as_u64()
         .ok_or_else(|| ClientError::Transport("the account has no sequence number".into()))?;
     say(format!(
-        "account {account} ({}) has balance {} and is at sequence {sequence}",
+        "account {account} ({}) holds {} and is at sequence {sequence}",
         format_address(&sender),
-        account_now["balance"].as_str().unwrap_or("?")
+        balance_text(account_now["balance"].as_str())
     ));
 
     let head = status["latest"]["height"].as_u64().unwrap_or(0);
@@ -310,4 +321,26 @@ pub fn bump(
         std::thread::sleep(Duration::from_millis(100));
     }
     Err(ClientError::NotIncluded { hash })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::balance_text;
+
+    #[test]
+    fn a_balance_is_shown_in_tokens_and_not_in_base_units() {
+        assert_eq!(balance_text(Some("1000000000000")), "1,000 THRY");
+        assert_eq!(balance_text(Some("1500000000")), "1.5 THRY");
+        assert_eq!(balance_text(Some("1")), "0.000000001 THRY");
+        assert_eq!(balance_text(Some("0")), "0 THRY");
+        // The most a balance can be, which does not fit a smaller integer.
+        assert!(balance_text(Some("340282366920938463463374607431768211455")).ends_with(" THRY"));
+    }
+
+    #[test]
+    fn a_balance_that_is_missing_or_not_a_number_says_so_and_does_not_invent_one() {
+        for bad in [None, Some(""), Some("lots"), Some("-5"), Some("1.5")] {
+            assert_eq!(balance_text(bad), "an unknown balance", "{bad:?}");
+        }
+    }
 }

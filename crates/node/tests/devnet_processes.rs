@@ -388,6 +388,28 @@ fn devnet_start_runs_a_generated_network_to_a_height_and_leaves_no_process_behin
         4,
         "{said}"
     );
+    // It said where the RPCs are and what to try, in commands that can be
+    // pasted: the real program and the real directory.
+    for node in 1..=4 {
+        assert!(
+            said.contains(&format!("node {node}  http://127.0.0.1:")),
+            "{said}"
+        );
+    }
+    let program = env!("CARGO_BIN_EXE_chain-node");
+    let dir = network.dir.display();
+    assert!(
+        said.contains(&format!("{program} devnet bump {dir}")),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("{program} devnet check {dir}")),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("until every node has block {HEIGHT}")),
+        "{said}"
+    );
     // Each node was stopped by having its input closed, not killed: it left
     // through its own exit, with success.
     assert_eq!(
@@ -660,6 +682,9 @@ fn a_transaction_sent_with_devnet_bump_is_included_and_seen_from_another_node() 
     );
     let said = stdout(&first);
     assert!(said.contains("is at sequence 0"), "{said}");
+    // The balance is in tokens, not the base units the RPC counts in.
+    assert!(said.contains("holds 1,000 THRY"), "{said}");
+    assert!(!said.contains("1000000000000"), "{said}");
     assert!(said.contains("included in block"), "{said}");
     assert!(said.contains("is now at sequence 1"), "{said}");
 

@@ -29,6 +29,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
+use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -258,6 +259,21 @@ pub fn launch(
         processes.0.push(child);
     }
 
+    let rpcs: Vec<(usize, SocketAddr)> = nodes
+        .iter()
+        .filter_map(|(node, config)| config.rpc_listen.map(|address| (node.number, address)))
+        .collect();
+    let first_log = nodes.first().map(|(node, _)| node.node_log());
+    for line in next_steps(
+        options.node_exe,
+        dir,
+        first_log.as_deref(),
+        &rpcs,
+        options.until_height,
+    ) {
+        say(line);
+    }
+
     let mut ended: Vec<Option<ExitStatus>> = vec![None; nodes.len()];
     let mut reached = vec![false; nodes.len()];
     let mut signer_gone = vec![false; nodes.len()];
@@ -340,6 +356,50 @@ pub fn launch(
     }
 }
 
+/// What to tell someone who has just started a network: how it stops, where its
+/// RPCs are, and what to try next, with commands they can paste as they are.
+fn next_steps(
+    exe: &Path,
+    dir: &Path,
+    first_log: Option<&Path>,
+    rpcs: &[(usize, SocketAddr)],
+    until_height: Option<u64>,
+) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    lines.push(match until_height {
+        None => "the network is running: Ctrl-C stops every node.".to_owned(),
+        Some(height) => format!(
+            "the network is running until every node has block {height}: Ctrl-C stops it sooner."
+        ),
+    });
+    if !rpcs.is_empty() {
+        lines.push("RPC (JSON-RPC over HTTP, from this machine only):".to_owned());
+        for (number, address) in rpcs {
+            lines.push(format!("  node {number}  http://{address}"));
+        }
+    }
+    lines.push("to try, in another terminal:".to_owned());
+    // The descriptions are shell comments, so a whole line can be pasted as it is.
+    lines.push(format!(
+        "  {} devnet bump {}    # send a transaction and watch it get included",
+        exe.display(),
+        dir.display()
+    ));
+    lines.push(format!(
+        "  {} devnet check {}   # is it committing, and do the nodes agree?",
+        exe.display(),
+        dir.display()
+    ));
+    if let Some(log) = first_log {
+        lines.push(format!(
+            "  tail -f {}    # watch blocks being made",
+            log.display()
+        ));
+    }
+    lines.push(String::new());
+    lines
+}
+
 /// The highest block the log at `path` says was committed, counting only what
 /// was written after its first `from` bytes.
 fn committed_since(path: &Path, from: u64) -> u64 {
@@ -352,4 +412,99 @@ fn committed_since(path: &Path, from: u64) -> u64 {
         return 0;
     }
     text.lines().filter_map(committed_height).max().unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+
+    fn rpcs() -> Vec<(usize, SocketAddr)> {
+        vec![
+            (1, "127.0.0.1:26660".parse().unwrap()),
+            (2, "127.0.0.1:26661".parse().unwrap()),
+        ]
+    }
+
+    fn said(until: Option<u64>, rpcs: &[(usize, SocketAddr)]) -> String {
+        next_steps(
+            Path::new("/opt/chain-node"),
+            Path::new("/tmp/thrylos-devnet"),
+            Some(Path::new("/tmp/thrylos-devnet/node1/node.log")),
+            rpcs,
+            until,
+        )
+        .join("\n")
+    }
+
+    #[test]
+    fn a_network_that_runs_until_stopped_says_how_to_stop_it_where_its_rpcs_are_and_what_to_try() {
+        let text = said(None, &rpcs());
+        assert!(text.contains("Ctrl-C stops every node"), "{text}");
+        assert!(text.contains("node 1  http://127.0.0.1:26660"), "{text}");
+        assert!(text.contains("node 2  http://127.0.0.1:26661"), "{text}");
+        // Commands that can be pasted as they are: the program and the directory.
+        assert!(
+            text.contains("/opt/chain-node devnet bump /tmp/thrylos-devnet"),
+            "{text}"
+        );
+        assert!(
+            text.contains("/opt/chain-node devnet check /tmp/thrylos-devnet"),
+            "{text}"
+        );
+        assert!(
+            text.contains("tail -f /tmp/thrylos-devnet/node1/node.log"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn every_command_in_the_note_can_be_pasted_whole_because_its_description_is_a_comment() {
+        let text = said(None, &rpcs());
+        let commands: Vec<&str> = text
+            .lines()
+            .filter(|line| {
+                line.contains("devnet bump")
+                    || line.contains("devnet check")
+                    || line.contains("tail -f")
+            })
+            .collect();
+        assert_eq!(commands.len(), 3, "{text}");
+        for line in commands {
+            // Everything after the `#` is a comment to the shell; nothing else
+            // may follow the command's last argument.
+            let (command, comment) = line
+                .split_once('#')
+                .unwrap_or_else(|| panic!("no comment: {line}"));
+            assert!(!comment.trim().is_empty(), "{line}");
+            assert!(
+                !command.contains("send a") && !command.contains("watch blocks"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_network_told_to_stop_at_a_height_says_so_and_that_ctrl_c_still_works() {
+        let text = said(Some(30), &rpcs());
+        assert!(text.contains("until every node has block 30"), "{text}");
+        assert!(text.contains("Ctrl-C stops it sooner"), "{text}");
+        assert!(!text.contains("Ctrl-C stops every node"), "{text}");
+    }
+
+    #[test]
+    fn nodes_with_no_rpc_have_no_rpc_section_and_the_rest_still_stands() {
+        let text = said(None, &[]);
+        assert!(!text.contains("RPC"), "{text}");
+        assert!(text.contains("devnet bump"), "{text}");
+    }
+
+    #[test]
+    fn the_note_never_uses_the_words_the_launcher_reports_progress_in() {
+        // A caller counts "reached height" lines to know every node is done.
+        let text = said(Some(5), &rpcs());
+        assert!(!text.contains("reached height"), "{text}");
+        assert!(!text.contains("committed block"), "{text}");
+    }
 }

@@ -28,6 +28,8 @@ target/debug/chain-node devnet check /tmp/thrylos-devnet  # is it committing, an
 curl -s -d '{"jsonrpc":"2.0","id":1,"method":"status"}' http://127.0.0.1:26660   # node 1's RPC (`devnet init` prints them)
 ```
 
+`chain-node --help` says what each command does, and `devnet start` prints each node's RPC address and what to try next.
+
 The genesis tool works on its own too:
 
 ```bash

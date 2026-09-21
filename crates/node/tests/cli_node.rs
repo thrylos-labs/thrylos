@@ -43,6 +43,46 @@ fn help_and_version_are_answers_not_errors() {
 }
 
 #[test]
+fn help_says_what_each_command_does_and_warns_that_the_test_keys_are_public() {
+    let help = stdout(&run(&["--help"]));
+    for command in [
+        "chain-node run <config.json>",
+        "chain-node network-key <file>",
+        "chain-node devnet init <dir>",
+        "chain-node devnet start <dir>",
+        "chain-node devnet bump <dir>",
+        "chain-node devnet check <dir>",
+    ] {
+        // The command's own paragraph: its synopsis, then a sentence about it.
+        let at = help.find(command);
+        assert!(at.is_some(), "no {command:?} in:\n{help}");
+        let at = at.unwrap();
+        let paragraph = help[at..].split("\n\n").next().unwrap_or_default();
+        assert!(
+            paragraph.contains('.') && paragraph.lines().count() >= 2,
+            "{command:?} has no description:\n{paragraph}"
+        );
+    }
+    assert!(help.contains("public test keys"), "{help}");
+    assert!(help.contains("Ctrl-C stops it"), "{help}");
+    // The example a newcomer would type, in order.
+    let init = help.find("devnet init /tmp/thrylos-devnet").unwrap();
+    let start = help.find("devnet start /tmp/thrylos-devnet").unwrap();
+    let bump = help.find("devnet bump /tmp/thrylos-devnet").unwrap();
+    assert!(init < start && start < bump, "{help}");
+}
+
+#[test]
+fn a_usage_error_points_at_help() {
+    for args in [&[][..], &["bogus"], &["run"], &["devnet", "check"]] {
+        let output = run(args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(stderr(&output).contains("usage:"), "{args:?}");
+        assert!(stderr(&output).contains("chain-node --help"), "{args:?}");
+    }
+}
+
+#[test]
 fn unknown_commands_and_missing_arguments_print_usage_and_exit_two() {
     for args in [
         &[][..],
