@@ -72,7 +72,7 @@ mod tests {
         ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValue, ConsensusVote,
     };
     use chain_types::bls::BlsSignature;
-    use chain_types::{BlockHeight, Hash};
+    use chain_types::{BlockHeight, ChainId, Hash};
     use malachite_core_types::{NilOrVal, Round, SignedProposal, SignedVote, VoteType};
 
     use super::*;
@@ -101,6 +101,7 @@ mod tests {
 
     fn proposal_by(author: u8) -> Message {
         let proposal = ConsensusProposal {
+            chain_id: ChainId(1),
             height: ConsensusHeight(BlockHeight(1)),
             round: Round::new(0),
             value: ConsensusValue(Hash::from_bytes([1; 32])),
@@ -115,6 +116,7 @@ mod tests {
 
     fn prevote_by(author: u8) -> Message {
         let vote = ConsensusVote {
+            chain_id: ChainId(1),
             height: ConsensusHeight(BlockHeight(1)),
             round: Round::new(0),
             value_id: NilOrVal::Nil,

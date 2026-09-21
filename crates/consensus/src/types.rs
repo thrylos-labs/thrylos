@@ -394,11 +394,14 @@ mod tests {
     use super::*;
 
     /// The layout this file wrote by hand before `chain_types::Vote`
-    /// existed. Signatures made under it must stay valid, so it must
-    /// stay byte-for-byte what `ConsensusVote` encodes to.
+    /// existed, with the chain ID that votes are now bound to written after
+    /// the tag. (A signature made before the chain was bound in is
+    /// deliberately no longer valid: no chain existed yet to keep it for.) It
+    /// must stay byte-for-byte what `ConsensusVote` encodes to.
     fn legacy_encoding(vote: &ConsensusVote) -> Vec<u8> {
         let mut out = Vec::new();
         0u8.encode(&mut out);
+        vote.chain_id.encode(&mut out);
         vote.height.0.encode(&mut out);
         round_as_u64(vote.round).encode(&mut out);
         match vote.value_id {
@@ -422,6 +425,7 @@ mod tests {
             ] {
                 for round in [Round::new(0), Round::new(7)] {
                     let vote = ConsensusVote {
+                        chain_id: ChainId(1),
                         height: ConsensusHeight(BlockHeight(42)),
                         round,
                         value_id,

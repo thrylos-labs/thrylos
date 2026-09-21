@@ -7,7 +7,7 @@
 use chain_engine_api::AbortReason;
 use chain_modules::GovernedParams;
 use chain_state::{StateKey, StateValue};
-use chain_types::BlockHeight;
+use chain_types::{BlockHeight, ChainId};
 
 /// What a call would change, held back rather than applied: handlers
 /// read state and return one of these, and only the caller decides
@@ -48,6 +48,8 @@ impl From<AbortReason> for CallError {
 /// governed parameters as they stood when the block began.
 #[derive(Clone, Copy)]
 pub(crate) struct BlockCtx {
+    /// The chain this executor runs: what evidence must have been signed for.
+    pub chain_id: ChainId,
     pub height: BlockHeight,
     pub timestamp_ms: u64,
     pub base_fee: u64,

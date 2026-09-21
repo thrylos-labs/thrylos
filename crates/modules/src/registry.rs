@@ -105,7 +105,7 @@ use ruint::aliases::U256;
 
 use chain_types::bls::BlsSignature;
 use chain_types::codec::{decode_field, CodecError, Decode, Encode};
-use chain_types::{Address, BlsPublicKey, DuplicateVoteEvidence};
+use chain_types::{Address, BlsPublicKey, ChainId, DuplicateVoteEvidence};
 
 use crate::params::GovernedParams;
 use crate::slashing::{
@@ -947,15 +947,17 @@ impl<S: Store> StakingRegistry<S> {
     pub fn submit_evidence(
         &mut self,
         evidence: &DuplicateVoteEvidence,
+        chain_id: ChainId,
         infraction_time_ms: u64,
         now_ms: u64,
     ) -> Result<Vec<SlashApplied>, RegistryError> {
-        self.atomic(|reg| reg.do_submit_evidence(evidence, infraction_time_ms, now_ms))
+        self.atomic(|reg| reg.do_submit_evidence(evidence, chain_id, infraction_time_ms, now_ms))
     }
 
     fn do_submit_evidence(
         &mut self,
         evidence: &DuplicateVoteEvidence,
+        chain_id: ChainId,
         infraction_time_ms: u64,
         now_ms: u64,
     ) -> Result<Vec<SlashApplied>, RegistryError> {
@@ -977,6 +979,7 @@ impl<S: Store> StakingRegistry<S> {
             .submit_evidence(
                 evidence,
                 &validator.consensus_key,
+                chain_id,
                 infraction_time_ms,
                 stake,
                 total,
@@ -1125,6 +1128,9 @@ mod tests {
 
     use super::*;
     use crate::params::{ParamValues, DAY_MS, MIN_UNBONDING_PERIOD_MS};
+
+    /// The chain the tests' evidence is signed for, and judged on.
+    const CHAIN: ChainId = ChainId(1);
     use crate::slashing::DOWNTIME_JAIL_MS;
     use crate::store::MemStore;
     use blst::min_pk::SecretKey;
@@ -1205,6 +1211,7 @@ mod tests {
     fn offence(seed: u8) -> DuplicateVoteEvidence {
         let sk = secret(seed);
         let vote = |value: u8| Vote {
+            chain_id: CHAIN,
             height: BlockHeight(10),
             round: Round(0),
             value: Some(Hash::from_bytes([value; 32])),
@@ -1460,7 +1467,7 @@ mod tests {
         reg.delegate(&id_of(1), staker(1), 100).unwrap();
         // Half of all stake equivocating: the penalty is 100%, which
         // leaves each share worth a fraction of a unit.
-        reg.submit_evidence(&offence(1), T0, T0).unwrap();
+        reg.submit_evidence(&offence(1), CHAIN, T0, T0).unwrap();
         assert!(reg.stake_of(&id_of(1), &staker(1)).unwrap() < 100);
 
         let amount = reg
@@ -1513,7 +1520,7 @@ mod tests {
             register(&mut reg, seed, 5_000);
         }
         reg.jail_for_downtime(&id_of(2), T0).unwrap();
-        reg.submit_evidence(&offence(3), T0, T0).unwrap();
+        reg.submit_evidence(&offence(3), CHAIN, T0, T0).unwrap();
 
         assert_eq!(ids(&reg.active_set(&params()).unwrap()), vec![id_of(1)]);
     }
@@ -1617,7 +1624,7 @@ mod tests {
         register(&mut reg, 2, 990_000); // ~99% of stake elsewhere
 
         // 10_000 of ~1_000_000 bonded: 1% -> 3% scaled -> floor of 5%.
-        let applied = reg.submit_evidence(&offence(1), T0, T0).unwrap();
+        let applied = reg.submit_evidence(&offence(1), CHAIN, T0, T0).unwrap();
         assert_eq!(applied.len(), 1);
         assert_eq!(applied[0].validator, id_of(1));
         assert_eq!(applied[0].ordered, 500, "5% of 10_000");
@@ -1658,7 +1665,7 @@ mod tests {
         assert_eq!(reg.total_unbonding().unwrap(), 5_000);
 
         let applied = reg
-            .submit_evidence(&offence(1), T0, T0 + 2 * DAY_MS)
+            .submit_evidence(&offence(1), CHAIN, T0, T0 + 2 * DAY_MS)
             .unwrap();
         assert_eq!(applied[0].burned, applied[0].ordered);
 
@@ -1685,7 +1692,7 @@ mod tests {
         // Left a day *before* the infraction: that stake wasn't at risk.
         reg.begin_unstake(&params(), &id_of(1), staker(1), 5_000, T0 - DAY_MS)
             .unwrap();
-        reg.submit_evidence(&offence(1), T0, T0).unwrap();
+        reg.submit_evidence(&offence(1), CHAIN, T0, T0).unwrap();
 
         let paid = reg.process(T0 - DAY_MS + MIN_UNBONDING_PERIOD_MS).unwrap();
         assert_eq!(paid.len(), 1);
@@ -1703,7 +1710,8 @@ mod tests {
             register(&mut reg, 2, 990_000);
             reg.begin_unstake(&params(), &id_of(1), staker(1), 5_000, began_at)
                 .unwrap();
-            reg.submit_evidence(&offence(1), T0, T0 + DAY_MS).unwrap();
+            reg.submit_evidence(&offence(1), CHAIN, T0, T0 + DAY_MS)
+                .unwrap();
             reg.process(began_at + MIN_UNBONDING_PERIOD_MS).unwrap()[0].amount
         };
         assert!(leaver_paid(T0) < 5_000, "at the instant: slashed");
@@ -1726,7 +1734,7 @@ mod tests {
         assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)).unwrap(), 0);
 
         let applied = reg
-            .submit_evidence(&offence(1), T0, T0 + 2 * DAY_MS)
+            .submit_evidence(&offence(1), CHAIN, T0, T0 + 2 * DAY_MS)
             .unwrap();
         // Half of all bonded stake equivocating: the full penalty, taken
         // out of the queue since the pool has nothing left to give.
@@ -1813,11 +1821,30 @@ mod tests {
     }
 
     #[test]
+    fn evidence_for_another_chain_convicts_nobody_here() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        // Genuine equivocation by a registered validator, but judged on a
+        // chain other than the one its votes were signed for.
+        let result = reg.submit_evidence(&offence(1), ChainId(2), T0, T0);
+        assert_eq!(
+            result,
+            Err(RegistryError::Evidence(EvidenceRejection::Invalid(
+                chain_types::EvidenceError::WrongChain
+            )))
+        );
+        assert_eq!(reg.status(&id_of(1)).unwrap(), ValidatorStatus::Active);
+        assert_eq!(reg.stake_of(&id_of(1), &operator_of(1)).unwrap(), 5_000);
+        // And on its own chain, the same evidence still convicts.
+        assert!(reg.submit_evidence(&offence(1), CHAIN, T0, T0).is_ok());
+    }
+
+    #[test]
     fn evidence_against_an_unknown_validator_is_refused() {
         let mut reg = new_registry();
         register(&mut reg, 2, 5_000);
         assert_eq!(
-            reg.submit_evidence(&offence(1), T0, T0),
+            reg.submit_evidence(&offence(1), CHAIN, T0, T0),
             Err(RegistryError::UnknownValidator)
         );
     }
@@ -1833,7 +1860,7 @@ mod tests {
         forged.vote_a.validator = id_of(1).0;
         forged.vote_b.validator = id_of(1).0;
 
-        let result = reg.submit_evidence(&forged, T0, T0);
+        let result = reg.submit_evidence(&forged, CHAIN, T0, T0);
         assert!(matches!(
             result,
             Err(RegistryError::Evidence(EvidenceRejection::Invalid(_)))
@@ -1849,9 +1876,9 @@ mod tests {
         register(&mut reg, 2, 20_000);
         register(&mut reg, 3, 60_000);
 
-        let first = reg.submit_evidence(&offence(1), T0, T0).unwrap();
+        let first = reg.submit_evidence(&offence(1), CHAIN, T0, T0).unwrap();
         assert_eq!(first.len(), 1);
-        let second = reg.submit_evidence(&offence(2), T0, T0).unwrap();
+        let second = reg.submit_evidence(&offence(2), CHAIN, T0, T0).unwrap();
         assert_eq!(
             second.len(),
             2,
@@ -1997,7 +2024,7 @@ mod tests {
                         paid += reg.process(now).unwrap().iter().map(|m| m.amount).sum::<u128>();
                     }
                     Op::Evidence { validator } => {
-                        if let Ok(applied) = reg.submit_evidence(&offence(validator + 1), now, now) {
+                        if let Ok(applied) = reg.submit_evidence(&offence(validator + 1), CHAIN, now, now) {
                             burned += applied.iter().map(|a| a.burned).sum::<u128>();
                         }
                     }
@@ -2133,7 +2160,7 @@ mod tests {
         reg.begin_unstake(&params(), &id_of(2), operator_of(2), 1_000, T0)
             .unwrap();
         reg.jail_for_downtime(&id_of(2), T0).unwrap();
-        reg.submit_evidence(&offence(1), T0, T0).unwrap();
+        reg.submit_evidence(&offence(1), CHAIN, T0, T0).unwrap();
 
         let restarted = StakingRegistry::new(reg.store().clone());
         assert_eq!(restarted, reg);

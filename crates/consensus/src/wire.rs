@@ -514,6 +514,7 @@ mod tests {
     fn vote(vote_type: VoteType, value: NilOrVal<Hash>) -> SignedVote<ThrylosContext> {
         SignedVote::new(
             ConsensusVote {
+                chain_id: ChainId(7),
                 height: ConsensusHeight(BlockHeight(7)),
                 round: Round::new(3),
                 value_id: value,
@@ -561,6 +562,7 @@ mod tests {
             ))),
             Message::Consensus(SignedConsensusMsg::Proposal(SignedProposal::new(
                 ConsensusProposal {
+                    chain_id: ChainId(7),
                     height: ConsensusHeight(BlockHeight(7)),
                     round: Round::new(2),
                     value: ConsensusValue(hash(6)),
@@ -571,6 +573,7 @@ mod tests {
             ))),
             Message::Consensus(SignedConsensusMsg::Proposal(SignedProposal::new(
                 ConsensusProposal {
+                    chain_id: ChainId(7),
                     height: ConsensusHeight(BlockHeight(7)),
                     round: Round::new(2),
                     value: ConsensusValue(hash(6)),
@@ -708,11 +711,12 @@ mod tests {
 
     #[test]
     fn a_round_no_encoder_would_write_is_refused() {
-        // A proposal's round sits after the tag and the 8-byte height.
+        // A proposal's round sits after the tag, the 8-byte chain ID and the
+        // 8-byte height.
         let bytes = encode_message(&messages()[2]);
         for bad in [1u64 << 32, u64::MAX - 1] {
             let mut altered = bytes.clone();
-            altered[9..17].copy_from_slice(&bad.to_le_bytes());
+            altered[17..25].copy_from_slice(&bad.to_le_bytes());
             assert_eq!(
                 decode_message(&altered).unwrap_err(),
                 CodecError::InvalidValue
@@ -721,7 +725,7 @@ mod tests {
         // The largest real round and nil are fine.
         for good in [u64::from(u32::MAX), u64::MAX] {
             let mut altered = bytes.clone();
-            altered[9..17].copy_from_slice(&good.to_le_bytes());
+            altered[17..25].copy_from_slice(&good.to_le_bytes());
             assert!(decode_message(&altered).is_ok());
         }
     }

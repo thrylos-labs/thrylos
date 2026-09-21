@@ -30,7 +30,11 @@ use chain_consensus::types::{
 use chain_consensus::wire::encode_commit_record;
 use chain_engine_api::Block;
 use chain_types::bls::{BlsSignature, DST_BEACON, DST_VOTE};
-use chain_types::{Address, BlockHeight, Encode, Hash};
+use chain_types::{Address, BlockHeight, ChainId, Encode, Hash};
+
+/// The chain the tests' votes are signed for, and their context runs on.
+const CHAIN: ChainId = ChainId(1);
+
 use malachite_core_consensus::ThresholdParams;
 use malachite_core_types::{CommitCertificate, CommitSignature, NilOrVal, Round, VoteType};
 
@@ -77,6 +81,7 @@ fn fixture() -> (
         });
 
         let vote = ConsensusVote {
+            chain_id: CHAIN,
             height,
             round,
             value_id: NilOrVal::Val(value),
@@ -124,13 +129,13 @@ fn individual_signatures_at_the_validator_cap() {
     let params = ThresholdParams::default();
 
     for _ in 0..WARMUP_RUNS {
-        verify_commit_certificate(&certificate, &validator_set, params).unwrap();
+        verify_commit_certificate(&certificate, &validator_set, params, CHAIN).unwrap();
     }
 
     let mut samples = Vec::with_capacity(SAMPLES);
     for _ in 0..SAMPLES {
         let started = Instant::now();
-        verify_commit_certificate(&certificate, &validator_set, params).unwrap();
+        verify_commit_certificate(&certificate, &validator_set, params, CHAIN).unwrap();
         samples.push(started.elapsed());
     }
     samples.sort_unstable();

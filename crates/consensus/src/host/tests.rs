@@ -511,6 +511,7 @@ fn certified<D: Storage>(host: &HostWith<D>, block: &Block) -> CommitRecord {
     let commit_signatures = [1u8, 2]
         .map(|n| {
             let vote = ConsensusVote {
+                chain_id: ChainId(1),
                 height: ConsensusHeight(block.height),
                 round: Round::new(0),
                 value_id: NilOrVal::Val(id),
@@ -801,6 +802,7 @@ fn vote_signature(
 ) -> (ConsensusAddress, BlsSignature) {
     let address = ConsensusAddress(Address::from_public_key(&operator(n)));
     let vote = crate::types::ConsensusVote {
+        chain_id: ChainId(1),
         height: ConsensusHeight(BlockHeight(1)),
         round: Round::new(round),
         value_id: value,

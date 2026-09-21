@@ -76,7 +76,7 @@ use ruint::aliases::U256;
 
 use chain_types::codec::{decode_field, CodecError, Decode, Encode};
 use chain_types::collections::BTreeMap;
-use chain_types::{Address, BlsPublicKey, DuplicateVoteEvidence, EvidenceError};
+use chain_types::{Address, BlsPublicKey, ChainId, DuplicateVoteEvidence, EvidenceError};
 
 use crate::params::{DAY_MS, MAX_EVIDENCE_AGE_MS};
 use crate::store::{be64, load, prefix_end, save, tag, Corrupt, ReadStore, Store};
@@ -422,7 +422,9 @@ impl<S: Store> SlashingTracker<S> {
 
     /// Admits `evidence` and returns what to burn, or says why not.
     ///
-    /// `public_key` is the validator's registered BLS key. The
+    /// `public_key` is the validator's registered BLS key, and
+    /// `expected_chain_id` the chain this is running on: both votes must have
+    /// been signed for it, or they are evidence of nothing here. The
     /// remaining arguments must come from chain state, never from the
     /// evidence or its submitter: `infraction_time_ms` is the timestamp of
     /// the block at `evidence.height()`, `validator_stake` the validator's
@@ -431,10 +433,14 @@ impl<S: Store> SlashingTracker<S> {
     /// everything is read before anything is written.
     ///
     /// The returned orders are in validator-address order.
+    // Each argument is a distinct fact taken from chain state, documented above;
+    // bundling them would only move the count into a struct built at every call.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_evidence(
         &mut self,
         evidence: &DuplicateVoteEvidence,
         public_key: &BlsPublicKey,
+        expected_chain_id: ChainId,
         infraction_time_ms: u64,
         validator_stake: u128,
         total_bonded_stake: u128,
@@ -463,7 +469,7 @@ impl<S: Store> SlashingTracker<S> {
             return Err(EvidenceRejection::StakeExceedsBonded);
         }
         evidence
-            .verify(public_key)
+            .verify(public_key, expected_chain_id)
             .map_err(EvidenceRejection::Invalid)?;
 
         // Admitted. Read what the new conviction correlates with, and
@@ -655,6 +661,9 @@ mod tests {
 
     use super::*;
     use crate::staking::StakingPool;
+
+    /// The chain the tests' evidence is signed for, and judged on.
+    const CHAIN: ChainId = ChainId(1);
     use crate::store::MemStore;
     use blst::min_pk::SecretKey;
     use chain_types::bls::{BlsSignature, DST_VOTE};
@@ -678,6 +687,7 @@ mod tests {
         let sk = SecretKey::key_gen(&[seed; 32], &[]).unwrap();
         let pk = BlsPublicKey::from_bytes(sk.sk_to_pk().to_bytes()).unwrap();
         let vote = |value: u8| Vote {
+            chain_id: CHAIN,
             height: BlockHeight(10),
             round: Round(0),
             value: Some(Hash::from_bytes([value; 32])),
@@ -709,7 +719,7 @@ mod tests {
         total: u128,
     ) -> Result<Vec<SlashOrder>, EvidenceRejection> {
         let (evidence, pk) = offence(seed);
-        tracker.submit_evidence(&evidence, &pk, NOW - age_ms, stake, total, NOW)
+        tracker.submit_evidence(&evidence, &pk, CHAIN, NOW - age_ms, stake, total, NOW)
     }
 
     fn burned(orders: &[SlashOrder], seed: u8) -> u128 {
@@ -833,7 +843,8 @@ mod tests {
         let (evidence, _) = offence(1);
         let (_, someone_elses_key) = offence(2);
 
-        let result = tracker.submit_evidence(&evidence, &someone_elses_key, NOW, 100, 1_000, NOW);
+        let result =
+            tracker.submit_evidence(&evidence, &someone_elses_key, CHAIN, NOW, 100, 1_000, NOW);
         assert_eq!(
             result,
             Err(EvidenceRejection::Invalid(EvidenceError::InvalidSignature))
@@ -842,11 +853,25 @@ mod tests {
     }
 
     #[test]
+    fn evidence_signed_for_another_chain_is_refused_and_leaves_no_trace() {
+        let mut tracker = new_tracker();
+        let (evidence, pk) = offence(1);
+        assert_eq!(
+            tracker.submit_evidence(&evidence, &pk, ChainId(2), NOW, 100, 1_000, NOW),
+            Err(EvidenceRejection::Invalid(EvidenceError::WrongChain))
+        );
+        assert_eq!(tracker, new_tracker(), "a rejection must leave no trace");
+        assert!(tracker
+            .submit_evidence(&evidence, &pk, CHAIN, NOW, 100, 1_000, NOW)
+            .is_ok());
+    }
+
+    #[test]
     fn evidence_from_the_future_is_refused() {
         let mut tracker = new_tracker();
         let (evidence, pk) = offence(1);
         assert_eq!(
-            tracker.submit_evidence(&evidence, &pk, NOW + 1, 100, 1_000, NOW),
+            tracker.submit_evidence(&evidence, &pk, CHAIN, NOW + 1, 100, 1_000, NOW),
             Err(EvidenceRejection::FromTheFuture)
         );
         assert_eq!(tracker, new_tracker());
@@ -984,13 +1009,13 @@ mod tests {
         let (evidence, pk) = offence(1);
         let old = 10 * DAY_MS;
         tracker
-            .submit_evidence(&evidence, &pk, old, 100, 10_000, old + DAY_MS)
+            .submit_evidence(&evidence, &pk, CHAIN, old, 100, 10_000, old + DAY_MS)
             .unwrap();
 
         let later = old + CORRELATION_WINDOW_MS + 1;
         let (evidence, pk) = offence(2);
         let orders = tracker
-            .submit_evidence(&evidence, &pk, later, 100, 10_000, later)
+            .submit_evidence(&evidence, &pk, CHAIN, later, 100, 10_000, later)
             .unwrap();
         // 1% of the stake, alone: 3% scaled, so the 5% floor: 5 of 100.
         assert_eq!(
@@ -1012,7 +1037,7 @@ mod tests {
         let mut tracker = new_tracker();
         let (evidence, pk) = offence(1);
         tracker
-            .submit_evidence(&evidence, &pk, 0, 100, 1_000, DAY_MS)
+            .submit_evidence(&evidence, &pk, CHAIN, 0, 100, 1_000, DAY_MS)
             .unwrap();
         assert!(tracker.total_slashed(&addr_of(1)).unwrap().is_some());
 
@@ -1020,7 +1045,7 @@ mod tests {
         let much_later = 3 * CORRELATION_WINDOW_MS;
         let (evidence, pk) = offence(2);
         tracker
-            .submit_evidence(&evidence, &pk, much_later, 100, 1_000, much_later)
+            .submit_evidence(&evidence, &pk, CHAIN, much_later, 100, 1_000, much_later)
             .unwrap();
         assert_eq!(tracker.total_slashed(&addr_of(1)).unwrap(), None);
         // ...but the first validator is still tombstoned.
@@ -1046,7 +1071,7 @@ mod tests {
                     let seed = u8::try_from(i + 1).unwrap();
                     let (evidence, pk) = offence(seed);
                     tracker
-                        .submit_evidence(&evidence, &pk, NOW - offset, stake, total, NOW)
+                        .submit_evidence(&evidence, &pk, CHAIN, NOW - offset, stake, total, NOW)
                         .unwrap();
                 }
                 (0..offenders.len())
@@ -1228,7 +1253,7 @@ mod tests {
         let much_later = NOW + 3 * CORRELATION_WINDOW_MS;
         let (evidence, pk) = offence(2);
         tracker
-            .submit_evidence(&evidence, &pk, much_later, 100, 10_000, much_later)
+            .submit_evidence(&evidence, &pk, CHAIN, much_later, 100, 10_000, much_later)
             .unwrap();
 
         let store = tracker.store();
@@ -1364,7 +1389,7 @@ mod tests {
     ) -> Vec<SlashOrder> {
         let (evidence, pk) = offence(seed);
         tracker
-            .submit_evidence(&evidence, &pk, infraction_ms, stake, total, now_ms)
+            .submit_evidence(&evidence, &pk, CHAIN, infraction_ms, stake, total, now_ms)
             .unwrap()
     }
 

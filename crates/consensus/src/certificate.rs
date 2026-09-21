@@ -285,6 +285,9 @@ mod tests {
     use chain_types::{Address, BlockHeight, BlsPublicKey};
     use malachite_core_types::{CommitSignature, PolkaSignature, RoundSignature};
 
+    /// The chain the tests' votes are signed for.
+    const CHAIN: ChainId = ChainId(1);
+
     struct Keyed {
         address: ConsensusAddress,
         secret: SecretKey,
@@ -337,6 +340,7 @@ mod tests {
         vote_type: VoteType,
     ) -> BlsSignature {
         let vote = ConsensusVote {
+            chain_id: CHAIN,
             height,
             round,
             value_id,
@@ -388,17 +392,47 @@ mod tests {
         ThresholdParams::default()
     }
 
+    // ---- chain binding ----------------------------------------------------
+
+    #[test]
+    fn a_certificate_signed_for_one_chain_is_no_certificate_on_another() {
+        let k = keyed(&[1, 1, 1, 1]);
+        let set = set_of(&k);
+        let other = ChainId(2);
+        let signers = [&k[0], &k[1], &k[2], &k[3]];
+
+        let commit = commit(&signers);
+        assert!(verify_commit_certificate(&commit, &set, params(), CHAIN).is_ok());
+        assert!(matches!(
+            verify_commit_certificate(&commit, &set, params(), other),
+            Err(CertificateError::InvalidCommitSignature(_))
+        ));
+
+        let polka = polka(&signers);
+        assert!(verify_polka_certificate(&polka, &set, params(), CHAIN).is_ok());
+        assert!(matches!(
+            verify_polka_certificate(&polka, &set, params(), other),
+            Err(CertificateError::InvalidPolkaSignature(_))
+        ));
+    }
+
     // ---- commit ----------------------------------------------------------
 
     #[test]
     fn a_quorum_of_precommits_is_a_valid_commit_certificate() {
         let k = keyed(&[1, 1, 1, 1]);
         let set = set_of(&k);
-        assert!(verify_commit_certificate(&commit(&[&k[0], &k[1], &k[2]]), &set, params()).is_ok());
         assert!(
-            verify_commit_certificate(&commit(&[&k[0], &k[1], &k[2], &k[3]]), &set, params())
+            verify_commit_certificate(&commit(&[&k[0], &k[1], &k[2]]), &set, params(), CHAIN)
                 .is_ok()
         );
+        assert!(verify_commit_certificate(
+            &commit(&[&k[0], &k[1], &k[2], &k[3]]),
+            &set,
+            params(),
+            CHAIN
+        )
+        .is_ok());
     }
 
     #[test]
@@ -406,7 +440,7 @@ mod tests {
         let k = keyed(&[1, 1, 1, 1]);
         let set = set_of(&k);
         assert!(matches!(
-            verify_commit_certificate(&commit(&[&k[0], &k[1]]), &set, params()),
+            verify_commit_certificate(&commit(&[&k[0], &k[1]]), &set, params(), CHAIN),
             Err(CertificateError::NotEnoughVotingPower {
                 signed: 2,
                 total: 4,
@@ -418,16 +452,20 @@ mod tests {
         let k3 = keyed(&[1, 1, 1]);
         let set3 = set_of(&k3);
         assert!(matches!(
-            verify_commit_certificate(&commit(&[&k3[0], &k3[1]]), &set3, params()),
+            verify_commit_certificate(&commit(&[&k3[0], &k3[1]]), &set3, params(), CHAIN),
             Err(CertificateError::NotEnoughVotingPower {
                 signed: 2,
                 total: 3,
                 expected: 3
             })
         ));
-        assert!(
-            verify_commit_certificate(&commit(&[&k3[0], &k3[1], &k3[2]]), &set3, params()).is_ok()
-        );
+        assert!(verify_commit_certificate(
+            &commit(&[&k3[0], &k3[1], &k3[2]]),
+            &set3,
+            params(),
+            CHAIN
+        )
+        .is_ok());
     }
 
     #[test]
@@ -435,10 +473,12 @@ mod tests {
         let k = keyed(&[50, 30, 20]);
         let set = set_of(&k);
         // 50 + 30 of 100: a quorum by power with two of three validators.
-        assert!(verify_commit_certificate(&commit(&[&k[0], &k[1]]), &set, params()).is_ok());
+        assert!(verify_commit_certificate(&commit(&[&k[0], &k[1]]), &set, params(), CHAIN).is_ok());
         // The two smaller ones together are two of three and only 50 of 100.
-        assert!(verify_commit_certificate(&commit(&[&k[1], &k[2]]), &set, params()).is_err());
-        assert!(verify_commit_certificate(&commit(&[&k[0]]), &set, params()).is_err());
+        assert!(
+            verify_commit_certificate(&commit(&[&k[1], &k[2]]), &set, params(), CHAIN).is_err()
+        );
+        assert!(verify_commit_certificate(&commit(&[&k[0]]), &set, params(), CHAIN).is_err());
     }
 
     #[test]
@@ -455,7 +495,7 @@ mod tests {
             NilOrVal::Val(value()),
             VoteType::Precommit,
         );
-        let result = verify_commit_certificate(&cert, &set, params());
+        let result = verify_commit_certificate(&cert, &set, params(), CHAIN);
         assert!(
             matches!(
                 &result,
@@ -474,7 +514,7 @@ mod tests {
         let mut cert = commit(&[&k[0], &k[1], &k[2]]);
         cert.commit_signatures[1].signature = cert.commit_signatures[0].signature;
         assert!(matches!(
-            verify_commit_certificate(&cert, &set, params()),
+            verify_commit_certificate(&cert, &set, params(), CHAIN),
             Err(CertificateError::InvalidCommitSignature(_))
         ));
     }
@@ -531,7 +571,7 @@ mod tests {
             cert.commit_signatures[2].signature = signature;
             assert!(
                 matches!(
-                    verify_commit_certificate(&cert, &set, params()),
+                    verify_commit_certificate(&cert, &set, params(), CHAIN),
                     Err(CertificateError::InvalidCommitSignature(_))
                 ),
                 "a signature for some other vote was accepted"
@@ -545,13 +585,13 @@ mod tests {
         let set = set_of(&k);
         let mut cert = commit(&[&k[0], &k[1], &k[2]]);
         cert.value_id = Hash::from_bytes([99; 32]);
-        assert!(verify_commit_certificate(&cert, &set, params()).is_err());
+        assert!(verify_commit_certificate(&cert, &set, params(), CHAIN).is_err());
         let mut cert = commit(&[&k[0], &k[1], &k[2]]);
         cert.height = ConsensusHeight(BlockHeight(10));
-        assert!(verify_commit_certificate(&cert, &set, params()).is_err());
+        assert!(verify_commit_certificate(&cert, &set, params(), CHAIN).is_err());
         let mut cert = commit(&[&k[0], &k[1], &k[2]]);
         cert.round = Round::new(3);
-        assert!(verify_commit_certificate(&cert, &set, params()).is_err());
+        assert!(verify_commit_certificate(&cert, &set, params(), CHAIN).is_err());
     }
 
     #[test]
@@ -562,7 +602,7 @@ mod tests {
         // validator, would reach 3 of 4 if the repeat were counted.
         let cert = commit(&[&k[0], &k[0], &k[1]]);
         assert!(matches!(
-            verify_commit_certificate(&cert, &set, params()),
+            verify_commit_certificate(&cert, &set, params(), CHAIN),
             Err(CertificateError::DuplicateVote(a)) if a == k[0].address
         ));
     }
@@ -573,7 +613,7 @@ mod tests {
         let set = set_of(&k[..4]); // the fifth is not a validator
         let cert = commit(&[&k[0], &k[1], &k[4]]);
         assert!(matches!(
-            verify_commit_certificate(&cert, &set, params()),
+            verify_commit_certificate(&cert, &set, params(), CHAIN),
             Err(CertificateError::UnknownValidator(a)) if a == k[4].address
         ));
     }
@@ -588,7 +628,7 @@ mod tests {
         for (i, k) in other.iter_mut().enumerate() {
             k.secret = SecretKey::key_gen(&[u8::try_from(i).unwrap() + 100; 32], &[]).unwrap();
         }
-        assert!(verify_commit_certificate(&cert, &set_of(&other), params()).is_err());
+        assert!(verify_commit_certificate(&cert, &set_of(&other), params(), CHAIN).is_err());
     }
 
     #[test]
@@ -597,7 +637,7 @@ mod tests {
         let set = set_of(&k);
         let cert = commit(&[&k[0], &k[1]]);
         assert!(matches!(
-            verify_commit_certificate(&cert, &set, params()),
+            verify_commit_certificate(&cert, &set, params(), CHAIN),
             Err(CertificateError::VotingPowerOverflow { .. })
         ));
     }
@@ -606,7 +646,7 @@ mod tests {
     fn an_empty_certificate_is_not_a_quorum() {
         let k = keyed(&[1, 1, 1]);
         assert!(matches!(
-            verify_commit_certificate(&commit(&[]), &set_of(&k), params()),
+            verify_commit_certificate(&commit(&[]), &set_of(&k), params(), CHAIN),
             Err(CertificateError::NotEnoughVotingPower { signed: 0, .. })
         ));
     }
@@ -617,9 +657,11 @@ mod tests {
     fn a_quorum_of_prevotes_is_a_valid_polka_and_a_precommit_is_not_a_prevote() {
         let k = keyed(&[1, 1, 1, 1]);
         let set = set_of(&k);
-        assert!(verify_polka_certificate(&polka(&[&k[0], &k[1], &k[2]]), &set, params()).is_ok());
+        assert!(
+            verify_polka_certificate(&polka(&[&k[0], &k[1], &k[2]]), &set, params(), CHAIN).is_ok()
+        );
         assert!(matches!(
-            verify_polka_certificate(&polka(&[&k[0], &k[1]]), &set, params()),
+            verify_polka_certificate(&polka(&[&k[0], &k[1]]), &set, params(), CHAIN),
             Err(CertificateError::NotEnoughVotingPower { .. })
         ));
 
@@ -627,7 +669,7 @@ mod tests {
         let mut cert = polka(&[&k[0], &k[1], &k[2]]);
         cert.polka_signatures[0].signature = honest(&k[0], VoteType::Precommit);
         assert!(matches!(
-            verify_polka_certificate(&cert, &set, params()),
+            verify_polka_certificate(&cert, &set, params(), CHAIN),
             Err(CertificateError::InvalidPolkaSignature(_))
         ));
     }
@@ -670,7 +712,7 @@ mod tests {
             ],
         );
         assert!(
-            verify_round_certificate(&two, &set, params()).is_ok(),
+            verify_round_certificate(&two, &set, params(), CHAIN).is_ok(),
             "2 of 4 is over a third"
         );
 
@@ -679,7 +721,7 @@ mod tests {
             &[(&k[0], VoteType::Prevote, nil)],
         );
         assert!(matches!(
-            verify_round_certificate(&one, &set, params()),
+            verify_round_certificate(&one, &set, params(), CHAIN),
             Err(CertificateError::NotEnoughVotingPower {
                 signed: 1,
                 total: 4,
@@ -701,7 +743,7 @@ mod tests {
                 (&k[2], VoteType::Precommit, nil),
             ],
         );
-        assert!(verify_round_certificate(&ok, &set, params()).is_ok());
+        assert!(verify_round_certificate(&ok, &set, params(), CHAIN).is_ok());
 
         let with_prevote = round_cert(
             RoundCertificateType::Precommit,
@@ -712,7 +754,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            verify_round_certificate(&with_prevote, &set, params()),
+            verify_round_certificate(&with_prevote, &set, params(), CHAIN),
             Err(CertificateError::InvalidVoteType(a)) if a == k[1].address
         ));
 
@@ -724,7 +766,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            verify_round_certificate(&too_few, &set, params()),
+            verify_round_certificate(&too_few, &set, params(), CHAIN),
             Err(CertificateError::NotEnoughVotingPower { .. })
         ));
     }
@@ -743,7 +785,7 @@ mod tests {
         // Claims the vote was for a value; the signature covers nil.
         cert.round_signatures[1].value_id = NilOrVal::Val(value());
         assert!(matches!(
-            verify_round_certificate(&cert, &set, params()),
+            verify_round_certificate(&cert, &set, params(), CHAIN),
             Err(CertificateError::InvalidRoundSignature(_))
         ));
     }

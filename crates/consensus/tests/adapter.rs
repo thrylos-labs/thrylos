@@ -106,7 +106,7 @@ fn the_context_picks_the_proposer_the_draw_picks_from_the_sets_own_order() {
     let executor = executor(&[(1, 2 * MIN), (2, 5 * MIN), (3, MIN)]);
     let infos = ChainView::validator_set(&executor).unwrap();
     let set = ConsensusValidatorSet::from_infos(&infos, seed(9));
-    let ctx = ThrylosContext::new();
+    let ctx = ThrylosContext::new(ChainId(1));
 
     for round in 0..50u32 {
         let chosen = ctx.select_proposer(&set, ConsensusHeight(BlockHeight(4)), Round::new(round));
@@ -121,7 +121,7 @@ fn proposers_follow_stake_on_a_real_validator_set() {
     let executor = executor(&[(1, 2 * MIN), (2, 5 * MIN), (3, MIN)]);
     let infos = ChainView::validator_set(&executor).unwrap();
     let set = ConsensusValidatorSet::from_infos(&infos, seed(3));
-    let ctx = ThrylosContext::new();
+    let ctx = ThrylosContext::new(ChainId(1));
 
     let mut counts = std::collections::BTreeMap::new();
     let draws = 16_000u32;
@@ -142,7 +142,7 @@ fn proposers_follow_stake_on_a_real_validator_set() {
 fn a_different_seed_is_a_different_schedule_and_the_same_seed_the_same_one() {
     let executor = executor(&[(1, MIN), (2, MIN), (3, MIN), (4, MIN)]);
     let infos = ChainView::validator_set(&executor).unwrap();
-    let ctx = ThrylosContext::new();
+    let ctx = ThrylosContext::new(ChainId(1));
     let schedule = |seed_byte: u8| -> Vec<ConsensusAddress> {
         let set = ConsensusValidatorSet::from_infos(&infos, seed(seed_byte));
         (0..40u32)
@@ -165,7 +165,7 @@ fn nodes_with_the_same_chain_and_seed_agree_on_every_proposer() {
     let set_a = ConsensusValidatorSet::from_infos(&ChainView::validator_set(&a).unwrap(), seed(5));
     let set_b = ConsensusValidatorSet::from_infos(&ChainView::validator_set(&b).unwrap(), seed(5));
     assert_eq!(set_a, set_b);
-    let ctx = ThrylosContext::new();
+    let ctx = ThrylosContext::new(ChainId(1));
     for round in 0..100u32 {
         assert_eq!(
             ctx.select_proposer(&set_a, ConsensusHeight(BlockHeight(2)), Round::new(round))

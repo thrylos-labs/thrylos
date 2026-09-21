@@ -340,10 +340,11 @@ mod tests {
     // ---- time checkpoints ------------------------------------------------
 
     use chain_modules::GovernedParams;
-    use chain_types::BlockHeight;
+    use chain_types::{BlockHeight, ChainId};
 
     fn ctx(height: u64, timestamp_ms: u64) -> BlockCtx {
         BlockCtx {
+            chain_id: ChainId(1),
             height: BlockHeight(height),
             timestamp_ms,
             base_fee: 1,

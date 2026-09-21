@@ -859,14 +859,9 @@ where
                 let valid = self.verify_signature(&signed, &public_key)?;
                 r.resume_with(valid)
             }
-            Effect::VerifyCommitCertificate(certificate, set, params, r) => {
-                r.resume_with(verify_commit_certificate(
-                    &certificate,
-                    &set,
-                    params,
-                    self.ctx.chain_id(),
-                ))
-            }
+            Effect::VerifyCommitCertificate(certificate, set, params, r) => r.resume_with(
+                verify_commit_certificate(&certificate, &set, params, self.ctx.chain_id()),
+            ),
             Effect::VerifyExtendedCommitCertificate(certificate, set, params, _policy, r) => r
                 .resume_with(verify_commit_certificate(
                     &certificate.trim_vote_extensions(),

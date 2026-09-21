@@ -192,10 +192,21 @@ fn bls_identity(seed: u8) -> (BlsPublicKey, BlsSignature) {
 }
 
 /// Real, verifiable equivocation at `height` by the validator whose BLS
-/// key is `bls_seed`'s and whose address is `validator`.
+/// key is `bls_seed`'s and whose address is `validator`, on this test chain.
 fn equivocation(bls_seed: u8, validator: Address, height: u64) -> DuplicateVoteEvidence {
+    equivocation_on(ChainId(1), bls_seed, validator, height)
+}
+
+/// The same, with the votes signed for `chain`.
+fn equivocation_on(
+    chain: ChainId,
+    bls_seed: u8,
+    validator: Address,
+    height: u64,
+) -> DuplicateVoteEvidence {
     let sk = bls_secret(bls_seed);
     let vote = |value: u8| Vote {
+        chain_id: chain,
         height: BlockHeight(height),
         round: Round(0),
         value: Some(Hash::from_bytes([value; 32])),
@@ -736,6 +747,49 @@ fn evidence_of_equivocation_burns_stake_removes_the_validator_and_lowers_the_sup
     let set = chain.executor.validator_set().unwrap();
     assert_eq!(set.len(), 1, "only the other validator remains");
     assert_ne!(set[0].id, id);
+    chain.audit();
+}
+
+#[test]
+fn equivocation_signed_for_another_chain_is_refused_and_convicts_nobody() {
+    let (mut chain, first, mut second) = chain_with_two_validators(5 * MIN_STAKE);
+    let id = ValidatorId(first.address());
+    let stake = chain
+        .executor
+        .with_registry(|r| r.total_pooled_stake().unwrap());
+    let supply = chain.executor.supply().unwrap();
+
+    // Genuine equivocation by a registered validator, but on chain 2's votes.
+    let mut elsewhere = Vec::new();
+    equivocation_on(ChainId(2), 1, first.address(), 1).encode(&mut elsewhere);
+    let report = second.staking(SUBMIT_EVIDENCE, vec![vector_arg(&elsewhere)]);
+    assert_eq!(chain.run(report), aborted(AbortReason::EvidenceRefused));
+    assert_eq!(
+        chain.executor.supply().unwrap(),
+        supply - FEE,
+        "only the reporter's fee left the supply"
+    );
+    assert_eq!(
+        chain
+            .executor
+            .with_registry(|r| r.total_pooled_stake().unwrap()),
+        stake,
+        "nothing was slashed"
+    );
+    assert_eq!(
+        chain.executor.with_registry(|r| r.status(&id).unwrap()),
+        chain_modules::ValidatorStatus::Active
+    );
+
+    // The same equivocation signed for this chain does convict.
+    let mut here = Vec::new();
+    equivocation(1, first.address(), 1).encode(&mut here);
+    let report = second.staking(SUBMIT_EVIDENCE, vec![vector_arg(&here)]);
+    assert_eq!(chain.run(report), SUCCESS);
+    assert_eq!(
+        chain.executor.with_registry(|r| r.status(&id).unwrap()),
+        chain_modules::ValidatorStatus::Tombstoned
+    );
     chain.audit();
 }
 

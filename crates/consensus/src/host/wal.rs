@@ -96,7 +96,7 @@ mod tests {
     use blst::min_pk::SecretKey;
     use chain_engine_api::Block;
     use chain_types::bls::{BlsSignature, DST_VOTE};
-    use chain_types::{Address, BlockHeight};
+    use chain_types::{Address, BlockHeight, ChainId};
     use malachite_core_consensus::SignedConsensusMsg;
     use malachite_core_types::{NilOrVal, SignedVote, Timeout, TimeoutKind, VoteType};
     use std::time::Duration;
@@ -127,6 +127,7 @@ mod tests {
             Entry::Message(Message::Consensus(SignedConsensusMsg::Vote(
                 SignedVote::new(
                     ConsensusVote {
+                        chain_id: ChainId(1),
                         height: ConsensusHeight(BlockHeight(4)),
                         round: Round::new(1),
                         value_id: NilOrVal::Nil,

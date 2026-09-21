@@ -490,17 +490,20 @@ fn an_unlisted_peer_is_not_admitted_and_a_silent_stranger_does_not_hold_up_a_rea
 }
 
 #[test]
-fn handshakes_are_capped_and_the_excess_is_refused_on_arrival() {
+fn silent_connections_beyond_one_sources_share_of_the_handshake_pool_are_refused_on_arrival() {
     let cluster = Cluster::start(&[1, 2], Duration::from_secs(10), quick());
     let target = cluster.nodes[&cluster.highest()].address;
     let network = cluster.node(cluster.highest());
 
-    // Far more silent connections than may be mid-handshake at once.
+    // Far more silent connections than may be mid-handshake at once, all from
+    // this one address: only its share of the pool is let in, and the rest are
+    // refused. (The pool as a whole is capped too, which one address cannot
+    // reach: that cap is tested, with many addresses, in the unit tests.)
     let many = 3 * chain_node::peer_network::MAX_PENDING_HANDSHAKES;
     let held: Vec<TcpStream> = (0..many)
         .map(|_| TcpStream::connect(target).unwrap())
         .collect();
-    let excess = many - chain_node::peer_network::MAX_PENDING_HANDSHAKES;
+    let excess = many - chain_node::peer_network::MAX_PENDING_HANDSHAKES_PER_IP;
     let end = Instant::now() + Duration::from_secs(5);
     while network.stats().refused_handshakes < excess as u64 {
         assert!(
@@ -510,7 +513,13 @@ fn handshakes_are_capped_and_the_excess_is_refused_on_arrival() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(network.stats().refused_handshakes, excess as u64);
+    // Everything past the share was refused. (A peer's own reconnect from the
+    // same address during the burst may be refused as well, so not exactly.)
+    let refused = network.stats().refused_handshakes;
+    assert!(
+        refused >= excess as u64 && refused <= many as u64,
+        "{refused}"
+    );
     drop(held);
 }
 

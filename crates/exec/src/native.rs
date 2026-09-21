@@ -378,7 +378,7 @@ fn submit_evidence(
 
     let (applied, mut changes) = run(state, |overlay| {
         StakingRegistry::new(overlay)
-            .submit_evidence(&evidence, infraction_ms, ctx.timestamp_ms)
+            .submit_evidence(&evidence, ctx.chain_id, infraction_ms, ctx.timestamp_ms)
             .map_err(evidence_error)
     })?;
 

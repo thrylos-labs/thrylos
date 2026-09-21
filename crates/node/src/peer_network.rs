@@ -175,8 +175,7 @@ struct Shared {
     next_connection: AtomicU64,
     /// Threads still running, so shutdown can wait for them.
     running: (Mutex<usize>, Condvar),
-    pending_handshakes: AtomicUsize,
-    pending_handshakes_by_ip: Mutex<BTreeMap<IpAddr, usize>>,
+    handshakes: HandshakeGate,
     connections_made: AtomicU64,
     dropped_outgoing: AtomicU64,
     refused_handshakes: AtomicU64,
@@ -284,8 +283,7 @@ impl PeerNetwork {
             shutdown: AtomicBool::new(false),
             next_connection: AtomicU64::new(0),
             running: (Mutex::new(0), Condvar::new()),
-            pending_handshakes: AtomicUsize::new(0),
-            pending_handshakes_by_ip: Mutex::new(BTreeMap::new()),
+            handshakes: HandshakeGate::default(),
             connections_made: AtomicU64::new(0),
             dropped_outgoing: AtomicU64::new(0),
             refused_handshakes: AtomicU64::new(0),
@@ -496,7 +494,7 @@ fn begin_handshake(shared: &Arc<Shared>, pending: PendingConnection) {
         shared.failed_handshakes.fetch_add(1, Ordering::Relaxed);
         return;
     };
-    if !reserve_handshake(shared, source) {
+    if !shared.handshakes.reserve(source) {
         shared.refused_handshakes.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -510,43 +508,52 @@ fn begin_handshake(shared: &Arc<Shared>, pending: PendingConnection) {
                 handshaker.failed_handshakes.fetch_add(1, Ordering::Relaxed);
             }
         }
-        release_handshake(&handshaker, source);
+        handshaker.handshakes.release(source);
     });
     if spawned.is_err() {
-        release_handshake(shared, source);
+        shared.handshakes.release(source);
     }
 }
 
-fn reserve_handshake(shared: &Shared, source: IpAddr) -> bool {
-    if shared.pending_handshakes.fetch_add(1, Ordering::AcqRel) >= MAX_PENDING_HANDSHAKES {
-        shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
-        return false;
+/// Who may be mid-handshake: at most [`MAX_PENDING_HANDSHAKES`] connections
+/// in all, and at most [`MAX_PENDING_HANDSHAKES_PER_IP`] from any one source
+/// address, so that one address cannot use up the whole pool.
+#[derive(Default)]
+struct HandshakeGate {
+    pending: AtomicUsize,
+    by_ip: Mutex<BTreeMap<IpAddr, usize>>,
+}
+
+impl HandshakeGate {
+    /// Takes a place for a connection from `source`, if there is one. Every
+    /// `true` must be matched by one [`Self::release`].
+    fn reserve(&self, source: IpAddr) -> bool {
+        if self.pending.fetch_add(1, Ordering::AcqRel) >= MAX_PENDING_HANDSHAKES {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        let mut by_ip = lock(&self.by_ip);
+        let count = by_ip.entry(source).or_default();
+        if *count >= MAX_PENDING_HANDSHAKES_PER_IP {
+            drop(by_ip);
+            self.pending.fetch_sub(1, Ordering::AcqRel);
+            return false;
+        }
+        *count = count.saturating_add(1);
+        true
     }
 
-    let mut by_ip = lock(&shared.pending_handshakes_by_ip);
-    let count = by_ip.entry(source).or_default();
-    if *count >= MAX_PENDING_HANDSHAKES_PER_IP {
-        if *count == 0 {
-            by_ip.remove(&source);
+    fn release(&self, source: IpAddr) {
+        let mut by_ip = lock(&self.by_ip);
+        if let Some(count) = by_ip.get_mut(&source) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                by_ip.remove(&source);
+            }
         }
         drop(by_ip);
-        shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
-        return false;
+        self.pending.fetch_sub(1, Ordering::AcqRel);
     }
-    *count = count.saturating_add(1);
-    true
-}
-
-fn release_handshake(shared: &Shared, source: IpAddr) {
-    let mut by_ip = lock(&shared.pending_handshakes_by_ip);
-    if let Some(count) = by_ip.get_mut(&source) {
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            by_ip.remove(&source);
-        }
-    }
-    drop(by_ip);
-    shared.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
 }
 
 fn dial_loop(shared: &Arc<Shared>, peer: PeerId) {
@@ -678,5 +685,86 @@ fn end_connection(
         .is_some_and(|connection| connection.id == state.id)
     {
         live.remove(&peer);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    fn source(n: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, n))
+    }
+
+    fn held(gate: &HandshakeGate) -> (usize, usize) {
+        (
+            gate.pending.load(Ordering::Acquire),
+            gate.by_ip.lock().unwrap().len(),
+        )
+    }
+
+    #[test]
+    fn one_source_may_hold_only_its_share_and_the_rest_of_the_pool_stays_open_to_others() {
+        let gate = HandshakeGate::default();
+        for _ in 0..MAX_PENDING_HANDSHAKES_PER_IP {
+            assert!(gate.reserve(source(1)));
+        }
+        assert!(!gate.reserve(source(1)), "one place past its share");
+        assert!(!gate.reserve(source(1)), "and still none");
+        // A refusal takes nothing: the pool has only what was granted.
+        assert_eq!(held(&gate), (MAX_PENDING_HANDSHAKES_PER_IP, 1));
+        // Another source is unaffected.
+        assert!(gate.reserve(source(2)));
+        // Leaving frees a place for that source, and only that source.
+        gate.release(source(1));
+        assert!(gate.reserve(source(1)));
+        assert!(!gate.reserve(source(1)));
+    }
+
+    #[test]
+    fn the_whole_pool_is_capped_whoever_asks_and_places_come_back_as_they_are_released() {
+        let gate = HandshakeGate::default();
+        // As many sources as there are places, one each: all fit.
+        let sources: Vec<u8> = (1..=u8::try_from(MAX_PENDING_HANDSHAKES).unwrap()).collect();
+        for n in &sources {
+            assert!(gate.reserve(source(*n)), "source {n}");
+        }
+        assert_eq!(
+            held(&gate),
+            (MAX_PENDING_HANDSHAKES, MAX_PENDING_HANDSHAKES)
+        );
+        // One more, from a source with none, is over the pool.
+        assert!(!gate.reserve(source(200)));
+        assert_eq!(
+            held(&gate),
+            (MAX_PENDING_HANDSHAKES, MAX_PENDING_HANDSHAKES)
+        );
+        // A place given back is a place for anyone.
+        gate.release(source(3));
+        assert!(gate.reserve(source(200)));
+        assert!(!gate.reserve(source(201)));
+    }
+
+    #[test]
+    fn everything_reserved_and_released_leaves_the_gate_empty() {
+        let gate = HandshakeGate::default();
+        let mut granted = Vec::new();
+        for round in 0..3u8 {
+            for n in 1..=8u8 {
+                let ip = source(n.wrapping_add(round));
+                if gate.reserve(ip) {
+                    granted.push(ip);
+                }
+            }
+        }
+        assert!(!granted.is_empty());
+        for ip in granted {
+            gate.release(ip);
+        }
+        assert_eq!(held(&gate), (0, 0), "no place or entry is left behind");
     }
 }

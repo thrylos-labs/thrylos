@@ -25,7 +25,11 @@ use chain_consensus::types::{
 };
 use chain_types::bls::{BlsPublicKey, BlsSignature, DST_VOTE};
 use chain_types::codec::Encode;
-use chain_types::{Address, BlockHeight, Hash};
+use chain_types::{Address, BlockHeight, ChainId, Hash};
+
+/// The chain the tests' votes are signed for, and their context runs on.
+const CHAIN: ChainId = ChainId(1);
+
 use malachite_core_consensus::{
     process, ConsensusMsg, Effect, Error, Input, Params, Resumable, State,
 };
@@ -71,7 +75,7 @@ fn make_state(
     my_address: ConsensusAddress,
 ) -> State<ThrylosContext> {
     State::new(
-        ThrylosContext::new(),
+        ThrylosContext::new(CHAIN),
         height,
         validator_set,
         Params {
@@ -146,7 +150,7 @@ fn drives_a_single_round_to_commit_with_real_context_and_bls() {
     let validator_set = ConsensusValidatorSet::new(validators.clone());
 
     let height = ConsensusHeight(BlockHeight(1));
-    let ctx = ThrylosContext::new();
+    let ctx = ThrylosContext::new(CHAIN);
     let proposer = ctx
         .select_proposer(&validator_set, height, Round::new(0))
         .clone();
@@ -174,6 +178,7 @@ fn drives_a_single_round_to_commit_with_real_context_and_bls() {
     ));
 
     let proposal = ConsensusProposal {
+        chain_id: CHAIN,
         height,
         round: Round::new(0),
         value,
@@ -216,6 +221,7 @@ fn drives_a_single_round_to_commit_with_real_context_and_bls() {
 
     for keyed_validator in &keyed {
         let vote = ConsensusVote {
+            chain_id: CHAIN,
             height,
             round: Round::new(0),
             value_id: NilOrVal::Val(value.0),
@@ -236,6 +242,7 @@ fn drives_a_single_round_to_commit_with_real_context_and_bls() {
 
     for keyed_validator in &keyed {
         let vote = ConsensusVote {
+            chain_id: CHAIN,
             height,
             round: Round::new(0),
             value_id: NilOrVal::Val(value.0),

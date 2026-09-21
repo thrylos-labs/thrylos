@@ -13,7 +13,11 @@ use chain_consensus::types::{
 };
 use chain_types::bls::{BlsPublicKey, BlsSignature, DST_VOTE};
 use chain_types::codec::{decode_exact, Encode};
-use chain_types::{Address, BlockHeight, DuplicateVoteEvidence, Hash};
+use chain_types::{Address, BlockHeight, ChainId, DuplicateVoteEvidence, Hash};
+
+/// The chain the tests' votes are signed for, and their context runs on.
+const CHAIN: ChainId = ChainId(1);
+
 use malachite_core_consensus::{
     process, ConsensusMsg, Effect, Error, Input, MisbehaviorEvidence, Params, Resumable, State,
 };
@@ -97,6 +101,7 @@ fn handle_effect(
 
 fn prevote(offender: &Keyed, value: u8) -> SignedVote<ThrylosContext> {
     let vote = ConsensusVote {
+        chain_id: CHAIN,
         height: ConsensusHeight(BlockHeight(1)),
         round: Round::new(0),
         value_id: NilOrVal::Val(Hash::from_bytes([value; 32])),
@@ -115,7 +120,7 @@ fn started() -> (Vec<Keyed>, State<ThrylosContext>, Metrics) {
     let validators: Vec<ConsensusValidator> = keyed.iter().map(|k| k.validator.clone()).collect();
     let height = ConsensusHeight(BlockHeight(1));
     let mut state = State::new(
-        ThrylosContext::new(),
+        ThrylosContext::new(CHAIN),
         height,
         ConsensusValidatorSet::new(validators.clone()),
         Params {
@@ -179,7 +184,7 @@ fn a_double_vote_becomes_evidence_that_convicts_the_offender() {
     assert_eq!(found.validator(), offender.validator.address.0);
     assert_eq!(found.height(), BlockHeight(1));
     assert_eq!(
-        found.verify(&offender.validator.public_key),
+        found.verify(&offender.validator.public_key, CHAIN),
         Ok(()),
         "the evidence must stand up on its own, without the consensus engine"
     );
@@ -198,7 +203,7 @@ fn the_evidence_does_not_convict_anyone_else() {
     assert!(evidence
         .first()
         .unwrap()
-        .verify(&bystander.validator.public_key)
+        .verify(&bystander.validator.public_key, CHAIN)
         .is_err());
 }
 
@@ -216,7 +221,10 @@ fn the_evidence_survives_the_wire() {
     found.encode(&mut bytes);
     let decoded: DuplicateVoteEvidence = decode_exact(&bytes).unwrap();
     assert_eq!(decoded, found);
-    assert_eq!(decoded.verify(&offender.validator.public_key), Ok(()));
+    assert_eq!(
+        decoded.verify(&offender.validator.public_key, CHAIN),
+        Ok(())
+    );
 }
 
 #[test]

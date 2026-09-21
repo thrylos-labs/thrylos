@@ -233,6 +233,9 @@ mod tests {
     use crate::codec::decode_exact;
     use blst::min_pk::SecretKey;
 
+    /// The chain the tests' votes are signed for.
+    const CHAIN: ChainId = ChainId(1);
+
     fn keypair(seed: u8) -> (SecretKey, BlsPublicKey) {
         let sk = SecretKey::key_gen(&[seed; 32], &[]).unwrap();
         let pk = BlsPublicKey::from_bytes(sk.sk_to_pk().to_bytes()).unwrap();
@@ -249,6 +252,7 @@ mod tests {
 
     fn vote(value: Option<u8>) -> Vote {
         Vote {
+            chain_id: CHAIN,
             height: BlockHeight(10),
             round: Round(2),
             value: value.map(|b| Hash::from_bytes([b; 32])),
@@ -284,13 +288,14 @@ mod tests {
     #[test]
     fn signing_bytes_have_the_layout_chain_consensus_signed_before_this_type_existed() {
         // Guards against the refactor that moved this here changing what
-        // gets signed: tag, height, round, has-value, hash, is-precommit,
-        // validator — each in canonical little-endian form.
+        // gets signed: tag, chain ID, height, round, has-value, hash,
+        // is-precommit, validator — each in canonical little-endian form.
         let v = Vote {
             kind: VoteKind::Precommit,
             ..vote(Some(3))
         };
         let mut expected = vec![0u8]; // VOTE_SIGNING_TAG
+        expected.extend_from_slice(&1u64.to_le_bytes()); // CHAIN
         expected.extend_from_slice(&10u64.to_le_bytes());
         expected.extend_from_slice(&2u64.to_le_bytes());
         expected.push(1);
@@ -298,6 +303,49 @@ mod tests {
         expected.push(1);
         expected.extend_from_slice(&[7u8; 32]);
         assert_eq!(v.signing_bytes(), expected);
+    }
+
+    #[test]
+    fn the_chain_is_part_of_what_is_signed_so_a_vote_cannot_be_replayed_on_another() {
+        let here = vote(Some(1));
+        let there = Vote {
+            chain_id: ChainId(2),
+            ..here
+        };
+        assert_ne!(here.signing_bytes(), there.signing_bytes());
+        let (sk, _) = keypair(1);
+        assert_ne!(sign(&sk, &here).to_bytes(), sign(&sk, &there).to_bytes());
+    }
+
+    #[test]
+    fn equivocation_signed_for_another_chain_is_no_evidence_here() {
+        let (sk, pk) = keypair(1);
+        let elsewhere = |value| Vote {
+            chain_id: ChainId(2),
+            ..vote(Some(value))
+        };
+        // Genuine equivocation, on chain 2: it verifies there and not here.
+        let ev = evidence(&sk, elsewhere(1), elsewhere(2));
+        assert_eq!(ev.verify(&pk, ChainId(2)), Ok(()));
+        assert_eq!(ev.verify(&pk, CHAIN), Err(EvidenceError::WrongChain));
+
+        // One vote from each chain is no better, whichever chain is expected.
+        let mixed = evidence(&sk, vote(Some(1)), elsewhere(2));
+        for expected in [CHAIN, ChainId(2)] {
+            assert_eq!(mixed.verify(&pk, expected), Err(EvidenceError::WrongChain));
+        }
+    }
+
+    #[test]
+    fn the_same_offence_on_another_chain_is_another_offence() {
+        let (sk, _) = keypair(1);
+        let here = evidence(&sk, vote(Some(1)), vote(Some(2)));
+        let there = |value| Vote {
+            chain_id: ChainId(2),
+            ..vote(Some(value))
+        };
+        assert!(here.same_offence_as(&here));
+        assert!(!here.same_offence_as(&evidence(&sk, there(1), there(2))));
     }
 
     #[test]
@@ -320,20 +368,23 @@ mod tests {
     fn genuine_equivocation_verifies() {
         let (sk, pk) = keypair(1);
         let ev = evidence(&sk, vote(Some(1)), vote(Some(2)));
-        assert_eq!(ev.verify(&pk), Ok(()));
+        assert_eq!(ev.verify(&pk, CHAIN), Ok(()));
     }
 
     #[test]
     fn a_nil_vote_against_a_value_vote_is_equivocation_too() {
         let (sk, pk) = keypair(1);
-        assert_eq!(evidence(&sk, vote(None), vote(Some(2))).verify(&pk), Ok(()));
+        assert_eq!(
+            evidence(&sk, vote(None), vote(Some(2))).verify(&pk, CHAIN),
+            Ok(())
+        );
     }
 
     #[test]
     fn the_same_vote_twice_is_not_equivocation() {
         let (sk, pk) = keypair(1);
         assert_eq!(
-            evidence(&sk, vote(Some(1)), vote(Some(1))).verify(&pk),
+            evidence(&sk, vote(Some(1)), vote(Some(1))).verify(&pk, CHAIN),
             Err(EvidenceError::NotConflicting)
         );
     }
@@ -346,7 +397,7 @@ mod tests {
             ..vote(Some(2))
         };
         assert_eq!(
-            evidence(&sk, vote(Some(1)), other).verify(&pk),
+            evidence(&sk, vote(Some(1)), other).verify(&pk, CHAIN),
             Err(EvidenceError::DifferentValidators)
         );
     }
@@ -370,7 +421,7 @@ mod tests {
         ];
         for other in variants {
             assert_eq!(
-                evidence(&sk, vote(Some(1)), other).verify(&pk),
+                evidence(&sk, vote(Some(1)), other).verify(&pk, CHAIN),
                 Err(EvidenceError::DifferentSlot),
                 "{other:?}"
             );
@@ -382,7 +433,7 @@ mod tests {
         let (sk, _) = keypair(1);
         let (_, other_pk) = keypair(2);
         assert_eq!(
-            evidence(&sk, vote(Some(1)), vote(Some(2))).verify(&other_pk),
+            evidence(&sk, vote(Some(1)), vote(Some(2))).verify(&other_pk, CHAIN),
             Err(EvidenceError::InvalidSignature)
         );
     }
@@ -393,7 +444,7 @@ mod tests {
         let (sk, pk) = keypair(1);
         let mut ev = evidence(&sk, vote(Some(1)), vote(Some(2)));
         core::mem::swap(&mut ev.signature_a, &mut ev.signature_b);
-        assert_eq!(ev.verify(&pk), Err(EvidenceError::InvalidSignature));
+        assert_eq!(ev.verify(&pk, CHAIN), Err(EvidenceError::InvalidSignature));
     }
 
     #[test]
@@ -401,7 +452,7 @@ mod tests {
         let (sk, pk) = keypair(1);
         let mut ev = evidence(&sk, vote(Some(1)), vote(Some(2)));
         ev.vote_b.value = Some(Hash::from_bytes([9u8; 32]));
-        assert_eq!(ev.verify(&pk), Err(EvidenceError::InvalidSignature));
+        assert_eq!(ev.verify(&pk, CHAIN), Err(EvidenceError::InvalidSignature));
     }
 
     #[test]

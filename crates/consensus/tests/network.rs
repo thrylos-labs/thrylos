@@ -806,7 +806,7 @@ impl Sim {
 /// for a chain whose validators are `exec`'s.
 fn expected_proposer(exec: &Executor, seed: &Hash, height: u64, round: u32) -> Address {
     let set = ConsensusValidatorSet::from_infos(&ChainView::validator_set(exec).unwrap(), *seed);
-    ThrylosContext::new()
+    ThrylosContext::new(ChainId(1))
         .select_proposer(
             &set,
             ConsensusHeight(BlockHeight(height)),
@@ -860,7 +860,8 @@ fn every_decision_carries_a_valid_quorum_certificate_and_links_to_its_parent() {
     for committed in &sim.committed[0] {
         assert_eq!(committed.certificate.value_id, committed.block.hash());
         assert_eq!(committed.certificate.height.0, committed.height);
-        verify_commit_certificate(&committed.certificate, &set, Default::default()).unwrap();
+        verify_commit_certificate(&committed.certificate, &set, Default::default(), ChainId(1))
+            .unwrap();
         assert_eq!(
             committed.block.parent_block_hash, parent,
             "the chain links up"
@@ -1444,6 +1445,7 @@ fn a_witnessed_double_vote_comes_out_as_evidence_that_convicts_the_offender() {
     // round 0, and node 0 sees both before anything else happens.
     let vote = |value: u8| {
         let vote = chain_consensus::types::ConsensusVote {
+            chain_id: ChainId(1),
             height: ConsensusHeight(BlockHeight(1)),
             round: malachite_core_types::Round::new(0),
             value_id: malachite_core_types::NilOrVal::Val(Hash::from_bytes([value; 32])),
@@ -1469,7 +1471,7 @@ fn a_witnessed_double_vote_comes_out_as_evidence_that_convicts_the_offender() {
     sim.run_until(|s| s.all_committed(1) && !s.evidence[0].is_empty());
     let evidence = &sim.evidence[0][0];
     assert_eq!(evidence.validator(), operator_address(4));
-    evidence.verify(&bls_public(4)).unwrap();
+    evidence.verify(&bls_public(4), ChainId(1)).unwrap();
 }
 
 // ---- noticing that the network has moved on ------------------------------------------
@@ -1478,6 +1480,7 @@ fn a_witnessed_double_vote_comes_out_as_evidence_that_convicts_the_offender() {
 /// secret — which is the voter's own unless it is a forgery.
 fn prevote_at(height: u64, voter: u8, key: u8) -> Message {
     let vote = chain_consensus::types::ConsensusVote {
+        chain_id: ChainId(1),
         height: ConsensusHeight(BlockHeight(height)),
         round: malachite_core_types::Round::new(0),
         value_id: malachite_core_types::NilOrVal::Nil,

@@ -564,6 +564,7 @@ impl Executor {
         let fee_params = params.fee_params();
         let transaction_gas_ceiling = max_transaction_gas(fee_params.max_block_gas());
         let ctx = BlockCtx {
+            chain_id: self.chain_id,
             height: block.height,
             timestamp_ms: block.timestamp_millis,
             base_fee,
@@ -684,9 +685,7 @@ impl Executor {
         if tx.body.max_fee_per_gas.0 < base_fee {
             return Err(reject(RejectionReason::Rejected));
         }
-        if native::is_protocol_call(tx)
-            && tx.body.gas_limit.0 < native::MIN_PROTOCOL_CALL_GAS
-        {
+        if native::is_protocol_call(tx) && tx.body.gas_limit.0 < native::MIN_PROTOCOL_CALL_GAS {
             return Err(reject(RejectionReason::TransactionGasLimitExceeded));
         }
 
