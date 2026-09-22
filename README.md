@@ -1,8 +1,7 @@
 # Thrylos
 
-**A Move-based proof-of-stake L1 written in Rust, optimised for auditability over feature count.**
-
-**Status:** Pre-genesis · Active development · Contributors welcome
+**A Move-based proof-of-stake L1 written in Rust, optimised for auditability over feature count. The status of 
+Thrylos is pre-genesis where we are actively develoing it. Contributers are welcome.**
 
 ![Thrylos Explorer showing a healthy four-validator local testnet and a funded account](docs/assets/thrylos-explorer.png)
 
