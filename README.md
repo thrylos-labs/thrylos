@@ -29,6 +29,7 @@ Thrylos already runs as a local multi-validator network.
 * ✅ Authenticated P2P networking
 * ✅ Transaction mempool and propagation
 * ✅ JSON-RPC
+* ✅ Read-only local web explorer
 * ✅ Compact block relay
 * ✅ Fuzz testing
 * ✅ TLA+ consensus model

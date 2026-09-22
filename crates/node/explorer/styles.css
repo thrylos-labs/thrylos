@@ -184,6 +184,19 @@ h1 { max-width: 720px; margin: 0; font-size: clamp(38px, 6vw, 72px); line-height
 .detail-grid div { min-width: 0; }
 .detail-grid dt { margin-bottom: 5px; color: var(--muted); font-size: 12px; }
 .detail-grid dd { margin: 0; overflow-wrap: anywhere; }
+.detail-value { display: flex; align-items: flex-start; gap: 9px; }
+.detail-value span { min-width: 0; overflow-wrap: anywhere; }
+.copy-button {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--panel-strong);
+  cursor: pointer;
+  font-size: 11px;
+}
+.copy-button:hover, .copy-button:focus-visible { color: var(--text); border-color: var(--border-bright); }
 details { margin: 0 18px 18px; border-top: 1px solid var(--border); }
 summary { padding: 14px 0; color: var(--accent-pale); cursor: pointer; }
 pre { max-height: 360px; margin: 0; padding: 16px; overflow: auto; border-radius: 10px; background: #061014; color: #bed2d6; font-size: 12px; line-height: 1.55; }

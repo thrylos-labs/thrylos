@@ -478,7 +478,11 @@ fn fail(error: impl fmt::Display) -> ExitCode {
 fn parse_port(flags: &[&str]) -> Result<u16, ()> {
     match flags {
         [] => Ok(DEFAULT_PORT),
-        ["--port", value] => value.parse::<u16>().map_err(|_| ()),
+        ["--port", value] => value
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or(()),
         _ => Err(()),
     }
 }
@@ -536,7 +540,71 @@ mod tests {
     fn port_flags_are_deliberately_small() {
         assert_eq!(parse_port(&[]), Ok(DEFAULT_PORT));
         assert_eq!(parse_port(&["--port", "9000"]), Ok(9_000));
+        assert!(parse_port(&["--port", "0"]).is_err());
         assert!(parse_port(&["--port", "nope"]).is_err());
         assert!(parse_port(&["--host", "0.0.0.0"]).is_err());
+    }
+
+    #[test]
+    fn static_routes_have_the_right_types_and_unknown_paths_are_not_found() {
+        let explorer = Explorer {
+            network: PathBuf::from("/tmp/network"),
+            nodes: vec![],
+        };
+        let page = route(
+            &explorer,
+            Request {
+                method: "GET".into(),
+                path: "/".into(),
+                body: vec![],
+            },
+        );
+        assert_eq!(page.status, 200);
+        assert_eq!(page.content_type, "text/html; charset=utf-8");
+        assert!(page
+            .body
+            .windows(16)
+            .any(|window| window == b"Thrylos Explorer"));
+
+        let logo = route(
+            &explorer,
+            Request {
+                method: "GET".into(),
+                path: "/favicon.ico".into(),
+                body: vec![],
+            },
+        );
+        assert_eq!(logo.content_type, "image/png");
+        assert_eq!(logo.body, LOGO);
+
+        let missing = route(
+            &explorer,
+            Request {
+                method: "GET".into(),
+                path: "/nothing-here".into(),
+                body: vec![],
+            },
+        );
+        assert_eq!(missing.status, 404);
+    }
+
+    #[test]
+    fn write_rpc_methods_are_refused_before_any_node_is_contacted() {
+        let explorer = Explorer {
+            network: PathBuf::from("/tmp/network"),
+            nodes: vec![],
+        };
+        let response = route(
+            &explorer,
+            Request {
+                method: "POST".into(),
+                path: "/api/rpc".into(),
+                body: br#"{"method":"send_transaction","params":{}}"#.to_vec(),
+            },
+        );
+        assert_eq!(response.status, 403);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["ok"], false);
+        assert!(body["error"].as_str().unwrap().contains("read-only"));
     }
 }

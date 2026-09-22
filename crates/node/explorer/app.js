@@ -2,7 +2,7 @@
 
 const REFRESH_MS = 2_000;
 const BLOCKS_TO_SHOW = 5;
-const HISTORY_BLOCKS = 25;
+const HISTORY_BLOCKS = 12;
 
 const byId = (id) => document.getElementById(id);
 const state = { info: null, status: null, health: null, blocks: [], refreshing: false };
@@ -159,6 +159,15 @@ function renderActivity() {
   setText("transactions-meta", `${transactions.length} found in ${state.blocks.length} blocks`);
 }
 
+function renderActivityError(error) {
+  const message = error?.message || String(error);
+  const blocksList = byId("blocks-list");
+  const transactionsList = byId("transactions-list");
+  blocksList.replaceChildren(make("p", "empty-state", `Recent blocks could not be loaded: ${message}`));
+  transactionsList.replaceChildren(make("p", "empty-state", "Recent transactions are temporarily unavailable."));
+  setText("transactions-meta", "History unavailable");
+}
+
 function nodeStateFromNote(note) {
   const match = /^node (\d+) \(RPC ([^)]+)\): height (\d+), newest block (.+)$/.exec(note);
   if (!match) return null;
@@ -247,7 +256,23 @@ function renderResult(type, title, result) {
   detailEntries(result).forEach(([label, value]) => {
     const wrapper = make("div", "");
     const term = make("dt", "", label);
-    const description = make("dd", typeof value === "string" && value.length > 24 ? "hash" : "", String(value));
+    const longValue = typeof value === "string" && value.length > 24;
+    const description = make("dd", longValue ? "detail-value hash" : "detail-value");
+    description.append(make("span", "", String(value)));
+    if (longValue) {
+      const copy = make("button", "copy-button", "Copy");
+      copy.type = "button";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(String(value));
+          copy.textContent = "Copied";
+          window.setTimeout(() => { copy.textContent = "Copy"; }, 1_500);
+        } catch (_) {
+          copy.textContent = "Select value";
+        }
+      });
+      description.append(copy);
+    }
     wrapper.append(term, description);
     details.append(wrapper);
   });
@@ -303,24 +328,36 @@ async function refresh() {
   if (state.refreshing) return;
   state.refreshing = true;
   try {
-    const [status, health] = await Promise.all([rpc("status"), request("/api/health")]);
+    const status = await rpc("status");
     state.status = status;
+    clearConnectionError();
+    if (!state.health) {
+      setHealthState(true, "Connected · checking validator agreement…");
+    }
+    renderStats();
+
+    const health = await request("/api/health");
     state.health = health;
+    renderStats();
+    renderHealth();
+
     const head = Number(status.latest?.height);
     const wanted = state.blocks.length ? BLOCKS_TO_SHOW : HISTORY_BLOCKS;
-    const heights = Number.isFinite(head)
-      ? Array.from({ length: Math.min(wanted, head + 1) }, (_, index) => head - index)
+    const heights = Number.isFinite(head) && head > 0
+      ? Array.from({ length: Math.min(wanted, head) }, (_, index) => head - index)
       : [];
-    const blocks = await Promise.all(heights.map((height) => rpc("block", { height, full: true })));
-    const merged = new Map(state.blocks.map((block) => [block.height, block]));
-    blocks.forEach((block) => merged.set(block.height, block));
-    state.blocks = Array.from(merged.values())
-      .sort((left, right) => right.height - left.height)
-      .slice(0, HISTORY_BLOCKS);
-    clearConnectionError();
-    renderStats();
-    renderActivity();
-    renderHealth();
+    try {
+      const blocks = await Promise.all(heights.map((height) => rpc("block", { height, full: true })));
+      const merged = new Map(state.blocks.map((block) => [block.height, block]));
+      blocks.forEach((block) => merged.set(block.height, block));
+      state.blocks = Array.from(merged.values())
+        .sort((left, right) => right.height - left.height)
+        .slice(0, HISTORY_BLOCKS);
+      renderStats();
+      renderActivity();
+    } catch (error) {
+      renderActivityError(error);
+    }
   } catch (error) {
     showConnectionError(error);
   } finally {
