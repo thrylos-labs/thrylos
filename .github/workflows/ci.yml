@@ -47,11 +47,13 @@ jobs:
           java-version: "21"
       - name: Download pinned TLC model checker
         run: |
+          # v1.8.0 is a rolling prerelease whose asset is replaced after every
+          # master build. Use the immutable stable release instead.
           curl -fsSL \
-            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
             -o "$RUNNER_TEMP/tla2tools.jar"
-          echo "85b172970b0a1d283b9e45679b8ecf5b4de72ab2  $RUNNER_TEMP/tla2tools.jar" \
-            | sha1sum -c -
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" \
+            | sha256sum -c -
       - name: Check consensus safety and eventual-synchrony liveness
         working-directory: formal/consensus
         run: >-
