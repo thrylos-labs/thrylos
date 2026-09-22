@@ -90,6 +90,8 @@ health, recent blocks and transactions, and can find a block height,
 transaction hash or `thry1…` account. Both the explorer and every validator RPC
 stay bound to this machine.
 
+![Thrylos Explorer showing a healthy four-validator local testnet and a funded account](docs/assets/thrylos-explorer.png)
+
 ### Watch blocks
 
 ```bash
