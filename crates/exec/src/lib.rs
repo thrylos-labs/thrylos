@@ -51,9 +51,10 @@
 //!   it as a pure function for the consensus host to apply before voting.
 //! - The native modules' state lives in this same flat state under its own
 //!   tag, through `module_store::StateStore`, one entry per entity, and a
-//!   transaction reaches them through [`native`]: staking (register a
+//!   transaction reaches them through [`native`]: native-coin transfer,
+//!   staking (register a
 //!   validator, stake, unstake, unjail, submit equivocation evidence) and
-//!   governance (propose, vote), as calls to two reserved system packages.
+//!   governance (propose, vote), as calls to reserved system packages.
 //!   A call that fails aborts and costs its fee, like any other. The
 //!   modules hold no coin; this crate moves it, and keeps the chain's
 //!   total supply in state ([`accounting`]) equal to everything held in
@@ -68,8 +69,9 @@
 //!   nor destroyed value; one that did is rejected as
 //!   `RejectionReason::InvariantViolated`, halting the chain at it.
 //! - Native protocol calls have a deterministic fixed charge on success (an
-//!   abort burns the declared budget) and a hard per-block count. Every
-//!   state-dependent scan they can trigger is independently capped: the
+//!   abort burns the declared budget); staking and governance calls have a
+//!   hard per-block count, while constant-time transfers use the ordinary gas
+//!   bound. Every state-dependent scan they can trigger is independently capped: the
 //!   validator registry and each validator's unbonding queue have protocol
 //!   ceilings. Reference-hardware calibration is still required before the
 //!   fixed charge is treated as economic pricing rather than a safety bound.

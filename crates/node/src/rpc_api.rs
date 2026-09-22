@@ -371,8 +371,10 @@ mod tests {
 
     use chain_genesis::devnet;
     use chain_rpc::{RpcError, Server, ServerConfig};
+    use ed25519_dalek::SigningKey;
 
     use super::*;
+    use crate::client::signed_transfer;
     use crate::txpool::testing::{bump, bump_by, chain, commit, DEVNET_CHAIN};
 
     /// What the loop would tell the API, with the relaying recorded.
@@ -530,6 +532,36 @@ mod tests {
             transaction_hash(&tx).to_string()
         );
         assert_eq!(facts.relayed.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_transfer_sent_through_rpc_reaches_the_recipient_account() {
+        let f = fixture();
+        let facts = Facts::new();
+        let recipient = Address::from_bytes([77; 32]);
+        let transaction = signed_transfer(
+            &SigningKey::from_bytes(&[101; 32]),
+            DEVNET_CHAIN,
+            0,
+            1_000,
+            recipient,
+            2_500_000_000,
+            1,
+        )
+        .unwrap();
+
+        let sent = ok(f.api.answer(
+            &Call::SendTransaction {
+                transaction: Box::new(transaction.clone()),
+            },
+            &facts,
+        ));
+        assert_eq!(sent["status"], "pending");
+        commit(&f.engine, vec![transaction]);
+
+        let account = ok(f.api.answer(&Call::Account { address: recipient }, &facts));
+        assert_eq!(account["balance"], "2500000000");
+        assert_eq!(account["nextSequenceNumber"], 0);
     }
 
     #[test]

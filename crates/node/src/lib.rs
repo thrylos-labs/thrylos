@@ -69,6 +69,7 @@ pub mod signed_log;
 pub mod txpool;
 pub mod verifier;
 pub mod wal;
+pub mod wallet;
 
 pub use clock::SystemClock;
 pub use commit_log::FileCommitLog;

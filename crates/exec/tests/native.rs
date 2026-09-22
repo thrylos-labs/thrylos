@@ -16,9 +16,9 @@ use chain_engine_api::{
 use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::hooks::{reward_for, EPOCH_BLOCKS};
 use chain_exec::native::{
-    GOVERNANCE_MODULE_NAME, GOVERNANCE_PACKAGE_ADDRESS, REGISTER_VALIDATOR, STAKE,
-    STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS, SUBMIT_EVIDENCE, SUBMIT_PROPOSAL, UNJAIL,
-    UNSTAKE, VOTE,
+    COIN_MODULE_NAME, COIN_PACKAGE_ADDRESS, GOVERNANCE_MODULE_NAME, GOVERNANCE_PACKAGE_ADDRESS,
+    REGISTER_VALIDATOR, STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS, SUBMIT_EVIDENCE,
+    SUBMIT_PROPOSAL, TRANSFER, UNJAIL, UNSTAKE, VOTE,
 };
 use chain_exec::Executor;
 use chain_modules::governance::{
@@ -163,6 +163,15 @@ impl Actor {
         )
     }
 
+    fn transfer(&mut self, recipient: Address, amount: u128) -> Transaction {
+        self.call(
+            COIN_PACKAGE_ADDRESS,
+            COIN_MODULE_NAME,
+            TRANSFER,
+            vec![address_arg(recipient), u128_arg(amount)],
+        )
+    }
+
     /// Registers this actor as a validator with the BLS key of `bls_seed`.
     fn register(&mut self, bls_seed: u8, self_stake: u128) -> Transaction {
         let (key, proof) = bls_identity(bls_seed);
@@ -302,6 +311,57 @@ fn chain_with_validator() -> (Chain, Actor) {
     let tx = operator.register(1, MIN_STAKE);
     assert_eq!(chain.run(tx), SUCCESS);
     (chain, operator)
+}
+
+// ---- coin ----------------------------------------------------------------
+
+#[test]
+fn transferring_moves_coin_to_the_recipient_and_burns_only_the_fee() {
+    let mut chain = Chain::new();
+    let mut sender = Actor::new(1);
+    let recipient = Actor::new(2);
+    chain.fund(&sender, 100_000);
+    let supply = chain.executor.supply().unwrap();
+
+    let tx = sender.transfer(recipient.address(), 40_000);
+    assert_eq!(chain.run(tx), SUCCESS);
+
+    assert_eq!(chain.balance(sender.address()), 100_000 - 40_000 - FEE);
+    assert_eq!(chain.balance(recipient.address()), 40_000);
+    assert_eq!(chain.executor.supply().unwrap(), supply - FEE);
+    chain.audit();
+}
+
+#[test]
+fn a_transfer_that_cannot_leave_the_maximum_fee_aborts_and_only_pays_the_real_fee() {
+    let mut chain = Chain::new();
+    let mut sender = Actor::new(1);
+    let recipient = Actor::new(2);
+    chain.fund(&sender, 40_000);
+
+    let tx = sender.transfer(recipient.address(), 40_000);
+    assert_eq!(chain.run(tx), aborted(AbortReason::InsufficientBalance));
+
+    assert_eq!(chain.balance(sender.address()), 40_000 - FEE);
+    assert_eq!(chain.balance(recipient.address()), 0);
+    chain.audit();
+}
+
+#[test]
+fn zero_and_self_transfers_abort_without_moving_coin() {
+    let mut chain = Chain::new();
+    let mut sender = Actor::new(1);
+    let recipient = Actor::new(2);
+    chain.fund(&sender, 100_000);
+
+    let zero = sender.transfer(recipient.address(), 0);
+    assert_eq!(chain.run(zero), aborted(AbortReason::InvalidArguments));
+    let to_self = sender.transfer(sender.address(), 1);
+    assert_eq!(chain.run(to_self), aborted(AbortReason::InvalidArguments));
+
+    assert_eq!(chain.balance(sender.address()), 100_000 - 2 * FEE);
+    assert_eq!(chain.balance(recipient.address()), 0);
+    chain.audit();
 }
 
 // ---- registering and staking --------------------------------------------

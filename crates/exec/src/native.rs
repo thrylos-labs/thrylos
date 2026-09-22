@@ -1,5 +1,5 @@
-//! The native module boundary: transactions that call into staking and
-//! governance.
+//! The native module boundary: transactions that transfer coin or call into
+//! staking and governance.
 //!
 //! `docs/spec.md`, "Native module boundary": "a frozen list of entry
 //! points ... the entire surface between the two trust worlds." This is
@@ -22,6 +22,7 @@
 //!
 //! | package | function | arguments | effect |
 //! |---|---|---|---|
+//! | `coin` | `transfer` | recipient address, amount `u128` | moves THRY between accounts |
 //! | `staking` | `register_validator` | consensus key, proof of possession, self-stake `u128` | bootstraps the first validator on a development chain |
 //! | `staking` | `stake` | validator address, amount `u128` | delegates |
 //! | `staking` | `unstake` | validator address, shares `u128` | begins unbonding |
@@ -52,9 +53,10 @@
 //!
 //! # Bounded work and gas
 //!
-//! A successful protocol call pays a fixed conservative charge; an abort
-//! burns its full declared budget. The executor also caps protocol calls per
-//! block. Work that depends on state is bounded independently: validator
+//! A successful native call pays a fixed conservative charge; an abort burns
+//! its full declared budget. The executor also caps the staking and governance
+//! calls whose work can depend on protocol state; ordinary transfers remain
+//! bounded by block gas. Work that depends on state is bounded independently: validator
 //! scans stop at the fixed first-testnet validator ceiling and evidence can
 //! inspect at most the fixed per-validator unbonding ceiling. A measured
 //! per-operation schedule can replace the conservative fixed charge later
@@ -79,9 +81,12 @@ use crate::module_store::{state_changes, StateView};
 
 pub const STAKING_PACKAGE_ADDRESS: [u8; 32] = [4; 32];
 pub const GOVERNANCE_PACKAGE_ADDRESS: [u8; 32] = [5; 32];
+pub const COIN_PACKAGE_ADDRESS: [u8; 32] = [6; 32];
 pub const STAKING_MODULE_NAME: &str = "staking";
 pub const GOVERNANCE_MODULE_NAME: &str = "governance";
+pub const COIN_MODULE_NAME: &str = "coin";
 
+pub const TRANSFER: &str = "transfer";
 pub const REGISTER_VALIDATOR: &str = "register_validator";
 pub const STAKE: &str = "stake";
 pub const UNSTAKE: &str = "unstake";
@@ -229,6 +234,13 @@ pub(crate) fn call(
     let package = *call.module_address.as_bytes();
     let (module, function) = (call.module_name.as_slice(), call.function_name.as_slice());
 
+    if package == COIN_PACKAGE_ADDRESS && module == COIN_MODULE_NAME.as_bytes() {
+        let result = match function {
+            f if f == TRANSFER.as_bytes() => transfer(state, tx),
+            _ => Err(AbortReason::UnknownFunction.into()),
+        };
+        return Some(result);
+    }
     if package == STAKING_PACKAGE_ADDRESS && module == STAKING_MODULE_NAME.as_bytes() {
         let result = match function {
             f if f == REGISTER_VALIDATOR.as_bytes() => register_validator(state, tx, ctx),
@@ -256,7 +268,51 @@ pub(crate) fn call(
 /// still consumes one bounded native-call slot.
 pub(crate) fn is_protocol_call(tx: &Transaction) -> bool {
     let package = *tx.body.call.module_address.as_bytes();
+    package == COIN_PACKAGE_ADDRESS
+        || package == STAKING_PACKAGE_ADDRESS
+        || package == GOVERNANCE_PACKAGE_ADDRESS
+}
+
+/// Whether a call counts against the separate cap for staking and governance
+/// work. Coin transfer is constant-time and is bounded by ordinary block gas.
+pub(crate) fn is_limited_protocol_call(tx: &Transaction) -> bool {
+    let package = *tx.body.call.module_address.as_bytes();
     package == STAKING_PACKAGE_ADDRESS || package == GOVERNANCE_PACKAGE_ADDRESS
+}
+
+// ---- coin ----------------------------------------------------------------
+
+fn transfer(state: &State, tx: &Transaction) -> Result<CallEffects, CallError> {
+    let [recipient_arg, amount_arg] = tx.body.call.arguments.as_slice() else {
+        return Err(AbortReason::InvalidArguments.into());
+    };
+    if !tx.body.call.type_arguments.is_empty() {
+        return Err(AbortReason::InvalidArguments.into());
+    }
+    let recipient = arg_address(recipient_arg).ok_or(AbortReason::InvalidArguments)?;
+    let amount = arg_u128(amount_arg).ok_or(AbortReason::InvalidArguments)?;
+    if amount == 0 || recipient == tx.sender_address() {
+        return Err(AbortReason::InvalidArguments.into());
+    }
+
+    let mut changes = Vec::new();
+    debit_sender(state, tx, amount, &mut changes)?;
+
+    let account =
+        chain_state::account::read_account(state, recipient).map_err(|_| CallError::Internal)?;
+    let balance = account
+        .balance
+        .checked_add(amount)
+        .ok_or(CallError::Internal)?;
+    let updated = Account { balance, ..account };
+    let mut bytes = Vec::new();
+    updated.encode(&mut bytes);
+    changes.push((
+        chain_state::account::account_key(recipient),
+        Some(StateValue::new(bytes)),
+    ));
+
+    Ok(effects(tx, changes))
 }
 
 // ---- staking -------------------------------------------------------------

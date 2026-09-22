@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use chain_exec::genesis::{
     COUNTER_BUMP_FUNCTION, COUNTER_MODULE_NAME, COUNTER_PACKAGE_ADDRESS, INITIAL_COUNTER_ADDRESS,
 };
+use chain_exec::native::{COIN_MODULE_NAME, COIN_PACKAGE_ADDRESS, MIN_PROTOCOL_CALL_GAS, TRANSFER};
 use chain_rpc::call::transaction_hash;
 use chain_rpc::hex;
 use chain_rpc::RpcError;
@@ -206,13 +207,89 @@ pub fn signed_counter_bump(
 
 /// A balance as the RPC gives it (a decimal string of base units) as a person
 /// reads it: `1,000 THRY`.
-fn balance_text(base_units: Option<&str>) -> String {
+pub fn balance_text(base_units: Option<&str>) -> String {
     base_units
         .and_then(|text| text.parse::<u128>().ok())
         .map_or_else(
             || "an unknown balance".to_owned(),
             chain_text::format_amount,
         )
+}
+
+/// A signed transfer of native THRY. The recipient and amount are encoded in
+/// the frozen native-call format; account balances are not Move objects, so
+/// they do not appear in `declared_inputs`.
+pub fn signed_transfer(
+    key: &SigningKey,
+    chain_id: u64,
+    sequence: u64,
+    expiry: u64,
+    recipient: Address,
+    amount: u128,
+    max_fee_per_gas: u64,
+) -> Result<Transaction, ClientError> {
+    let sender = PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes())
+        .map_err(|_| ClientError::Setup("the signing key is not a valid public key".into()))?;
+    let body = TransactionBody {
+        chain_id: ChainId(chain_id),
+        sender,
+        sequence_number: SequenceNumber(sequence),
+        expiry: BlockHeight(expiry),
+        gas_limit: GasAmount(MIN_PROTOCOL_CALL_GAS),
+        max_fee_per_gas: GasPrice(max_fee_per_gas),
+        declared_inputs: Vec::new(),
+        call: MoveCall {
+            module_address: Address::from_bytes(COIN_PACKAGE_ADDRESS),
+            module_name: COIN_MODULE_NAME.as_bytes().to_vec(),
+            function_name: TRANSFER.as_bytes().to_vec(),
+            type_arguments: Vec::new(),
+            arguments: vec![recipient.as_bytes().to_vec(), amount.to_le_bytes().to_vec()],
+        },
+    };
+    let mut bytes = Vec::new();
+    body.encode(&mut bytes);
+    let signature = Signature::from_ed25519_bytes(key.sign(&bytes).to_bytes());
+    Ok(Transaction { body, signature })
+}
+
+/// Submit a transaction and return its locally calculated hash. A dishonest
+/// or broken RPC cannot make the wallet report a different transaction as the
+/// one it sent.
+pub fn submit_transaction(
+    client: &RpcClient,
+    transaction: &Transaction,
+) -> Result<String, ClientError> {
+    let mut bytes = Vec::new();
+    transaction.encode(&mut bytes);
+    let expected = transaction_hash(transaction).to_string();
+    let result = client.call(
+        "send_transaction",
+        &json!({ "transaction": hex::encode(&bytes) }),
+    )?;
+    if result["hash"].as_str() != Some(expected.as_str()) {
+        return Err(ClientError::Transport(
+            "the RPC returned a different transaction hash".into(),
+        ));
+    }
+    Ok(expected)
+}
+
+/// Wait until a transaction is included, returning the RPC's inclusion
+/// record. Not finding it immediately is normal: it may still be in flight.
+pub fn wait_for_inclusion(client: &RpcClient, hash: &str) -> Result<Value, ClientError> {
+    let started = Instant::now();
+    while started.elapsed() < INCLUSION_PATIENCE {
+        match client.call("transaction", &json!({ "hash": hash })) {
+            Ok(found) if found["status"] == "included" => return Ok(found),
+            Ok(_) => {}
+            Err(ClientError::Rpc { code, .. }) if code == RpcError::NOT_FOUND => {}
+            Err(other) => return Err(other),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(ClientError::NotIncluded {
+        hash: hash.to_owned(),
+    })
 }
 
 /// What `devnet bump` reports as it goes.
@@ -333,7 +410,35 @@ mod tests {
 
     use std::net::TcpListener;
 
-    use super::{balance_text, ClientError, RpcClient};
+    use chain_exec::native::{COIN_MODULE_NAME, COIN_PACKAGE_ADDRESS, TRANSFER};
+    use chain_types::{Address, GasAmount};
+    use ed25519_dalek::SigningKey;
+
+    use super::{balance_text, signed_transfer, ClientError, RpcClient};
+
+    #[test]
+    fn a_signed_transfer_names_the_frozen_coin_call_and_verifies() {
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let recipient = Address::from_bytes([42; 32]);
+        let transaction = signed_transfer(&key, 7, 3, 99, recipient, 123_456, 8).unwrap();
+
+        assert_eq!(
+            transaction.body.call.module_address,
+            Address::from_bytes(COIN_PACKAGE_ADDRESS)
+        );
+        assert_eq!(
+            transaction.body.call.module_name,
+            COIN_MODULE_NAME.as_bytes()
+        );
+        assert_eq!(transaction.body.call.function_name, TRANSFER.as_bytes());
+        assert_eq!(transaction.body.call.arguments[0], recipient.as_bytes());
+        assert_eq!(
+            transaction.body.call.arguments[1],
+            123_456u128.to_le_bytes()
+        );
+        assert_eq!(transaction.body.gas_limit, GasAmount(1_000));
+        assert!(transaction.verify_signature().is_ok());
+    }
 
     #[test]
     fn a_node_that_is_not_listening_is_unreachable_and_the_error_names_where_it_looked() {

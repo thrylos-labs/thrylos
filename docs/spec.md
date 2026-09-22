@@ -305,8 +305,9 @@ Replay-from-genesis alone is not safe. A node syncing from nothing can be fed an
 
 ## Native module boundary
 
-Signed transactions reach staking and governance through seven frozen protocol calls, dispatched by reserved package and module names and changed only by a fork:
+Signed transactions transfer native coin and reach staking and governance through eight frozen protocol calls, dispatched by reserved package and module names and changed only by a fork:
 
+- `transfer(recipient, amount)`
 - `register_validator(consensus_key, proof_of_possession, self_stake)` (development-chain bootstrap only; a production genesis already contains its complete validator set)
 - `stake(validator, amount)`
 - `unstake(validator, shares)` (begins the unbonding period)
@@ -317,7 +318,7 @@ Signed transactions reach staking and governance through seven frozen protocol c
 
 These are protocol calls handled at the executor boundary, not custom MoveVM native functions callable from arbitrary bytecode. That smaller boundary avoids representing validator administration, evidence and governance capabilities as a second set of Move resources before there is an application requirement for contract-level composability. Rewards compound into the staking share price and are realised by unstaking, so a separate `claim_rewards` call would duplicate accounting state. Consensus reads the validator set through the read-only engine view rather than a transaction call.
 
-Each state-changing call has deterministic gas accounting and bounded work. The first-testnet implementation charges one fixed amount on success, burns the declared budget on abort, caps calls per block, caps registered validators at 65 and caps open unbonding entries per validator at 512. Reference-hardware measurement must replace the fixed charge before economic calibration is considered complete. Nothing else crosses the boundary: no caller-supplied clock, no ambient randomness and no arbitrary native dispatch.
+Each state-changing call has deterministic gas accounting and bounded work. The first-testnet implementation charges one fixed amount on success, burns the declared budget on abort, caps staking and governance calls per block, caps registered validators at 65 and caps open unbonding entries per validator at 512. Constant-time coin transfers are bounded by block gas instead of the separate protocol-call cap. Reference-hardware measurement must replace the fixed charge before economic calibration is considered complete. Nothing else crosses the boundary: no caller-supplied clock, no ambient randomness and no arbitrary native dispatch.
 
 ## Halt recovery
 

@@ -705,7 +705,7 @@ impl Executor {
                     reason: RejectionReason::TransactionGasLimitExceeded,
                 });
             }
-            if native::is_protocol_call(tx) {
+            if native::is_limited_protocol_call(tx) {
                 protocol_calls = protocol_calls.saturating_add(1);
                 if protocol_calls > native::MAX_PROTOCOL_CALLS_PER_BLOCK {
                     return Err(BlockRejected {
