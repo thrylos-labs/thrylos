@@ -15,6 +15,7 @@ use chain_engine_api::{
 };
 use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::hooks::{reward_for, EPOCH_BLOCKS};
+use chain_exec::native::UNBONDING_ENTRY_STORAGE_DEPOSIT;
 use chain_exec::native::{
     COIN_MODULE_NAME, COIN_PACKAGE_ADDRESS, GOVERNANCE_MODULE_NAME, GOVERNANCE_PACKAGE_ADDRESS,
     NEW_ACCOUNT_STORAGE_DEPOSIT, NEW_ENTRY_STORAGE_DEPOSIT, REGISTER_VALIDATOR, STAKE,
@@ -569,11 +570,16 @@ fn staking_with_a_validator_that_does_not_exist_aborts() {
 fn unstaking_is_paid_out_by_the_block_after_the_unbonding_period_and_not_before() {
     let (mut chain, operator) = chain_with_validator();
     let mut delegator = Actor::new(2);
-    chain.fund(&delegator, 100_000 + NEW_ENTRY_STORAGE_DEPOSIT);
+    // Big enough that the stake is worth more than the unbonding entry's
+    // storage deposit, which is taken out of it.
+    let staked: u128 = 100_000_000;
+    let funded: u128 = 1_000_000_000;
+    let entry_deposit = UNBONDING_ENTRY_STORAGE_DEPOSIT;
+    chain.fund(&delegator, funded);
     let id = ValidatorId(operator.address());
     let tx = delegator.staking(
         STAKE,
-        vec![address_arg(operator.address()), u128_arg(40_000)],
+        vec![address_arg(operator.address()), u128_arg(staked)],
     );
     assert_eq!(chain.run(tx), SUCCESS);
     let shares = chain
@@ -589,14 +595,14 @@ fn unstaking_is_paid_out_by_the_block_after_the_unbonding_period_and_not_before(
     let balance_after_unstaking = chain.balance(delegator.address());
     assert_eq!(
         balance_after_unstaking,
-        100_000 - 40_000 - 2 * FEE,
+        funded - staked - NEW_ENTRY_STORAGE_DEPOSIT - 2 * FEE,
         "not paid yet"
     );
     assert_eq!(
         chain
             .executor
             .with_registry(|r| r.total_unbonding().unwrap()),
-        40_000
+        staked - entry_deposit
     );
     chain.audit();
 
@@ -608,7 +614,7 @@ fn unstaking_is_paid_out_by_the_block_after_the_unbonding_period_and_not_before(
     chain.block_after(1_000, Vec::new());
     assert_eq!(
         chain.balance(delegator.address()),
-        balance_after_unstaking + 40_000
+        balance_after_unstaking + staked - entry_deposit
     );
     assert_eq!(
         chain
@@ -1230,5 +1236,77 @@ fn opening_a_proposal_pays_for_the_snapshot_it_creates() {
         "whole deposits on top of the fee, got {paid}"
     );
     assert_eq!(chain.executor.supply().unwrap(), supply - paid);
+    chain.audit();
+}
+
+// ---- unbonding entries pay for themselves ----------------------------------
+
+#[test]
+fn a_stake_worth_less_than_an_unbonding_entry_buys_no_entry_and_is_forfeited() {
+    // Otherwise dust from many accounts fills a validator's unbonding queue
+    // and nobody else can unstake from it for three weeks.
+    let (mut chain, operator) = chain_with_validator();
+    let mut griefer = Actor::new(9);
+    chain.fund(&griefer, 1_000_000_000);
+    let id = ValidatorId(operator.address());
+    let dust = UNBONDING_ENTRY_STORAGE_DEPOSIT.div_euclid(2);
+    let stake = griefer.staking(STAKE, vec![address_arg(operator.address()), u128_arg(dust)]);
+    assert_eq!(chain.run(stake), SUCCESS);
+    let shares = chain
+        .executor
+        .with_registry(|r| r.shares_of(&id, &griefer.address()).unwrap());
+    let entries = chain.executor.with_registry(|r| r.unbonding_entry_count());
+    let supply = chain.executor.supply().unwrap();
+
+    let unstake = griefer.staking(
+        UNSTAKE,
+        vec![address_arg(operator.address()), u128_arg(shares)],
+    );
+    assert_eq!(chain.run(unstake), SUCCESS);
+    assert_eq!(
+        chain.executor.with_registry(|r| r.unbonding_entry_count()),
+        entries,
+        "no entry was opened"
+    );
+    assert_eq!(
+        chain.executor.supply().unwrap(),
+        supply - dust - FEE,
+        "what the shares were worth was burned"
+    );
+    chain.audit();
+}
+
+#[test]
+fn a_larger_unstake_pays_the_entry_deposit_out_of_its_own_proceeds() {
+    let (mut chain, operator) = chain_with_validator();
+    let mut delegator = Actor::new(10);
+    chain.fund(&delegator, 1_000_000_000);
+    let id = ValidatorId(operator.address());
+    let staked: u128 = 500_000_000;
+    let stake = delegator.staking(
+        STAKE,
+        vec![address_arg(operator.address()), u128_arg(staked)],
+    );
+    assert_eq!(chain.run(stake), SUCCESS);
+    let shares = chain
+        .executor
+        .with_registry(|r| r.shares_of(&id, &delegator.address()).unwrap());
+    let supply = chain.executor.supply().unwrap();
+
+    let unstake = delegator.staking(
+        UNSTAKE,
+        vec![address_arg(operator.address()), u128_arg(shares)],
+    );
+    assert_eq!(chain.run(unstake), SUCCESS);
+    assert_eq!(
+        chain
+            .executor
+            .with_registry(|r| r.total_unbonding().unwrap()),
+        staked - UNBONDING_ENTRY_STORAGE_DEPOSIT
+    );
+    assert_eq!(
+        chain.executor.supply().unwrap(),
+        supply - UNBONDING_ENTRY_STORAGE_DEPOSIT - FEE
+    );
     chain.audit();
 }

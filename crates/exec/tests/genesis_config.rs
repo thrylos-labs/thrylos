@@ -24,6 +24,8 @@ use chain_types::{
 use ed25519_dalek::{Signer, SigningKey};
 
 const MIN: u128 = GENESIS_PARAM_VALUES.min_self_stake;
+/// Half of it must be worth more than an unbonding entry's storage deposit.
+const BIG_STAKE: u128 = 400_000_000;
 const GENESIS_TIME: u64 = 1_700_000_000_000;
 
 fn signing_key(seed: u8) -> SigningKey {
@@ -342,7 +344,7 @@ fn a_genesis_validator_can_unstake_and_is_paid_after_the_unbonding_period() {
         GENESIS_TIME,
         GENESIS_PARAM_VALUES,
         vec![allocation(1, 100_000)],
-        vec![validator(1, 2 * MIN)],
+        vec![validator(1, BIG_STAKE)],
     )
     .unwrap();
     let mut executor = Executor::from_genesis(&with_fee_money).unwrap();
@@ -373,7 +375,7 @@ fn a_genesis_validator_can_unstake_and_is_paid_after_the_unbonding_period() {
     commit(&mut executor, &matured);
     assert_eq!(
         executor.read_account(operator).unwrap().balance,
-        after_fee + MIN,
+        after_fee + BIG_STAKE / 2 - chain_exec::native::UNBONDING_ENTRY_STORAGE_DEPOSIT,
         "half of the self-stake came back"
     );
     executor.audit().unwrap();
@@ -416,7 +418,7 @@ fn a_chain_restored_mid_unbonding_pays_out_exactly_as_the_original_does() {
         GENESIS_TIME,
         GENESIS_PARAM_VALUES,
         vec![allocation(1, 100_000)],
-        vec![validator(1, 2 * MIN), validator(2, MIN)],
+        vec![validator(1, BIG_STAKE), validator(2, MIN)],
     )
     .unwrap();
     let mut original = Executor::from_genesis(&with_fee_money).unwrap();
@@ -484,7 +486,7 @@ fn a_chain_restored_mid_unbonding_pays_out_exactly_as_the_original_does() {
     );
     assert_eq!(
         copy.read_account(operator).unwrap().balance,
-        100_000 - 1_000 + MIN,
+        100_000 - 1_000 + BIG_STAKE / 2 - chain_exec::native::UNBONDING_ENTRY_STORAGE_DEPOSIT,
         "half of the self-stake came back, on the restored chain too"
     );
     copy.audit().unwrap();

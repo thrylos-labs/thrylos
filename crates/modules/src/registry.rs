@@ -132,6 +132,15 @@ pub const MAX_UNBONDING_ENTRIES_PER_VALIDATOR: usize = 512;
 /// one call; the rest wait for the next.
 pub const MAX_MATURING_PER_CALL: usize = 256;
 
+/// What [`StakingRegistry::begin_unstake_charged`] did with the shares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unstaked {
+    /// What was queued to be paid out at maturity.
+    pub amount: u128,
+    /// What was kept back for the entry's storage, for the caller to burn.
+    pub burned: u128,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ValidatorId(pub Address);
 
@@ -888,7 +897,28 @@ impl<S: Store> StakingRegistry<S> {
         shares: u128,
         now_ms: u64,
     ) -> Result<u128, RegistryError> {
-        self.atomic(|reg| reg.do_begin_unstake(params, id, staker, shares, now_ms))
+        self.begin_unstake_charged(params, id, staker, shares, now_ms, 0)
+            .map(|unstaked| unstaked.amount)
+    }
+
+    /// [`Self::begin_unstake`], but `deposit` of what the shares were worth
+    /// is set aside to pay for the entry's storage and is *not* queued: the
+    /// caller burns it. Taking it out of the proceeds rather than the
+    /// staker's balance means an account with nothing spare can still
+    /// leave, while a stake worth less than the deposit — the only kind
+    /// worth opening thousands of entries with, to fill a validator's
+    /// queue and lock everyone else out of unstaking — buys no entry at
+    /// all and is simply forfeited.
+    pub fn begin_unstake_charged(
+        &mut self,
+        params: &GovernedParams,
+        id: &ValidatorId,
+        staker: Address,
+        shares: u128,
+        now_ms: u64,
+        deposit: u128,
+    ) -> Result<Unstaked, RegistryError> {
+        self.atomic(|reg| reg.do_begin_unstake(params, id, staker, shares, now_ms, deposit))
     }
 
     fn do_begin_unstake(
@@ -898,7 +928,8 @@ impl<S: Store> StakingRegistry<S> {
         staker: Address,
         shares: u128,
         now_ms: u64,
-    ) -> Result<u128, RegistryError> {
+        deposit: u128,
+    ) -> Result<Unstaked, RegistryError> {
         let mut validator = self.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
         let open = self.open_entries(&staker, id)?;
         if usize::try_from(open).map_or(true, |open| open >= MAX_UNBONDING_ENTRIES_PER_PAIR) {
@@ -923,7 +954,9 @@ impl<S: Store> StakingRegistry<S> {
         if shares > held {
             return Err(StakingError::InsufficientShares.into());
         }
-        let amount = validator.pool.withdraw(shares)?;
+        let gross = validator.pool.withdraw(shares)?;
+        let burned = gross.min(deposit);
+        let amount = gross.saturating_sub(burned);
 
         let remaining = held.saturating_sub(shares);
         if remaining == 0 {
@@ -954,7 +987,7 @@ impl<S: Store> StakingRegistry<S> {
                 open.saturating_add(1),
             );
         }
-        Ok(amount)
+        Ok(Unstaked { amount, burned })
     }
 
     fn set_open_entries(&mut self, staker: &Address, id: &ValidatorId, count: u64) {

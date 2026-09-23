@@ -129,6 +129,16 @@ pub const NEW_ACCOUNT_STORAGE_DEPOSIT: u128 = 10_000_000;
 /// account with no spare balance be unable to leave a stake or cast a vote.
 pub const NEW_ENTRY_STORAGE_DEPOSIT: u128 = NEW_ACCOUNT_STORAGE_DEPOSIT;
 
+/// What an unbonding entry costs, taken out of what is being unstaked (see
+/// `StakingRegistry::begin_unstake_charged`) rather than the sender's
+/// balance, so that leaving a stake never needs spare coin. An entry is
+/// three state keys (the entry and its two indexes), so three entry
+/// deposits. It is what stops someone opening the cap's worth of dust
+/// entries on one validator and locking every other delegator out of
+/// unstaking for the whole unbonding period: each entry now costs at
+/// least this much, burned.
+pub const UNBONDING_ENTRY_STORAGE_DEPOSIT: u128 = 3 * NEW_ENTRY_STORAGE_DEPOSIT;
+
 type State = BTreeMap<StateKey, StateValue>;
 type Changes = Vec<(StateKey, Option<StateValue>)>;
 
@@ -503,17 +513,27 @@ fn unstake(state: &State, tx: &Transaction, ctx: &BlockCtx) -> Result<CallEffect
     let shares = arg_u128(shares_arg).ok_or(AbortReason::InvalidArguments)?;
 
     let sender = tx.sender_address();
-    let (_amount, changes) = run(state, |overlay| {
+    let (unstaked, mut changes) = run(state, |overlay| {
         StakingRegistry::new(overlay)
-            .begin_unstake(
+            .begin_unstake_charged(
                 &ctx.params,
                 &ValidatorId(validator),
                 sender,
                 shares,
                 ctx.timestamp_ms,
+                UNBONDING_ENTRY_STORAGE_DEPOSIT,
             )
             .map_err(staking_error)
     })?;
+    if unstaked.burned > 0 {
+        let supply = read_supply(state).ok_or(CallError::Internal)?;
+        let after = supply
+            .checked_sub(unstaked.burned)
+            .ok_or(CallError::Internal)?;
+        let mut bytes = Vec::new();
+        after.encode(&mut bytes);
+        changes.push((supply_key(), Some(StateValue::new(bytes))));
+    }
     Ok(effects(tx, changes))
 }
 
