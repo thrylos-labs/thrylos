@@ -49,6 +49,14 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots: Mozilla's compiled-in CA root bundle (from the CCADB),
+    # used by `thrylos`'s HTTPS RPC client
+    # (`crates/node/src/remote_rpc.rs`) to verify TLS without an OS trust
+    # store. The whole crate — code and the underlying CCADB certificate
+    # data alike — is licensed CDLA-Permissive-2.0, a permissive license
+    # with no copyleft or attribution burden beyond what MIT/Apache-2.0
+    # already require here.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]
