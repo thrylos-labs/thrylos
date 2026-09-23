@@ -22,7 +22,7 @@ use chain_exec::native::{
 };
 use chain_exec::Executor;
 use chain_modules::governance::{
-    ProposalId, ProposalKind, ProposalStatus, TIMELOCK_MS, VOTING_PERIOD_MS,
+    ApplyFailure, ProposalId, ProposalKind, ProposalStatus, TIMELOCK_MS, VOTING_PERIOD_MS,
 };
 use chain_modules::params::{DAY_MS, GENESIS_PARAM_VALUES, MIN_UNBONDING_PERIOD_MS};
 use chain_modules::{ParamChange, ValidatorId, DEAD_SHARES};
@@ -683,6 +683,16 @@ fn inflation_proposal(bps: u16) -> Vec<u8> {
     vector_arg(&bytes)
 }
 
+fn min_self_stake_proposal(value: u128) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    ProposalKind::ParameterChange(ParamChange {
+        min_self_stake: Some(value),
+        ..ParamChange::default()
+    })
+    .encode(&mut bytes);
+    vector_arg(&bytes)
+}
+
 fn status(chain: &Chain, id: u64) -> ProposalStatus {
     chain
         .executor
@@ -708,6 +718,65 @@ fn a_proposal_passes_waits_out_the_timelock_and_changes_the_parameters() {
     chain.block_after(TIMELOCK_MS, Vec::new());
     assert_eq!(status(&chain, 0), ProposalStatus::Applied);
     assert_eq!(chain.executor.params().unwrap().values().inflation_bps, 700);
+    chain.audit();
+}
+
+/// Governance could once set the minimum self-stake to anything positive,
+/// including above every operator's stake: the active set would empty, and
+/// since only a validator in it can propose, nothing could ever undo that.
+/// It must now fail when it comes to be applied, on a real chain, whatever
+/// the vote said.
+#[test]
+fn a_passed_proposal_that_would_empty_the_validator_set_fails_and_changes_nothing() {
+    let (mut chain, mut operator) = chain_with_validator();
+    let before = chain.executor.params().unwrap().values().min_self_stake;
+    let members = chain.executor.validator_set().unwrap().len();
+    assert!(members > 0);
+
+    // Twice what the only validator holds: it would no longer qualify.
+    let submit = operator.governance(SUBMIT_PROPOSAL, vec![min_self_stake_proposal(before * 2)]);
+    assert_eq!(chain.run(submit), SUCCESS);
+    let vote = operator.governance(VOTE, vec![0u64.to_le_bytes().to_vec(), vec![0]]); // Yes
+    assert_eq!(chain.run(vote), SUCCESS);
+
+    chain.block_after(VOTING_PERIOD_MS, Vec::new());
+    assert!(matches!(status(&chain, 0), ProposalStatus::Passed { .. }));
+    chain.block_after(TIMELOCK_MS, Vec::new());
+
+    assert_eq!(
+        status(&chain, 0),
+        ProposalStatus::Failed(ApplyFailure::Params(
+            chain_modules::params::ParamError::MinSelfStakeWouldEmptyTheSet
+        ))
+    );
+    assert_eq!(
+        chain.executor.params().unwrap().values().min_self_stake,
+        before
+    );
+    assert_eq!(chain.executor.validator_set().unwrap().len(), members);
+    chain.audit();
+}
+
+#[test]
+fn lowering_the_minimum_self_stake_still_applies() {
+    let (mut chain, mut operator) = chain_with_validator();
+    let before = chain.executor.params().unwrap().values().min_self_stake;
+
+    let submit = operator.governance(
+        SUBMIT_PROPOSAL,
+        vec![min_self_stake_proposal(before.div_euclid(2))],
+    );
+    assert_eq!(chain.run(submit), SUCCESS);
+    let vote = operator.governance(VOTE, vec![0u64.to_le_bytes().to_vec(), vec![0]]);
+    assert_eq!(chain.run(vote), SUCCESS);
+    chain.block_after(VOTING_PERIOD_MS, Vec::new());
+    chain.block_after(TIMELOCK_MS, Vec::new());
+
+    assert_eq!(status(&chain, 0), ProposalStatus::Applied);
+    assert_eq!(
+        chain.executor.params().unwrap().values().min_self_stake,
+        before.div_euclid(2)
+    );
     chain.audit();
 }
 

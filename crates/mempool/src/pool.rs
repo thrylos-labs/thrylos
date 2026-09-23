@@ -32,6 +32,9 @@ pub enum AdmissionError {
     WrongChainId,
     InvalidSignature,
     InvalidExpiry,
+    /// Declares less than [`chain_types::MIN_GAS_LIMIT`], so it could be
+    /// charged next to nothing.
+    GasLimitTooLow,
     /// Below the sender's on-chain next sequence number: already
     /// executed, or otherwise unreachable.
     SequenceNumberTooLow,
@@ -53,6 +56,7 @@ impl core::fmt::Display for AdmissionError {
             Self::WrongChainId => f.write_str("the chain ID is missing or is not this chain's"),
             Self::InvalidSignature => f.write_str("the signature does not verify against the sender"),
             Self::InvalidExpiry => f.write_str("the transaction has expired, or expires too far ahead"),
+            Self::GasLimitTooLow => f.write_str("the gas limit is below the protocol minimum"),
             Self::SequenceNumberTooLow => f.write_str("the sequence number is below the sender's next one: already executed"),
             Self::InsufficientBalance => f.write_str("the sender's balance is below the worst-case fee, gas limit times max fee per gas"),
             Self::ReplacementFeeTooLow => f.write_str("a transaction is already pending at this sequence number and the fee is not raised enough to replace it"),
@@ -166,6 +170,9 @@ impl<A: AccountView> Mempool<A> {
         }
         if !tx.is_expiry_valid(current_height) {
             return Err(AdmissionError::InvalidExpiry);
+        }
+        if tx.body.gas_limit.0 < chain_types::MIN_GAS_LIMIT {
+            return Err(AdmissionError::GasLimitTooLow);
         }
 
         let sender = tx.sender_address();
@@ -395,6 +402,16 @@ mod tests {
         sequence_number: u64,
         max_fee_per_gas: u64,
     ) -> Transaction {
+        signed_tx_with_gas(seed, chain_id, sequence_number, max_fee_per_gas, 1_000)
+    }
+
+    fn signed_tx_with_gas(
+        seed: u8,
+        chain_id: ChainId,
+        sequence_number: u64,
+        max_fee_per_gas: u64,
+        gas_limit: u64,
+    ) -> Transaction {
         let signing_key = SigningKey::from_bytes(&[seed; 32]);
         let sender = PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes()).unwrap();
         let body = chain_types::TransactionBody {
@@ -402,7 +419,7 @@ mod tests {
             sender,
             sequence_number: SequenceNumber(sequence_number),
             expiry: BlockHeight(1_000),
-            gas_limit: GasAmount(1_000),
+            gas_limit: GasAmount(gas_limit),
             max_fee_per_gas: GasPrice(max_fee_per_gas),
             declared_inputs: Vec::new(),
             call: MoveCall {
@@ -645,6 +662,31 @@ mod tests {
     }
 
     #[test]
+    fn a_gas_limit_below_the_protocol_minimum_is_refused_even_from_an_empty_account() {
+        let chain_id = ChainId(1);
+        // Zero gas times any price is a zero worst-case fee, which an
+        // account with no balance at all "affords": without the floor this
+        // was admitted, and executed for free once proposed.
+        let free = signed_tx_with_gas(9, chain_id, 0, 1, 0);
+        let mut pool = Mempool::new(config(chain_id), MockAccounts::new());
+        assert_eq!(
+            pool.admit(free, BlockHeight(0)),
+            Err(AdmissionError::GasLimitTooLow)
+        );
+
+        // One unit under the floor is refused; the floor itself is not.
+        let just_under = signed_tx_with_gas(9, chain_id, 0, 1, chain_types::MIN_GAS_LIMIT - 1);
+        let at_floor = signed_tx_with_gas(9, chain_id, 0, 1, chain_types::MIN_GAS_LIMIT);
+        let accounts = MockAccounts::new().with_balance(at_floor.sender_address(), 1_000_000);
+        let mut funded = Mempool::new(config(chain_id), accounts);
+        assert_eq!(
+            funded.admit(just_under, BlockHeight(0)),
+            Err(AdmissionError::GasLimitTooLow)
+        );
+        assert_eq!(funded.admit(at_floor, BlockHeight(0)), Ok(()));
+    }
+
+    #[test]
     fn replacement_below_the_fee_bump_floor_is_rejected() {
         let chain_id = ChainId(1);
         let first = signed_tx(7, chain_id, 0, 100);
@@ -874,6 +916,7 @@ mod display_tests {
             AdmissionError::WrongChainId,
             AdmissionError::InvalidSignature,
             AdmissionError::InvalidExpiry,
+            AdmissionError::GasLimitTooLow,
             AdmissionError::SequenceNumberTooLow,
             AdmissionError::InsufficientBalance,
             AdmissionError::ReplacementFeeTooLow,

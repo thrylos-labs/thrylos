@@ -29,6 +29,15 @@ use crate::keys::{PublicKey, Signature, SignatureError};
 /// until a stated block height, max 7,200 ahead".
 pub const MAX_EXPIRY_HORIZON: u64 = 7_200;
 
+/// The least `gas_limit` any transaction may declare, and the least gas any
+/// executed transaction is charged. Without a floor a transaction declaring
+/// zero gas affords its own worst-case fee from an empty account (0 x price
+/// is 0), executes, aborts, is charged nothing, and still writes its
+/// sender's account: free state, free block space, and no pressure on the
+/// base fee. Every call this chain runs today costs at least this much, so
+/// the floor forbids nothing legitimate.
+pub const MIN_GAS_LIMIT: u64 = 1_000;
+
 /// A Move entry-function call: which package/module/function, and its
 /// arguments. Kept fully opaque to Move's own types: `chain-types` must
 /// not depend on the MoveVM dependency (a large git dependency that only

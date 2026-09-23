@@ -508,6 +508,62 @@ impl<S: ReadStore> StakingRegistry<S> {
         Ok(load(&self.store, &shares_key(id, staker))?.unwrap_or(0))
     }
 
+    /// The highest minimum self-stake that would still leave more than two
+    /// thirds of today's active stake qualified — the most a governance
+    /// change to it can be allowed to ask for on this chain as it stands.
+    ///
+    /// The minimum is the one parameter that decides who *may* validate, so
+    /// setting it above what validators actually hold does not merely
+    /// disqualify some of them: past one third of the stake, no quorum can
+    /// form, and past all of it the set is empty, in which case nobody is
+    /// left to vote on undoing it. The bound is read from the stake that is
+    /// really there, not from a constant, because a constant high enough to
+    /// be useful is also high enough to brick a small chain.
+    ///
+    /// Counts exactly who [`Self::active_set`] counts today (active, with
+    /// stake, operator above the current minimum, top
+    /// [`MAX_ACTIVE_VALIDATORS`] by stake) and returns `params`' own
+    /// minimum when there is no stake to protect, so a chain with nothing
+    /// staked cannot have it raised at all.
+    pub fn max_safe_min_self_stake(&self, params: &GovernedParams) -> Result<u128, RegistryError> {
+        let current = params.values().min_self_stake;
+        // (operator's own stake, the validator's total stake)
+        let mut active: Vec<(u128, u128)> = Vec::new();
+        for (id, validator) in self.all_validators()? {
+            if self.status(&id)? != ValidatorStatus::Active {
+                continue;
+            }
+            let operator_stake = validator
+                .pool
+                .redeemable_for(self.shares_of(&id, &validator.operator)?);
+            let stake = validator.pool.attributable_stake();
+            if operator_stake >= current && stake > 0 {
+                active.push((operator_stake, stake));
+            }
+        }
+        active.sort_by(|a, b| b.1.cmp(&a.1));
+        active.truncate(MAX_ACTIVE_VALIDATORS);
+
+        let total = active.iter().fold(U256::ZERO, |sum, (_, stake)| {
+            sum.saturating_add(U256::from(*stake))
+        });
+        if total.is_zero() {
+            return Ok(current);
+        }
+
+        // Keep the best-staked operators until they hold more than two
+        // thirds; the least of them sets the ceiling.
+        active.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut covered = U256::ZERO;
+        for (operator_stake, stake) in active {
+            covered = covered.saturating_add(U256::from(stake));
+            if covered.saturating_mul(U256::from(3u8)) > total.saturating_mul(U256::from(2u8)) {
+                return Ok(operator_stake);
+            }
+        }
+        Ok(current)
+    }
+
     /// Every validator, decoded, in id order.
     fn all_validators(&self) -> Result<Vec<(ValidatorId, Validator)>, Corrupt> {
         let entries = self
@@ -1617,6 +1673,88 @@ mod tests {
         reg.begin_unstake(&params(), &id_of(1), operator_of(1), 5_000, T0)
             .unwrap();
         assert!(reg.active_set(&params()).unwrap().is_empty());
+    }
+
+    // ---- how high the minimum self-stake may safely go -----------------
+
+    fn operator_stake(reg: &Reg, seed: u8) -> u128 {
+        reg.stake_of(&id_of(seed), &operator_of(seed)).unwrap()
+    }
+
+    /// The set that would be active if the minimum were `minimum`.
+    fn active_at(reg: &Reg, minimum: u128) -> Vec<ValidatorId> {
+        let mut values = *params().values();
+        values.min_self_stake = minimum;
+        ids(&reg
+            .active_set(&GovernedParams::new(values).unwrap())
+            .unwrap())
+    }
+
+    #[test]
+    fn the_ceiling_is_where_two_thirds_of_the_stake_is_still_qualified() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 10_000);
+        register(&mut reg, 2, 5_000);
+        register(&mut reg, 3, 1_500);
+        register(&mut reg, 4, 1_000);
+        // 10,000 alone is under two thirds of 17,500; 15,000 is over. So the
+        // second validator's own stake is as high as the minimum can go.
+        let ceiling = reg.max_safe_min_self_stake(&params()).unwrap();
+        assert_eq!(ceiling, operator_stake(&reg, 2));
+        assert_eq!(active_at(&reg, ceiling), vec![id_of(1), id_of(2)]);
+        // One unit higher would leave the first alone: 10,000 of 17,500.
+        assert_eq!(active_at(&reg, ceiling + 1), vec![id_of(1)]);
+    }
+
+    #[test]
+    fn a_dominant_validator_lets_the_minimum_rise_to_its_own_stake() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 10_000);
+        register(&mut reg, 2, 1_000);
+        register(&mut reg, 3, 1_000);
+        // Alone it holds well over two thirds, so the small ones may be
+        // priced out — that is a choice governance may make.
+        assert_eq!(
+            reg.max_safe_min_self_stake(&params()).unwrap(),
+            operator_stake(&reg, 1)
+        );
+    }
+
+    #[test]
+    fn equal_validators_need_three_of_four() {
+        let mut reg = new_registry();
+        for seed in 1..=4 {
+            register(&mut reg, seed, 5_000);
+        }
+        let ceiling = reg.max_safe_min_self_stake(&params()).unwrap();
+        assert_eq!(ceiling, operator_stake(&reg, 1));
+        assert_eq!(active_at(&reg, ceiling).len(), 4);
+        assert!(active_at(&reg, ceiling + 1).is_empty());
+    }
+
+    #[test]
+    fn stake_delegated_behind_a_small_operator_does_not_lift_the_ceiling() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 1_000);
+        register(&mut reg, 2, 5_000);
+        // Most of the stake sits behind an operator holding only 1,000 of
+        // it, and it is the operator's own stake the minimum is measured
+        // against — so the minimum cannot rise past that without losing
+        // the validator that carries the stake.
+        reg.delegate(&id_of(1), staker(1), 50_000).unwrap();
+        assert_eq!(
+            reg.max_safe_min_self_stake(&params()).unwrap(),
+            operator_stake(&reg, 1)
+        );
+    }
+
+    #[test]
+    fn with_no_stake_at_all_the_minimum_cannot_be_raised() {
+        let reg = new_registry();
+        assert_eq!(
+            reg.max_safe_min_self_stake(&params()).unwrap(),
+            MIN_SELF_STAKE
+        );
     }
 
     #[test]

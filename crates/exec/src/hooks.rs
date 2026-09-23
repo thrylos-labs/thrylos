@@ -57,7 +57,7 @@ use ruint::aliases::U256;
 use crate::accounting::{read_supply, write_supply};
 use crate::effects::BlockCtx;
 use crate::keys::{reward_clock_key, time_checkpoint_key, time_checkpoint_tag};
-use crate::module_store::StateStore;
+use crate::module_store::{StateStore, StateView};
 
 type State = BTreeMap<StateKey, StateValue>;
 
@@ -139,11 +139,29 @@ pub fn infraction_time(state: &State, height: u64) -> Option<u64> {
 pub(crate) fn end_of_block(state: &mut State, ctx: &BlockCtx) -> Result<(), HookFailure> {
     pay_matured_unbonding(state, ctx)?;
     pay_rewards(state, ctx)?;
+    let ceiling = min_self_stake_ceiling(state)?;
     Governance::new(StateStore::new(state))
-        .process(ctx.timestamp_ms, ctx.height)
+        .process_within(ctx.timestamp_ms, ctx.height, ceiling)
         .map_err(|_| HookFailure)?;
     keep_time_checkpoints(state, ctx);
     Ok(())
+}
+
+/// The most a governance change may set the minimum self-stake to, measured
+/// against the stake as it stands after this block's unbonding and rewards
+/// (see `StakingRegistry::max_safe_min_self_stake`). Scanning every
+/// validator is not free and this runs every block, so it is only done when
+/// a proposal is open — with none, nothing can be applied and the answer
+/// would go unused.
+fn min_self_stake_ceiling(state: &State) -> Result<u128, HookFailure> {
+    let governance = Governance::new(StateView::new(state));
+    if !governance.has_open_proposals().map_err(|_| HookFailure)? {
+        return Ok(u128::MAX);
+    }
+    let params = governance.params().map_err(|_| HookFailure)?;
+    StakingRegistry::new(StateView::new(state))
+        .max_safe_min_self_stake(&params)
+        .map_err(|_| HookFailure)
 }
 
 fn pay_matured_unbonding(state: &mut State, ctx: &BlockCtx) -> Result<(), HookFailure> {

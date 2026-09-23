@@ -825,6 +825,11 @@ impl Executor {
         if tx.body.max_fee_per_gas.0 < base_fee {
             return Err(reject(RejectionReason::Rejected));
         }
+        // A rule of the chain, not just of one node's mempool: a block that
+        // carries a transaction under the floor is not a valid block.
+        if tx.body.gas_limit.0 < chain_types::MIN_GAS_LIMIT {
+            return Err(reject(RejectionReason::TransactionGasLimitExceeded));
+        }
         if native::is_protocol_call(tx) && tx.body.gas_limit.0 < native::MIN_PROTOCOL_CALL_GAS {
             return Err(reject(RejectionReason::TransactionGasLimitExceeded));
         }
@@ -858,6 +863,12 @@ impl Executor {
             }
             Err(CallError::Internal) => return Err(reject(RejectionReason::Rejected)),
         };
+
+        // Never less than the floor, whatever the call happened to meter:
+        // a call that fails almost at once must not be nearly free to send.
+        // The declared limit is at least the floor (checked above), and a
+        // call never uses more than it declared, so this stays within it.
+        let gas_used = gas_used.max(chain_types::MIN_GAS_LIMIT);
 
         // Charged the base fee, not the sender's `max_fee_per_gas`
         // ceiling: that ceiling was only ever checked, above, to be
@@ -1203,9 +1214,13 @@ impl Engine for Executor {
         // function's to report.
         let ctx = self.block_ctx(&self.state, height, timestamp_millis).ok();
         let mut scratch = ctx.is_some().then(|| self.state.clone());
+        let mut try_on_copy = false;
+        let mut protocol_calls = 0usize;
 
         for tx in candidate_transactions {
-            if tx.body.gas_limit.0 > transaction_gas_ceiling {
+            if tx.body.gas_limit.0 > transaction_gas_ceiling
+                || tx.body.gas_limit.0 < chain_types::MIN_GAS_LIMIT
+            {
                 continue;
             }
             let Some(next_total) = gas_so_far.checked_add(tx.body.gas_limit.0) else {
@@ -1213,6 +1228,13 @@ impl Engine for Executor {
             };
             if next_total > limits.max_gas {
                 break;
+            }
+            // `apply_block` refuses a block with more than this many
+            // protocol calls, so a proposer must stop at the cap rather
+            // than propose a block its own peers will reject.
+            let limited = native::is_limited_protocol_call(&tx);
+            if limited && protocol_calls >= native::MAX_PROTOCOL_CALLS_PER_BLOCK {
+                continue;
             }
 
             let mut encoded_transaction = Vec::new();
@@ -1225,7 +1247,6 @@ impl Engine for Executor {
             }
 
             if let (Some(ctx), Some(state)) = (ctx, scratch.as_mut()) {
-                let mut attempt = state.clone();
                 let would_be_index = transactions.len();
                 // `Err` means nothing was written — every rejecting check
                 // in `apply_transaction` runs before its first mutation —
@@ -1234,19 +1255,47 @@ impl Engine for Executor {
                 // per-transaction retry to name and drop, exactly as
                 // before this function simulated anything. Only a breach
                 // of the cap itself is this loop's to police.
-                if self
-                    .apply_transaction(&mut attempt, &tx, would_be_index, &ctx)
-                    .is_ok()
-                {
-                    if !state_within_limits(&attempt) {
-                        continue;
+                //
+                // The common case applies straight onto the running
+                // scratch: no per-candidate copy of the whole state. Only
+                // when a transaction is found to have breached the cap is
+                // the scratch rebuilt from the accepted transactions, and
+                // from then on candidates are tried on a copy, since a
+                // proposer that has hit the cap is the one place a rollback
+                // is needed again.
+                if try_on_copy {
+                    let mut attempt = state.clone();
+                    if self
+                        .apply_transaction(&mut attempt, &tx, would_be_index, &ctx)
+                        .is_ok()
+                    {
+                        if !state_within_limits(&attempt) {
+                            continue;
+                        }
+                        *state = attempt;
                     }
-                    *state = attempt;
+                } else if self
+                    .apply_transaction(state, &tx, would_be_index, &ctx)
+                    .is_ok()
+                    && !state_within_limits(state)
+                {
+                    let mut rebuilt = self.state.clone();
+                    for (index, kept) in transactions.iter().enumerate() {
+                        // Replaying what was already accepted: it applied
+                        // cleanly against exactly this state a moment ago.
+                        let _ = self.apply_transaction(&mut rebuilt, kept, index, &ctx);
+                    }
+                    *state = rebuilt;
+                    try_on_copy = true;
+                    continue;
                 }
             }
 
             gas_so_far = next_total;
             encoded_size = next_size;
+            if limited {
+                protocol_calls = protocol_calls.saturating_add(1);
+            }
             transactions.push(tx);
         }
 
@@ -1566,6 +1615,74 @@ mod tests {
             limits,
         );
         assert_eq!(block.transactions, vec![tx]);
+    }
+
+    fn unjail_call(seed: u8, sequence_number: u64) -> Transaction {
+        let mut tx = coin_transfer(seed, sequence_number, Address::from_bytes([0; 32]), 1);
+        tx.body.call.module_address = Address::from_bytes(native::STAKING_PACKAGE_ADDRESS);
+        tx.body.call.module_name = native::STAKING_MODULE_NAME.as_bytes().to_vec();
+        tx.body.call.function_name = native::UNJAIL.as_bytes().to_vec();
+        tx.body.call.arguments = Vec::new();
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut bytes = Vec::new();
+        tx.body.encode(&mut bytes);
+        use ed25519_dalek::Signer;
+        tx.signature =
+            chain_types::Signature::from_ed25519_bytes(signing_key.sign(&bytes).to_bytes());
+        tx
+    }
+
+    #[test]
+    fn proposal_stops_at_the_protocol_call_cap_instead_of_proposing_a_block_peers_reject() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(address_of(2), 1_000_000_000)
+            .unwrap();
+        let limits = executor.block_limits().unwrap();
+        let cap = native::MAX_PROTOCOL_CALLS_PER_BLOCK;
+        let calls: Vec<Transaction> = (0..u64::try_from(cap + 10).unwrap())
+            .map(|sequence| unjail_call(2, sequence))
+            .collect();
+        let block = executor.propose_block(
+            executor.tip_block_hash(),
+            executor.state_root(),
+            BlockHeight(1),
+            1_000,
+            calls,
+            limits,
+        );
+        assert_eq!(block.transactions.len(), cap);
+        assert!(
+            executor
+                .execute_block(executor.state_root(), &block)
+                .is_ok(),
+            "the block it proposed must be one it would itself accept"
+        );
+    }
+
+    #[test]
+    fn proposal_keeps_what_fits_after_dropping_a_transaction_that_breached_the_cap() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(address_of(2), 1_000_000_000)
+            .unwrap();
+        let limits = executor.block_limits().unwrap();
+        fill_state_to_within(&mut executor, 1);
+        let first = Address::from_bytes([222; 32]);
+        let second = Address::from_bytes([223; 32]);
+        let fits = coin_transfer(2, 0, first, 10);
+        let breaches = coin_transfer(2, 1, second, 10);
+        // Sequence 1 again: the dropped transaction never used its number.
+        let later = coin_transfer(2, 1, first, 10);
+        let block = executor.propose_block(
+            executor.tip_block_hash(),
+            executor.state_root(),
+            BlockHeight(1),
+            1_000,
+            vec![fits.clone(), breaches, later.clone()],
+            limits,
+        );
+        assert_eq!(block.transactions, vec![fits, later]);
     }
 
     #[test]

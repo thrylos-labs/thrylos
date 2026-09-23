@@ -729,6 +729,13 @@ impl<S: ReadStore> Governance<S> {
             .collect()
     }
 
+    /// Whether any proposal is still unresolved. When none is, nothing
+    /// can be applied this block, so a caller that would otherwise compute
+    /// something expensive to pass to [`Self::process_within`] can skip it.
+    pub fn has_open_proposals(&self) -> Result<bool, GovernanceError> {
+        Ok(!self.store.scan_prefix(&[tag::GOV_OPEN], 1).is_empty())
+    }
+
     /// How many proposals are unresolved: still being voted on, or
     /// passed and waiting out the timelock.
     pub fn open_proposal_count(&self) -> Result<usize, GovernanceError> {
@@ -1012,18 +1019,40 @@ impl<S: Store> Governance<S> {
     ///
     /// Reads only the unresolved proposals, at most
     /// [`MAX_OPEN_PROPOSALS`], and never their votes.
+    ///
+    /// Applies parameter changes with no ceiling on the minimum self-stake,
+    /// because governance does not know who is staked: a running chain
+    /// calls [`Self::process_within`] with the ceiling its registry works
+    /// out, and this form is for callers with no registry to ask.
     pub fn process(
         &mut self,
         now_ms: u64,
         now_height: BlockHeight,
     ) -> Result<Vec<(ProposalId, ProposalStatus)>, GovernanceError> {
-        self.atomic(|gov| gov.do_process(now_ms, now_height))
+        self.process_within(now_ms, now_height, u128::MAX)
+    }
+
+    /// [`Self::process`], except that a parameter change which raises the
+    /// minimum self-stake above `min_self_stake_ceiling` fails when it comes
+    /// to be applied (as [`ParamError::MinSelfStakeWouldEmptyTheSet`]) and
+    /// leaves the parameters as they were. Checked at application, not at
+    /// voting, because that is when the stake it must be measured against
+    /// is known: a proposal that was safe when submitted may not be after
+    /// a week of unstaking.
+    pub fn process_within(
+        &mut self,
+        now_ms: u64,
+        now_height: BlockHeight,
+        min_self_stake_ceiling: u128,
+    ) -> Result<Vec<(ProposalId, ProposalStatus)>, GovernanceError> {
+        self.atomic(|gov| gov.do_process(now_ms, now_height, min_self_stake_ceiling))
     }
 
     fn do_process(
         &mut self,
         now_ms: u64,
         now_height: BlockHeight,
+        min_self_stake_ceiling: u128,
     ) -> Result<Vec<(ProposalId, ProposalStatus)>, GovernanceError> {
         let mut params = self.params()?;
         let mut changed = Vec::new();
@@ -1039,7 +1068,12 @@ impl<S: Store> Governance<S> {
                     },
                 ),
                 ProposalStatus::Passed { apply_at_ms } if now_ms >= apply_at_ms => {
-                    Some(self.apply(&proposal.kind, &mut params, now_height)?)
+                    Some(self.apply(
+                        &proposal.kind,
+                        &mut params,
+                        now_height,
+                        min_self_stake_ceiling,
+                    )?)
                 }
                 _ => None,
             };
@@ -1064,9 +1098,21 @@ impl<S: Store> Governance<S> {
         kind: &ProposalKind,
         params: &mut GovernedParams,
         now_height: BlockHeight,
+        min_self_stake_ceiling: u128,
     ) -> Result<ProposalStatus, GovernanceError> {
         Ok(match kind {
             ProposalKind::ParameterChange(change) => match params.with_change(change) {
+                // Only a change that itself raises the minimum is held to
+                // the ceiling: one that leaves it alone must still apply
+                // when an earlier unstaking has already left it above.
+                Ok(updated)
+                    if change.min_self_stake.is_some()
+                        && updated.values().min_self_stake > min_self_stake_ceiling =>
+                {
+                    ProposalStatus::Failed(ApplyFailure::Params(
+                        ParamError::MinSelfStakeWouldEmptyTheSet,
+                    ))
+                }
                 Ok(updated) => {
                     *params = updated;
                     save(&mut self.store, params_key(), &updated);
@@ -1225,6 +1271,67 @@ mod tests {
             gov.process(passed_at + TIMELOCK_MS, BlockHeight(3))
                 .unwrap(),
             vec![(id, ProposalStatus::Applied)]
+        );
+        assert_eq!(gov.params().unwrap().values().inflation_bps, 500);
+    }
+
+    fn min_self_stake_change(value: u128) -> ProposalKind {
+        ProposalKind::ParameterChange(ParamChange {
+            min_self_stake: Some(value),
+            ..ParamChange::default()
+        })
+    }
+
+    /// Passes `kind` by a clear majority, waits out the timelock, and applies
+    /// it with `ceiling` on the minimum self-stake, returning what happened.
+    fn applied_within(gov: &mut Gov, kind: ProposalKind, ceiling: u128) -> ProposalStatus {
+        let id = submit(gov, kind);
+        cast(gov, id, 1, 600, VoteChoice::Yes);
+        assert!(matches!(
+            close_voting(gov, id),
+            ProposalStatus::Passed { .. }
+        ));
+        let apply_at = T0 + VOTING_PERIOD_MS + TIMELOCK_MS;
+        let events = gov
+            .process_within(apply_at, BlockHeight(3), ceiling)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        events[0].1
+    }
+
+    #[test]
+    fn a_minimum_self_stake_within_the_ceiling_applies() {
+        let mut gov = new_gov();
+        assert_eq!(
+            applied_within(&mut gov, min_self_stake_change(4_000), 5_000),
+            ProposalStatus::Applied
+        );
+        assert_eq!(gov.params().unwrap().values().min_self_stake, 4_000);
+    }
+
+    #[test]
+    fn a_minimum_self_stake_above_the_ceiling_fails_and_changes_nothing() {
+        // The proposal passed a real vote and a timelock, and still cannot
+        // be applied: it would disqualify enough of the stake that no
+        // quorum could form, and then nobody could vote to undo it.
+        let mut gov = new_gov();
+        assert_eq!(
+            applied_within(&mut gov, min_self_stake_change(5_001), 5_000),
+            ProposalStatus::Failed(ApplyFailure::Params(
+                ParamError::MinSelfStakeWouldEmptyTheSet
+            ))
+        );
+        assert_eq!(gov.params().unwrap().values().min_self_stake, 1_000);
+    }
+
+    #[test]
+    fn a_change_that_leaves_the_minimum_alone_applies_even_when_it_is_already_above_the_ceiling() {
+        // Unstaking since can have left the minimum above what is safe to
+        // *raise* it to; that must not freeze every unrelated parameter.
+        let mut gov = new_gov();
+        assert_eq!(
+            applied_within(&mut gov, inflation_change(500), 10),
+            ProposalStatus::Applied
         );
         assert_eq!(gov.params().unwrap().values().inflation_bps, 500);
     }
@@ -2118,6 +2225,8 @@ mod tests {
             ApplyFailure::Params(ParamError::UnbondingPeriodOutOfRange),
             ApplyFailure::Params(ParamError::QuorumOutOfRange),
             ApplyFailure::Params(ParamError::VetoThresholdOutOfRange),
+            ApplyFailure::Params(ParamError::MinSelfStakeTooHigh),
+            ApplyFailure::Params(ParamError::MinSelfStakeWouldEmptyTheSet),
             ApplyFailure::Params(ParamError::Fee(
                 crate::fees::FeeError::BlockGasLimitOutOfRange,
             )),

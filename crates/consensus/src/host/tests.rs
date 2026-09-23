@@ -417,12 +417,18 @@ fn the_pace_is_the_setting_and_a_different_one_gives_a_different_gap() {
 
 // ---- blocks that arrive ------------------------------------------------------
 
-/// A block message from the one validator, with a reveal that checks out for
+/// A block message from validator 1, with a reveal that checks out for
 /// `height` and the host's current seed. `variant` makes distinct blocks.
 fn genuine<D: Storage>(host: &HostWith<D>, height: u64, variant: u64) -> ProposedBlock {
+    genuine_from(host, 1, height, variant)
+}
+
+/// The same, from validator `n`: its own address, and a reveal only its key
+/// could have made — so a block that is junk in every way but that one.
+fn genuine_from<D: Storage>(host: &HostWith<D>, n: u8, height: u64, variant: u64) -> ProposedBlock {
     let head = host.env.exec.head().unwrap();
     ProposedBlock {
-        proposer: Address::from_public_key(&operator(1)),
+        proposer: Address::from_public_key(&operator(n)),
         block: Block {
             parent_block_hash: head.block_hash,
             height: BlockHeight(height),
@@ -430,7 +436,7 @@ fn genuine<D: Storage>(host: &HostWith<D>, height: u64, variant: u64) -> Propose
             transactions: Vec::new(),
         },
         reveal: BlsSignature::from_bytes(
-            secret()
+            secret_for(n)
                 .sign(
                     &beacon_message(BlockHeight(height), host.seed()),
                     DST_BEACON,
@@ -467,25 +473,128 @@ fn a_block_from_someone_who_is_not_a_validator_is_dropped() {
     assert!(host.env.blocks.is_empty());
 }
 
-#[test]
-fn blocks_held_for_the_height_are_capped() {
-    let mut host = host(GENESIS_TIME + 1);
-    let cap = host.env.config.max_pending_per_height;
-    for variant in 0..u64::try_from(cap + 10).unwrap() {
-        host.handle_message(Message::Block(genuine(&host, 1, variant)));
+/// The validator the draw picks to propose round 0 of height 1, as its
+/// number (1 or 2) and the other one's.
+fn drawn_and_other(host: &TestHost) -> (u8, u8) {
+    let drawn = host.env.ctx.select_proposer(
+        &host.env.validators,
+        ConsensusHeight(BlockHeight(1)),
+        Round::new(0),
+    );
+    if drawn.address().0 == Address::from_public_key(&operator(1)) {
+        (1, 2)
+    } else {
+        (2, 1)
     }
-    assert_eq!(host.env.blocks.len(), cap);
+}
+
+/// A verified proposal from the drawn proposer naming `id`, as
+/// `verify_signature` hands one to `note_proposal`.
+fn vouch_for(host: &mut TestHost, id: Hash) {
+    let drawn = host
+        .env
+        .ctx
+        .select_proposer(
+            &host.env.validators,
+            ConsensusHeight(BlockHeight(1)),
+            Round::new(0),
+        )
+        .address();
+    host.env.note_proposal(&ConsensusProposal {
+        chain_id: ChainId(1),
+        height: ConsensusHeight(BlockHeight(1)),
+        round: Round::new(0),
+        value: ConsensusValue(id),
+        pol_round: Round::Nil,
+        validator_address: *drawn,
+    });
+}
+
+#[test]
+fn one_proposer_cannot_take_the_slots_the_real_proposer_needs() {
+    // Reveals do not cover a block's contents, so a validator can sign
+    // endless distinct blocks under its own genuine reveal. Held first come,
+    // first served that filled every slot, and the drawn proposer's real
+    // block was then dropped at every honest node — for this height, and
+    // after a restart (they were logged), and the next.
+    let mut host = host(GENESIS_TIME + 1);
+    let (drawn, other) = drawn_and_other(&host);
+    let quota = host.env.config.max_unvouched_blocks_per_proposer;
+    for variant in 0..u64::try_from(host.env.config.max_pending_per_height + 10).unwrap() {
+        host.handle_message(Message::Block(genuine_from(&host, other, 1, variant)));
+    }
+    assert_eq!(host.env.blocks.len(), quota, "only its share is held");
+
+    // The real proposer's block still gets in.
+    let real = genuine_from(&host, drawn, 1, 1_000);
+    let real_id = real.id();
+    host.handle_message(Message::Block(real));
+    assert!(host.env.blocks.contains_key(&real_id));
+    assert_eq!(host.env.blocks.len(), quota + 1);
+}
+
+#[test]
+fn the_shared_slots_are_still_capped_across_proposers() {
+    let mut host = host(GENESIS_TIME + 1);
+    host.env.config.max_pending_per_height = 5;
+    // Distinct blocks throughout: the proposer is not part of a block's
+    // hash, so the same variant from both would be one block.
+    for variant in 0..4 {
+        host.handle_message(Message::Block(genuine_from(&host, 1, 1, variant)));
+        host.handle_message(Message::Block(genuine_from(&host, 2, 1, 100 + variant)));
+    }
+    assert_eq!(host.env.blocks.len(), 5);
+}
+
+#[test]
+fn a_block_a_verified_proposal_names_is_kept_even_when_the_slots_are_full() {
+    let mut host = host(GENESIS_TIME + 1);
+    host.env.config.max_pending_per_height = 3;
+    let (drawn, other) = drawn_and_other(&host);
+    for variant in 0..3 {
+        host.handle_message(Message::Block(genuine_from(&host, other, 1, variant)));
+    }
+    assert_eq!(host.env.blocks.len(), 3);
+
+    // Nothing has vouched for the real block, and there is no room.
+    let real = genuine_from(&host, drawn, 1, 1_000);
+    let real_id = real.id();
+    host.handle_message(Message::Block(real.clone()));
+    assert!(!host.env.blocks.contains_key(&real_id));
+
+    // Once the drawn proposer's signed proposal names it, it is kept, in
+    // the place of one of the unvouched blocks.
+    vouch_for(&mut host, real_id);
+    host.handle_message(Message::Block(real));
+    assert!(host.env.blocks.contains_key(&real_id));
+    assert_eq!(host.env.blocks.len(), 3);
+    assert_eq!(host.env.unvouched.len(), 2);
+}
+
+#[test]
+fn a_proposal_arriving_after_its_block_lifts_the_block_out_of_its_senders_quota() {
+    let mut host = host(GENESIS_TIME + 1);
+    let (drawn, _) = drawn_and_other(&host);
+    let real = genuine_from(&host, drawn, 1, 7);
+    let id = real.id();
+    host.handle_message(Message::Block(real));
+    assert!(host.env.unvouched.contains_key(&id));
+
+    vouch_for(&mut host, id);
+    assert!(!host.env.unvouched.contains_key(&id));
+    assert!(host.env.blocks.contains_key(&id), "still held");
 }
 
 #[test]
 fn blocks_for_later_heights_are_held_up_to_a_cap_and_a_window() {
     let mut host = host(GENESIS_TIME + 1);
-    let cap = host.env.config.max_pending_per_height;
+    host.env.config.max_pending_per_height = 5;
     let window = host.env.config.max_future_heights;
-    for variant in 0..u64::try_from(cap + 10).unwrap() {
-        host.handle_message(Message::Block(genuine(&host, 2, variant)));
+    for variant in 0..4 {
+        host.handle_message(Message::Block(genuine_from(&host, 1, 2, variant)));
+        host.handle_message(Message::Block(genuine_from(&host, 2, 2, variant)));
     }
-    assert_eq!(host.env.future_blocks[&2].len(), cap);
+    assert_eq!(host.env.future_blocks[&2].len(), 5);
 
     // Inside the window, kept; beyond it, and behind the chain, dropped.
     host.handle_message(Message::Block(genuine(&host, 1 + window, 0)));
@@ -495,6 +604,21 @@ fn blocks_for_later_heights_are_held_up_to_a_cap_and_a_window() {
     host.handle_message(Message::Block(genuine(&host, 0, 0)));
     assert!(!host.env.future_blocks.contains_key(&0));
     assert!(host.env.blocks.is_empty());
+}
+
+#[test]
+fn one_proposer_cannot_fill_a_later_height_and_a_stranger_cannot_use_it_at_all() {
+    let mut host = host(GENESIS_TIME + 1);
+    let quota = host.env.config.max_unvouched_blocks_per_proposer;
+    for variant in 0..u64::try_from(host.env.config.max_pending_per_height + 10).unwrap() {
+        host.handle_message(Message::Block(genuine_from(&host, 2, 2, variant)));
+    }
+    assert_eq!(host.env.future_blocks[&2].len(), quota);
+
+    let mut stranger = genuine(&host, 3, 0);
+    stranger.proposer = Address::from_public_key(&operator(7));
+    host.handle_message(Message::Block(stranger));
+    assert!(!host.env.future_blocks.contains_key(&3));
 }
 
 // ---- adopting what a peer says was decided ---------------------------------------
@@ -755,8 +879,11 @@ fn a_log_that_fails_when_a_new_height_begins_halts_the_host() {
 fn what_peers_can_make_the_log_hold_is_capped_but_what_the_host_holds_is_not() {
     let mut host = host(GENESIS_TIME + 1);
     host.env.config.max_wal_entries = 2;
+    // From both validators, so it is the log's cap that is being measured
+    // and not one proposer's share of the slots.
     for variant in 0..5 {
-        host.handle_message(Message::Block(genuine(&host, 1, variant)));
+        let proposer = 1 + u8::try_from(variant % 2).unwrap();
+        host.handle_message(Message::Block(genuine_from(&host, proposer, 1, variant)));
     }
     assert_eq!(host.env.storage.wal.len(), 2);
     assert_eq!(host.env.blocks.len(), 5);
@@ -919,4 +1046,46 @@ fn a_host_that_cannot_record_a_commit_halts_before_finalising_it() {
     adopting(&mut host, record);
     assert!(wal_failed(&host));
     assert_eq!(host.chain().head().unwrap().height, BlockHeight(0));
+}
+
+#[test]
+fn a_sync_answer_stops_at_its_byte_budget_but_always_carries_one_block() {
+    // Sixteen full blocks would be far past the transport's frame limit and
+    // the answer would be dropped whole, stranding the peer that asked.
+    let mut host = host(GENESIS_TIME + 1);
+    let head = host.env.exec.head().unwrap();
+    let mut records = Vec::new();
+    for offset in 1..=3u64 {
+        let mut block = good_block(&head);
+        block.height = BlockHeight(head.height.0 + offset);
+        records.push(certified(&host, &block));
+    }
+    let one = records[0].block.encoded_len().unwrap();
+    for record in &records {
+        host.env.storage.record(record, hash_of(9)).unwrap();
+    }
+    let requester = Address::from_public_key(&operator(1));
+    let from = records[0].block.height;
+    let served = |host: &mut TestHost| {
+        host.handle_message(Message::SyncRequest(SyncRequest { requester, from }));
+        host.take_outbox()
+            .directed
+            .into_iter()
+            .map(|(_, message)| match message {
+                Message::SyncResponse(response) => response.commits.len(),
+                _ => 0,
+            })
+            .sum::<usize>()
+    };
+
+    host.env.config.sync_response_max_bytes = one * 2;
+    assert_eq!(served(&mut host), 2, "stops at the budget");
+    host.env.config.sync_response_max_bytes = 1;
+    assert_eq!(
+        served(&mut host),
+        1,
+        "still sends one so a peer can progress"
+    );
+    host.env.config.sync_response_max_bytes = usize::MAX;
+    assert_eq!(served(&mut host), 3);
 }

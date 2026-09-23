@@ -216,7 +216,8 @@ fn full_pipeline_executes_a_real_transaction_and_commits_the_result() {
     );
 
     let executed = executor.execute_block(genesis_root, &block).unwrap();
-    assert_eq!(executed.gas_used, 1);
+    // One metered instruction, charged at the protocol's minimum.
+    assert_eq!(executed.gas_used, chain_types::MIN_GAS_LIMIT);
     // execute_block must not have mutated the executor's committed state.
     assert_eq!(executor.state_root(), genesis_root);
 
@@ -513,9 +514,9 @@ fn a_move_abort_charges_gas_and_rolls_back_but_the_block_carries_on() {
             TransactionOutcome::Success,
         ]
     );
-    // Both calls execute one metered instruction: the first aborts and the
-    // second succeeds.
-    assert_eq!(executed.gas_used, 2);
+    // Both calls execute one metered instruction, the first aborting and the
+    // second succeeding, and each is charged at the protocol's minimum.
+    assert_eq!(executed.gas_used, 2 * chain_types::MIN_GAS_LIMIT);
 
     assert_eq!(
         executor.read_result(&overflowing_sender),
@@ -525,27 +526,65 @@ fn a_move_abort_charges_gas_and_rolls_back_but_the_block_carries_on() {
     assert_eq!(executor.read_result(&fine_sender), Some(42));
 
     let charged = executor.read_account(overflowing_sender).unwrap();
-    assert_eq!(charged.balance, 1_000_000 - 1);
+    assert_eq!(
+        charged.balance,
+        1_000_000 - u128::from(chain_types::MIN_GAS_LIMIT)
+    );
     assert_eq!(charged.next_sequence_number, SequenceNumber(1));
 }
 
+/// A transaction declaring less than the minimum gas — zero above all — must
+/// not be executable at any price. Before the floor, zero declared gas
+/// afforded its own worst-case fee (0 x price) from an empty account, ran,
+/// aborted, was charged nothing, and still created its sender's account: free
+/// state and free block space, past the storage deposit and the state cap.
+///
+/// (This used to be the test that a Move call stops when its signed gas
+/// budget is exhausted, by signing a budget of zero. The floor makes that
+/// budget unreachable through a transaction, and no call the chain runs
+/// today meters more than the floor, so exhaustion inside the VM is no longer
+/// exercisable end to end here.)
 #[test]
-fn move_execution_stops_when_its_signed_gas_budget_is_exhausted() {
-    let mut executor = Executor::genesis(ChainId(1)).unwrap();
+fn a_transaction_declaring_less_than_the_minimum_gas_is_never_executed() {
+    let executor = Executor::genesis(ChainId(1)).unwrap();
     let tx = signed_transaction_priced(71, 1, 0, 0, 1, Vec::new(), calculator_call(2, 40));
+    // Deliberately not funded: an empty account is exactly who used to get in.
+    assert_eq!(tx.body.gas_limit.0, 0);
     let sender = tx.sender_address();
-    fund(&mut executor, &tx);
+    let entries_before = executor.state_root();
 
-    let executed = execute_and_finalise(&mut executor, vec![tx]);
-    assert_eq!(
-        executed.outcomes,
-        vec![TransactionOutcome::Aborted(AbortReason::ExecutionFailed)]
+    // The proposer leaves it out ...
+    let proposed = executor.propose_block(
+        executor.tip_block_hash(),
+        executor.state_root(),
+        BlockHeight(1),
+        FIRST_TIMESTAMP,
+        vec![tx.clone()],
+        default_limits(),
     );
-    assert_eq!(executed.gas_used, 0);
-    assert_eq!(executor.read_result(&sender), None);
+    assert!(proposed.transactions.is_empty());
+
+    // ... and a block that carries it anyway is refused, naming it.
+    let block = chain_engine_api::Block {
+        parent_block_hash: executor.tip_block_hash(),
+        height: BlockHeight(1),
+        timestamp_millis: FIRST_TIMESTAMP,
+        transactions: vec![tx],
+    };
+    let rejected = executor
+        .execute_block(executor.state_root(), &block)
+        .unwrap_err();
+    assert_eq!(
+        rejected.reason,
+        RejectionReason::TransactionGasLimitExceeded
+    );
+    assert_eq!(rejected.transaction_index, Some(0));
+
+    // Nothing was created for the sender.
+    assert_eq!(executor.state_root(), entries_before);
     assert_eq!(
         executor.read_account(sender).unwrap().next_sequence_number,
-        SequenceNumber(1)
+        SequenceNumber(0)
     );
 }
 
@@ -748,7 +787,10 @@ fn a_successful_transaction_debits_gas_and_advances_the_sequence_number() {
     executor.finalise_block(&block, &executed).unwrap();
 
     let account = executor.read_account(sender).unwrap();
-    assert_eq!(account.balance, 1_000_000 - 1);
+    assert_eq!(
+        account.balance,
+        1_000_000 - u128::from(chain_types::MIN_GAS_LIMIT)
+    );
     assert_eq!(account.next_sequence_number, SequenceNumber(1));
 }
 

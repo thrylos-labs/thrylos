@@ -65,6 +65,18 @@ pub const MAX_QUORUM_BPS: u16 = 6_700;
 pub const MIN_VETO_THRESHOLD_BPS: u16 = 1_000;
 pub const MAX_VETO_THRESHOLD_BPS: u16 = 5_000;
 
+/// The most the minimum self-stake may ever be set to: a million THRY.
+///
+/// **A choice.** The minimum only has to be positive to do its job, and
+/// with no upper bound a single passed proposal could set it above every
+/// operator's stake: the active set would be empty, and since proposing
+/// needs a voter from that set, nothing could ever undo it. This bounds how
+/// wrong a parameter can be even where no other check is available; it is
+/// not what protects a *running* chain, which is the apply-time check
+/// against the stake that is actually there (see
+/// [`ParamError::MinSelfStakeWouldEmptyTheSet`]).
+pub const MAX_MIN_SELF_STAKE: u128 = 1_000_000_000_000_000;
+
 /// The parameters a chain starts with, unless its genesis says otherwise.
 /// The spec's own numbers where it gives one (60M block gas, base fee
 /// denominator 8, 21-day unbonding, 3-5% inflation, quorum and veto at a
@@ -91,6 +103,14 @@ pub enum ParamError {
     UnbondingPeriodOutOfRange,
     QuorumOutOfRange,
     VetoThresholdOutOfRange,
+    /// The minimum self-stake is above [`MAX_MIN_SELF_STAKE`].
+    MinSelfStakeTooHigh,
+    /// Well inside its clamp, but higher than the validators actually
+    /// staked would meet: applying it would disqualify enough of them that
+    /// a two-thirds quorum could no longer form, or empty the set entirely.
+    /// Only ever the outcome of applying a proposal to a live chain, never
+    /// of [`GovernedParams::new`], which has no stake to look at.
+    MinSelfStakeWouldEmptyTheSet,
 }
 
 impl Encode for ParamError {
@@ -105,6 +125,8 @@ impl Encode for ParamError {
             Self::UnbondingPeriodOutOfRange => 3u8.encode(out),
             Self::QuorumOutOfRange => 4u8.encode(out),
             Self::VetoThresholdOutOfRange => 5u8.encode(out),
+            Self::MinSelfStakeTooHigh => 6u8.encode(out),
+            Self::MinSelfStakeWouldEmptyTheSet => 7u8.encode(out),
         }
     }
 }
@@ -122,6 +144,8 @@ impl Decode for ParamError {
             3 => Ok((Self::UnbondingPeriodOutOfRange, offset)),
             4 => Ok((Self::QuorumOutOfRange, offset)),
             5 => Ok((Self::VetoThresholdOutOfRange, offset)),
+            6 => Ok((Self::MinSelfStakeTooHigh, offset)),
+            7 => Ok((Self::MinSelfStakeWouldEmptyTheSet, offset)),
             _ => Err(CodecError::InvalidValue),
         }
     }
@@ -136,6 +160,10 @@ impl core::fmt::Display for ParamError {
             Self::UnbondingPeriodOutOfRange => f.write_str("unbonding period outside its clamp"),
             Self::QuorumOutOfRange => f.write_str("quorum outside its clamp"),
             Self::VetoThresholdOutOfRange => f.write_str("veto threshold outside its clamp"),
+            Self::MinSelfStakeTooHigh => f.write_str("minimum self-stake above its clamp"),
+            Self::MinSelfStakeWouldEmptyTheSet => f.write_str(
+                "minimum self-stake would disqualify too many validators for a quorum to form",
+            ),
         }
     }
 }
@@ -303,6 +331,9 @@ impl GovernedParams {
         if values.min_self_stake == 0 {
             return Err(ParamError::MinSelfStakeZero);
         }
+        if values.min_self_stake > MAX_MIN_SELF_STAKE {
+            return Err(ParamError::MinSelfStakeTooHigh);
+        }
         if values.inflation_bps > MAX_INFLATION_BPS {
             return Err(ParamError::InflationOutOfRange);
         }
@@ -380,6 +411,25 @@ mod tests {
         assert_eq!(
             GovernedParams::new(values),
             Err(ParamError::Fee(FeeError::DenominatorOutOfRange))
+        );
+    }
+
+    #[test]
+    fn a_minimum_self_stake_above_its_clamp_is_rejected_and_the_clamp_itself_is_not() {
+        let mut values = valid();
+        values.min_self_stake = MAX_MIN_SELF_STAKE;
+        assert!(GovernedParams::new(values).is_ok());
+        values.min_self_stake = MAX_MIN_SELF_STAKE + 1;
+        assert_eq!(
+            GovernedParams::new(values),
+            Err(ParamError::MinSelfStakeTooHigh)
+        );
+        // The value that used to pass: enough to disqualify every operator
+        // there could ever be.
+        values.min_self_stake = u128::MAX;
+        assert_eq!(
+            GovernedParams::new(values),
+            Err(ParamError::MinSelfStakeTooHigh)
         );
     }
 
@@ -651,12 +701,14 @@ mod tests {
             ParamError::UnbondingPeriodOutOfRange,
             ParamError::QuorumOutOfRange,
             ParamError::VetoThresholdOutOfRange,
+            ParamError::MinSelfStakeTooHigh,
+            ParamError::MinSelfStakeWouldEmptyTheSet,
             ParamError::Fee(FeeError::BlockGasLimitOutOfRange),
             ParamError::Fee(FeeError::DenominatorOutOfRange),
         ] {
             assert_eq!(decode_exact::<ParamError>(&encoded(&err)).unwrap(), err);
         }
-        assert!(decode_exact::<ParamError>(&[6]).is_err());
+        assert!(decode_exact::<ParamError>(&[8]).is_err());
         assert!(
             decode_exact::<ParamError>(&[0, 2]).is_err(),
             "unknown fee error"

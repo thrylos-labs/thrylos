@@ -192,6 +192,18 @@ pub struct HostConfig {
     /// the height being run: everything a peer can make this node hold is
     /// bounded.
     pub max_pending_per_height: usize,
+    /// **A choice.** The most blocks one proposer may have held that no
+    /// verified proposal names yet, per height. A block message is only
+    /// vouched for by its proposer's reveal, which does not cover the
+    /// block's contents, so any validator can mint as many distinct blocks
+    /// as it likes; without this one of them could fill every slot
+    /// `max_pending_per_height` allows and the real proposer's block would
+    /// be dropped, height after height. A block a verified proposal from
+    /// the drawn proposer names is exempt: it is always kept, making room
+    /// by dropping unvouched ones. An honest proposer builds one block per
+    /// round, and a height needs only a few rounds, so a handful is room to
+    /// spare.
+    pub max_unvouched_blocks_per_proposer: usize,
     /// **A choice.** How long a validator has to be seen working past this
     /// node's height before it asks for what it missed. Peers a moment ahead
     /// are the normal case at every height boundary; a node that is still
@@ -202,6 +214,12 @@ pub struct HostConfig {
     pub sync_retry_ms: u64,
     /// **A choice.** The most decided blocks sent in one answer.
     pub sync_batch: usize,
+    /// **A choice.** The most block bytes in one answer, so that a run of
+    /// full blocks cannot make the reply larger than the transport's frame
+    /// limit and be dropped whole. Leaves room under that limit for the
+    /// certificates that travel with the blocks. At least one block is
+    /// always sent, so a lagging peer can still make progress.
+    pub sync_response_max_bytes: usize,
     /// The spec's "1s target" for block time (`docs/spec.md`, "Consensus":
     /// "1s target, 2s timeout"), as a pace: after committing a block the host
     /// waits this long, by its own clock, before it starts the next height.
@@ -241,9 +259,11 @@ impl Default for HostConfig {
             max_transactions: 10_000,
             max_future_heights: 2,
             max_pending_per_height: 64,
+            max_unvouched_blocks_per_proposer: 4,
             sync_grace_ms: 1_000,
             sync_retry_ms: 3_000,
             sync_batch: 16,
+            sync_response_max_bytes: 8 * 1024 * 1024,
             min_block_interval_ms: 1_000,
             max_wal_entries: 4096,
         }
@@ -318,6 +338,10 @@ struct Env<X, T, C, K: ConsensusSigner, L, D> {
 
     // Per height.
     blocks: BTreeMap<Hash, Block>,
+    /// Which proposer sent each held block that no verified proposal names
+    /// yet. A block is in `blocks` and here until such a proposal arrives
+    /// (then only in `blocks`); this node's own blocks are never here.
+    unvouched: BTreeMap<Hash, Address>,
     reveals: BTreeMap<Address, BlsSignature>,
     verdicts: BTreeMap<Hash, Verdict>,
     props: BTreeMap<(Hash, Address), Prop>,
@@ -449,6 +473,7 @@ where
                 seed,
                 seed_after: None,
                 blocks: BTreeMap::new(),
+                unvouched: BTreeMap::new(),
                 reveals: BTreeMap::new(),
                 verdicts: BTreeMap::new(),
                 props: BTreeMap::new(),
@@ -994,6 +1019,10 @@ where
             pol_round: proposal.pol_round,
             fed: false,
         });
+        // A block held on nothing but its proposer's reveal is now named by
+        // a verified proposal from the drawn proposer: no longer only as
+        // good as its sender's quota.
+        self.unvouched.remove(&proposal.value.0);
         self.feed_ready();
     }
 
@@ -1008,8 +1037,21 @@ where
         } else if height > self.height.0
             && height <= self.height.0.saturating_add(self.config.max_future_heights)
         {
+            // Not checked against a seed yet, so the little that can be
+            // checked is: a stranger's blocks are not held at all, and one
+            // proposer cannot take every slot for a height.
+            if self
+                .validators
+                .get_by_address(&ConsensusAddress(pb.proposer))
+                .is_none()
+            {
+                return;
+            }
             let held = self.future_blocks.entry(height).or_default();
-            if held.len() < self.config.max_pending_per_height {
+            let from_this_proposer = held.iter().filter(|b| b.proposer == pb.proposer).count();
+            if held.len() < self.config.max_pending_per_height
+                && from_this_proposer < self.config.max_unvouched_blocks_per_proposer
+            {
                 held.push(pb);
             }
         }
@@ -1029,9 +1071,27 @@ where
             return;
         }
         let id = pb.id();
-        if !self.blocks.contains_key(&id) && self.blocks.len() >= self.config.max_pending_per_height
-        {
-            return;
+        let held = self.blocks.contains_key(&id);
+        let vouched = self.props.keys().any(|(value, _)| *value == id);
+        if !held {
+            let full = self.blocks.len() >= self.config.max_pending_per_height;
+            if vouched {
+                // A verified proposal from the drawn proposer names it: it
+                // is kept whatever else is held, by giving up an unvouched
+                // block's place if there is no other.
+                if full && !self.evict_one_unvouched() {
+                    return;
+                }
+            } else {
+                let from_this_proposer = self
+                    .unvouched
+                    .values()
+                    .filter(|proposer| **proposer == pb.proposer)
+                    .count();
+                if full || from_this_proposer >= self.config.max_unvouched_blocks_per_proposer {
+                    return;
+                }
+            }
         }
         // Written before it is used.
         if self
@@ -1041,8 +1101,39 @@ where
             return;
         }
         self.reveals.entry(pb.proposer).or_insert(pb.reveal);
-        self.blocks.entry(id).or_insert(pb.block);
+        if !held {
+            self.blocks.insert(id, pb.block);
+            if !vouched {
+                self.unvouched.insert(id, pb.proposer);
+            }
+        }
         self.feed_ready();
+    }
+
+    /// Drops one block that no verified proposal names, taking it from
+    /// whichever proposer has the most held, and says whether there was one.
+    /// What makes room for a block that *is* named when the shared slots
+    /// are full of the other kind.
+    fn evict_one_unvouched(&mut self) -> bool {
+        let mut counts: BTreeMap<Address, usize> = BTreeMap::new();
+        for proposer in self.unvouched.values() {
+            let count = counts.entry(*proposer).or_default();
+            *count = count.saturating_add(1);
+        }
+        let Some((heaviest, _)) = counts.into_iter().max_by_key(|(_, count)| *count) else {
+            return false;
+        };
+        let Some(id) = self
+            .unvouched
+            .iter()
+            .find(|(_, proposer)| **proposer == heaviest)
+            .map(|(id, _)| *id)
+        else {
+            return false;
+        };
+        self.unvouched.remove(&id);
+        self.blocks.remove(&id);
+        true
     }
 
     /// Tells the engine about every proposal whose block and proposer's
@@ -1423,6 +1514,7 @@ where
         self.seed = seed;
         self.validators = ConsensusValidatorSet::from_infos(&infos, seed);
         self.blocks.clear();
+        self.unvouched.clear();
         self.reveals.clear();
         self.verdicts.clear();
         self.props.clear();
@@ -1589,7 +1681,18 @@ where
         {
             return;
         }
-        let commits = self.storage.range(request.from, self.config.sync_batch);
+        let mut commits = self.storage.range(request.from, self.config.sync_batch);
+        let mut total = 0usize;
+        let mut keep = 0usize;
+        for record in &commits {
+            let size = record.block.encoded_len().unwrap_or(usize::MAX);
+            total = total.saturating_add(size);
+            if keep > 0 && total > self.config.sync_response_max_bytes {
+                break;
+            }
+            keep = keep.saturating_add(1);
+        }
+        commits.truncate(keep);
         if commits.is_empty() {
             return;
         }

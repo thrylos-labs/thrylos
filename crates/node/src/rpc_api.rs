@@ -321,6 +321,7 @@ const fn reason(error: AdmissionError) -> &'static str {
         AdmissionError::WrongChainId => "WrongChainId",
         AdmissionError::InvalidSignature => "InvalidSignature",
         AdmissionError::InvalidExpiry => "InvalidExpiry",
+        AdmissionError::GasLimitTooLow => "GasLimitTooLow",
         AdmissionError::SequenceNumberTooLow => "SequenceNumberTooLow",
         AdmissionError::InsufficientBalance => "InsufficientBalance",
         AdmissionError::ReplacementFeeTooLow => "ReplacementFeeTooLow",
