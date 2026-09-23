@@ -649,19 +649,46 @@ impl Executor {
     /// ([`crate::accounting::check_block_conservation`]); a block that did
     /// is rejected as [`RejectionReason::InvariantViolated`], which halts
     /// the chain at it — the spec's "halts block production if violated".
+    /// The block context a call runs in: the base fee and governed
+    /// parameters as `state` currently has them. Shared by `apply_block`
+    /// and `propose_block` — proposing now simulates execution too (see
+    /// `propose_block`'s doc comment), and the two must agree on exactly
+    /// what a call would see, or a proposal's simulation could accept what
+    /// execution would later reject on a technicality unrelated to the
+    /// state cap it exists to police.
+    fn block_ctx(
+        &self,
+        state: &BTreeMap<StateKey, StateValue>,
+        height: BlockHeight,
+        timestamp_millis: u64,
+    ) -> Result<BlockCtx, BlockRejected> {
+        // Missing or malformed, this is a broken state invariant (genesis
+        // seeds it and only `apply_block` writes it), not anything a block
+        // did.
+        let base_fee = read_u64(state, &base_fee_key()).ok_or(BlockRejected {
+            transaction_index: None,
+            reason: RejectionReason::Rejected,
+        })?;
+        let params = Governance::new(StateView::new(state))
+            .params()
+            .map_err(|_| BlockRejected {
+                transaction_index: None,
+                reason: RejectionReason::Rejected,
+            })?;
+        Ok(BlockCtx {
+            chain_id: self.chain_id,
+            height,
+            timestamp_ms: timestamp_millis,
+            base_fee,
+            params,
+        })
+    }
+
     fn apply_block(
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
         block: &Block,
     ) -> Result<(u64, Vec<TransactionOutcome>), BlockRejected> {
-        // Missing or malformed, this is a broken state invariant (genesis
-        // seeds it and only this function writes it), not anything a
-        // block did.
-        let base_fee = read_u64(state, &base_fee_key()).ok_or(BlockRejected {
-            transaction_index: None,
-            reason: RejectionReason::Rejected,
-        })?;
-
         let (parent_height, parent_timestamp) = read_head(state).ok_or(BlockRejected {
             transaction_index: None,
             reason: RejectionReason::Rejected,
@@ -679,21 +706,10 @@ impl Executor {
             });
         }
 
-        let params = Governance::new(StateView::new(state))
-            .params()
-            .map_err(|_| BlockRejected {
-                transaction_index: None,
-                reason: RejectionReason::Rejected,
-            })?;
-        let fee_params = params.fee_params();
+        let ctx = self.block_ctx(state, block.height, block.timestamp_millis)?;
+        let fee_params = ctx.params.fee_params();
         let transaction_gas_ceiling = max_transaction_gas(fee_params.max_block_gas());
-        let ctx = BlockCtx {
-            chain_id: self.chain_id,
-            height: block.height,
-            timestamp_ms: block.timestamp_millis,
-            base_fee,
-            params,
-        };
+        let base_fee = ctx.base_fee;
 
         let mut gas_used: u64 = 0;
         let mut protocol_calls = 0usize;
@@ -1138,6 +1154,26 @@ impl ChainView for Executor {
 }
 
 impl Engine for Executor {
+    /// Packs candidates by gas and size, as before, but each survivor is
+    /// also speculatively applied to a scratch copy of `state` before it is
+    /// accepted, and dropped if that would breach the protocol's state
+    /// cap ([`MAX_STATE_ENTRIES`], [`MAX_STATE_BYTES`]).
+    ///
+    /// This exists because `execute_block` checks that cap only once, over
+    /// the whole block, and reports a breach as an unattributed rejection
+    /// (`transaction_index: None`) — nothing names which transaction to
+    /// drop. A proposer that packed blindly would have every candidate
+    /// bulk-rejected the moment state neared the cap, and its retry loop
+    /// (`chain_consensus::host`) can only respond to an unattributed
+    /// rejection by discarding every candidate and proposing empty — so
+    /// once state was near the cap, no transaction that grows it (an
+    /// ordinary transfer to a fresh address among them) could ever be
+    /// included again, by any proposer, permanently. Simulating here
+    /// instead means a block this executor proposes never fails this check
+    /// in the first place, at the cost of running each accepted candidate
+    /// through real execution during proposal as well as at execution —
+    /// bounded by how many candidates are offered, not by state size, but
+    /// a real cost this function did not use to pay.
     fn propose_block(
         &self,
         parent_block_hash: Hash,
@@ -1159,6 +1195,15 @@ impl Engine for Executor {
             transactions: Vec::new(),
         };
         let mut encoded_size = empty.encoded_len().unwrap_or(usize::MAX);
+
+        // `None` only if the state invariants `block_ctx` depends on are
+        // already broken, in which case `execute_block` will fail on this
+        // same state moments later regardless — simulation is skipped
+        // rather than proposing nothing, since that failure is not this
+        // function's to report.
+        let ctx = self.block_ctx(&self.state, height, timestamp_millis).ok();
+        let mut scratch = ctx.is_some().then(|| self.state.clone());
+
         for tx in candidate_transactions {
             if tx.body.gas_limit.0 > transaction_gas_ceiling {
                 continue;
@@ -1177,6 +1222,27 @@ impl Engine for Executor {
             };
             if next_size > max_size {
                 continue;
+            }
+
+            if let (Some(ctx), Some(state)) = (ctx, scratch.as_mut()) {
+                let mut attempt = state.clone();
+                let would_be_index = transactions.len();
+                // `Err` means nothing was written — every rejecting check
+                // in `apply_transaction` runs before its first mutation —
+                // so a transaction invalid for reasons unrelated to the
+                // state cap is left for `execute_block`'s existing
+                // per-transaction retry to name and drop, exactly as
+                // before this function simulated anything. Only a breach
+                // of the cap itself is this loop's to police.
+                if self
+                    .apply_transaction(&mut attempt, &tx, would_be_index, &ctx)
+                    .is_ok()
+                {
+                    if !state_within_limits(&attempt) {
+                        continue;
+                    }
+                    *state = attempt;
+                }
             }
 
             gas_so_far = next_total;
@@ -1384,6 +1450,122 @@ mod tests {
             MAX_STATE_ENTRIES,
             MAX_STATE_BYTES + 1
         ));
+    }
+
+    /// The address a `coin_transfer(seed, ..)` call signs from — so a test
+    /// can fund the account that will actually send it, not a coincidental
+    /// stand-in address with no relation to the signing key.
+    fn address_of(seed: u8) -> Address {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let public =
+            chain_types::PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes())
+                .unwrap();
+        Address::from_public_key(&public)
+    }
+
+    /// A native coin transfer to `recipient`, signed by `seed`, funded and
+    /// sequenced by the caller ([`address_of`] names the account that must
+    /// hold that funding). Building one by hand (rather than through
+    /// `client::signed_transfer`, which this crate cannot depend on) keeps
+    /// this test inside `chain-exec` alongside the code it is proving.
+    fn coin_transfer(
+        seed: u8,
+        sequence_number: u64,
+        recipient: Address,
+        amount: u128,
+    ) -> Transaction {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let sender =
+            chain_types::PublicKey::from_ed25519_bytes(signing_key.verifying_key().to_bytes())
+                .unwrap();
+        let body = chain_types::TransactionBody {
+            chain_id: ChainId(1),
+            sender,
+            sequence_number: chain_types::SequenceNumber(sequence_number),
+            expiry: BlockHeight(1_000),
+            gas_limit: GasAmount(native::MIN_PROTOCOL_CALL_GAS),
+            max_fee_per_gas: GasPrice(1),
+            declared_inputs: Vec::new(),
+            call: chain_types::MoveCall {
+                module_address: Address::from_bytes(native::COIN_PACKAGE_ADDRESS),
+                module_name: native::COIN_MODULE_NAME.as_bytes().to_vec(),
+                function_name: native::TRANSFER.as_bytes().to_vec(),
+                type_arguments: Vec::new(),
+                arguments: vec![recipient.as_bytes().to_vec(), amount.to_le_bytes().to_vec()],
+            },
+        };
+        let mut bytes = Vec::new();
+        body.encode(&mut bytes);
+        use ed25519_dalek::Signer;
+        let signature =
+            chain_types::Signature::from_ed25519_bytes(signing_key.sign(&bytes).to_bytes());
+        Transaction { body, signature }
+    }
+
+    /// Pads `executor`'s state with synthetic entries — content is
+    /// irrelevant to the cap, only count is — until exactly `spare` slots
+    /// remain under [`MAX_STATE_ENTRIES`].
+    fn fill_state_to_within(executor: &mut Executor, spare: usize) {
+        let target = MAX_STATE_ENTRIES.saturating_sub(spare);
+        let mut next = 0u64;
+        while executor.state.len() < target {
+            let key = StateKey::new(format!("load-test-padding-{next}").into_bytes());
+            executor.state.insert(key, StateValue::new(vec![0u8; 8]));
+            next += 1;
+        }
+    }
+
+    #[test]
+    fn proposal_drops_a_transaction_that_would_breach_the_state_entry_cap() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(address_of(2), 1_000_000_000)
+            .unwrap();
+        let limits = executor.block_limits().unwrap();
+
+        // No room for even one more entry: a transfer to a fresh address
+        // must be dropped, not proposed and rejected wholesale later.
+        fill_state_to_within(&mut executor, 0);
+        let recipient = Address::from_bytes([222; 32]);
+        let tx = coin_transfer(2, 0, recipient, 10);
+        let block = executor.propose_block(
+            executor.tip_block_hash(),
+            executor.state_root(),
+            BlockHeight(1),
+            1_000,
+            vec![tx],
+            limits,
+        );
+        assert_eq!(
+            block.transactions,
+            Vec::new(),
+            "a state-cap-breaching transaction must not be proposed"
+        );
+    }
+
+    #[test]
+    fn proposal_still_includes_a_transaction_that_fits_under_the_state_entry_cap() {
+        let mut executor = Executor::genesis(ChainId(1)).unwrap();
+        executor
+            .credit_account(address_of(2), 1_000_000_000)
+            .unwrap();
+        let limits = executor.block_limits().unwrap();
+
+        // Room for exactly one more entry: the same shape of transaction
+        // now fits, proving the drop above is about the cap specifically,
+        // not a simulation that always refuses.
+        fill_state_to_within(&mut executor, 1);
+        let recipient = Address::from_bytes([222; 32]);
+        let tx = coin_transfer(2, 0, recipient, 10);
+        let block = executor.propose_block(
+            executor.tip_block_hash(),
+            executor.state_root(),
+            BlockHeight(1),
+            1_000,
+            vec![tx.clone()],
+            limits,
+        );
+        assert_eq!(block.transactions, vec![tx]);
     }
 
     #[test]

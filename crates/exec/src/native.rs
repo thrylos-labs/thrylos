@@ -101,6 +101,23 @@ pub const MIN_PROTOCOL_CALL_GAS: u64 = 1_000;
 /// Independent bound on protocol-native calls in one block.
 pub const MAX_PROTOCOL_CALLS_PER_BLOCK: usize = 64;
 
+/// `docs/spec.md`, "Fees": persistent bytes created pay a one-time storage
+/// deposit at a compiled-in price, so growing state costs more than the gas
+/// to propose it — otherwise a proposer that will not include a block
+/// breaching the cap (`crate::executor::propose_block`) can still be run up
+/// to that cap almost for free, one dust transfer to a fresh address at a
+/// time. A new account is the only persistent-creation shape that exists
+/// today (no object or module creation yet), so this is a flat price for
+/// exactly that shape, not yet real byte accounting. Burned, not escrowed:
+/// nothing can delete an account yet to refund this against, so there is
+/// nothing to hold it against either. `docs/spec-conformance.md` tracks
+/// this as still missing byte accounting and deletion refunds — revisit
+/// together with object and module creation, and turn this into a real
+/// per-byte price then. 0.01 THRY: enough that filling the entire
+/// 100,000-entry state cap this way costs 1,000 THRY, not the price of the
+/// gas alone.
+pub const NEW_ACCOUNT_STORAGE_DEPOSIT: u128 = 10_000_000;
+
 type State = BTreeMap<StateKey, StateValue>;
 type Changes = Vec<(StateKey, Option<StateValue>)>;
 
@@ -295,8 +312,21 @@ fn transfer(state: &State, tx: &Transaction) -> Result<CallEffects, CallError> {
         return Err(AbortReason::InvalidArguments.into());
     }
 
+    // A recipient with no account yet is about to get one: the chain's
+    // only persistent-creation path today, and priced as
+    // `NEW_ACCOUNT_STORAGE_DEPOSIT` documents. Checked before any state is
+    // read for the credit below, so the deposit is exactly what an
+    // existing recipient never causes.
+    let creates_account = !state.contains_key(&chain_state::account::account_key(recipient));
+    let deposit = if creates_account {
+        NEW_ACCOUNT_STORAGE_DEPOSIT
+    } else {
+        0
+    };
+    let total_debit = amount.checked_add(deposit).ok_or(CallError::Internal)?;
+
     let mut changes = Vec::new();
-    debit_sender(state, tx, amount, &mut changes)?;
+    debit_sender(state, tx, total_debit, &mut changes)?;
 
     let account =
         chain_state::account::read_account(state, recipient).map_err(|_| CallError::Internal)?;
@@ -311,6 +341,16 @@ fn transfer(state: &State, tx: &Transaction) -> Result<CallEffects, CallError> {
         chain_state::account::account_key(recipient),
         Some(StateValue::new(bytes)),
     ));
+
+    // Burned, not credited anywhere: see `NEW_ACCOUNT_STORAGE_DEPOSIT`'s
+    // doc comment for why there is nothing yet to escrow it against.
+    if deposit > 0 {
+        let supply = read_supply(state).ok_or(CallError::Internal)?;
+        let after = supply.checked_sub(deposit).ok_or(CallError::Internal)?;
+        let mut supply_bytes = Vec::new();
+        after.encode(&mut supply_bytes);
+        changes.push((supply_key(), Some(StateValue::new(supply_bytes))));
+    }
 
     Ok(effects(tx, changes))
 }

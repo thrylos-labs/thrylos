@@ -17,8 +17,8 @@ use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::hooks::{reward_for, EPOCH_BLOCKS};
 use chain_exec::native::{
     COIN_MODULE_NAME, COIN_PACKAGE_ADDRESS, GOVERNANCE_MODULE_NAME, GOVERNANCE_PACKAGE_ADDRESS,
-    REGISTER_VALIDATOR, STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS, SUBMIT_EVIDENCE,
-    SUBMIT_PROPOSAL, TRANSFER, UNJAIL, UNSTAKE, VOTE,
+    NEW_ACCOUNT_STORAGE_DEPOSIT, REGISTER_VALIDATOR, STAKE, STAKING_MODULE_NAME,
+    STAKING_PACKAGE_ADDRESS, SUBMIT_EVIDENCE, SUBMIT_PROPOSAL, TRANSFER, UNJAIL, UNSTAKE, VOTE,
 };
 use chain_exec::Executor;
 use chain_modules::governance::{
@@ -321,14 +321,57 @@ fn transferring_moves_coin_to_the_recipient_and_burns_only_the_fee() {
     let mut sender = Actor::new(1);
     let recipient = Actor::new(2);
     chain.fund(&sender, 100_000);
+    // Already exists, so this transfer pays no storage deposit — that is
+    // its own, separately covered behaviour.
+    chain.fund(&recipient, 1);
     let supply = chain.executor.supply().unwrap();
 
     let tx = sender.transfer(recipient.address(), 40_000);
     assert_eq!(chain.run(tx), SUCCESS);
 
     assert_eq!(chain.balance(sender.address()), 100_000 - 40_000 - FEE);
-    assert_eq!(chain.balance(recipient.address()), 40_000);
+    assert_eq!(chain.balance(recipient.address()), 1 + 40_000);
     assert_eq!(chain.executor.supply().unwrap(), supply - FEE);
+    chain.audit();
+}
+
+#[test]
+fn transferring_to_a_fresh_address_also_burns_the_storage_deposit() {
+    let mut chain = Chain::new();
+    let mut sender = Actor::new(1);
+    let recipient = Actor::new(2); // never funded: has no account yet
+    chain.fund(&sender, 100_000_000);
+    let supply = chain.executor.supply().unwrap();
+
+    let tx = sender.transfer(recipient.address(), 40_000);
+    assert_eq!(chain.run(tx), SUCCESS);
+
+    assert_eq!(
+        chain.balance(sender.address()),
+        100_000_000 - 40_000 - NEW_ACCOUNT_STORAGE_DEPOSIT - FEE
+    );
+    assert_eq!(chain.balance(recipient.address()), 40_000);
+    assert_eq!(
+        chain.executor.supply().unwrap(),
+        supply - NEW_ACCOUNT_STORAGE_DEPOSIT - FEE
+    );
+    chain.audit();
+}
+
+#[test]
+fn a_transfer_that_cannot_afford_the_storage_deposit_aborts_and_only_pays_the_real_fee() {
+    let mut chain = Chain::new();
+    let mut sender = Actor::new(1);
+    let recipient = Actor::new(2); // never funded: has no account yet
+                                   // Enough for the amount and the fee, but the deposit this recipient
+                                   // needs is not on top of that.
+    chain.fund(&sender, 40_000 + FEE);
+
+    let tx = sender.transfer(recipient.address(), 40_000);
+    assert_eq!(chain.run(tx), aborted(AbortReason::InsufficientBalance));
+
+    assert_eq!(chain.balance(sender.address()), 40_000);
+    assert_eq!(chain.balance(recipient.address()), 0);
     chain.audit();
 }
 
