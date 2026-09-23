@@ -35,6 +35,11 @@ pub enum AdmissionError {
     /// Declares less than [`chain_types::MIN_GAS_LIMIT`], so it could be
     /// charged next to nothing.
     GasLimitTooLow,
+    /// Further ahead of the sender's next sequence number than a few
+    /// multiples of `MempoolConfig::max_pending_per_sender`. Such a transaction cannot run
+    /// until every number before it has, and holding it would let one sender
+    /// park high-fee transactions that are not includable.
+    SequenceNumberTooFarAhead,
     /// Below the sender's on-chain next sequence number: already
     /// executed, or otherwise unreachable.
     SequenceNumberTooLow,
@@ -57,6 +62,7 @@ impl core::fmt::Display for AdmissionError {
             Self::InvalidSignature => f.write_str("the signature does not verify against the sender"),
             Self::InvalidExpiry => f.write_str("the transaction has expired, or expires too far ahead"),
             Self::GasLimitTooLow => f.write_str("the gas limit is below the protocol minimum"),
+            Self::SequenceNumberTooFarAhead => f.write_str("the sequence number is too far ahead of the sender's next one"),
             Self::SequenceNumberTooLow => f.write_str("the sequence number is below the sender's next one: already executed"),
             Self::InsufficientBalance => f.write_str("the sender's balance is below the worst-case fee, gas limit times max fee per gas"),
             Self::ReplacementFeeTooLow => f.write_str("a transaction is already pending at this sequence number and the fee is not raised enough to replace it"),
@@ -102,6 +108,12 @@ fn clears_replacement_bump(old_fee: u64, new_fee: u64, bump_percent: u64) -> boo
     };
     lhs >= rhs
 }
+
+/// How far past the sender's next sequence number a transaction may be, as a
+/// multiple of `MempoolConfig::max_pending_per_sender`. Room for a burst
+/// that arrives out of order, without letting a sender park transactions
+/// arbitrarily far ahead.
+const SEQUENCE_WINDOW_FACTOR: u64 = 4;
 
 /// A pending transaction ranked by fee for eviction/selection, without
 /// cloning the whole `Transaction` just to compare it. Ties break on
@@ -180,6 +192,14 @@ impl<A: AccountView> Mempool<A> {
             return Err(AdmissionError::SequenceNumberTooLow);
         }
 
+        let window = u64::try_from(self.config.max_pending_per_sender)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(SEQUENCE_WINDOW_FACTOR);
+        let next = self.accounts.next_sequence_number(&sender);
+        if tx.body.sequence_number.0 >= next.0.saturating_add(window) {
+            return Err(AdmissionError::SequenceNumberTooFarAhead);
+        }
+
         let cost =
             u128::from(tx.body.gas_limit.0).checked_mul(u128::from(tx.body.max_fee_per_gas.0));
         match cost {
@@ -232,23 +252,41 @@ impl<A: AccountView> Mempool<A> {
         }
     }
 
-    /// Remove and return the pending transaction with the lowest fee,
-    /// if any. Used both by `admit` when the pool is over capacity and
+    /// Remove and return the pending transaction that is worth least, if
+    /// any. Used both by `admit` when the pool is over capacity and
     /// directly by callers implementing their own back-pressure.
+    ///
+    /// A transaction that cannot run yet (a gap before it in its sender's
+    /// sequence, or a number already executed) always goes before one that
+    /// can, whatever it pays: its fee is a promise nothing can collect
+    /// until the gap is filled, and ranking by that fee alone let a sender
+    /// crowd real transactions out with high-fee ones that were never
+    /// includable. Among equals the lowest fee goes first.
     pub fn evict_lowest_fee(&mut self) -> Option<Transaction> {
-        let lowest = self
-            .pending
-            .iter()
-            .flat_map(|(sender, by_sequence)| {
-                by_sequence
-                    .iter()
-                    .map(move |(sequence_number, tx)| RankedSlot {
+        let mut lowest: Option<(bool, RankedSlot)> = None;
+        for (sender, by_sequence) in &self.pending {
+            let mut expected = self.accounts.next_sequence_number(sender).0;
+            let mut contiguous = true;
+            for (sequence_number, tx) in by_sequence {
+                if contiguous && sequence_number.0 == expected {
+                    expected = expected.saturating_add(1);
+                } else {
+                    contiguous = false;
+                }
+                let candidate = (
+                    contiguous,
+                    RankedSlot {
                         fee: tx.body.max_fee_per_gas.0,
                         sender: *sender,
                         sequence_number: *sequence_number,
-                    })
-            })
-            .min()?;
+                    },
+                );
+                if lowest.as_ref().is_none_or(|current| candidate < *current) {
+                    lowest = Some(candidate);
+                }
+            }
+        }
+        let (_, lowest) = lowest?;
 
         let by_sequence = self.pending.get_mut(&lowest.sender)?;
         let removed = by_sequence.remove(&lowest.sequence_number);
@@ -736,6 +774,82 @@ mod tests {
     }
 
     #[test]
+    fn a_sequence_number_beyond_the_window_is_refused() {
+        let chain_id = ChainId(1);
+        let mut cfg = config(chain_id);
+        cfg.max_pending_per_sender = 3;
+        let inside = signed_tx(1, chain_id, 11, 5);
+        let outside = signed_tx(1, chain_id, 12, 5);
+        let sender = inside.sender_address();
+        let mut pool = Mempool::new(cfg, MockAccounts::new().with_balance(sender, u128::MAX));
+
+        assert!(pool.admit(inside, BlockHeight(0)).is_ok());
+        assert_eq!(
+            pool.admit(outside, BlockHeight(0)),
+            Err(AdmissionError::SequenceNumberTooFarAhead)
+        );
+    }
+
+    #[test]
+    fn high_fee_transactions_that_cannot_run_yet_do_not_crowd_out_ones_that_can() {
+        let chain_id = ChainId(1);
+        let mut cfg = config(chain_id);
+        cfg.max_pool_size = 2;
+        cfg.max_pending_per_sender = 5;
+
+        // The attacker's transactions skip sequence 0, so none can run, but
+        // they pay far more than the honest one.
+        let gap_a = signed_tx(20, chain_id, 3, 1_000);
+        let gap_b = signed_tx(20, chain_id, 4, 1_000);
+        let honest = signed_tx(21, chain_id, 0, 1);
+        let attacker = gap_a.sender_address();
+        let honest_sender = honest.sender_address();
+        let accounts = MockAccounts::new()
+            .with_balance(attacker, u128::MAX)
+            .with_balance(honest_sender, u128::MAX);
+        let mut pool = Mempool::new(cfg, accounts);
+
+        pool.admit(gap_a, BlockHeight(0)).unwrap();
+        pool.admit(gap_b, BlockHeight(0)).unwrap();
+        pool.admit(honest, BlockHeight(0)).unwrap();
+
+        assert_eq!(pool.len(), 2);
+        assert!(
+            pool.contains(&honest_sender, SequenceNumber(0)),
+            "the transaction that can run is kept"
+        );
+        assert!(
+            !pool.contains(&attacker, SequenceNumber(3)),
+            "a gapped one went first, its lower-numbered fee notwithstanding"
+        );
+    }
+
+    #[test]
+    fn a_run_that_starts_at_the_next_sequence_number_counts_as_able_to_run() {
+        let chain_id = ChainId(1);
+        let mut cfg = config(chain_id);
+        cfg.max_pool_size = 2;
+        cfg.max_pending_per_sender = 5;
+        let first = signed_tx(30, chain_id, 0, 1);
+        let second = signed_tx(30, chain_id, 1, 1);
+        let gapped = signed_tx(31, chain_id, 2, 500);
+        let runner = first.sender_address();
+        let other = gapped.sender_address();
+        let accounts = MockAccounts::new()
+            .with_balance(runner, u128::MAX)
+            .with_balance(other, u128::MAX);
+        let mut pool = Mempool::new(cfg, accounts);
+
+        pool.admit(first, BlockHeight(0)).unwrap();
+        pool.admit(second, BlockHeight(0)).unwrap();
+        pool.admit(gapped, BlockHeight(0)).unwrap();
+
+        assert!(pool.contains(&runner, SequenceNumber(0)));
+        assert!(pool.contains(&runner, SequenceNumber(1)));
+        assert!(!pool.contains(&other, SequenceNumber(2)));
+    }
+
+    #[test]
     fn admitting_past_capacity_evicts_the_lowest_fee_transaction() {
         let chain_id = ChainId(1);
         let mut cfg = config(chain_id);
@@ -917,6 +1031,7 @@ mod display_tests {
             AdmissionError::InvalidSignature,
             AdmissionError::InvalidExpiry,
             AdmissionError::GasLimitTooLow,
+            AdmissionError::SequenceNumberTooFarAhead,
             AdmissionError::SequenceNumberTooLow,
             AdmissionError::InsufficientBalance,
             AdmissionError::ReplacementFeeTooLow,
