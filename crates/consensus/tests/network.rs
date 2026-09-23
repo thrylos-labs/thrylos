@@ -920,7 +920,11 @@ fn a_transaction_offered_to_every_mempool_is_included_once_and_moves_coin_the_sa
             .read_account(operator_address(USER))
             .unwrap()
             .balance;
-        assert_eq!(balance, 1_000_000_000 - 40_000 - 1_000);
+        assert_eq!(
+            balance,
+            1_000_000_000 - 40_000 - chain_exec::native::NEW_ENTRY_STORAGE_DEPOSIT - 1_000,
+            "the stake, the new delegation's storage deposit, and the fee"
+        );
         node.chain().audit().unwrap();
     }
     for source in &sim.sources {

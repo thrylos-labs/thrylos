@@ -17,8 +17,9 @@ use chain_exec::genesis_config::{Allocation, GenesisConfig, GenesisValidator};
 use chain_exec::hooks::{reward_for, EPOCH_BLOCKS};
 use chain_exec::native::{
     COIN_MODULE_NAME, COIN_PACKAGE_ADDRESS, GOVERNANCE_MODULE_NAME, GOVERNANCE_PACKAGE_ADDRESS,
-    NEW_ACCOUNT_STORAGE_DEPOSIT, REGISTER_VALIDATOR, STAKE, STAKING_MODULE_NAME,
-    STAKING_PACKAGE_ADDRESS, SUBMIT_EVIDENCE, SUBMIT_PROPOSAL, TRANSFER, UNJAIL, UNSTAKE, VOTE,
+    NEW_ACCOUNT_STORAGE_DEPOSIT, NEW_ENTRY_STORAGE_DEPOSIT, REGISTER_VALIDATOR, STAKE,
+    STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS, SUBMIT_EVIDENCE, SUBMIT_PROPOSAL, TRANSFER,
+    UNJAIL, UNSTAKE, VOTE,
 };
 use chain_exec::Executor;
 use chain_modules::governance::{
@@ -307,7 +308,7 @@ fn aborted(reason: AbortReason) -> TransactionOutcome {
 fn chain_with_validator() -> (Chain, Actor) {
     let mut chain = Chain::new();
     let mut operator = Actor::new(1);
-    chain.fund(&operator, 10 * MIN_STAKE);
+    chain.fund(&operator, 10 * MIN_STAKE + 100 * NEW_ENTRY_STORAGE_DEPOSIT);
     let tx = operator.register(1, MIN_STAKE);
     assert_eq!(chain.run(tx), SUCCESS);
     (chain, operator)
@@ -447,7 +448,7 @@ fn registering_moves_the_stake_and_the_dead_shares_into_the_pool_and_charges_the
 fn invalid_registration_or_registration_after_bootstrap_aborts_and_costs_only_the_fee() {
     let mut chain = Chain::new();
     let mut operator = Actor::new(1);
-    chain.fund(&operator, 10 * MIN_STAKE);
+    chain.fund(&operator, 10 * MIN_STAKE + 100 * NEW_ENTRY_STORAGE_DEPOSIT);
     let start = chain.balance(operator.address());
 
     let too_little = operator.register(1, MIN_STAKE - 1);
@@ -499,7 +500,7 @@ fn a_registration_the_balance_cannot_cover_aborts() {
 fn delegating_mints_shares_and_debits_the_delegator() {
     let (mut chain, operator) = chain_with_validator();
     let mut delegator = Actor::new(2);
-    chain.fund(&delegator, 100_000);
+    chain.fund(&delegator, 100_000 + NEW_ENTRY_STORAGE_DEPOSIT);
 
     let tx = delegator.staking(
         STAKE,
@@ -568,7 +569,7 @@ fn staking_with_a_validator_that_does_not_exist_aborts() {
 fn unstaking_is_paid_out_by_the_block_after_the_unbonding_period_and_not_before() {
     let (mut chain, operator) = chain_with_validator();
     let mut delegator = Actor::new(2);
-    chain.fund(&delegator, 100_000);
+    chain.fund(&delegator, 100_000 + NEW_ENTRY_STORAGE_DEPOSIT);
     let id = ValidatorId(operator.address());
     let tx = delegator.staking(
         STAKE,
@@ -1158,4 +1159,76 @@ fn two_nodes_running_the_same_native_transactions_reach_the_same_state() {
         chain.executor.state_root()
     };
     assert_eq!(run(), run());
+}
+
+// ---- storage deposit on delegation and proposals --------------------------
+
+#[test]
+fn a_first_delegation_pays_the_entry_deposit_and_a_top_up_does_not() {
+    let (mut chain, operator) = chain_with_validator();
+    let mut delegator = Actor::new(7);
+    chain.fund(&delegator, 100_000_000);
+    let validator = operator.address();
+    let start = chain.balance(delegator.address());
+    let supply = chain.executor.supply().unwrap();
+
+    let first = delegator.staking(STAKE, vec![address_arg(validator), u128_arg(1_000)]);
+    assert_eq!(chain.run(first), SUCCESS);
+    assert_eq!(
+        chain.balance(delegator.address()),
+        start - 1_000 - NEW_ENTRY_STORAGE_DEPOSIT - FEE
+    );
+    assert_eq!(
+        chain.executor.supply().unwrap(),
+        supply - NEW_ENTRY_STORAGE_DEPOSIT - FEE,
+        "the deposit is burned, not moved"
+    );
+
+    let after_first = chain.balance(delegator.address());
+    let top_up = delegator.staking(STAKE, vec![address_arg(validator), u128_arg(1_000)]);
+    assert_eq!(chain.run(top_up), SUCCESS);
+    assert_eq!(
+        chain.balance(delegator.address()),
+        after_first - 1_000 - FEE,
+        "adding to an existing delegation creates nothing"
+    );
+    chain.audit();
+}
+
+#[test]
+fn a_delegation_that_cannot_afford_its_entry_deposit_aborts_and_pays_only_the_fee() {
+    let (mut chain, operator) = chain_with_validator();
+    let mut delegator = Actor::new(8);
+    // Enough for the stake and the fee, not the deposit.
+    chain.fund(
+        &delegator,
+        1_000 + FEE + NEW_ENTRY_STORAGE_DEPOSIT.div_euclid(2),
+    );
+    let tx = delegator.staking(
+        STAKE,
+        vec![address_arg(operator.address()), u128_arg(1_000)],
+    );
+    assert_eq!(chain.run(tx), aborted(AbortReason::InsufficientBalance));
+    assert_eq!(
+        chain.balance(delegator.address()),
+        1_000 + NEW_ENTRY_STORAGE_DEPOSIT.div_euclid(2),
+        "nothing but the fee was taken"
+    );
+    chain.audit();
+}
+
+#[test]
+fn opening_a_proposal_pays_for_the_snapshot_it_creates() {
+    let (mut chain, mut operator) = chain_with_validator();
+    let before = chain.balance(operator.address());
+    let supply = chain.executor.supply().unwrap();
+    let tx = operator.governance(SUBMIT_PROPOSAL, vec![min_self_stake_proposal(MIN_STAKE)]);
+    assert_eq!(chain.run(tx), SUCCESS);
+    let paid = before - chain.balance(operator.address());
+    assert!(
+        paid > FEE && (paid - FEE).is_multiple_of(NEW_ENTRY_STORAGE_DEPOSIT),
+        "whole deposits on top of the fee, got {paid}"
+    );
+    assert_eq!(chain.executor.supply().unwrap(), supply - paid);
+    chain.audit();
 }

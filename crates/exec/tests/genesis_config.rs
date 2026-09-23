@@ -290,6 +290,9 @@ fn the_first_block_must_be_strictly_after_the_genesis_time() {
 #[test]
 fn an_allocated_account_can_transact_and_delegate_to_a_genesis_validator() {
     let mut executor = Executor::from_genesis(&config()).unwrap();
+    // A first delegation creates a new entry, which costs a storage deposit
+    // the genesis allocation alone is too small to cover.
+    executor.credit_account(address(50), 100_000_000).unwrap();
     let supply = executor.supply().unwrap();
 
     let stake = call(
@@ -303,17 +306,19 @@ fn an_allocated_account_can_transact_and_delegate_to_a_genesis_validator() {
     );
     let block = block_at(&executor, GENESIS_TIME + 1_000, vec![stake]);
     let executed = commit(&mut executor, &block);
+    // One delegation entry, priced per new entry.
+    let deposit = chain_exec::native::NEW_ENTRY_STORAGE_DEPOSIT;
     assert_eq!(executed.outcomes[0], TransactionOutcome::Success);
 
     assert_eq!(
         executor.read_account(address(50)).unwrap().balance,
-        1_000_000 - 40_000 - 1_000,
-        "the stake and the fee"
+        1_000_000 + 100_000_000 - 40_000 - deposit - 1_000,
+        "the stake, the storage deposit and the fee"
     );
     assert_eq!(
         executor.supply().unwrap(),
-        supply - 1_000,
-        "only the fee left"
+        supply - deposit - 1_000,
+        "only the fee and the deposit left"
     );
     assert_eq!(
         executor

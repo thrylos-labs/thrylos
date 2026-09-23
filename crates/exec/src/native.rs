@@ -118,6 +118,17 @@ pub const MAX_PROTOCOL_CALLS_PER_BLOCK: usize = 64;
 /// gas alone.
 pub const NEW_ACCOUNT_STORAGE_DEPOSIT: u128 = 10_000_000;
 
+/// The same flat price, charged to the sender for each *new* state entry a
+/// staking delegation or a governance proposal creates. Without it those
+/// were the free half of state growth: a funded account could spread dust
+/// over every validator, or an operator could open snapshots, and grow the
+/// state without paying the deposit a new account does. `unstake`, `vote`,
+/// `unjail` and evidence are left free on purpose: they only ever create
+/// entries bounded by what one of the charged calls already paid for (and
+/// by the unbonding and proposal caps), and charging them would let an
+/// account with no spare balance be unable to leave a stake or cast a vote.
+pub const NEW_ENTRY_STORAGE_DEPOSIT: u128 = NEW_ACCOUNT_STORAGE_DEPOSIT;
+
 type State = BTreeMap<StateKey, StateValue>;
 type Changes = Vec<(StateKey, Option<StateValue>)>;
 
@@ -230,6 +241,62 @@ fn debit_sender(
         chain_state::account::account_key(sender),
         Some(StateValue::new(bytes)),
     ));
+    Ok(())
+}
+
+/// Burns `NEW_ENTRY_STORAGE_DEPOSIT` from the sender for every key `changes`
+/// creates that `state` does not already hold. Reads the sender's balance
+/// and the supply as `changes` already leaves them, since the call may have
+/// debited the sender itself.
+fn charge_entry_deposit(
+    state: &State,
+    tx: &Transaction,
+    changes: &mut Changes,
+) -> Result<(), CallError> {
+    let mut created = std::collections::BTreeSet::new();
+    for (key, value) in changes.iter() {
+        if value.is_some() && !state.contains_key(key) {
+            created.insert(key.clone());
+        } else if value.is_none() {
+            created.remove(key);
+        }
+    }
+    let count = u128::try_from(created.len()).map_err(|_| CallError::Internal)?;
+    let deposit = count.saturating_mul(NEW_ENTRY_STORAGE_DEPOSIT);
+    if deposit == 0 {
+        return Ok(());
+    }
+
+    let sender = tx.sender_address();
+    let account_key = chain_state::account::account_key(sender);
+    let latest = |key: &StateKey| -> Option<StateValue> {
+        match changes.iter().rev().find(|(changed, _)| changed == key) {
+            Some((_, value)) => value.clone(),
+            None => state.get(key).cloned(),
+        }
+    };
+    let account: Account =
+        decode_exact(latest(&account_key).ok_or(CallError::Internal)?.as_bytes())
+            .map_err(|_| CallError::Internal)?;
+    let fee_reserve =
+        u128::from(tx.body.gas_limit.0).saturating_mul(u128::from(tx.body.max_fee_per_gas.0));
+    if deposit > account.balance.saturating_sub(fee_reserve) {
+        return Err(AbortReason::InsufficientBalance.into());
+    }
+    let supply: u128 = decode_exact(latest(&supply_key()).ok_or(CallError::Internal)?.as_bytes())
+        .map_err(|_| CallError::Internal)?;
+    let supply_after = supply.checked_sub(deposit).ok_or(CallError::Internal)?;
+
+    let updated = Account {
+        balance: account.balance.saturating_sub(deposit),
+        ..account
+    };
+    let mut bytes = Vec::new();
+    updated.encode(&mut bytes);
+    changes.push((account_key, Some(StateValue::new(bytes))));
+    let mut supply_bytes = Vec::new();
+    supply_after.encode(&mut supply_bytes);
+    changes.push((supply_key(), Some(StateValue::new(supply_bytes))));
     Ok(())
 }
 
@@ -424,6 +491,7 @@ fn stake(state: &State, tx: &Transaction, _ctx: &BlockCtx) -> Result<CallEffects
             .map_err(staking_error)
     })?;
     debit_sender(state, tx, amount, &mut changes)?;
+    charge_entry_deposit(state, tx, &mut changes)?;
     Ok(effects(tx, changes))
 }
 
@@ -537,6 +605,8 @@ fn submit_proposal(
             .map_err(governance_error)?;
         Ok(())
     })?;
+    let mut changes = changes;
+    charge_entry_deposit(state, tx, &mut changes)?;
     Ok(effects(tx, changes))
 }
 
