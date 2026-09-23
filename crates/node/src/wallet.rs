@@ -76,6 +76,7 @@ pub fn default_path() -> Result<PathBuf, WalletError> {
 pub struct Wallet {
     key: SigningKey,
     address: Address,
+    public_key: PublicKey,
 }
 
 impl Wallet {
@@ -89,12 +90,12 @@ impl Wallet {
         }
 
         let mut bytes = [0u8; KEY_BYTES];
-        let (key, address) = loop {
+        let (key, public_key, address) = loop {
             getrandom::fill(&mut bytes).map_err(|_| WalletError::Randomness)?;
             let candidate = SigningKey::from_bytes(&bytes);
             if let Ok(public) = PublicKey::from_ed25519_bytes(candidate.verifying_key().to_bytes())
             {
-                break (candidate, Address::from_public_key(&public));
+                break (candidate, public, Address::from_public_key(&public));
             }
         };
 
@@ -112,7 +113,11 @@ impl Wallet {
             })?;
         file.write_all(&bytes).map_err(|error| io(path, error))?;
         file.sync_all().map_err(|error| io(path, error))?;
-        Ok(Self { key, address })
+        Ok(Self {
+            key,
+            address,
+            public_key,
+        })
     }
 
     /// Load a wallet only when its key file is private to its owner.
@@ -126,14 +131,27 @@ impl Wallet {
             .try_into()
             .map_err(|_| WalletError::Invalid(path.to_owned()))?;
         let key = SigningKey::from_bytes(&bytes);
-        let public = PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes())
+        let public_key = PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes())
             .map_err(|_| WalletError::Invalid(path.to_owned()))?;
-        let address = Address::from_public_key(&public);
-        Ok(Self { key, address })
+        let address = Address::from_public_key(&public_key);
+        Ok(Self {
+            key,
+            address,
+            public_key,
+        })
     }
 
     pub fn address(&self) -> Address {
         self.address
+    }
+
+    /// The public key `address()` was derived from — what a genesis
+    /// allocation or validator entry names an account or operator by
+    /// (`docs/core-network-alpha.md`, "Create the alpha genesis and release
+    /// configuration"). An address cannot be turned back into this; it is
+    /// only ever available from the wallet that made it.
+    pub fn public_key(&self) -> PublicKey {
+        self.public_key
     }
 
     pub fn signing_key(&self) -> &SigningKey {
@@ -162,6 +180,15 @@ mod tests {
             Err(WalletError::Exists(at)) if at == path
         ));
         assert_eq!(Wallet::load(&path).unwrap().address(), made.address());
+    }
+
+    #[test]
+    fn public_key_is_what_the_address_was_derived_from_and_survives_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.key");
+        let made = Wallet::create(&path).unwrap();
+        assert_eq!(Address::from_public_key(&made.public_key()), made.address());
+        assert_eq!(Wallet::load(&path).unwrap().public_key(), made.public_key());
     }
 
     #[test]

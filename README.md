@@ -28,8 +28,11 @@ Thrylos already runs as a local multi-validator network.
 * ✅ Crash recovery and write-ahead logging
 * ✅ Authenticated P2P networking
 * ✅ Transaction mempool and propagation
+* ✅ Native THRY transfers and account CLI
 * ✅ JSON-RPC
 * ✅ Read-only local web explorer
+* ✅ Durable, rate-limited testnet faucet with a Discord adapter
+* ✅ TLS RPC gateway config, an HTTPS-capable CLI and reproducible release builds
 * ✅ Compact block relay
 * ✅ Fuzz testing
 * ✅ TLA+ consensus model
@@ -76,6 +79,35 @@ target/debug/chain-node devnet check /tmp/thrylos-devnet
 ```
 
 This checks that the validators are still committing blocks and agree on the latest commit certificate.
+
+### Use the core-alpha account CLI
+
+```bash
+target/debug/thrylos setup
+target/debug/thrylos address
+target/debug/thrylos balance
+target/debug/thrylos send 2.5 thry1...
+```
+
+For local testing, fund the address printed by `thrylos address` from one of
+the devnet's intentionally public accounts:
+
+```bash
+target/debug/chain-node devnet fund /tmp/thrylos-devnet thry1... --amount 100
+```
+
+To use a public gateway instead of a local node, `--rpc` also takes an
+`https://` URL, and a saved profile can hold it so it does not need to be
+retyped:
+
+```bash
+target/debug/thrylos network add testnet-alpha https://rpc.testnet.example
+target/debug/thrylos network use testnet-alpha
+target/debug/thrylos balance
+```
+
+The faucet, Discord setup and public RPC gateway are documented in
+[`docs/core-network-alpha.md`](docs/core-network-alpha.md).
 
 ### 6. Open the explorer
 

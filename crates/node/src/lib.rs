@@ -47,6 +47,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alpha;
 mod atomic;
 pub mod block_relay;
 pub mod client;
@@ -57,11 +58,15 @@ pub mod devnet;
 pub mod disk;
 pub mod durable_engine;
 pub mod event_loop;
+pub mod faucet;
+pub mod faucet_discord;
 pub mod health;
 pub mod launch;
 pub mod mark_store;
+pub mod network_profile;
 pub mod node;
 pub mod peer_network;
+pub mod remote_rpc;
 pub mod remote_signer;
 pub mod rpc_api;
 pub mod runtime;

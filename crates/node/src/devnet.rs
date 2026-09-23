@@ -66,7 +66,7 @@ pub const SIGNER_MARK: &str = "signer.mark";
 pub const SIGNER_SOCKET: &str = "signer.sock";
 pub const SIGNER_LOG: &str = "signer.log";
 pub const NODE_LOG: &str = "node.log";
-const DIRECTORY_PREFIX: &str = "node";
+pub(crate) const DIRECTORY_PREFIX: &str = "node";
 
 /// Why a network could not be generated or found.
 #[derive(Debug)]
@@ -138,7 +138,7 @@ impl core::fmt::Display for DevnetError {
 
 impl std::error::Error for DevnetError {}
 
-fn io(path: &Path, error: impl core::fmt::Display) -> DevnetError {
+pub(crate) fn io(path: &Path, error: impl core::fmt::Display) -> DevnetError {
     DevnetError::Io {
         path: path.to_path_buf(),
         error: error.to_string(),
@@ -235,7 +235,10 @@ struct Plan {
     credential: [u8; 32],
 }
 
-fn random() -> Result<[u8; 32], DevnetError> {
+/// 32 bytes from the operating system's randomness. Shared with
+/// `crate::alpha`, which needs the same real key material this module's own
+/// (insecure, seed-derived) genesis keys deliberately do not use.
+pub(crate) fn random() -> Result<[u8; 32], DevnetError> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| DevnetError::Randomness)?;
     Ok(bytes)
@@ -243,11 +246,11 @@ fn random() -> Result<[u8; 32], DevnetError> {
 
 /// Creates a new file that only its owner can read or write, refusing to
 /// replace one.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), DevnetError> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), DevnetError> {
     write_new(path, bytes, 0o600)
 }
 
-fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), DevnetError> {
+pub(crate) fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), DevnetError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

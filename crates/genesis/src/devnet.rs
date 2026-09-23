@@ -36,10 +36,13 @@ pub fn ed25519(seed: u8) -> Result<PublicKey, ParseError> {
         .map_err(|_| invalid("ed25519 key"))
 }
 
-/// The consensus key and proof of possession of the development validator
-/// with this seed.
-pub fn bls(seed: u8) -> Result<(BlsPublicKey, BlsSignature), ParseError> {
-    let secret = SecretKey::key_gen(&[seed; 32], &[]).map_err(|_| invalid("bls secret"))?;
+/// The consensus key, its proof of possession, and the secret they were
+/// derived from, from 32 bytes of key material. [`bls`] is this with the
+/// insecure, seed-derived devnet material; a real validator's material must
+/// be secret and unpredictable (`crates/node/src/alpha.rs` uses this
+/// directly, with material from the operating system's randomness).
+pub fn bls_from_ikm(ikm: &[u8; 32]) -> Result<(SecretKey, BlsPublicKey, BlsSignature), ParseError> {
+    let secret = SecretKey::key_gen(ikm, &[]).map_err(|_| invalid("bls secret"))?;
     let key = BlsPublicKey::from_bytes(secret.sk_to_pk().to_bytes())
         .map_err(|_| invalid("bls public key"))?;
     let proof = BlsSignature::from_bytes(
@@ -48,6 +51,13 @@ pub fn bls(seed: u8) -> Result<(BlsPublicKey, BlsSignature), ParseError> {
             .to_bytes(),
     )
     .map_err(|_| invalid("proof of possession"))?;
+    Ok((secret, key, proof))
+}
+
+/// The consensus key and proof of possession of the development validator
+/// with this seed.
+pub fn bls(seed: u8) -> Result<(BlsPublicKey, BlsSignature), ParseError> {
+    let (_secret, key, proof) = bls_from_ikm(&[seed; 32])?;
     Ok((key, proof))
 }
 

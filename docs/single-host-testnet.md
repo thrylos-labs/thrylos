@@ -7,6 +7,12 @@ process recovery, but it does not simulate host loss or real network latency.
 
 The development keys are public and must never hold value.
 
+For the one-machine dress rehearsal of a real public alpha — real validator
+and faucet keys, a chosen chain ID, a TLS gateway — use `chain-node testnet
+init` instead of `devnet init`; see `docs/core-network-alpha.md`, "Alpha
+genesis". Everything below this point still applies to it: `devnet start`,
+`devnet check` and the explorer all work the same on either kind of network.
+
 ## Start with fresh V2 state
 
 Trie commitment V2 is incompatible with databases created by the earlier

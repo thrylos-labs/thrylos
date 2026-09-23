@@ -51,6 +51,51 @@ fn setup_makes_a_private_wallet_and_address_reads_the_same_public_address() {
 }
 
 #[test]
+fn address_hex_is_a_stable_32_byte_public_key_distinct_from_the_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = dir.path().join("wallet.key");
+    let thrylos = env!("CARGO_BIN_EXE_thrylos");
+
+    Command::new(thrylos)
+        .args(["setup", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    let address_out = Command::new(thrylos)
+        .args(["address", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    let address = String::from_utf8(address_out.stdout).unwrap();
+    let address = address.trim().to_owned();
+
+    let hex_out = Command::new(thrylos)
+        .args(["address", "--hex", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    assert!(
+        hex_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&hex_out.stderr)
+    );
+    let hex = String::from_utf8(hex_out.stdout).unwrap();
+    let hex = hex.trim();
+    assert_eq!(hex.len(), 64);
+    assert!(hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_ne!(hex, address);
+
+    // Reading it again must produce the exact same public key: nothing here
+    // is randomized per call, only chosen once at `setup`.
+    let hex_again = Command::new(thrylos)
+        .args(["address", "--hex", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(hex_again.stdout).unwrap().trim(), hex);
+}
+
+#[test]
 fn an_address_before_setup_says_exactly_how_to_fix_it() {
     let dir = tempfile::tempdir().unwrap();
     let wallet = dir.path().join("missing.key");

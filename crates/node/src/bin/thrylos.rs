@@ -5,16 +5,18 @@
 #![allow(clippy::indexing_slicing)]
 
 use std::io::{self, Write};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use chain_exec::native::MIN_PROTOCOL_CALL_GAS;
 use chain_node::client::{
-    balance_text, signed_transfer, submit_transaction, wait_for_inclusion, ClientError, RpcClient,
+    balance_text, signed_transfer, submit_transaction, wait_for_inclusion, ClientError,
     EXPIRES_AFTER,
 };
+use chain_node::network_profile;
+use chain_node::remote_rpc::Endpoint;
 use chain_node::wallet::Wallet;
+use chain_rpc::hex;
 use chain_text::{format_address, format_amount, parse_address, parse_amount};
 use serde_json::{json, Value};
 
@@ -24,16 +26,26 @@ const USAGE: &str = "Thrylos core-network alpha
 
 Usage:
   thrylos setup
-  thrylos address
+  thrylos address [--hex]
   thrylos balance [address]
   thrylos send <amount> <address> [--yes]
   thrylos tx <hash>
   thrylos status
+  thrylos network add <name> <rpc>
+  thrylos network use <name>
+  thrylos network list
+  thrylos network remove <name>
 
 Options:
-  --rpc <host:port>   node RPC (default 127.0.0.1:26660 or THRYLOS_RPC)
+  --rpc <rpc>         node or gateway RPC: host:port for a local node, or an
+                       http(s):// URL for a public gateway (default
+                       127.0.0.1:26660, then THRYLOS_RPC, then the active
+                       saved network)
   --wallet <file>     wallet key (default ~/.thrylos/wallet.key or THRYLOS_WALLET)
   --yes               send without the confirmation prompt
+  --hex               with `address`, print the raw public key instead
+                       (what a genesis allocation or validator entry needs;
+                       an address cannot be turned back into one)
   --help              show this help
   --version           show the version
 
@@ -41,12 +53,16 @@ Examples:
   thrylos setup
   thrylos address
   thrylos balance
-  thrylos send 2.5 thry1...";
+  thrylos send 2.5 thry1...
+  thrylos network add testnet-alpha https://rpc.testnet.example
+  thrylos network use testnet-alpha
+  thrylos balance";
 
 struct Options {
-    rpc: SocketAddr,
+    rpc: Endpoint,
     wallet: PathBuf,
     yes: bool,
+    hex: bool,
     positional: Vec<String>,
 }
 
@@ -54,32 +70,52 @@ fn option_value(flag: &str, args: &mut impl Iterator<Item = String>) -> Result<S
     args.next().ok_or_else(|| format!("{flag} needs a value"))
 }
 
+/// `--rpc`, then `THRYLOS_RPC`, then the active saved network
+/// (`thrylos network use`), then the local-node default.
+fn resolve_rpc(flag: Option<String>) -> Result<String, String> {
+    if let Some(text) = flag {
+        return Ok(text);
+    }
+    if let Ok(text) = std::env::var("THRYLOS_RPC") {
+        return Ok(text);
+    }
+    let Ok(networks_path) = network_profile::default_path() else {
+        return Ok(DEFAULT_RPC.to_owned());
+    };
+    match network_profile::active_rpc(&networks_path) {
+        Ok(Some(text)) => Ok(text),
+        Ok(None) => Ok(DEFAULT_RPC.to_owned()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn parse_options() -> Result<Options, String> {
     let mut args = std::env::args();
     let _program = args.next();
-    let rpc_default = std::env::var("THRYLOS_RPC").unwrap_or_else(|_| DEFAULT_RPC.to_owned());
-    let mut rpc_text = rpc_default;
+    let mut rpc_flag = None;
     let mut wallet = chain_node::wallet::default_path().map_err(|error| error.to_string())?;
     let mut yes = false;
+    let mut hex_flag = false;
     let mut positional = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--rpc" => rpc_text = option_value("--rpc", &mut args)?,
+            "--rpc" => rpc_flag = Some(option_value("--rpc", &mut args)?),
             "--wallet" => wallet = PathBuf::from(option_value("--wallet", &mut args)?),
             "--yes" => yes = true,
+            "--hex" => hex_flag = true,
             flag if flag.starts_with("--") && flag != "--help" && flag != "--version" => {
                 return Err(format!("unknown option {flag:?}"));
             }
             _ => positional.push(arg),
         }
     }
-    let rpc = rpc_text
-        .parse()
-        .map_err(|_| format!("{rpc_text:?} is not an RPC address such as {DEFAULT_RPC}"))?;
+    let rpc_text = resolve_rpc(rpc_flag)?;
+    let rpc = Endpoint::parse(&rpc_text)?;
     Ok(Options {
         rpc,
         wallet,
+        hex: hex_flag,
         yes,
         positional,
     })
@@ -110,13 +146,24 @@ fn setup(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn address(path: &Path) -> Result<(), String> {
+fn address(path: &Path, hex: bool) -> Result<(), String> {
     let wallet = load_wallet(path)?;
-    println!("{}", format_address(&wallet.address()));
+    if hex {
+        // The raw public key, not the address: a genesis allocation or
+        // validator entry (docs/core-network-alpha.md) is written by public
+        // key, and an address cannot be turned back into one.
+        println!("{}", encode_public_key(&wallet));
+    } else {
+        println!("{}", format_address(&wallet.address()));
+    }
     Ok(())
 }
 
-fn account(client: &RpcClient, address: chain_types::Address) -> Result<Value, String> {
+fn encode_public_key(wallet: &Wallet) -> String {
+    hex::encode(&wallet.public_key().ed25519_bytes())
+}
+
+fn account(client: &Endpoint, address: chain_types::Address) -> Result<Value, String> {
     client
         .call("account", &json!({ "address": format_address(&address) }))
         .map_err(|error| error.to_string())
@@ -127,19 +174,14 @@ fn balance(options: &Options, requested: Option<&str>) -> Result<(), String> {
         Some(text) => parse_address(text).map_err(|error| error.to_string())?,
         None => load_wallet(&options.wallet)?.address(),
     };
-    let result = account(
-        &RpcClient {
-            address: options.rpc,
-        },
-        address,
-    )?;
+    let result = account(&options.rpc, address)?;
     println!("Address: {}", format_address(&address));
     println!("Balance: {}", balance_text(result["balance"].as_str()));
     println!("At height: {}", result["height"]);
     Ok(())
 }
 
-fn status(client: &RpcClient) -> Result<(), String> {
+fn status(client: &Endpoint) -> Result<(), String> {
     let status = client
         .call("status", &json!({}))
         .map_err(|error| error.to_string())?;
@@ -214,9 +256,7 @@ fn send(options: &Options, amount_text: &str, recipient_text: &str) -> Result<()
     if recipient == wallet.address() {
         return Err("the recipient is your own address; nothing needs to be sent".into());
     }
-    let client = RpcClient {
-        address: options.rpc,
-    };
+    let client = &options.rpc;
     let network = client
         .call("status", &json!({}))
         .map_err(|error| error.to_string())?;
@@ -228,7 +268,7 @@ fn send(options: &Options, amount_text: &str, recipient_text: &str) -> Result<()
         .checked_mul(u128::from(max_fee_per_gas))
         .ok_or_else(|| "the node reported a fee too large to use".to_owned())?;
 
-    let current = account(&client, wallet.address())?;
+    let current = account(client, wallet.address())?;
     let sequence = field_u64(&current, "nextSequenceNumber", "account")?;
     let balance: u128 = current["balance"]
         .as_str()
@@ -260,14 +300,14 @@ fn send(options: &Options, amount_text: &str, recipient_text: &str) -> Result<()
         max_fee_per_gas,
     )
     .map_err(|error| error.to_string())?;
-    let hash = submit_transaction(&client, &transaction).map_err(|error| error.to_string())?;
+    let hash = submit_transaction(client, &transaction).map_err(|error| error.to_string())?;
     println!("Sent: {hash}");
     println!("Waiting for inclusion…");
-    let found = wait_for_inclusion(&client, &hash).map_err(|error| error.to_string())?;
+    let found = wait_for_inclusion(client, &hash).map_err(|error| error.to_string())?;
     describe_inclusion(&hash, &found)
 }
 
-fn transaction(client: &RpcClient, hash: &str) -> Result<(), String> {
+fn transaction(client: &Endpoint, hash: &str) -> Result<(), String> {
     let found = client
         .call("transaction", &json!({ "hash": hash }))
         .map_err(|error| error.to_string())?;
@@ -290,6 +330,59 @@ fn transaction(client: &RpcClient, hash: &str) -> Result<(), String> {
         _ => return Err("the RPC returned an unknown transaction status".into()),
     }
     Ok(())
+}
+
+fn network(rest: &[String]) -> Result<(), String> {
+    let path = network_profile::default_path().map_err(|error| error.to_string())?;
+    let Some((subcommand, rest)) = rest.split_first() else {
+        return Err(
+            "usage: thrylos network <add <name> <rpc> | use <name> | list | remove <name>>".into(),
+        );
+    };
+    match subcommand.as_str() {
+        "add" => {
+            let values = exactly(rest, 2, "thrylos network add <name> <rpc>")?;
+            let name = &values[0];
+            let rpc = &values[1];
+            network_profile::add(&path, name, rpc).map_err(|error| error.to_string())?;
+            println!("Saved {name:?} as {rpc}. Use it with `thrylos network use {name}`.");
+            Ok(())
+        }
+        "use" => {
+            let values = exactly(rest, 1, "thrylos network use <name>")?;
+            let name = &values[0];
+            network_profile::use_network(&path, name).map_err(|error| error.to_string())?;
+            println!("Now using {name:?}.");
+            Ok(())
+        }
+        "remove" => {
+            let values = exactly(rest, 1, "thrylos network remove <name>")?;
+            let name = &values[0];
+            network_profile::remove(&path, name).map_err(|error| error.to_string())?;
+            println!("Removed {name:?}.");
+            Ok(())
+        }
+        "list" => {
+            exactly(rest, 0, "thrylos network list")?;
+            let (current, networks) = network_profile::list(&path).map_err(|error| error.to_string())?;
+            if networks.is_empty() {
+                println!("No saved networks. Add one with `thrylos network add <name> <rpc>`.");
+                return Ok(());
+            }
+            for (name, rpc) in &networks {
+                let marker = if current.as_deref() == Some(name.as_str()) {
+                    "*"
+                } else {
+                    " "
+                };
+                println!("{marker} {name}  {rpc}");
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "unknown `thrylos network {other}`\n\nusage: thrylos network <add <name> <rpc> | use <name> | list | remove <name>>"
+        )),
+    }
 }
 
 fn exactly<'a>(args: &'a [String], count: usize, form: &str) -> Result<&'a [String], String> {
@@ -318,8 +411,8 @@ fn run(options: &Options) -> Result<(), String> {
             setup(&options.wallet)
         }
         "address" => {
-            exactly(rest, 0, "thrylos address")?;
-            address(&options.wallet)
+            exactly(rest, 0, "thrylos address [--hex]")?;
+            address(&options.wallet, options.hex)
         }
         "balance" => {
             if rest.len() > 1 {
@@ -329,10 +422,9 @@ fn run(options: &Options) -> Result<(), String> {
         }
         "status" => {
             exactly(rest, 0, "thrylos status")?;
-            status(&RpcClient {
-                address: options.rpc,
-            })
+            status(&options.rpc)
         }
+        "network" => network(rest),
         "send" => {
             let values = exactly(rest, 2, "thrylos send <amount> <address> [--yes]")?;
             let Some((amount, tail)) = values.split_first() else {
@@ -348,12 +440,7 @@ fn run(options: &Options) -> Result<(), String> {
             let Some(hash) = values.first() else {
                 return Err("usage: thrylos tx <hash>".into());
             };
-            transaction(
-                &RpcClient {
-                    address: options.rpc,
-                },
-                hash,
-            )
+            transaction(&options.rpc, hash)
         }
         other => Err(format!("unknown command {other:?}\n\n{USAGE}")),
     }

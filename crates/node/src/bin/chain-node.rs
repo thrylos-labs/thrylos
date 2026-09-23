@@ -6,9 +6,13 @@
 //! chain-node network-key <file>                       make a transport key
 //! chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
 //!                          [--block-interval-ms <ms>] write a local network
-//! chain-node devnet start <dir> [--until-height <n>]  run a local network
+//! chain-node testnet init <dir> --chain-id <n> --operator <pubkey-hex>...
+//!             [--allocate <pubkey-hex>:<amount>]... write a real network
+//! chain-node devnet start <dir> [--until-height <n>]  run a generated network
 //! chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
 //!                                                     send a transaction to a running one
+//! chain-node devnet fund <dir> <address> [--node <n>] [--account <1-4>]
+//!                                      [--amount <THRY>] fund a local wallet or faucet
 //! chain-node devnet check <dir>                       is it committing, and do the nodes agree?
 //! chain-node --help | --version
 //! ```
@@ -32,13 +36,18 @@
 //!
 //! `devnet init` writes the files of a network of validators on this machine
 //! (see `chain_node::devnet`; **insecure**, for development only) and refuses a
-//! directory that holds anything. `devnet start` runs one: a `chain-signer` and
-//! a `chain-node` per validator, logging to files in their directories, until
-//! every node has ended. With `--until-height` it runs until every node has
-//! committed that height and then stops them all: a node that joined late is
-//! waited for, and the chain goes on meanwhile. (`run --until-height` is
-//! different: each node stops as it gets there, so a node that has fallen
-//! behind by then cannot catch up once the others have stopped.)
+//! directory that holds anything. `testnet init` writes the same kind of
+//! directory with a real, chosen chain ID, real random consensus keys, and a
+//! genesis that funds only the addresses it is told to (see
+//! `chain_node::alpha`); a validator's own operator key is an ordinary
+//! `thrylos` wallet, made and held the same way any account's is. `devnet
+//! start` runs either kind: a `chain-signer` and a `chain-node` per
+//! validator, logging to files in their directories, until every node has
+//! ended. With `--until-height` it runs until every node has committed that
+//! height and then stops them all: a node that joined late is waited for,
+//! and the chain goes on meanwhile. (`run --until-height` is different: each
+//! node stops as it gets there, so a node that has fallen behind by then
+//! cannot catch up once the others have stopped.)
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -63,8 +72,14 @@ const USAGE: &str = "usage:
   chain-node network-key <file>
   chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
                           [--block-interval-ms <ms>]
+  chain-node testnet init <dir> --chain-id <n> --operator <pubkey-hex>...
+                          [--allocate <pubkey-hex>:<amount>]...
+                          [--genesis-time <unix-ms>] [--base-port <port>]
+                          [--block-interval-ms <ms>]
   chain-node devnet start <dir> [--until-height <n>]
   chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
+  chain-node devnet fund <dir> <address> [--node <n>] [--account <1-4>]
+                          [--amount <THRY>]
   chain-node devnet check <dir>
   chain-node --help | --version
 
@@ -97,15 +112,34 @@ The commands:
                           [--block-interval-ms <ms>]
       Write the files of a local network. <dir> must be new or empty. By
       default that is 4 validators (up to 65) making a block every 1000 ms.
+      INSECURE: every consensus key is derived from a small public seed.
+
+  chain-node testnet init <dir> --chain-id <n> --operator <pubkey-hex>...
+                          [--allocate <pubkey-hex>:<amount>]...
+                          [--genesis-time <unix-ms>] [--base-port <port>]
+                          [--block-interval-ms <ms>]
+      Write the files of a real network: one validator per --operator, each
+      with a freshly and randomly generated consensus key. An operator is a
+      public key, not an address (`thrylos setup` then `thrylos address
+      --hex`); genesis allocates funds only to --allocate, never implicitly.
+      --chain-id must be unique to this network. <dir> must be new or empty.
 
   chain-node devnet start <dir> [--until-height <n>]
-      Run that network: one node and one signer for each validator. It says
-      where each node's log and RPC are, and what to try next.
+      Run a network: one node and one signer for each validator. Despite the
+      name this runs any generated network, `devnet init`'s or `testnet
+      init`'s. It says where each node's log and RPC are, and what to try
+      next.
 
   chain-node devnet bump <dir> [--node <n>] [--account <1-4>] [--amount <n>]
       Send one transaction to a running network from a funded test account, and
       say whether it succeeded. It adds <amount> (1 by default) to a test
       counter; <node> (1 by default) is the node it is sent to.
+
+  chain-node devnet fund <dir> <address> [--node <n>] [--account <1-4>]
+                          [--amount <THRY>]
+      Send test THRY to a wallet or faucet from a public development account.
+      The default is 100 THRY from account 1 through node 1. This command only
+      exists under devnet; it has no production privilege or minting power.
 
   chain-node devnet check <dir>
       Ask every node whether it is committing, and whether they agree on the
@@ -323,6 +357,179 @@ fn devnet_bump(dir: &str, flags: &[&str]) -> ExitCode {
     }
 }
 
+fn devnet_fund(dir: &str, address: &str, flags: &[&str]) -> ExitCode {
+    let Some(pairs) = flag_pairs(flags, &["--node", "--account", "--amount"]) else {
+        return usage_error();
+    };
+    let (node, account) = match (
+        flag_value::<usize>(&pairs, "--node", Some(1)),
+        flag_value::<u8>(&pairs, "--account", Some(1)),
+    ) {
+        (Ok(Some(node)), Ok(Some(account))) => (node, account),
+        (Err(error), _) | (_, Err(error)) => return fail(error),
+        _ => return usage_error(),
+    };
+    let recipient = match chain_text::parse_address(address) {
+        Ok(address) => address,
+        Err(error) => return fail(format!("address: {error}")),
+    };
+    let amount_text = pairs
+        .iter()
+        .find(|(name, _)| *name == "--amount")
+        .map_or("100", |(_, value)| *value);
+    let amount = match chain_text::parse_amount(amount_text) {
+        Ok(0) => return fail("--amount must be more than zero"),
+        Ok(amount) => amount,
+        Err(error) => return fail(format!("--amount: {error}")),
+    };
+    match client::devnet_transfer(
+        Path::new(dir),
+        node,
+        account,
+        recipient,
+        amount,
+        &mut |line| println!("{line}"),
+    ) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let nothing_answered = matches!(error, ClientError::Unreachable { .. });
+            let failed = fail(error);
+            if nothing_answered {
+                eprintln!("{}", not_running_hint(dir));
+            }
+            failed
+        }
+    }
+}
+
+/// Every `--flag value` pair in `flags`, in order, without `flag_pairs`'s
+/// restriction to one of each: `testnet init` takes `--operator` and
+/// `--allocate` any number of times.
+fn flag_occurrences<'a>(flags: &[&'a str]) -> Option<Vec<(&'a str, &'a str)>> {
+    let mut pairs = Vec::new();
+    for pair in flags.chunks(2) {
+        let [name, value] = pair else { return None };
+        pairs.push((*name, *value));
+    }
+    Some(pairs)
+}
+
+fn parse_public_key(text: &str) -> Result<chain_types::PublicKey, String> {
+    let bytes = hex::decode::<32>(text).map_err(|error| format!("{text:?}: {error}"))?;
+    chain_types::PublicKey::from_ed25519_bytes(bytes)
+        .map_err(|_| format!("{text:?} is not a valid Ed25519 public key"))
+}
+
+fn parse_allocation(text: &str) -> Result<chain_exec::genesis_config::Allocation, String> {
+    let (key_text, amount_text) = text
+        .split_once(':')
+        .ok_or_else(|| format!("--allocate wants <public-key-hex>:<amount>, not {text:?}"))?;
+    let owner = parse_public_key(key_text)?;
+    let amount = chain_text::parse_amount(amount_text).map_err(|error| error.to_string())?;
+    Ok(chain_exec::genesis_config::Allocation { owner, amount })
+}
+
+fn testnet_init(dir: &str, flags: &[&str]) -> ExitCode {
+    let Some(pairs) = flag_occurrences(flags) else {
+        return usage_error();
+    };
+    let allowed = [
+        "--operator",
+        "--allocate",
+        "--chain-id",
+        "--genesis-time",
+        "--base-port",
+        "--block-interval-ms",
+    ];
+    if pairs.iter().any(|(name, _)| !allowed.contains(name)) {
+        return usage_error();
+    }
+
+    let mut operators = Vec::new();
+    let mut allocations = Vec::new();
+    for (name, value) in &pairs {
+        match *name {
+            "--operator" => match parse_public_key(value) {
+                Ok(key) => operators.push(key),
+                Err(error) => return fail(format!("--operator {error}")),
+            },
+            "--allocate" => match parse_allocation(value) {
+                Ok(allocation) => allocations.push(allocation),
+                Err(error) => return fail(error),
+            },
+            _ => {}
+        }
+    }
+    if operators.is_empty() {
+        return fail(
+            "at least one --operator <public-key-hex> is required (make one with \
+             `thrylos setup` then `thrylos address --hex`)",
+        );
+    }
+    let chain_id = match flag_value::<u64>(&pairs, "--chain-id", None) {
+        Ok(Some(chain_id)) => chain_id,
+        Ok(None) => {
+            return fail(
+                "--chain-id is required: choose a value unique to this network, never reused \
+                 from devnet's 1337 or another testnet's",
+            );
+        }
+        Err(error) => return fail(error),
+    };
+    let genesis_time_ms =
+        match flag_value::<u64>(&pairs, "--genesis-time", Some(chain_node::clock::now_ms())) {
+            Ok(Some(value)) => value,
+            Ok(None) => return usage_error(),
+            Err(error) => return fail(error),
+        };
+    let base_port = match flag_value::<u16>(&pairs, "--base-port", Some(DEFAULT_BASE_PORT)) {
+        Ok(Some(value)) => value,
+        Ok(None) => return usage_error(),
+        Err(error) => return fail(error),
+    };
+    let block_interval_ms = match flag_value::<u64>(
+        &pairs,
+        "--block-interval-ms",
+        Some(DEFAULT_BLOCK_INTERVAL_MS),
+    ) {
+        Ok(Some(value)) => value,
+        Ok(None) => return usage_error(),
+        Err(error) => return fail(error),
+    };
+
+    match chain_node::alpha::init(
+        Path::new(dir),
+        &operators,
+        allocations,
+        chain_id,
+        genesis_time_ms,
+        base_port,
+        block_interval_ms,
+    ) {
+        Ok(nodes) => {
+            println!(
+                "wrote {} validators to {dir}, chain ID {chain_id}:",
+                nodes.len()
+            );
+            for node in &nodes {
+                println!(
+                    "  node{}  {}  peers {}  rpc {}",
+                    node.number,
+                    chain_text::format_address(&node.validator),
+                    node.listen,
+                    node.rpc
+                );
+            }
+            println!(
+                "run it with: chain-node devnet start {dir}  (that command's name is generic; \
+                 it runs any generated network, not only an insecure devnet one)"
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(error),
+    }
+}
+
 /// Exits 0 if the network is committing and its nodes agree, 1 if not.
 fn devnet_check(dir: &str) -> ExitCode {
     match health::check(Path::new(dir)) {
@@ -394,8 +601,10 @@ fn main() -> ExitCode {
         ["run", path, flags @ ..] => run_command(path, flags),
         ["network-key", path] => network_key(path),
         ["devnet", "init", dir, flags @ ..] => devnet_init(dir, flags),
+        ["testnet", "init", dir, flags @ ..] => testnet_init(dir, flags),
         ["devnet", "start", dir, flags @ ..] => devnet_start(dir, flags),
         ["devnet", "bump", dir, flags @ ..] => devnet_bump(dir, flags),
+        ["devnet", "fund", dir, address, flags @ ..] => devnet_fund(dir, address, flags),
         ["devnet", "check", dir] => devnet_check(dir),
         _ => usage_error(),
     }

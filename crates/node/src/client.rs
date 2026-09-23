@@ -166,6 +166,19 @@ impl RpcClient {
     }
 }
 
+/// Anything that can make one JSON-RPC call, so [`submit_transaction`] and
+/// [`wait_for_inclusion`] work the same over a local node's [`RpcClient`] and
+/// a public gateway's [`crate::remote_rpc::Endpoint`].
+pub trait RpcCall {
+    fn call(&self, method: &str, params: &Value) -> Result<Value, ClientError>;
+}
+
+impl RpcCall for RpcClient {
+    fn call(&self, method: &str, params: &Value) -> Result<Value, ClientError> {
+        Self::call(self, method, params)
+    }
+}
+
 /// How many blocks a transaction this client signs stays valid for: well inside
 /// the horizon a transaction may expire in.
 pub const EXPIRES_AFTER: u64 = 1_000;
@@ -256,7 +269,7 @@ pub fn signed_transfer(
 /// or broken RPC cannot make the wallet report a different transaction as the
 /// one it sent.
 pub fn submit_transaction(
-    client: &RpcClient,
+    client: &impl RpcCall,
     transaction: &Transaction,
 ) -> Result<String, ClientError> {
     let mut bytes = Vec::new();
@@ -276,7 +289,7 @@ pub fn submit_transaction(
 
 /// Wait until a transaction is included, returning the RPC's inclusion
 /// record. Not finding it immediately is normal: it may still be in flight.
-pub fn wait_for_inclusion(client: &RpcClient, hash: &str) -> Result<Value, ClientError> {
+pub fn wait_for_inclusion(client: &impl RpcCall, hash: &str) -> Result<Value, ClientError> {
     let started = Instant::now();
     while started.elapsed() < INCLUSION_PATIENCE {
         match client.call("transaction", &json!({ "hash": hash })) {
@@ -402,6 +415,120 @@ pub fn bump(
         std::thread::sleep(Duration::from_millis(100));
     }
     Err(ClientError::NotIncluded { hash })
+}
+
+/// Sends native THRY from one of the public development accounts to
+/// `recipient`. This is deliberately under `chain-node devnet`: it is an
+/// operator convenience for funding a wallet or faucet on a local network,
+/// never a production mint or privileged chain operation.
+pub fn devnet_transfer(
+    network: &Path,
+    node: usize,
+    account: u8,
+    recipient: Address,
+    amount: u128,
+    say: Say<'_>,
+) -> Result<(), ClientError> {
+    if !(1..=4).contains(&account) {
+        return Err(ClientError::Setup(format!(
+            "account {account}: the development genesis funds accounts 1 to 4"
+        )));
+    }
+    let nodes = nodes_in(network)?;
+    let chosen = nodes
+        .iter()
+        .find(|candidate| candidate.number == node)
+        .ok_or_else(|| ClientError::Setup(format!("the network has no node {node}")))?;
+    let config = NodeConfig::load(&chosen.config())
+        .map_err(|error| ClientError::Setup(error.to_string()))?;
+    let address = config.rpc_listen.ok_or_else(|| {
+        ClientError::Setup(format!("node {node}'s configuration has no `rpc` section"))
+    })?;
+    let client = RpcClient { address };
+    let seed = 100u8.saturating_add(account);
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let sender = Address::from_public_key(
+        &PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes())
+            .map_err(|_| ClientError::Setup("the development signing key is invalid".into()))?,
+    );
+    let status = client.call("status", &json!({}))?;
+    let chain_id = status["chainId"]
+        .as_u64()
+        .ok_or_else(|| ClientError::Transport("status has no chain ID".into()))?;
+    let head = status["latest"]["height"]
+        .as_u64()
+        .ok_or_else(|| ClientError::Transport("status has no latest height".into()))?;
+    let base_fee = status["baseFee"]
+        .as_u64()
+        .ok_or_else(|| ClientError::Transport("status has no base fee".into()))?;
+    let max_fee_per_gas = base_fee.saturating_mul(2).max(1);
+    let account_now = client.call("account", &json!({ "address": format_address(&sender) }))?;
+    let sequence = account_now["nextSequenceNumber"]
+        .as_u64()
+        .ok_or_else(|| ClientError::Transport("the account has no sequence number".into()))?;
+    let balance = account_now["balance"]
+        .as_str()
+        .ok_or_else(|| ClientError::Transport("the account has no balance".into()))?
+        .parse::<u128>()
+        .map_err(|_| ClientError::Transport("the account balance is invalid".into()))?;
+    let maximum_fee = u128::from(MIN_PROTOCOL_CALL_GAS)
+        .checked_mul(u128::from(max_fee_per_gas))
+        .ok_or_else(|| ClientError::Setup("the fee is too large".into()))?;
+    let needed = amount
+        .checked_add(maximum_fee)
+        .ok_or_else(|| ClientError::Setup("the amount and fee are too large".into()))?;
+    if needed > balance {
+        return Err(ClientError::Setup(format!(
+            "development account {account} holds {}, but {} plus a maximum fee of {} is needed",
+            chain_text::format_amount(balance),
+            chain_text::format_amount(amount),
+            chain_text::format_amount(maximum_fee)
+        )));
+    }
+    say(format!(
+        "sending {} from development account {account} to {}",
+        chain_text::format_amount(amount),
+        format_address(&recipient)
+    ));
+    let transaction = signed_transfer(
+        &key,
+        chain_id,
+        sequence,
+        head.saturating_add(EXPIRES_AFTER),
+        recipient,
+        amount,
+        max_fee_per_gas,
+    )?;
+    let hash = submit_transaction(&client, &transaction)?;
+    say(format!("sent {hash} to node {node}: pending"));
+    let found = wait_for_inclusion(&client, &hash)?;
+    let height = found["height"].as_u64().unwrap_or(0);
+    say(format!(
+        "included in block {height} ({}), position {}",
+        found["blockHash"].as_str().unwrap_or("?"),
+        found["index"]
+    ));
+    match found["outcome"]["status"].as_str() {
+        Some("success") => {
+            say("it succeeded".into());
+            Ok(())
+        }
+        Some("aborted") => Err(ClientError::Aborted {
+            hash,
+            height,
+            reason: found["outcome"]["reason"]
+                .as_str()
+                .unwrap_or("?")
+                .to_owned(),
+            message: found["outcome"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned(),
+        }),
+        _ => Err(ClientError::Transport(
+            "the included transaction has no recorded outcome".into(),
+        )),
+    }
 }
 
 #[cfg(test)]

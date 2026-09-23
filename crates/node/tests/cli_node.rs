@@ -51,6 +51,7 @@ fn help_says_what_each_command_does_and_warns_that_the_test_keys_are_public() {
         "chain-node devnet init <dir>",
         "chain-node devnet start <dir>",
         "chain-node devnet bump <dir>",
+        "chain-node devnet fund <dir>",
         "chain-node devnet check <dir>",
     ] {
         // The command's own paragraph: its synopsis, then a sentence about it.

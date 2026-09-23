@@ -32,6 +32,7 @@ use chain_node::{DurableEngine, NodeConfig};
 use chain_types::{BlockHeight, Hash};
 
 const NODE: &str = env!("CARGO_BIN_EXE_chain-node");
+const FAUCET: &str = env!("CARGO_BIN_EXE_chain-faucet");
 const SIGNER: &str = env!("CARGO_BIN_EXE_chain-signer");
 
 /// `count` consecutive free ports, and the first of them. Ports are handed out
@@ -50,6 +51,10 @@ fn free_base_port(count: u16) -> u16 {
 
 fn run(args: &[&str]) -> Output {
     Command::new(NODE).args(args).output().unwrap()
+}
+
+fn run_faucet(args: &[&str]) -> Output {
+    Command::new(FAUCET).args(args).output().unwrap()
 }
 
 fn stdout(output: &Output) -> String {
@@ -789,6 +794,148 @@ fn a_transaction_sent_with_devnet_bump_is_included_and_seen_from_another_node() 
         );
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[test]
+fn devnet_fund_sends_real_thry_to_a_wallet_and_every_node_sees_it() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+    let recipient = chain_types::Address::from_bytes([77; 32]);
+    let address = chain_text::format_address(&recipient);
+
+    let funded = run(&[
+        "devnet",
+        "fund",
+        &dir,
+        &address,
+        "--node",
+        "2",
+        "--account",
+        "1",
+        "--amount",
+        "2.5",
+    ]);
+    assert_eq!(
+        funded.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&funded),
+        stderr(&funded)
+    );
+    assert!(stdout(&funded).contains("sending 2.5 THRY"));
+    assert!(stdout(&funded).contains("it succeeded"));
+
+    let rpc = NodeConfig::load(&network.nodes[3].config())
+        .unwrap()
+        .rpc_listen
+        .unwrap();
+    let client = chain_node::client::RpcClient { address: rpc };
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        let account = client
+            .call("account", &serde_json::json!({ "address": address }))
+            .unwrap();
+        if account["balance"] == "2500000000" {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "node 4 never saw the funding: {account}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn the_faucet_is_funded_and_delivers_one_real_capped_claim() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 2);
+
+    let faucet_dir = network._root.path().join("faucet");
+    let faucet_path = faucet_dir.to_str().unwrap();
+    let initialized = run_faucet(&["init", faucet_path]);
+    assert_eq!(
+        initialized.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&initialized),
+        stderr(&initialized)
+    );
+    let faucet_address = stdout(&initialized)
+        .lines()
+        .find_map(|line| line.strip_prefix("Address to fund: "))
+        .unwrap()
+        .to_owned();
+
+    // Generated test networks use isolated random ports, so point the faucet
+    // at this test's first node instead of the public local-dev default.
+    let rpc = NodeConfig::load(&network.nodes[0].config())
+        .unwrap()
+        .rpc_listen
+        .unwrap();
+    let config_path = faucet_dir.join("faucet.json");
+    let mut config: chain_node::faucet::FaucetConfig =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config.rpc = rpc.to_string();
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+
+    let network_path = network.dir.to_str().unwrap();
+    let funded = run(&[
+        "devnet",
+        "fund",
+        network_path,
+        &faucet_address,
+        "--amount",
+        "100",
+    ]);
+    assert_eq!(
+        funded.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&funded),
+        stderr(&funded)
+    );
+
+    let recipient = chain_types::Address::from_bytes([88; 32]);
+    let recipient_text = chain_text::format_address(&recipient);
+    let queued = run_faucet(&["request", faucet_path, "discord-user-1", &recipient_text]);
+    assert_eq!(
+        queued.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&queued),
+        stderr(&queued)
+    );
+    assert!(stdout(&queued).contains("queued 10 THRY"));
+
+    let worked = run_faucet(&["work", faucet_path]);
+    assert_eq!(
+        worked.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&worked),
+        stderr(&worked)
+    );
+    assert!(stdout(&worked).contains("included"));
+    assert!(stdout(&worked).contains("queue empty"));
+
+    let other_rpc = NodeConfig::load(&network.nodes[3].config())
+        .unwrap()
+        .rpc_listen
+        .unwrap();
+    let account = chain_node::client::RpcClient { address: other_rpc }
+        .call("account", &serde_json::json!({ "address": recipient_text }))
+        .unwrap();
+    assert_eq!(account["balance"], "10000000000");
+
+    // The same Discord identity cannot take another claim that UTC day.
+    let second_address = chain_text::format_address(&chain_types::Address::from_bytes([89; 32]));
+    let capped = run_faucet(&["request", faucet_path, "discord-user-1", &second_address]);
+    assert_eq!(capped.status.code(), Some(0));
+    assert!(stdout(&capped).contains("user reached today's limit"));
 }
 
 /// The spec's halt runbook, run: a network loses too many validators to commit,
