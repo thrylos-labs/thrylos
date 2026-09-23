@@ -10,9 +10,13 @@
 //!   canonical set for the height, never keys or power the certificate
 //!   supplies;
 //! - no signer is counted twice;
-//! - every signature verifies, as that validator's vote for exactly the
-//!   height, round and value the certificate is for;
-//! - and the signers' voting power clears the threshold.
+//! - the signers' voting power clears the threshold;
+//! - and every signature verifies, as that validator's vote for exactly the
+//!   height, round and value the certificate is for.
+//!
+//! In that order, deliberately: the first three are integer work, the last
+//! is a pairing per signer, so a certificate that cannot possibly reach
+//! quorum is refused before any pairing runs.
 //!
 //! A vote's signed bytes include its validator's address
 //! ([`ConsensusVote`]), so a signature cannot be attributed to a different
@@ -90,15 +94,39 @@ fn check(
     threshold: ThresholdParam,
     entries: &[Entry<'_>],
 ) -> Result<(), Fault> {
+    // Everything cheap first. A certificate that names a stranger, repeats a
+    // signer, or simply lacks the power for quorum is refused here without a
+    // single pairing, so presenting one costs an attacker an integer sum and
+    // costs this node the same — not one signature verification per signer
+    // claimed. Nothing here can accept: only the loop below can.
     let mut seen = BTreeSet::new();
+    let mut signers = Vec::with_capacity(entries.len());
     let mut signed: VotingPower = 0;
-    for (index, entry) in entries.iter().enumerate() {
+    for entry in entries {
         let Some(validator) = set.get_by_address(entry.address) else {
             return Err(Fault::Unknown(*entry.address));
         };
         if !seen.insert(*entry.address) {
             return Err(Fault::Duplicate(*entry.address));
         }
+        let added = validator.voting_power();
+        signed = signed
+            .checked_add(added)
+            .ok_or(Fault::Overflow { signed, added })?;
+        signers.push(validator);
+    }
+
+    let total = set.total_voting_power();
+    if !threshold.is_met(signed, total) {
+        return Err(Fault::NotEnough {
+            signed,
+            total,
+            expected: power_needed(threshold, total),
+        });
+    }
+
+    // Only a certificate that could be a quorum reaches the expensive part.
+    for (index, (entry, validator)) in entries.iter().zip(signers).enumerate() {
         let vote = ConsensusVote {
             chain_id,
             height,
@@ -113,19 +141,6 @@ fn check(
         if verify_aggregate(&[validator.public_key()], &bytes, DST_VOTE, entry.signature).is_err() {
             return Err(Fault::BadSignature(index));
         }
-        let added = validator.voting_power();
-        signed = signed
-            .checked_add(added)
-            .ok_or(Fault::Overflow { signed, added })?;
-    }
-
-    let total = set.total_voting_power();
-    if !threshold.is_met(signed, total) {
-        return Err(Fault::NotEnough {
-            signed,
-            total,
-            expected: power_needed(threshold, total),
-        });
     }
     Ok(())
 }
@@ -466,6 +481,53 @@ mod tests {
             CHAIN
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_certificate_short_of_quorum_is_refused_before_any_signature_is_checked() {
+        let k = keyed(&[1, 1, 1, 1]);
+        let set = set_of(&k);
+
+        // Two of four is short of quorum, and both signatures are forged
+        // (validator 3's key signing as validators 0 and 1). Checking
+        // signatures first would name the first forgery; refusing on power
+        // first names the shortfall — which is only possible if no pairing
+        // ran, since running one would have failed.
+        let mut cert = commit(&[&k[0], &k[1]]);
+        for (slot, victim) in cert.commit_signatures.iter_mut().zip([&k[0], &k[1]]) {
+            slot.signature = sign(
+                &k[3],
+                &victim.address,
+                HEIGHT,
+                round(),
+                NilOrVal::Val(value()),
+                VoteType::Precommit,
+            );
+        }
+        assert!(matches!(
+            verify_commit_certificate(&cert, &set, params(), CHAIN),
+            Err(CertificateError::NotEnoughVotingPower {
+                signed: 2,
+                total: 4,
+                expected: 3
+            })
+        ));
+
+        // The same forgeries in a certificate that does reach quorum are
+        // still caught, and by signature: the cheap check only ever refuses.
+        let mut quorum = commit(&[&k[0], &k[1], &k[2]]);
+        quorum.commit_signatures[0].signature = sign(
+            &k[3],
+            &k[0].address,
+            HEIGHT,
+            round(),
+            NilOrVal::Val(value()),
+            VoteType::Precommit,
+        );
+        assert!(matches!(
+            verify_commit_certificate(&quorum, &set, params(), CHAIN),
+            Err(CertificateError::InvalidCommitSignature(_))
+        ));
     }
 
     #[test]

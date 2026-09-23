@@ -277,7 +277,12 @@ impl Decode for BlockTransactions {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
 
     use chain_types::{
         ChainId, GasAmount, GasPrice, MoveCall, PublicKey, SequenceNumber, Signature,

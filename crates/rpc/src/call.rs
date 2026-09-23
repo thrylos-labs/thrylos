@@ -331,6 +331,12 @@ fn to_bytes(value: &Value) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
     use chain_types::Encode;
 
     use super::*;

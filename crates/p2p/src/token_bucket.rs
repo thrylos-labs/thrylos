@@ -45,11 +45,12 @@ impl TokenBucket {
     /// succeeded; on failure, no tokens are spent.
     pub fn try_consume(&mut self, amount: u64, now: Instant) -> bool {
         self.refill(now);
-        if self.tokens >= amount {
-            self.tokens -= amount;
-            true
-        } else {
-            false
+        match self.tokens.checked_sub(amount) {
+            Some(left) => {
+                self.tokens = left;
+                true
+            }
+            None => false,
         }
     }
 

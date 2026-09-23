@@ -3,11 +3,11 @@
 
 /// `bytes` as lowercase hex.
 pub fn encode(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+        // A nibble is always below 16, so `from_digit` always answers.
+        out.extend(char::from_digit(u32::from(byte >> 4), 16));
+        out.extend(char::from_digit(u32::from(byte & 0x0f), 16));
     }
     out
 }
@@ -33,12 +33,10 @@ impl core::fmt::Display for HexError {
 impl std::error::Error for HexError {}
 
 fn digit(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    // ASCII-only: `char::from(u8)` maps a byte above 0x7f to a non-digit.
+    char::from(byte)
+        .to_digit(16)
+        .and_then(|value| u8::try_from(value).ok())
 }
 
 /// The bytes `text` spells, with or without a `0x` prefix.
@@ -62,6 +60,12 @@ pub fn decode(text: &str) -> Result<Vec<u8>, HexError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
+
     use super::*;
 
     #[test]

@@ -11,7 +11,11 @@ description = "Authenticated transport and bounded ingress"
 # (`[lints] workspace = true`), not that table itself: this crate's
 # failure mode is "Halt via DoS" (a local crash/hang), not "Fork", so
 # panics still matter (denied below) but the fork-risk-specific
-# arithmetic/float-determinism rules do not apply. (`disallowed_methods`
+# integer-division and float-determinism rules do not apply.
+# `arithmetic_side_effects` is kept, though, for the same DoS reason as
+# the rest: release builds have overflow checks on, so an unchecked
+# overflow on peer-influenced numbers is a remotely triggerable panic.
+# (`disallowed_methods`
 # is a separate case — see `clippy.toml`'s comment and `src/lib.rs`'s
 # crate-level `#![allow(clippy::disallowed_methods)]`: that lint fires
 # workspace-wide regardless of this table, so this crate overrides it
@@ -24,6 +28,7 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
 
 [dependencies]
 chain-consensus = { path = "../consensus", version = "0.1.0" }
