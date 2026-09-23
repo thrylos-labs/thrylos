@@ -351,6 +351,11 @@ fn read_request(stream: &mut TcpStream, max_body: usize) -> Result<Vec<u8>, Opti
     if parts.next().is_some() || !matches!(version, Some("HTTP/1.1" | "HTTP/1.0")) {
         return Err(Some(http(400, "Bad Request")));
     }
+    if method == Some("OPTIONS") {
+        // A browser's CORS preflight for the POST below; this RPC is
+        // already fully public and unauthenticated, so any origin may ask.
+        return Err(Some(http(204, "No Content")));
+    }
     if method != Some("POST") {
         return Err(Some(http(405, "Method Not Allowed")));
     }
@@ -418,9 +423,14 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, reason: &str, body: &[u8]) {
+    // This RPC is already fully public and unauthenticated (anyone can
+    // already call it directly), so allowing every browser origin adds no
+    // capability — it only lets browser JS call it without a backend proxy.
     let head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         Connection: close\r\n{}\r\n",
+         Connection: close\r\nAccess-Control-Allow-Origin: *\r\n\
+         Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type\r\n{}\r\n",
         body.len(),
         if status == 405 { "Allow: POST\r\n" } else { "" }
     );

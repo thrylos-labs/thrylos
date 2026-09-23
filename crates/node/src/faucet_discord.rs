@@ -184,15 +184,18 @@ fn record_message(record: &RequestRecord) -> String {
             format!("Request `{}` is queued for {}.", record.id, record.address)
         }
         RequestStatus::Prepared { hash, .. } => format!(
-            "Request `{}` is processing. Transaction: `{hash}`.",
-            record.id
+            "Request `{}` for {} is processing. Transaction: `{hash}`.",
+            record.id, record.address
         ),
         RequestStatus::Included { hash, height } => format!(
-            "Request `{}` succeeded in block {height}. Transaction: `{hash}`.",
-            record.id
+            "Request `{}` for {} succeeded in block {height}. Transaction: `{hash}`.",
+            record.id, record.address
         ),
         RequestStatus::Failed { message } => {
-            format!("Request `{}` failed: {message}", record.id)
+            format!(
+                "Request `{}` for {} failed: {message}",
+                record.id, record.address
+            )
         }
     }
 }
