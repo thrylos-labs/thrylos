@@ -1,0 +1,16 @@
+# Serves the thrylos.org landing page (deploy/site) on loopback; the Cloudflare
+# Tunnel publishes it. Deployed with scripts/deploy-site.sh.
+[Unit]
+Description=Thrylos landing page (thrylos.org)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/thrylos-site
+ExecStart=/usr/bin/python3 -m http.server 8084 --bind 127.0.0.1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
