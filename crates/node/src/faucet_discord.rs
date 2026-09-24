@@ -127,6 +127,28 @@ fn command(faucet: &mut Faucet, interaction: &Value, day: u64) -> DiscordRespons
     }
 }
 
+/// Milliseconds from the Unix epoch to Discord's own, 2015-01-01.
+const DISCORD_EPOCH_MS: u64 = 1_420_070_400_000;
+
+/// The UTC day (days since the Unix epoch) a Discord account was created,
+/// read out of its snowflake ID: the top bits are milliseconds since
+/// [`DISCORD_EPOCH_MS`]. `None` if `user_id` is not a snowflake.
+fn account_creation_day(user_id: &str) -> Option<u64> {
+    let id: u64 = user_id.parse().ok()?;
+    let created_ms = (id >> 22).checked_add(DISCORD_EPOCH_MS)?;
+    created_ms.checked_div(86_400_000)
+}
+
+/// Whether the account is at least `min_days` old on `day`. An ID that is
+/// not a snowflake is never old enough: Discord does not send those.
+fn old_enough(user_id: &str, day: u64, min_days: u32) -> bool {
+    if min_days == 0 {
+        return true;
+    }
+    account_creation_day(user_id)
+        .is_some_and(|created| created.saturating_add(u64::from(min_days)) <= day)
+}
+
 fn faucet_command(
     faucet: &mut Faucet,
     interaction: &Value,
@@ -147,6 +169,12 @@ fn faucet_command(
         Ok(address) => address,
         Err(error) => return message(&format!("That address is not valid: {error}")),
     };
+    let min_days = faucet.config().min_account_age_days;
+    if !old_enough(user_id, day, min_days) {
+        return message(&format!(
+            "The faucet is only open to Discord accounts at least {min_days} days old, to stop one person farming many new ones. Nothing was queued."
+        ));
+    }
     let request = FaucetRequest {
         id: request_id,
         user_id,
@@ -248,6 +276,10 @@ mod tests {
 
     use super::*;
 
+    /// A Discord user ID from 2015: an old account. And a day well after it.
+    const OLD_ACCOUNT: &str = "80351110224678912";
+    const TODAY: u64 = 20_000;
+
     fn signed(key: &SigningKey, timestamp: &str, body: &[u8]) -> String {
         let mut message = timestamp.as_bytes().to_vec();
         message.extend_from_slice(body);
@@ -315,7 +347,7 @@ mod tests {
         let body = serde_json::to_vec(&json!({
             "id": "interaction-1",
             "type": 2,
-            "member": { "user": { "id": "discord-1" } },
+            "member": { "user": { "id": OLD_ACCOUNT } },
             "data": {
                 "name": "faucet",
                 "options": [{ "name": "address", "type": 3, "value": address }]
@@ -329,7 +361,7 @@ mod tests {
             Some(&signature),
             Some("123"),
             &body,
-            9,
+            TODAY,
         );
         assert_eq!(answer.status, 200);
         let value: Value = serde_json::from_slice(&answer.body).unwrap();
@@ -346,12 +378,64 @@ mod tests {
             Some(&signature),
             Some("123"),
             &body,
-            9,
+            TODAY,
         );
         assert_eq!(again.status, 200);
         assert_eq!(
             faucet.request("interaction-1").unwrap().status,
             RequestStatus::Queued
         );
+    }
+
+    /// The snowflake for an account created at `days` days after the Unix epoch.
+    fn snowflake_created_on(day: u64) -> String {
+        let ms = day
+            .saturating_mul(86_400_000)
+            .saturating_sub(DISCORD_EPOCH_MS);
+        (ms << 22).to_string()
+    }
+
+    #[test]
+    fn an_account_is_old_enough_only_after_the_minimum_age_and_a_bad_id_never_is() {
+        let created = 20_000;
+        let id = snowflake_created_on(created);
+        assert_eq!(account_creation_day(&id), Some(created));
+        assert!(!old_enough(&id, created + 6, 7), "six days is too young");
+        assert!(old_enough(&id, created + 7, 7), "seven days is enough");
+        assert!(!old_enough(&id, created - 1, 7), "not born yet");
+        assert!(old_enough("not-a-snowflake", 0, 0), "the gate can be off");
+        assert!(!old_enough("not-a-snowflake", TODAY, 7));
+    }
+
+    #[test]
+    fn a_brand_new_account_is_turned_away_and_nothing_is_queued() {
+        let (_parent, mut faucet) = faucet();
+        let key = SigningKey::from_bytes(&[8; 32]);
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let body = serde_json::to_vec(&json!({
+            "id": "interaction-new",
+            "type": 2,
+            "member": { "user": { "id": snowflake_created_on(TODAY - 1) } },
+            "data": {
+                "name": "faucet",
+                "options": [{ "name": "address", "type": 3, "value": address }]
+            }
+        }))
+        .unwrap();
+        let signature = signed(&key, "123", &body);
+        let answer = handle_interaction(
+            &mut faucet,
+            &key.verifying_key(),
+            Some(&signature),
+            Some("123"),
+            &body,
+            TODAY,
+        );
+        let value: Value = serde_json::from_slice(&answer.body).unwrap();
+        assert!(value["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("days old"));
+        assert!(faucet.request("interaction-new").is_none());
     }
 }

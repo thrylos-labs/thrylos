@@ -166,7 +166,7 @@ fn a_real_faucet_command_over_the_wire_is_queued_and_a_bad_signature_is_refused(
     let interaction = json!({
         "id": "wire-test-1",
         "type": 2,
-        "member": { "user": { "id": "discord-user-over-the-wire" } },
+        "member": { "user": { "id": "80351110224678912" } },
         "data": {
             "name": "faucet",
             "options": [{ "name": "address", "value": recipient }]

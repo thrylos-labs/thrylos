@@ -86,8 +86,19 @@ pub struct FaucetConfig {
     pub per_address_daily_claims: u32,
     pub global_daily_claims: u32,
     pub max_pending: usize,
+    /// How old, in whole days, a Discord account must be to claim. Discord
+    /// user IDs are snowflakes that carry their creation time, so this needs
+    /// no lookup and cannot be faked by the requester. It is the cheap
+    /// defence against one person farming many fresh accounts past the
+    /// per-user cap; `0` turns it off.
+    #[serde(default = "default_min_account_age_days")]
+    pub min_account_age_days: u32,
     /// Discord application public key, as 64 hex digits. `null` until set.
     pub discord_public_key: Option<String>,
+}
+
+const fn default_min_account_age_days() -> u32 {
+    7
 }
 
 impl Default for FaucetConfig {
@@ -99,6 +110,7 @@ impl Default for FaucetConfig {
             per_address_daily_claims: 1,
             global_daily_claims: 100,
             max_pending: 1_000,
+            min_account_age_days: default_min_account_age_days(),
             discord_public_key: None,
         }
     }
