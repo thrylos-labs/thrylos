@@ -103,6 +103,52 @@ jobs:
           name: fuzz-${{ matrix.target }}-${{ github.sha }}
           path: fuzz/artifacts/${{ matrix.target }}
 
+  # Known-vulnerability scan of the locked dependency graph. The ignore list
+  # mirrors deny.toml's `[advisories] ignore` (each is explained there); keep
+  # the two in step.
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_AUDIT_VERSION: 0.22.2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ env.CARGO_AUDIT_VERSION }}
+      - name: Install cargo-audit
+        run: |
+          echo "${{ runner.tool_cache }}/cargo-audit/bin" >> "$GITHUB_PATH"
+          cargo install --root "${{ runner.tool_cache }}/cargo-audit" \
+            --version "$CARGO_AUDIT_VERSION" cargo-audit --locked
+      - name: Audit Cargo.lock
+        run: >-
+          cargo audit
+          --ignore RUSTSEC-2024-0384 --ignore RUSTSEC-2024-0320
+          --ignore RUSTSEC-2026-0097 --ignore RUSTSEC-2026-0118
+          --ignore RUSTSEC-2026-0119 --ignore RUSTSEC-2024-0436
+
+  # The release script must produce the same bytes from the same commit
+  # wherever it is checked out. Builds twice, in two different directories,
+  # and compares checksums.
+  reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: a
+      - uses: actions/checkout@v4
+        with:
+          path: b
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build in two directories
+        run: |
+          (cd a && scripts/release.sh > ../a.log)
+          (cd b && scripts/release.sh > ../b.log)
+      - name: Compare
+        run: diff a/target/release-artifacts/SHA256SUMS b/target/release-artifacts/SHA256SUMS
+
   deny:
     runs-on: ubuntu-latest
     steps:
