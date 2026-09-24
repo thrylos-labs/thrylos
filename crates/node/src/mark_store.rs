@@ -38,6 +38,10 @@ use chain_types::{BlockHeight, Round};
 
 use crate::atomic::write_atomic;
 
+/// What a signer that has never signed starts from: height 0, which no block
+/// has, so it refuses nothing real.
+const FIRST_MARK: HighWaterMark = HighWaterMark::new(BlockHeight(0), Round(0), Step::Propose);
+
 /// The first format: no digest.
 const MAGIC_V1: &[u8; 8] = b"THRYMARK";
 /// The current format: a digest of what was signed at the mark.
@@ -56,6 +60,12 @@ pub enum MarkError {
     /// Another process holds this mark's lock: another signer is running
     /// against the same mark file.
     Locked,
+    /// The mark file is gone but its lock file shows one was made: the
+    /// signer has run here before, so "no mark" would be a claim that it has
+    /// never signed, which may be false. Restore the file from a backup, or,
+    /// if the key really has never signed anywhere, delete the `.lock` file
+    /// too and start again.
+    Missing,
     /// Asked to persist a mark below the one already on disk.
     Regression {
         on_disk: HighWaterMark,
@@ -67,6 +77,9 @@ impl core::fmt::Display for MarkError {
         match self {
             Self::Io(error) => write!(f, "signer mark i/o: {error}"),
             Self::Corrupt => f.write_str("the signer's mark file is damaged"),
+            Self::Missing => f.write_str(
+                "the signer's mark file is missing although the signer has run here before; refusing to start as if it had never signed (restore the file, or delete the .lock file beside it only if this key has never signed)",
+            ),
             Self::Locked => f.write_str(
                 "another signer is already running against this mark file; refusing to start a second",
             ),
@@ -179,20 +192,34 @@ impl FileMarkStore {
     pub fn open(path: &Path) -> Result<Self, MarkError> {
         let mut lock_path = path.as_os_str().to_owned();
         lock_path.push(".lock");
+        let lock_path = PathBuf::from(lock_path);
+        let signed_here_before = lock_path.exists();
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .mode(0o600)
-            .open(PathBuf::from(lock_path))?;
+            .open(&lock_path)?;
         match lock.try_lock() {
-            Ok(()) => Ok(Self {
-                path: path.to_path_buf(),
-                _lock: lock,
-            }),
-            Err(TryLockError::WouldBlock) => Err(MarkError::Locked),
-            Err(TryLockError::Error(error)) => Err(error.into()),
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(MarkError::Locked),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
         }
+        let mut store = Self {
+            path: path.to_path_buf(),
+            _lock: lock,
+        };
+        if !path.exists() {
+            // A deleted mark file must not read as "never signed". The
+            // first start writes a mark at the very beginning, so from then
+            // on the file always exists and its absence means something
+            // removed it.
+            if signed_here_before {
+                return Err(MarkError::Missing);
+            }
+            store.write(FIRST_MARK, None)?;
+        }
+        Ok(store)
     }
 }
 
@@ -266,9 +293,31 @@ mod tests {
     }
 
     #[test]
-    fn a_store_that_has_never_persisted_has_no_mark() {
+    fn a_store_that_has_never_signed_starts_at_the_first_mark_below_every_real_height() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(store(&dir).0.load().unwrap(), None);
+        assert_eq!(
+            store(&dir).0.load().unwrap(),
+            Some(mark(0, 0, Step::Propose))
+        );
+    }
+
+    #[test]
+    fn a_deleted_mark_file_is_refused_not_read_as_never_signed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = store(&dir);
+        s.persist(mark(9, 0, Step::Prevote)).unwrap();
+        drop(s);
+        fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            FileMarkStore::open(&path),
+            Err(MarkError::Missing)
+        ));
+
+        // Removing the lock file too, knowingly, lets it start afresh.
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        fs::remove_file(lock).unwrap();
+        assert!(FileMarkStore::open(&path).is_ok());
     }
 
     #[test]

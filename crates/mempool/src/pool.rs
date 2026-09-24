@@ -355,14 +355,19 @@ impl<A: AccountView> Mempool<A> {
             .pending
             .iter()
             .filter_map(|(sender, by_sequence)| {
-                let (sequence_number, tx) = by_sequence.iter().next()?;
+                // Only a transaction the account can run *now*: its next
+                // sequence number. A sender whose lowest pending number is
+                // further ahead has a gap, and offering that transaction
+                // would spend proposal gas on one the executor refuses.
+                let sequence_number = self.accounts.next_sequence_number(sender);
+                let tx = by_sequence.get(&sequence_number)?;
                 if tx.body.max_fee_per_gas.0 < base_fee {
                     return None;
                 }
                 Some(RankedSlot {
                     fee: tx.body.max_fee_per_gas.0,
                     sender: *sender,
-                    sequence_number: *sequence_number,
+                    sequence_number,
                 })
             })
             .collect();
@@ -378,13 +383,15 @@ impl<A: AccountView> Mempool<A> {
             };
             selected.push(tx.clone());
 
-            if let Some(next_sequence) = by_sequence.keys().find(|s| **s > slot.sequence_number) {
-                if let Some(next_tx) = by_sequence.get(next_sequence) {
+            // The follower is only ever the very next number: a hole ends
+            // that sender's run for this block.
+            if let Some(next_sequence) = slot.sequence_number.0.checked_add(1).map(SequenceNumber) {
+                if let Some(next_tx) = by_sequence.get(&next_sequence) {
                     if next_tx.body.max_fee_per_gas.0 >= base_fee {
                         ready.push(RankedSlot {
                             fee: next_tx.body.max_fee_per_gas.0,
                             sender: slot.sender,
-                            sequence_number: *next_sequence,
+                            sequence_number: next_sequence,
                         });
                     }
                 }
@@ -881,6 +888,29 @@ mod tests {
         );
         assert!(pool.contains(&mid_sender, SequenceNumber(0)));
         assert!(pool.contains(&high_sender, SequenceNumber(0)));
+    }
+
+    #[test]
+    fn a_sender_with_a_gap_is_never_offered_for_a_block() {
+        let chain_id = ChainId(1);
+        let mut cfg = config(chain_id);
+        cfg.max_pending_per_sender = 5;
+        let gapped = signed_tx(40, chain_id, 2, 900);
+        let after_hole = signed_tx(41, chain_id, 0, 1);
+        let follower = signed_tx(41, chain_id, 2, 800);
+        let (gapped_sender, runner) = (gapped.sender_address(), after_hole.sender_address());
+        let accounts = MockAccounts::new()
+            .with_balance(gapped_sender, u128::MAX)
+            .with_balance(runner, u128::MAX);
+        let mut pool = Mempool::new(cfg, accounts);
+        pool.admit(gapped, BlockHeight(0)).unwrap();
+        pool.admit(after_hole, BlockHeight(0)).unwrap();
+        pool.admit(follower, BlockHeight(0)).unwrap();
+
+        let offered = pool.candidate_transactions(10, 1);
+        assert_eq!(offered.len(), 1, "one that can run; not the gapped ones");
+        assert_eq!(offered[0].sender_address(), runner);
+        assert_eq!(offered[0].body.sequence_number, SequenceNumber(0));
     }
 
     #[test]

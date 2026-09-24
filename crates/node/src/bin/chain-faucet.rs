@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use chain_node::connection_guard::{self, Slots, MAX_CONCURRENT};
 use chain_node::faucet::{
     current_utc_day, execute_prepared, transfer_context, EnqueueResult, Faucet, FaucetError,
     FaucetRequest, NextWork, WorkResult,
@@ -238,7 +239,10 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
+fn read_request(
+    stream: &mut TcpStream,
+    deadline: Option<Instant>,
+) -> Result<HttpRequest, &'static str> {
     let mut bytes = Vec::with_capacity(2_048);
     let mut chunk = [0u8; 2_048];
     let header_end = loop {
@@ -248,6 +252,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
         if bytes.len() >= MAX_HEADER_BYTES {
             return Err("Request Header Fields Too Large");
         }
+        connection_guard::budget(stream, deadline, IO_TIMEOUT).map_err(|_| "Request Timeout")?;
         match stream.read(&mut chunk) {
             Ok(0) | Err(_) => return Err("Bad Request"),
             Ok(count) => bytes.extend_from_slice(chunk.get(..count).unwrap_or_default()),
@@ -277,6 +282,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, &'static str> {
     }
     let body_start = header_end.saturating_add(4);
     while bytes.len().saturating_sub(body_start) < content_length {
+        connection_guard::budget(stream, deadline, IO_TIMEOUT).map_err(|_| "Request Timeout")?;
         match stream.read(&mut chunk) {
             Ok(0) | Err(_) => return Err("Bad Request"),
             Ok(count) => bytes.extend_from_slice(chunk.get(..count).unwrap_or_default()),
@@ -315,7 +321,7 @@ fn serve_one(mut stream: TcpStream, faucet: &Mutex<Faucet>, key: &ed25519_dalek:
     {
         return;
     }
-    let request = match read_request(&mut stream) {
+    let request = match read_request(&mut stream, connection_guard::deadline()) {
         Ok(request) => request,
         Err(reason) => {
             write_response(
@@ -393,10 +399,25 @@ fn run_server(directory: &str, listen: SocketAddr) -> Result<(), FaucetError> {
         .map_err(|error| FaucetError::Setup(error.to_string()))?;
     println!("Discord faucet listening on http://{address}");
     println!("Keep this address private; expose it only through an HTTPS reverse proxy.");
+    let slots = Slots::default();
     for connection in listener.incoming() {
         match connection {
             Ok(stream) => match stream.peer_addr() {
-                Ok(peer) if is_local(peer.ip()) => serve_one(stream, &faucet, &key),
+                Ok(peer) if is_local(peer.ip()) => {
+                    // Concurrent, and bounded: past the limit the connection
+                    // is simply closed, so a slow client cannot hold up the
+                    // rest and a flood cannot start unlimited threads.
+                    let Some(slot) = slots.take(MAX_CONCURRENT) else {
+                        continue;
+                    };
+                    let faucet = Arc::clone(&faucet);
+                    let _ = thread::Builder::new()
+                        .name("faucet-conn".into())
+                        .spawn(move || {
+                            let _slot = slot;
+                            serve_one(stream, &faucet, &key);
+                        });
+                }
                 _ => {}
             },
             Err(error) => eprintln!("faucet connection failed: {error}"),

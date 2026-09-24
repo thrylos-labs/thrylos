@@ -13,10 +13,13 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use chain_node::client::{ClientError, RpcClient};
 use chain_node::config::NodeConfig;
+use chain_node::connection_guard::{self, Slots, MAX_CONCURRENT};
 use chain_node::devnet::nodes_in;
 use chain_node::health;
 use serde_json::{json, Value};
@@ -243,7 +246,7 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request, HttpFailure> {
+fn read_request(stream: &mut TcpStream, deadline: Option<Instant>) -> Result<Request, HttpFailure> {
     let mut buffer = Vec::with_capacity(2_048);
     let mut chunk = [0u8; 2_048];
     let header_end = loop {
@@ -253,6 +256,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, HttpFailure> {
         if buffer.len() >= MAX_HEADER_BYTES {
             return Err(http_failure(431, "Request Header Fields Too Large"));
         }
+        connection_guard::budget(stream, deadline, IO_TIMEOUT)
+            .map_err(|_| http_failure(408, "Request Timeout"))?;
         match stream.read(&mut chunk) {
             Ok(0) | Err(_) => return Err(http_failure(400, "Bad Request")),
             Ok(count) => buffer.extend_from_slice(chunk.get(..count).unwrap_or_default()),
@@ -319,6 +324,8 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, HttpFailure> {
     }
     while body.len() < length {
         let wanted = length.saturating_sub(body.len()).min(chunk.len());
+        connection_guard::budget(stream, deadline, IO_TIMEOUT)
+            .map_err(|_| http_failure(408, "Request Timeout"))?;
         let read = stream
             .read(chunk.get_mut(..wanted).unwrap_or_default())
             .map_err(|_| http_failure(400, "Bad Request"))?;
@@ -446,21 +453,35 @@ fn serve(network: &Path, port: u16) -> Result<(), ExplorerError> {
         "reading {} local validator RPCs; Ctrl-C stops the explorer",
         explorer.nodes.len()
     );
+    let explorer = Arc::new(explorer);
+    let slots = Slots::default();
     for connection in listener.incoming() {
-        let mut stream = match connection {
+        let stream = match connection {
             Ok(stream) => stream,
             Err(error) => {
                 eprintln!("explorer connection failed: {error}");
                 continue;
             }
         };
-        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-        let response = match read_request(&mut stream) {
-            Ok(request) => route(&explorer, request),
-            Err(error) => Response::http_failure(error),
+        // Concurrent, and bounded: past the limit the connection is closed,
+        // so one slow client cannot hold up the rest.
+        let Some(slot) = slots.take(MAX_CONCURRENT) else {
+            continue;
         };
-        write_response(&mut stream, response);
+        let explorer = Arc::clone(&explorer);
+        let _ = thread::Builder::new()
+            .name("explorer-conn".into())
+            .spawn(move || {
+                let _slot = slot;
+                let mut stream = stream;
+                let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+                let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+                let response = match read_request(&mut stream, connection_guard::deadline()) {
+                    Ok(request) => route(&explorer, request),
+                    Err(error) => Response::http_failure(error),
+                };
+                write_response(&mut stream, response);
+            });
     }
     Ok(())
 }

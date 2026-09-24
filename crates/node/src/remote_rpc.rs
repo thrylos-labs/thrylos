@@ -14,7 +14,7 @@
 // as `null`, which every caller here already checks for.
 #![allow(clippy::indexing_slicing)]
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -23,7 +23,7 @@ use rustls::pki_types::{ServerName, TrustAnchor};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use serde_json::{json, Value};
 
-use crate::client::{ClientError, RpcCall};
+use crate::client::{read_capped, ClientError, RpcCall};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -133,7 +133,7 @@ impl Endpoint {
         let mut stream = self.connect()?;
         stream.write_all(request.as_bytes()).map_err(transport)?;
         let mut text = String::new();
-        stream.read_to_string(&mut text).map_err(transport)?;
+        read_capped(&mut stream, &mut text)?.map_err(transport)?;
         Ok(text)
     }
 
@@ -156,7 +156,7 @@ impl Endpoint {
         let mut tls = StreamOwned::new(connection, stream);
         tls.write_all(request.as_bytes()).map_err(transport)?;
         let mut text = String::new();
-        match tls.read_to_string(&mut text) {
+        match read_capped(&mut tls, &mut text)? {
             Ok(_) => {}
             // A server that answers `Connection: close` may end the TLS
             // session without a `close_notify`; the response bytes already

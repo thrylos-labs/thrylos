@@ -10,7 +10,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    clippy::arithmetic_side_effects
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_methods
 )]
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -207,4 +208,59 @@ fn a_real_faucet_command_over_the_wire_is_queued_and_a_bad_signature_is_refused(
     );
     assert!(status.starts_with("HTTP/1.1 401"), "{status}");
     assert_eq!(body, Value::Null);
+}
+
+#[test]
+fn silent_and_dripping_clients_do_not_stop_a_real_request_being_answered() {
+    // The listener used to serve one connection at a time, so a client that
+    // said nothing (or sent a byte inside every timeout) held everyone up,
+    // and Discord gives an interaction only seconds to be answered.
+    let parent = tempfile::tempdir().unwrap();
+    let dir = parent.path().join("faucet");
+    let discord_key = SigningKey::from_bytes(&[11; 32]);
+    init_faucet(&dir, &discord_key);
+    let faucet = start(&dir);
+
+    let _silent: Vec<TcpStream> = (0..4)
+        .map(|_| TcpStream::connect(&faucet.address).unwrap())
+        .collect();
+    let mut dripper = TcpStream::connect(&faucet.address).unwrap();
+    dripper.write_all(b"POST / HTTP/1.1\r\nContent-Le").unwrap();
+
+    let started = std::time::Instant::now();
+    let (status, body) = post_interaction(
+        &faucet.address,
+        &discord_key,
+        "1700000000",
+        &json!({ "type": 1 }),
+        true,
+    );
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    assert_eq!(body["type"], 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "answered after {:?}, behind the slow clients",
+        started.elapsed()
+    );
+
+    // And the dripper is cut off at the whole-request deadline, however
+    // steadily it feeds bytes in.
+    let began = std::time::Instant::now();
+    let mut cut_off = false;
+    while began.elapsed() < Duration::from_secs(15) {
+        if dripper.write_all(b"x").is_err() {
+            cut_off = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let mut rest = Vec::new();
+    // (Refused with EINVAL on some systems once the peer has closed.)
+    let _ = dripper.set_read_timeout(Some(Duration::from_secs(1)));
+    let closed = dripper.read_to_end(&mut rest).is_ok();
+    assert!(
+        cut_off || closed,
+        "still being held after {:?}",
+        began.elapsed()
+    );
 }

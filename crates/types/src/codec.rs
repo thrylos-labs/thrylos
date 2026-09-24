@@ -199,6 +199,14 @@ impl<K: Decode + Ord, V: Decode> Decode for BTreeMap<K, V> {
         for _ in 0..len {
             let (key, used) = K::decode(slice_from(input, offset)?)?;
             offset = checked_add(offset, used)?;
+            // Canonical form: keys strictly ascending, exactly what `encode`
+            // writes. Accepting anything else would let two different byte
+            // strings decode to one value (a duplicate key silently
+            // overwriting an earlier one, or the same entries in another
+            // order), so a hash of the bytes would not identify the value.
+            if map.keys().next_back().is_some_and(|last| *last >= key) {
+                return Err(CodecError::InvalidValue);
+            }
             let (value, used) = V::decode(slice_from(input, offset)?)?;
             offset = checked_add(offset, used)?;
             map.insert(key, value);
@@ -258,5 +266,29 @@ mod tests {
         // len prefix (4 bytes) + first key immediately after.
         let (first_key, _) = u32::decode(&buf[4..]).unwrap();
         assert_eq!(first_key, 1);
+    }
+
+    #[test]
+    fn btreemap_refuses_keys_out_of_order_or_repeated() {
+        let entries = |pairs: &[(u32, u32)]| {
+            let mut buf = Vec::new();
+            u32::try_from(pairs.len()).unwrap().encode(&mut buf);
+            for (key, value) in pairs {
+                key.encode(&mut buf);
+                value.encode(&mut buf);
+            }
+            buf
+        };
+        assert!(decode_exact::<BTreeMap<u32, u32>>(&entries(&[(1, 10), (2, 20)])).is_ok());
+        assert_eq!(
+            decode_exact::<BTreeMap<u32, u32>>(&entries(&[(2, 20), (1, 10)])),
+            Err(CodecError::InvalidValue),
+            "out of order"
+        );
+        assert_eq!(
+            decode_exact::<BTreeMap<u32, u32>>(&entries(&[(1, 10), (1, 99)])),
+            Err(CodecError::InvalidValue),
+            "a repeated key"
+        );
     }
 }

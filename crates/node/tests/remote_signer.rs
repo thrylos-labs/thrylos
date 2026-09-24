@@ -194,7 +194,11 @@ fn a_wrong_local_credential_cannot_reach_the_signer() {
         Duration::from_secs(2),
     )
     .is_err());
-    assert_eq!(fixture.connect().high_water_mark(), None);
+    // A signer that has never signed starts at height 0, below every real one.
+    assert_eq!(
+        fixture.connect().high_water_mark(),
+        Some(position(0, Step::Propose))
+    );
 }
 
 #[test]

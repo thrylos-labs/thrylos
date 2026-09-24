@@ -117,6 +117,28 @@ fn transport(error: impl core::fmt::Display) -> ClientError {
     ClientError::Transport(error.to_string())
 }
 
+/// The most an RPC response is read to before the client gives up. A whole
+/// 4 MiB block in hex is 8 MiB, so this is twice that: room for any honest
+/// answer, and a bound on what a hostile or broken server can make the client
+/// hold in memory.
+pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Reads `reader` to its end into `text`, but not past [`MAX_RESPONSE_BYTES`].
+/// Returns the read's own error; a response that fills the whole allowance is
+/// [`ClientError::Transport`], not a truncated success.
+pub(crate) fn read_capped(
+    reader: impl Read,
+    text: &mut String,
+) -> Result<std::io::Result<usize>, ClientError> {
+    let result = reader.take(MAX_RESPONSE_BYTES).read_to_string(text);
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) >= MAX_RESPONSE_BYTES {
+        return Err(ClientError::Transport(format!(
+            "the RPC response is larger than {MAX_RESPONSE_BYTES} bytes"
+        )));
+    }
+    Ok(result)
+}
+
 /// A client of one node's RPC.
 #[derive(Debug, Clone, Copy)]
 pub struct RpcClient {
@@ -144,7 +166,7 @@ impl RpcClient {
         )
         .map_err(transport)?;
         let mut text = String::new();
-        stream.read_to_string(&mut text).map_err(transport)?;
+        read_capped(&mut stream, &mut text)?.map_err(transport)?;
         let (head, body) = text
             .split_once("\r\n\r\n")
             .ok_or_else(|| ClientError::Transport("no HTTP response".into()))?;
@@ -604,5 +626,34 @@ mod tests {
         for bad in [None, Some(""), Some("lots"), Some("-5"), Some("1.5")] {
             assert_eq!(balance_text(bad), "an unknown balance", "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_response_past_the_size_cap_is_an_error_not_held_in_memory() {
+        use std::io::{Read, Write};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n");
+            let chunk = vec![b'a'; 1024 * 1024];
+            // Well past the cap; the client stops reading at it.
+            for _ in 0..24 {
+                if stream.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        let result = RpcClient { address }.call("status", &serde_json::json!({}));
+        match result {
+            Err(ClientError::Transport(message)) => {
+                assert!(message.contains("larger than"), "{message}");
+            }
+            other => panic!("expected a size-cap error, got {other:?}"),
+        }
+        let _ = server.join();
     }
 }

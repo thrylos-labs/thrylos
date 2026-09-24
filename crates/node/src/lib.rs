@@ -54,6 +54,7 @@ pub mod client;
 pub mod clock;
 pub mod commit_log;
 pub mod config;
+pub mod connection_guard;
 pub mod devnet;
 pub mod disk;
 pub mod durable_engine;
