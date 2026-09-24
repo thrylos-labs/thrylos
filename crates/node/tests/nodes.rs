@@ -145,7 +145,7 @@ fn provision_full(root: &Path, advanced: &[u8], clients: &[ClientPlan]) -> Vec<P
             let key = SecretKey::key_gen(&[plan.seed; 32], &[]).unwrap();
             let credential = [plan.seed + 50; 32];
             private(&dir.join("signer.credential"), &credential);
-            let mut marks = FileMarkStore::open(&dir.join("signer.mark"));
+            let mut marks = FileMarkStore::open(&dir.join("signer.mark")).unwrap();
             if advanced.contains(&plan.seed) {
                 marks
                     .persist(HighWaterMark::new(

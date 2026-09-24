@@ -76,7 +76,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
     })?;
     let credential = SignerCredential::from_bytes(credential_array);
-    let signer = Signer::load(secret, FileMarkStore::open(&mark_path))?;
+    let signer = Signer::load(secret, FileMarkStore::open(&mark_path)?)?;
     let mut server = SignerServer::bind(&socket, credential, signer, Duration::from_secs(5))?;
     server.serve()?;
     Ok(())

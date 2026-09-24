@@ -342,8 +342,10 @@ impl Disk {
             return;
         };
         let opened = NodeDisk::open(dir.path()).unwrap();
+        // The old store holds the lock: let it go before the new one opens.
+        *self.mark.0.borrow_mut() = MarkBackend::Memory(InMemoryStore::new());
         *self.mark.0.borrow_mut() =
-            MarkBackend::Files(FileMarkStore::open(&dir.path().join("signer.mark")));
+            MarkBackend::Files(FileMarkStore::open(&dir.path().join("signer.mark")).unwrap());
         *self.signed.0.borrow_mut() = SignedBackend::Files(opened.signed);
         *self.storage.inner.borrow_mut() = StorageBackend::Files(opened.storage);
     }

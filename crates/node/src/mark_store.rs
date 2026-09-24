@@ -14,11 +14,23 @@
 //! refuse everything at that position, exactly as before; it is never read as
 //! damaged nor as absent, and the first signature after it writes the new form.
 //!
+//! **One signer per mark.** Opening the store takes an exclusive advisory lock
+//! (`flock`) on a sibling `.lock` file and keeps it until the store is
+//! dropped, so a second signer pointed at the same mark — a mistaken restart
+//! script, a stray old process — is refused at startup instead of racing the
+//! first: each would read the mark, find room, sign, and write, and two
+//! different messages could be signed at one position, which is the slashable
+//! act this file exists to prevent. The kernel drops the lock when the holder
+//! exits, however it exits, so a crash never leaves a stale one behind. (The
+//! lock is on its own file because the mark file itself is replaced by
+//! rename on every write.)
+//!
 //! **A damaged mark file is an error, not "no mark".** Reading it as absent
 //! would tell the signer it had never signed, which is the one thing it must
 //! never be told.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use chain_signer::{HighWaterMark, HighWaterMarkStore, MessageDigest, Step};
@@ -41,6 +53,9 @@ pub enum MarkError {
     Io(std::io::Error),
     /// The file is not a mark this crate wrote.
     Corrupt,
+    /// Another process holds this mark's lock: another signer is running
+    /// against the same mark file.
+    Locked,
     /// Asked to persist a mark below the one already on disk.
     Regression {
         on_disk: HighWaterMark,
@@ -52,6 +67,9 @@ impl core::fmt::Display for MarkError {
         match self {
             Self::Io(error) => write!(f, "signer mark i/o: {error}"),
             Self::Corrupt => f.write_str("the signer's mark file is damaged"),
+            Self::Locked => f.write_str(
+                "another signer is already running against this mark file; refusing to start a second",
+            ),
             Self::Regression { on_disk } => {
                 write!(f, "refusing to move the mark back from {on_disk:?}")
             }
@@ -150,13 +168,30 @@ fn decode(bytes: &[u8]) -> Result<Recorded, MarkError> {
 #[derive(Debug)]
 pub struct FileMarkStore {
     path: PathBuf,
+    /// Held for as long as the store lives; dropping it releases the lock.
+    _lock: File,
 }
 
 impl FileMarkStore {
-    /// The store at `path`. Nothing is read or written until it is used.
-    pub fn open(path: &Path) -> Self {
-        Self {
-            path: path.to_path_buf(),
+    /// The store at `path`, holding its exclusive lock. Nothing else is read
+    /// or written until it is used. [`MarkError::Locked`] if another store
+    /// on the same path is open, in this process or any other.
+    pub fn open(path: &Path) -> Result<Self, MarkError> {
+        let mut lock_path = path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(PathBuf::from(lock_path))?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Self {
+                path: path.to_path_buf(),
+                _lock: lock,
+            }),
+            Err(TryLockError::WouldBlock) => Err(MarkError::Locked),
+            Err(TryLockError::Error(error)) => Err(error.into()),
         }
     }
 }
@@ -227,7 +262,7 @@ mod tests {
 
     fn store(dir: &tempfile::TempDir) -> (FileMarkStore, PathBuf) {
         let path = dir.path().join("signer.mark");
-        (FileMarkStore::open(&path), path)
+        (FileMarkStore::open(&path).unwrap(), path)
     }
 
     #[test]
@@ -244,7 +279,7 @@ mod tests {
             let m = mark(u64::MAX, 7, step);
             s.persist(m).unwrap();
             drop(s);
-            assert_eq!(FileMarkStore::open(&path).load().unwrap(), Some(m));
+            assert_eq!(FileMarkStore::open(&path).unwrap().load().unwrap(), Some(m));
             assert_eq!(
                 fs::metadata(&path).unwrap().permissions().mode() & 0o777,
                 0o600
@@ -290,7 +325,7 @@ mod tests {
         s.persist_signed(mark(4, 0, Step::Prevote), [0xab; 32])
             .unwrap();
         drop(s);
-        let reopened = FileMarkStore::open(&path);
+        let reopened = FileMarkStore::open(&path).unwrap();
         assert_eq!(reopened.load().unwrap(), Some(mark(4, 0, Step::Prevote)));
         assert_eq!(reopened.load_digest().unwrap(), Some([0xab; 32]));
         assert_eq!(
@@ -299,9 +334,22 @@ mod tests {
         );
 
         // A mark that is later persisted alone brings no digest with it.
-        let mut s = FileMarkStore::open(&path);
+        drop(reopened);
+        let mut s = FileMarkStore::open(&path).unwrap();
         s.persist(mark(5, 0, Step::Propose)).unwrap();
         assert_eq!(s.load_digest().unwrap(), None);
+    }
+
+    #[test]
+    fn a_second_signer_on_the_same_mark_is_refused_until_the_first_lets_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, path) = store(&dir);
+        assert!(matches!(FileMarkStore::open(&path), Err(MarkError::Locked)));
+        drop(first);
+        assert!(
+            FileMarkStore::open(&path).is_ok(),
+            "released with the store"
+        );
     }
 
     #[test]
@@ -429,8 +477,9 @@ mod tests {
         fs::write(dir.path().join("signer.mark.tmp"), b"half a wri").unwrap();
         assert_eq!(s.load().unwrap(), Some(mark(3, 0, Step::Propose)));
         s.persist(mark(4, 0, Step::Propose)).unwrap();
+        drop(s);
         assert_eq!(
-            FileMarkStore::open(&path).load().unwrap(),
+            FileMarkStore::open(&path).unwrap().load().unwrap(),
             Some(mark(4, 0, Step::Propose))
         );
     }
