@@ -16,7 +16,9 @@
 //! - a header block of at most [`MAX_HEADER_BYTES`] and a body of at most
 //!   `max_body`, checked against the declared length before anything is read;
 //! - a time limit on every read and write, so a client that says nothing holds a
-//!   worker for that long and no longer;
+//!   worker for that long and no longer, and a limit on the whole request, so
+//!   one that sends a byte just inside each of those limits (a slowloris)
+//!   cannot hold a worker for hours either;
 //! - a queue of calls waiting for the node (the node answers on its own thread,
 //!   between the things it does), and when it is full the caller is told the node
 //!   is busy; and a time limit on the node's answer.
@@ -25,13 +27,17 @@
 //! `POST /` with a `Content-Length` and no chunked encoding, nothing else. A
 //! client that wants to send more opens another connection.
 
+// A request deadline is wall-clock I/O timing on a local socket. It never feeds
+// the state transition the `Instant::now` ban protects (see `clippy.toml`).
+#![allow(clippy::disallowed_methods)]
+
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::call::{failure, parse, respond, Call, Reply, RpcError};
 
@@ -53,6 +59,9 @@ pub struct ServerConfig {
     pub max_body: usize,
     /// How long a client may take over any one read or write.
     pub io_timeout: Duration,
+    /// How long a client may take to send the whole request, headers and
+    /// body together, however steadily it trickles them.
+    pub request_timeout: Duration,
     /// How long the node has to answer a call.
     pub reply_timeout: Duration,
 }
@@ -69,6 +78,7 @@ impl ServerConfig {
             // some JSON around it.
             max_body: 600 * 1024,
             io_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(10),
             reply_timeout: Duration::from_secs(10),
         }
     }
@@ -154,7 +164,10 @@ impl Server {
                 return Err(ServerError::InvalidConfig(name));
             }
         }
-        if config.io_timeout.is_zero() || config.reply_timeout.is_zero() {
+        if config.io_timeout.is_zero()
+            || config.request_timeout.is_zero()
+            || config.reply_timeout.is_zero()
+        {
             return Err(ServerError::InvalidConfig("timeouts"));
         }
         let listener = TcpListener::bind(config.listen)?;
@@ -285,7 +298,12 @@ fn serve(mut stream: TcpStream, calls: &SyncSender<Pending>, config: ServerConfi
     {
         return;
     }
-    let body = match read_request(&mut stream, config.max_body) {
+    let body = match read_request(
+        &mut stream,
+        config.max_body,
+        config.io_timeout,
+        Instant::now().checked_add(config.request_timeout),
+    ) {
         Ok(body) => body,
         // The client stopped talking or the connection broke: nothing to say.
         Err(None) => return,
@@ -323,7 +341,30 @@ fn ask_the_node(call: Call, calls: &SyncSender<Pending>, config: ServerConfig) -
 
 /// Reads one request and returns its body. `Err(None)` is a connection that
 /// gave out; `Err(Some(_))` is a request to refuse.
-fn read_request(stream: &mut TcpStream, max_body: usize) -> Result<Vec<u8>, Option<HttpError>> {
+///
+/// `deadline` is when the whole request must have arrived (`None` if that
+/// is too far off to represent, which no configuration reaches). Before
+/// every read the socket's timeout is cut to what is left of it, so the
+/// per-read limit alone cannot be stretched by a client that always sends
+/// one more byte in time.
+fn read_request(
+    stream: &mut TcpStream,
+    max_body: usize,
+    io_timeout: Duration,
+    deadline: Option<Instant>,
+) -> Result<Vec<u8>, Option<HttpError>> {
+    let budget = |stream: &TcpStream| -> Result<(), Option<HttpError>> {
+        let Some(deadline) = deadline else {
+            return Ok(());
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(None);
+        }
+        stream
+            .set_read_timeout(Some(left.min(io_timeout)))
+            .map_err(|_| None)
+    };
     let mut buffer: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
     let header_end = loop {
@@ -333,6 +374,7 @@ fn read_request(stream: &mut TcpStream, max_body: usize) -> Result<Vec<u8>, Opti
         if buffer.len() >= MAX_HEADER_BYTES {
             return Err(Some(http(431, "Request Header Fields Too Large")));
         }
+        budget(stream)?;
         match stream.read(&mut chunk) {
             Ok(0) | Err(_) => return Err(None),
             Ok(count) => buffer.extend_from_slice(chunk.get(..count).unwrap_or_default()),
@@ -409,6 +451,7 @@ fn read_request(stream: &mut TcpStream, max_body: usize) -> Result<Vec<u8>, Opti
     }
     while body.len() < length {
         let want = length.saturating_sub(body.len()).min(chunk.len());
+        budget(stream)?;
         match stream.read(chunk.get_mut(..want).unwrap_or_default()) {
             Ok(0) | Err(_) => return Err(None),
             Ok(count) => body.extend_from_slice(chunk.get(..count).unwrap_or_default()),

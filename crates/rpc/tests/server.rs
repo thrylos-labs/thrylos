@@ -325,6 +325,52 @@ fn a_client_that_says_nothing_holds_a_worker_only_as_long_as_the_time_limit() {
 }
 
 #[test]
+fn a_client_that_drips_bytes_inside_each_read_limit_is_still_cut_off() {
+    // A slowloris: every read arrives well inside `io_timeout`, so only a limit
+    // on the whole request can end it.
+    let (server, _node) = start(|config| {
+        config.workers = 1;
+        config.io_timeout = Duration::from_secs(2);
+        config.request_timeout = Duration::from_millis(600);
+    });
+    let mut dripper = TcpStream::connect(server.local_addr()).unwrap();
+    let request = b"POST / HTTP/1.1\r\nContent-Length: 40\r\n\r\n";
+    let started = Instant::now();
+    let mut cut_off = false;
+    for byte in request.iter().cycle().take(200) {
+        if dripper.write_all(&[*byte]).is_err() {
+            cut_off = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+        if started.elapsed() > Duration::from_secs(5) {
+            break;
+        }
+    }
+    let mut rest = Vec::new();
+    // The server closes on us once the deadline passes.
+    let _ = dripper.set_read_timeout(Some(Duration::from_secs(2)));
+    let closed = dripper.read_to_end(&mut rest).is_ok();
+    assert!(
+        cut_off || closed,
+        "still held after {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // And the worker is free again.
+    let answer = call(
+        server.local_addr(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"status"}"#,
+    );
+    assert_eq!(answer["result"]["answered"], "status");
+}
+
+#[test]
 fn past_the_backlog_a_connection_is_told_so_at_once() {
     let (server, _node) = start(|config| {
         config.workers = 1;
