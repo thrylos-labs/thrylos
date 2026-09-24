@@ -240,8 +240,13 @@ because the wallet refuses to create a wallet without the registry:
 5. **Check it works before the wallet goes out:** `curl
    https://names.thrylos.org/names/available/test` answers, and a signed
    reservation from a scratch key is accepted.
-6. **Only then deploy the wallet** (`index.html`, `app.js`). Until the registry
-   answers at `names.thrylos.org`, the new wallet cannot create wallets.
+6. **Only then deploy the wallet, with `scripts/deploy-wallet.sh`** (not a bare
+   `rsync`). Until the registry answers at `names.thrylos.org`, the new wallet
+   cannot create wallets. The script stamps `app.js` with a hash of its
+   contents in the URL (`app.js?v=…`): Cloudflare has browsers cache `.js` for
+   four hours, and a stale `app.js` beside the new `index.html` runs the old
+   create flow, which has no name step. That happened on the first deploy and
+   was only noticed in a live test.
 
 Wallets created before this shipped have no name; on unlock they are asked to
 reserve one, and confirm it with `/faucet` or `/name`.
