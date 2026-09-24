@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://rpc.thrylos.org; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#071014">
+<title>Thrylos</title>
+<meta name="description" content="Thrylos is a Move-based proof-of-stake Layer 1 written in Rust. The alpha testnet is live: join the Discord to learn more.">
+<meta property="og:title" content="Thrylos">
+<meta property="og:description" content="A Move-based proof-of-stake L1 written in Rust. The alpha testnet is live. Join the Discord to learn more.">
+<link rel="icon" href="thrylos-logo.png" type="image/png">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="/" aria-label="Thrylos home">
+    <span class="logo-crop"><img src="thrylos-logo.png" alt="Thrylos logo"></span>
+  </a>
+  <nav class="main-nav" aria-label="Main">
+    <a href="https://wallet.thrylos.org" rel="noopener">Wallet</a>
+    <a href="https://explorer.thrylos.org" rel="noopener">Explorer</a>
+    <a href="https://github.com/thrylos-labs/thrylos-rust" rel="noopener">GitHub</a>
+    <a class="nav-cta" href="https://discord.gg/nT2Xcy4QB6" rel="noopener">Join the Discord</a>
+  </nav>
+  <div class="network-pill"><span class="status-dot" id="net-dot"></span><span id="net-text">Alpha testnet</span></div>
+</header>
+
+<main>
+  <section class="hero">
+    <img class="hero-mark" src="thrylos-logo.png" alt="">
+    <p class="eyebrow-line"><span class="status-dot" id="hero-dot"></span><span id="hero-line">Alpha testnet</span></p>
+    <h1>The Thrylos testnet is open.</h1>
+    <p class="hero-copy">Thrylos is a Move-based proof-of-stake Layer 1 written in Rust, built to keep the parts that matter small enough to read, test and audit. Join the Discord to learn more, get test coins and follow along as it grows.</p>
+    <div class="cta-row">
+      <a class="button primary" href="https://discord.gg/nT2Xcy4QB6" rel="noopener">Join the Discord <span aria-hidden="true">→</span></a>
+      <a class="button" href="https://wallet.thrylos.org" rel="noopener">Open the wallet</a>
+    </div>
+    <p class="fine-print">Test THRY has no value. This is an alpha: expect it to change, and to be reset.</p>
+  </section>
+
+  <section class="steps" aria-labelledby="steps-title">
+    <p class="eyebrow">Get started</p>
+    <h2 id="steps-title">Three steps to your first transaction</h2>
+    <ol class="step-grid">
+      <li class="panel">
+        <span class="step-number">1</span>
+        <h3>Join the Discord</h3>
+        <p>It's where the testnet lives: announcements, the faucet, questions, and the people building it.</p>
+        <a class="text-link" href="https://discord.gg/nT2Xcy4QB6" rel="noopener">Open the invite →</a>
+      </li>
+      <li class="panel">
+        <span class="step-number">2</span>
+        <h3>Create a wallet</h3>
+        <p>It runs in your browser, with no install. Pick a <code>.thry</code> name and a password; the key is encrypted on your device.</p>
+        <a class="text-link" href="https://wallet.thrylos.org" rel="noopener">Open the wallet →</a>
+      </li>
+      <li class="panel">
+        <span class="step-number">3</span>
+        <h3>Get test coins</h3>
+        <p>Run <code>/faucet</code> in the Discord with your address to receive test THRY. Use <code>/name</code> there to confirm your name.</p>
+        <a class="text-link" href="https://explorer.thrylos.org" rel="noopener">Watch it land in the explorer →</a>
+      </li>
+    </ol>
+  </section>
+
+  <section class="facts" aria-label="About Thrylos">
+    <div class="stats">
+      <div class="stat-card"><p class="stat-label">Chain</p><p class="stat-value">Proof of stake</p><p class="stat-note">BFT consensus, fast finality</p></div>
+      <div class="stat-card"><p class="stat-label">Contracts</p><p class="stat-value">Move</p><p class="stat-note">Built on the Move VM</p></div>
+      <div class="stat-card"><p class="stat-label">Written in</p><p class="stat-value">Rust</p><p class="stat-note">Small, auditable core</p></div>
+      <div class="stat-card"><p class="stat-label">Latest block</p><p class="stat-value" id="height">—</p><p class="stat-note" id="height-note">Checking the network…</p></div>
+    </div>
+  </section>
+
+  <section class="closing">
+    <h2>Come and break it.</h2>
+    <p>The best way to help is to use the testnet and tell us what's confusing, slow or broken.</p>
+    <a class="button primary" href="https://discord.gg/nT2Xcy4QB6" rel="noopener">Join the Discord <span aria-hidden="true">→</span></a>
+  </section>
+</main>
+
+<footer>
+  <p>© Thrylos. Alpha testnet: test coins only.</p>
+  <p><a href="https://wallet.thrylos.org" rel="noopener">Wallet</a> · <a href="https://explorer.thrylos.org" rel="noopener">Explorer</a> · <a href="https://github.com/thrylos-labs/thrylos-rust" rel="noopener">GitHub</a> · <a href="https://discord.gg/nT2Xcy4QB6" rel="noopener">Discord</a></p>
+</footer>
+<script src="site.js" defer></script>
+</body>
+</html>
