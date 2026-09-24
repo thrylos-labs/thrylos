@@ -43,16 +43,17 @@ fn init_creates_a_private_separate_key_and_refuses_to_overwrite() {
 }
 
 #[test]
-fn discord_commands_are_the_two_expected_slash_commands() {
+fn discord_commands_are_the_three_expected_slash_commands() {
     let output = run(&["discord-commands"]);
     assert!(output.status.success());
     let commands: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let commands = commands.as_array().unwrap();
-    assert_eq!(commands.len(), 2);
+    assert_eq!(commands.len(), 3);
     let faucet = commands.first().unwrap();
     assert_eq!(faucet.get("name").unwrap(), "faucet");
+    assert_eq!(commands.get(1).unwrap().get("name").unwrap(), "name");
     assert_eq!(
-        commands.get(1).unwrap().get("name").unwrap(),
+        commands.get(2).unwrap().get("name").unwrap(),
         "faucet-status"
     );
     assert_eq!(

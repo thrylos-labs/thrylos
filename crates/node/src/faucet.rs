@@ -100,6 +100,16 @@ pub struct FaucetConfig {
     /// date and is refused while this is on. `0`, the default, turns it off.
     #[serde(default)]
     pub min_server_membership_days: u32,
+    /// Where the `.thry` name registry (`chain-names`) listens, a loopback
+    /// address such as `127.0.0.1:8083`. With this and `names_secret_file`
+    /// set, an accepted `/faucet` claim and the `/name` command confirm a
+    /// wallet's reserved name. `null` leaves names off.
+    #[serde(default)]
+    pub names_registry: Option<String>,
+    /// The file holding the secret shared with the registry (`names.secret`
+    /// in its directory). A relative path is read from the faucet's directory.
+    #[serde(default)]
+    pub names_secret_file: Option<String>,
     /// Discord application public key, as 64 hex digits. `null` until set.
     pub discord_public_key: Option<String>,
 }
@@ -119,6 +129,8 @@ impl Default for FaucetConfig {
             max_pending: 1_000,
             min_account_age_days: default_min_account_age_days(),
             min_server_membership_days: 0,
+            names_registry: None,
+            names_secret_file: None,
             discord_public_key: None,
         }
     }
@@ -155,6 +167,26 @@ impl FaucetConfig {
             return Err(FaucetError::InvalidConfig(format!(
                 "faucet configuration `max_pending` must be from 1 to {MAX_RECORDS}"
             )));
+        }
+        match (&self.names_registry, &self.names_secret_file) {
+            (None, None) => {}
+            (Some(registry), Some(_)) => {
+                let address = registry.parse::<std::net::SocketAddr>().map_err(|_| {
+                    FaucetError::InvalidConfig(format!(
+                        "faucet configuration `names_registry` must be an address such as 127.0.0.1:8083, not {registry:?}"
+                    ))
+                })?;
+                if !address.ip().is_loopback() {
+                    return Err(FaucetError::InvalidConfig(
+                        "faucet configuration `names_registry` must be a loopback address".into(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(FaucetError::InvalidConfig(
+                    "faucet configuration `names_registry` and `names_secret_file` go together: set both or neither".into(),
+                ))
+            }
         }
         if let Some(key) = &self.discord_public_key {
             let bytes = hex::decode(key).map_err(|error| {
@@ -335,6 +367,17 @@ impl Faucet {
 
     pub const fn config(&self) -> &FaucetConfig {
         &self.config
+    }
+
+    /// The name registry's address and shared secret, if names are set up and
+    /// the secret can be read. `None` otherwise, which callers treat as "names
+    /// are off", never as an error that stops a payout.
+    pub fn names_settings(&self) -> Option<(std::net::SocketAddr, String)> {
+        let registry = self.config.names_registry.as_ref()?.parse().ok()?;
+        let file = self.config.names_secret_file.as_ref()?;
+        let path = self.directory.join(file);
+        let secret = fs::read_to_string(path).ok()?.trim().to_owned();
+        (!secret.is_empty()).then_some((registry, secret))
     }
 
     pub fn address(&self) -> Address {
@@ -814,6 +857,50 @@ mod tests {
             EnqueueResult::Existing(RequestStatus::Queued)
         );
         assert!(loaded.enqueue(request("one", "another", 2), 20).is_err());
+    }
+
+    #[test]
+    fn the_names_settings_go_together_stay_on_loopback_and_are_off_by_default() {
+        let (dir, faucet) = faucet();
+        assert!(faucet.names_settings().is_none(), "off unless configured");
+        let base = FaucetConfig::default();
+        assert!(base.validate().is_ok());
+
+        let only_registry = FaucetConfig {
+            names_registry: Some("127.0.0.1:8083".into()),
+            ..base.clone()
+        };
+        assert!(
+            only_registry.validate().is_err(),
+            "the secret file is needed too"
+        );
+        let only_secret = FaucetConfig {
+            names_secret_file: Some("names.secret".into()),
+            ..base.clone()
+        };
+        assert!(only_secret.validate().is_err());
+        let public = FaucetConfig {
+            names_registry: Some("203.0.113.5:8083".into()),
+            names_secret_file: Some("names.secret".into()),
+            ..base.clone()
+        };
+        assert!(
+            public.validate().is_err(),
+            "a registry off this machine is refused"
+        );
+        let nonsense = FaucetConfig {
+            names_registry: Some("not an address".into()),
+            names_secret_file: Some("names.secret".into()),
+            ..base.clone()
+        };
+        assert!(nonsense.validate().is_err());
+        let good = FaucetConfig {
+            names_registry: Some("127.0.0.1:8083".into()),
+            names_secret_file: Some("names.secret".into()),
+            ..base
+        };
+        assert!(good.validate().is_ok());
+        drop(dir);
     }
 
     #[test]

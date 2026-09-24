@@ -1,0 +1,15 @@
+# Thrylos alpha .thry name registry. Install next to the other thrylos-*.service
+# units (see docs/thry-names.md, "Deploying").
+[Unit]
+Description=Thrylos alpha name registry
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/thrylos-rust/target/release/chain-names run /root/.thrylos-alpha/names
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

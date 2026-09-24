@@ -1,4 +1,10 @@
 const RPC_URL = "https://rpc.thrylos.org/";
+// The .thry name registry (docs/thry-names.md). A name is required: a wallet is
+// created only after the registry has accepted a signed reservation for it.
+const NAMES_URL = "https://names.thrylos.org";
+const NAME_MIN = 3;
+const NAME_MAX = 20;
+const CLAIM_TAG = new TextEncoder().encode("thrylos-name-claim-v1");
 // The old, unencrypted form: read once so an existing wallet keeps working, and
 // removed the moment it is encrypted under a password.
 const STORAGE_KEY = "thrylos-testnet-seed-hex";
@@ -15,6 +21,17 @@ const EXPIRES_AFTER = 1000n;
 const INCLUSION_TIMEOUT_MS = 60000;
 const INCLUSION_POLL_MS = 500;
 
+const createName = document.getElementById("create-name");
+const createNameHint = document.getElementById("create-name-hint");
+const createNameError = document.getElementById("create-name-error");
+const nameBadge = document.getElementById("name-badge");
+const nameBlock = document.getElementById("name-block");
+const nameMessage = document.getElementById("name-message");
+const claimForm = document.getElementById("claim-form");
+const claimName = document.getElementById("claim-name");
+const claimNameHint = document.getElementById("claim-name-hint");
+const claimNameError = document.getElementById("claim-name-error");
+const claimBtn = document.getElementById("claim-btn");
 const lockState = document.getElementById("lock-state");
 const createPassword = document.getElementById("create-password");
 const createPasswordError = document.getElementById("create-password-error");
@@ -167,7 +184,7 @@ function decodeAddress(text) {
 }
 
 // address = bech32m(blake3([DomainTag::AddressV1=4] ++ [Scheme::Ed25519=0] ++ pubkey))
-async function addressFromSeed(seed) {
+async function addressBytesFromSeed(seed) {
   const pub = await ed.getPublicKeyAsync(seed);
   const encoded = new Uint8Array(33);
   encoded[0] = 0;
@@ -175,8 +192,10 @@ async function addressFromSeed(seed) {
   const domainInput = new Uint8Array(34);
   domainInput[0] = 4;
   domainInput.set(encoded, 1);
-  const addressBytes = blake3(domainInput);
-  return encodeBech32m("thry", addressBytes);
+  return blake3(domainInput);
+}
+async function addressFromSeed(seed) {
+  return encodeBech32m("thry", await addressBytesFromSeed(seed));
 }
 
 // ---- Amounts ----
@@ -287,6 +306,187 @@ async function rpcCall(method, params) {
 const fetchStatus = () => rpcCall("status", {});
 const fetchAccount = (address) => rpcCall("account", { address });
 
+// ---- .thry names ----
+
+// The bare, lowercase form of what was typed: "Alice.thry" -> "alice".
+function cleanName(text) {
+  const lowered = text.trim().toLowerCase();
+  return lowered.endsWith(".thry") ? lowered.slice(0, -5) : lowered;
+}
+
+// The registry decides what is reserved or taken; this is only the shape, so a
+// typo is caught before a request is made. Mirrors crates/node/src/names.rs.
+function nameShapeError(name) {
+  if (name.length < NAME_MIN || name.length > NAME_MAX) return "use " + NAME_MIN + " to " + NAME_MAX + " characters";
+  if (!/^[a-z0-9-]+$/.test(name)) return "use only a-z, 0-9 and -";
+  if (name.startsWith("-") || name.endsWith("-")) return "do not start or end with -";
+  if (name.includes("--")) return "do not use --";
+  return null;
+}
+
+async function namesCall(method, path, body) {
+  const res = await fetch(NAMES_URL + path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  return { status: res.status, data };
+}
+
+// {available, reason}, or null if the registry could not be asked.
+async function checkAvailability(name) {
+  try {
+    const { status, data } = await namesCall("GET", "/names/available/" + encodeURIComponent(name));
+    if (status !== 200 || !data) return null;
+    return { available: data.available === true, reason: data.valid === false ? data.reason : null };
+  } catch {
+    return null;
+  }
+}
+
+// Live "is it free?" feedback under a name field.
+function watchName(input, hint, error) {
+  let timer = null;
+  let latest = 0;
+  input.addEventListener("input", () => {
+    error.hidden = true;
+    input.classList.remove("invalid");
+    hint.hidden = true;
+    hint.className = "field-hint";
+    if (timer) clearTimeout(timer);
+    const name = cleanName(input.value);
+    if (!name) return;
+    const shape = nameShapeError(name);
+    if (shape) {
+      hint.textContent = shape;
+      hint.hidden = false;
+      return;
+    }
+    const ticket = ++latest;
+    timer = setTimeout(async () => {
+      const result = await checkAvailability(name);
+      if (ticket !== latest) return;
+      hint.hidden = false;
+      if (!result) hint.textContent = "could not reach the name registry to check";
+      else if (result.reason) hint.textContent = result.reason;
+      else if (result.available) { hint.textContent = name + ".thry is free"; hint.className = "field-hint ok"; }
+      else hint.textContent = name + ".thry is taken";
+    }, 400);
+  });
+}
+watchName(createName, createNameHint, createNameError);
+watchName(claimName, claimNameHint, claimNameError);
+
+// The bytes the registry verifies (docs/thry-names.md, "The reservation"):
+// tag ++ chain_id(u64le) ++ len(u8) ++ name ++ address(32) ++ timestamp_ms(u64le).
+function claimBytes(chainId, name, addressBytes, timestampMs) {
+  const nameBytes = new TextEncoder().encode(name);
+  return concatBytes([CLAIM_TAG, u64le(chainId), new Uint8Array([nameBytes.length]), nameBytes, addressBytes, u64le(timestampMs)]);
+}
+
+// Signs and sends a reservation. Throws an Error with the registry's own words
+// when it refuses.
+async function reserveName(seed, name) {
+  const shape = nameShapeError(name);
+  if (shape) throw new Error(shape);
+  const status = await fetchStatus();
+  const publicKey = await ed.getPublicKeyAsync(seed);
+  const addressBytes = await addressBytesFromSeed(seed);
+  const timestampMs = Date.now();
+  const signature = await ed.signAsync(claimBytes(BigInt(status.chainId), name, addressBytes, timestampMs), seed);
+  let reply;
+  try {
+    reply = await namesCall("POST", "/names", {
+      name,
+      publicKey: bytesToHex(publicKey),
+      timestampMs,
+      signature: bytesToHex(signature),
+    });
+  } catch {
+    throw new Error("could not reach the name registry — try again in a moment");
+  }
+  if (reply.status !== 200) {
+    throw new Error((reply.data && reply.data.error && reply.data.error.message) || "the name registry refused that");
+  }
+  return reply.data;
+}
+
+// {status: "confirmed"|"pending"|"none"|"unknown", name?, expiresAtMs?}
+async function fetchNameStatus(address) {
+  try {
+    const { status, data } = await namesCall("GET", "/names/by-address/" + address);
+    if (status === 404) return { status: "none" };
+    if (status === 200 && data && (data.status === "confirmed" || data.status === "pending")) return data;
+    return { status: "unknown" };
+  } catch {
+    return { status: "unknown" };
+  }
+}
+
+async function resolveName(name) {
+  const { status, data } = await namesCall("GET", "/names/" + encodeURIComponent(name));
+  if (status === 200 && data && typeof data.address === "string") return data.address;
+  if (status === 404) return null;
+  throw new Error("the name registry could not be reached");
+}
+
+// What the wallet knows about its own name. Sending is blocked while the wallet
+// has no confirmed name; if the registry cannot be reached the state is unknown
+// and sending is left alone (a name is a convenience, not part of the chain).
+let nameState = { status: "unknown" };
+let reservedNameThisSession = null;
+
+function nameBlocksSending() {
+  return nameState.status === "none" || nameState.status === "pending";
+}
+
+function renderName() {
+  const state = nameState.status;
+  nameBadge.hidden = state !== "confirmed";
+  if (state === "confirmed") nameBadge.textContent = nameState.name + ".thry";
+  nameBlock.hidden = state === "confirmed";
+  claimForm.hidden = state !== "none";
+  if (state === "pending") {
+    const when = nameState.expiresAtMs ? new Date(nameState.expiresAtMs).toLocaleString() : "in three days";
+    nameMessage.textContent = (reservedNameThisSession ? reservedNameThisSession + ".thry is reserved for you. " : "A name is reserved for this wallet. ") +
+      "Confirm it in Discord: run /faucet (or /name) there with your address below. The reservation lapses on " + when + ". You can send once it is confirmed.";
+  } else if (state === "none") {
+    nameMessage.textContent = "This wallet needs a name. Choose one, then confirm it in Discord with /faucet or /name.";
+  } else if (state === "unknown") {
+    nameBlock.hidden = false;
+    claimForm.hidden = true;
+    nameMessage.textContent = "The name registry could not be reached, so this wallet's name could not be checked. Sending still works.";
+  }
+}
+
+async function refreshNameState() {
+  if (!currentAddress) return;
+  nameState = await fetchNameStatus(currentAddress);
+  renderName();
+}
+
+claimBtn.addEventListener("click", async () => {
+  setFieldError(claimName, claimNameError, "");
+  const name = cleanName(claimName.value);
+  const shape = nameShapeError(name);
+  if (shape) { setFieldError(claimName, claimNameError, shape); return; }
+  claimBtn.disabled = true;
+  claimBtn.textContent = "Reserving…";
+  try {
+    await reserveName(currentSeed, name);
+    reservedNameThisSession = name;
+    claimName.value = "";
+    await refreshNameState();
+  } catch (err) {
+    setFieldError(claimName, claimNameError, err.message);
+  } finally {
+    claimBtn.disabled = false;
+    claimBtn.textContent = "Reserve name";
+  }
+});
+
 function loadSeed() {
   try {
     const hex = localStorage.getItem(STORAGE_KEY);
@@ -377,15 +577,24 @@ async function showWallet(seed) {
   setFieldError(protectPassword, protectError, "");
   lockBtn.hidden = !encrypted;
   lockState.hidden = true;
+  nameState = { status: "unknown" };
+  renderName();
+  await refreshNameState();
   await refreshBalance(currentAddress);
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(() => refreshBalance(currentAddress), 10000);
+  pollTimer = setInterval(() => {
+    refreshBalance(currentAddress);
+    // A name waiting for Discord is checked as often as the balance.
+    if (nameState.status === "pending" || nameState.status === "unknown") refreshNameState();
+  }, 10000);
 }
 
 function lockWallet() {
   if (pollTimer) clearInterval(pollTimer);
   currentSeed = null;
   currentAddress = null;
+  reservedNameThisSession = null;
+  nameState = { status: "unknown" };
   keyBlock.hidden = true;
   privateKeyText.textContent = "";
   walletState.hidden = true;
@@ -411,6 +620,10 @@ async function refreshBalance(address) {
 
 createBtn.addEventListener("click", async () => {
   setFieldError(createPassword, createPasswordError, "");
+  setFieldError(createName, createNameError, "");
+  const name = cleanName(createName.value);
+  const shape = nameShapeError(name);
+  if (shape) { setFieldError(createName, createNameError, shape); return; }
   try {
     checkPassword(createPassword.value);
   } catch (err) {
@@ -421,14 +634,20 @@ createBtn.addEventListener("click", async () => {
   createBtn.textContent = "Creating…";
   try {
     await loadCrypto();
+    // The key exists only in memory until the registry has accepted the name:
+    // if the name is taken or the registry is down, no wallet is created.
     const seed = ed.utils.randomPrivateKey();
+    await reserveName(seed, name);
+    reservedNameThisSession = name;
     await saveSeedEncrypted(seed, createPassword.value);
     createPassword.value = "";
+    createName.value = "";
     await showWallet(seed);
   } catch (err) {
+    setFieldError(createName, createNameError, err.message);
+  } finally {
     createBtn.disabled = false;
     createBtn.textContent = "Create wallet";
-    alertInline("Could not create a wallet: " + err.message);
   }
 });
 
@@ -603,14 +822,46 @@ function setSendStatus(kind, ...parts) {
   }
 }
 
+// A name typed as the recipient is resolved, then shown as a full address and
+// only sent to after a second press. The wallet never sends on a name alone.
+let resolvedRecipient = null;
+sendAddressInput.addEventListener("input", () => {
+  resolvedRecipient = null;
+  sendBtn.textContent = "Send";
+});
+
 sendBtn.addEventListener("click", async () => {
   setFieldError(sendAddressInput, sendAddressError, "");
   setFieldError(sendAmountInput, sendAmountError, "");
   setSendStatus("", "");
 
+  if (nameBlocksSending()) {
+    setSendStatus("error", "this wallet needs a confirmed name before it can send — see the name box above");
+    return;
+  }
+
   let recipient, recipientText, amount;
   try {
     recipientText = sendAddressInput.value.trim();
+    if (!/^thry1/i.test(recipientText)) {
+      const name = cleanName(recipientText);
+      const shape = nameShapeError(name);
+      if (shape) throw new Error("that is not an address or a name: " + shape);
+      let address;
+      try {
+        address = await resolveName(name);
+      } catch (err) {
+        throw new Error(err.message);
+      }
+      if (!address) throw new Error(name + ".thry does not exist");
+      if (!resolvedRecipient || resolvedRecipient.name !== name || resolvedRecipient.address !== address) {
+        resolvedRecipient = { name, address };
+        sendBtn.textContent = "Confirm and send";
+        setSendStatus("pending", name + ".thry is ", {code: address}, ". Check this is the right address, then press Confirm and send.");
+        return;
+      }
+      recipientText = address;
+    }
     recipient = decodeAddress(recipientText);
   } catch (err) {
     setFieldError(sendAddressInput, sendAddressError, err.message);
@@ -683,6 +934,7 @@ sendBtn.addEventListener("click", async () => {
     setSendStatus("success", `sent — included in block ${included.height}. `, {code: hash.slice(0, 16) + "…"});
     sendAddressInput.value = "";
     sendAmountInput.value = "";
+    resolvedRecipient = null;
     refreshBalance(currentAddress);
   } catch (err) {
     setSendStatus("error", "could not send: " + err.message);

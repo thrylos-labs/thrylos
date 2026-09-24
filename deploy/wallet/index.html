@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thrylos Wallet</title>
 <meta name="description" content="Create a testnet address, check its balance, and send THRY — no install required.">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://rpc.thrylos.org; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://rpc.thrylos.org https://names.thrylos.org; img-src 'self' data:; base-uri 'none'; form-action 'none'">
 <meta name="theme-color" content="#0a0f0e">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -254,6 +254,9 @@
   .field input.invalid {
     border-color: var(--danger);
   }
+  .name-badge { color: var(--accent, #6ee7b7); font-weight: 600; margin-bottom: 6px; }
+  .field-hint { font-size: 12px; margin-top: 4px; color: var(--muted, #8a9a96); }
+  .field-hint.ok { color: var(--accent, #6ee7b7); }
   .field-error {
     font-size: 12px;
     color: var(--danger);
@@ -299,13 +302,19 @@
   </header>
 
   <div class="notice">
-    Test THRY only — it has no value. This wallet lives entirely in your browser; nothing but public, read-only chain queries and your own signed transactions ever leaves your device. The key is stored on this device encrypted under your password, so keep that password: it cannot be recovered. Clearing your browser data deletes the wallet — that's fine, it's testnet.
+    Test THRY only — it has no value. This wallet lives entirely in your browser; nothing but public, read-only chain queries and your own signed transactions ever leaves your device. The key is stored on this device encrypted under your password, so keep that password: it cannot be recovered. Your name is public and stays tied to your address; it lives in a testnet registry, not on the chain, and is reset with the testnet. Clearing your browser data deletes the wallet — that's fine, it's testnet.
   </div>
 
   <div class="card">
     <!-- Empty state: no wallet yet -->
     <div class="empty" id="empty-state">
       <p>No wallet yet on this device.<br>Create one to get a testnet address.</p>
+      <div class="field" style="text-align: left;">
+        <label for="create-name">Your name (3–20 letters, digits or -)</label>
+        <input id="create-name" placeholder="alice" autocomplete="off" spellcheck="false" maxlength="30">
+        <div class="field-hint" id="create-name-hint" hidden></div>
+        <div class="field-error" id="create-name-error" hidden></div>
+      </div>
       <div class="field" style="text-align: left;">
         <label for="create-password">Password (encrypts the key stored on this device)</label>
         <input id="create-password" type="password" placeholder="at least 8 characters" autocomplete="new-password" spellcheck="false">
@@ -341,6 +350,7 @@
 
     <!-- Wallet state -->
     <div id="wallet-state" hidden>
+      <div class="name-badge" id="name-badge" hidden></div>
       <div class="row-label">Your address</div>
       <div class="address-row">
         <span class="address-text" id="address-text"></span>
@@ -353,6 +363,19 @@
           <span class="balance-unit">THRY</span>
         </div>
         <div class="balance-meta" id="balance-meta">checking…</div>
+      </div>
+
+      <div class="import-form" id="name-block" hidden>
+        <div class="key-warning" id="name-message"></div>
+        <div id="claim-form" hidden>
+          <div class="field">
+            <label for="claim-name">Choose your name (3–20 letters, digits or -)</label>
+            <input id="claim-name" placeholder="alice" autocomplete="off" spellcheck="false" maxlength="30">
+            <div class="field-hint" id="claim-name-hint" hidden></div>
+            <div class="field-error" id="claim-name-error" hidden></div>
+          </div>
+          <button class="btn-primary" id="claim-btn">Reserve name</button>
+        </div>
       </div>
 
       <div class="import-form" id="protect-block" hidden>
@@ -403,7 +426,7 @@
         <div class="row-label">Send THRY</div>
         <div class="field">
           <label for="send-address">Recipient address</label>
-          <input id="send-address" placeholder="thry1…" autocomplete="off" spellcheck="false">
+          <input id="send-address" placeholder="thry1… or a name like alice.thry" autocomplete="off" spellcheck="false">
           <div class="field-error" id="send-address-error" hidden></div>
         </div>
         <div class="field">

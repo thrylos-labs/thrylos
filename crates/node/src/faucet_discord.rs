@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::faucet::{
     EnqueueResult, Faucet, FaucetError, FaucetRequest, RequestRecord, RequestStatus,
 };
+use crate::names_client::{self, Confirmation};
 
 const DISCORD_SIGNATURE_BYTES: usize = 64;
 const DISCORD_PUBLIC_KEY_BYTES: usize = 32;
@@ -119,11 +120,12 @@ fn command(faucet: &mut Faucet, interaction: &Value, day: u64) -> DiscordRespons
     };
     match interaction["data"]["name"].as_str() {
         Some("faucet") => faucet_command(faucet, interaction, user_id, day),
+        Some("name") => name_command(faucet, interaction, user_id, day),
         Some("faucet-status") => match faucet.latest_for_user(user_id) {
             Some(record) => message(&record_message(record)),
             None => message("You have no faucet request yet. Use `/faucet` with your address."),
         },
-        _ => message("Unknown command. Use `/faucet` or `/faucet-status`."),
+        _ => message("Unknown command. Use `/faucet`, `/name` or `/faucet-status`."),
     }
 }
 
@@ -225,11 +227,16 @@ fn faucet_command(
         address,
     };
     match faucet.enqueue(request, day) {
-        Ok(EnqueueResult::Queued) => message(&format!(
-            "Queued {} for {}. Request `{request_id}`. Use `/faucet-status` to check it.",
-            faucet.config().payout,
-            format_address(&address)
-        )),
+        Ok(EnqueueResult::Queued) => {
+            // A reserved name is confirmed by the same request, so the person
+            // does one thing, not two. It never decides whether they are paid.
+            let name_note = confirm_name(faucet, &address, user_id, false);
+            message(&format!(
+                "Queued {} for {}. Request `{request_id}`. Use `/faucet-status` to check it.{name_note}",
+                faucet.config().payout,
+                format_address(&address)
+            ))
+        }
         Ok(EnqueueResult::Existing(status)) => message(&format!(
             "Request `{request_id}` was already received and is {}.",
             status.label()
@@ -248,6 +255,75 @@ fn faucet_command(
         }
         Err(error) => message(&format!("The faucet could not save the request: {error}")),
     }
+}
+
+/// Asks the name registry to confirm the reservation for `address`, and words
+/// the answer for the user, with a leading line break so it can follow another
+/// message. Empty when names are off. `explicit` is a person who asked for a
+/// name (`/name`): they hear about every outcome, where a `/faucet` claim stays
+/// quiet if there was simply no reservation (a wallet with no name reserved).
+fn confirm_name(
+    faucet: &Faucet,
+    address: &chain_types::Address,
+    user_id: &str,
+    explicit: bool,
+) -> String {
+    let Some((registry, secret)) = faucet.names_settings() else {
+        return if explicit {
+            "\nNames are not switched on for this faucet.".into()
+        } else {
+            String::new()
+        };
+    };
+    match names_client::confirm(registry, &secret, &format_address(address), user_id) {
+        Confirmation::Confirmed { name } => {
+            format!("\nYour name `{name}.thry` is confirmed.")
+        }
+        Confirmation::Refused { code, .. } if code == "NoReservation" && !explicit => String::new(),
+        Confirmation::Refused { code, .. } if code == "NoReservation" => {
+            "\nThere is no reservation for that address, or it has lapsed. Reserve a name in the wallet first.".into()
+        }
+        Confirmation::Refused { message, .. } => format!("\nYour name was not confirmed: {message}."),
+        Confirmation::Unavailable => {
+            "\nYour name could not be confirmed right now. Use `/name` with the same address in a few minutes.".into()
+        }
+    }
+}
+
+/// `/name address:<thry1…>`: confirm a reserved name without asking for coin.
+/// It has to pass the same gates as the faucet, or a fresh Discord account
+/// could take a name the faucet would have refused it.
+fn name_command(
+    faucet: &mut Faucet,
+    interaction: &Value,
+    user_id: &str,
+    day: u64,
+) -> DiscordResponse {
+    let address_text = interaction["data"]["options"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["name"] == "address"))
+        .and_then(|option| option["value"].as_str());
+    let Some(address_text) = address_text else {
+        return message("Give `/name` the Thrylos address (`thry1…`) you reserved your name for.");
+    };
+    let address = match parse_address(address_text) {
+        Ok(address) => address,
+        Err(error) => return message(&format!("That address is not valid: {error}")),
+    };
+    let min_days = faucet.config().min_account_age_days;
+    if !old_enough(user_id, day, min_days) {
+        return message(&format!(
+            "Names are only open to Discord accounts at least {min_days} days old. Nothing was confirmed."
+        ));
+    }
+    let membership_days = faucet.config().min_server_membership_days;
+    if !member_long_enough(interaction, day, membership_days) {
+        return message(&format!(
+            "Names are only open to people who have been in this Discord server at least {membership_days} days, used in the server rather than a DM. Nothing was confirmed."
+        ));
+    }
+    let outcome = confirm_name(faucet, &address, user_id, true);
+    message(outcome.trim_start())
 }
 
 fn record_message(record: &RequestRecord) -> String {
@@ -293,6 +369,21 @@ pub fn command_definitions() -> Value {
             "options": [{
                 "name": "address",
                 "description": "Your thry1… testnet address",
+                "type": 3,
+                "required": true,
+                "min_length": 63,
+                "max_length": 63
+            }],
+            "contexts": [0, 1],
+            "integration_types": [0]
+        },
+        {
+            "name": "name",
+            "type": 1,
+            "description": "Confirm the .thry name you reserved in the wallet",
+            "options": [{
+                "name": "address",
+                "description": "The thry1… address you reserved the name for",
                 "type": 3,
                 "required": true,
                 "min_length": 63,
@@ -522,5 +613,189 @@ mod tests {
             20_720,
             3
         ));
+    }
+
+    // ---- names ----------------------------------------------------------
+
+    /// A stand-in registry: answers each connection with the next of `replies`
+    /// and remembers what it was sent.
+    fn fake_registry(
+        replies: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for reply in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buffer = vec![0u8; 4096];
+                let count = stream.read(&mut buffer).unwrap_or(0);
+                record
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buffer[..count]).into_owned());
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        (address, seen)
+    }
+
+    const CONFIRMED: &str =
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n{\"name\":\"alice\",\"status\":\"confirmed\"}";
+    const NO_RESERVATION: &str = "HTTP/1.1 404 Not Found\r\n\r\n{\"error\":{\"code\":\"NoReservation\",\"message\":\"none\"}}";
+    const HAS_NAME: &str = "HTTP/1.1 409 Conflict\r\n\r\n{\"error\":{\"code\":\"DiscordUserHasName\",\"message\":\"this Discord account already has a name\"}}";
+
+    fn faucet_with_names(registry: std::net::SocketAddr) -> (tempfile::TempDir, Faucet) {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = parent.path().join("faucet");
+        Faucet::init(&directory).unwrap();
+        let path = directory.join("faucet.json");
+        let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        config["names_registry"] = json!(registry.to_string());
+        config["names_secret_file"] = json!("names.secret");
+        std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        std::fs::write(directory.join("names.secret"), "the-shared-secret\n").unwrap();
+        (parent, Faucet::load(&directory).unwrap())
+    }
+
+    fn say(faucet: &mut Faucet, command: &str, user: &str, id: &str, address: &str) -> String {
+        let interaction = json!({
+            "id": id,
+            "type": 2,
+            "member": { "user": { "id": user } },
+            "data": { "name": command, "options": [{ "name": "address", "value": address }] }
+        });
+        let body = serde_json::to_vec(&interaction).unwrap();
+        let key = SigningKey::from_bytes(&[8; 32]);
+        let signature = signed(&key, "123", &body);
+        let answer = handle_interaction(
+            faucet,
+            &key.verifying_key(),
+            Some(&signature),
+            Some("123"),
+            &body,
+            TODAY,
+        );
+        let value: Value = serde_json::from_slice(&answer.body).unwrap();
+        value["data"]["content"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn an_accepted_faucet_claim_also_confirms_the_reserved_name() {
+        let (registry, seen) = fake_registry(vec![CONFIRMED]);
+        let (_parent, mut faucet) = faucet_with_names(registry);
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let reply = say(&mut faucet, "faucet", OLD_ACCOUNT, "i1", &address);
+        assert!(reply.starts_with("Queued"), "{reply}");
+        assert!(reply.contains("`alice.thry` is confirmed"), "{reply}");
+        let sent = seen.lock().unwrap().join("\n");
+        assert!(sent.contains("X-Names-Secret: the-shared-secret"), "{sent}");
+        assert!(
+            sent.contains(&address) && sent.contains(OLD_ACCOUNT),
+            "{sent}"
+        );
+    }
+
+    #[test]
+    fn a_refused_faucet_claim_never_reaches_the_registry() {
+        // The daily limit stops the second request, so nothing may be confirmed by it.
+        let (registry, seen) = fake_registry(vec![NO_RESERVATION]);
+        let (_parent, mut faucet) = faucet_with_names(registry);
+        let first = format_address(&Address::from_bytes([7; 32]));
+        let second = format_address(&Address::from_bytes([9; 32]));
+        assert!(say(&mut faucet, "faucet", OLD_ACCOUNT, "i1", &first).starts_with("Queued"));
+        let reply = say(&mut faucet, "faucet", OLD_ACCOUNT, "i2", &second);
+        assert!(reply.contains("limit"), "{reply}");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "only the accepted claim asked"
+        );
+    }
+
+    #[test]
+    fn a_faucet_claim_with_no_reservation_stays_quiet_and_a_registry_outage_never_stops_the_payout()
+    {
+        let (registry, _) = fake_registry(vec![NO_RESERVATION]);
+        let (_parent, mut faucet) = faucet_with_names(registry);
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let reply = say(&mut faucet, "faucet", OLD_ACCOUNT, "i1", &address);
+        assert!(
+            reply.starts_with("Queued") && !reply.contains("name"),
+            "{reply}"
+        );
+
+        // Nothing listening: still paid, with a line saying to use /name.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (_parent2, mut faucet) = faucet_with_names(closed);
+        let other = format_address(&Address::from_bytes([8; 32]));
+        let reply = say(&mut faucet, "faucet", OLD_ACCOUNT, "i2", &other);
+        assert!(reply.starts_with("Queued"), "{reply}");
+        assert!(reply.contains("`/name`"), "{reply}");
+        assert_eq!(faucet.request("i2").unwrap().status, RequestStatus::Queued);
+    }
+
+    #[test]
+    fn the_name_command_confirms_without_a_payout_and_reports_refusals() {
+        let (registry, _) = fake_registry(vec![CONFIRMED, HAS_NAME, NO_RESERVATION]);
+        let (_parent, mut faucet) = faucet_with_names(registry);
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let done = say(&mut faucet, "name", OLD_ACCOUNT, "n1", &address);
+        assert!(done.contains("`alice.thry` is confirmed"), "{done}");
+        assert!(faucet.request("n1").is_none(), "no faucet request was made");
+        let twice = say(&mut faucet, "name", OLD_ACCOUNT, "n2", &address);
+        assert!(twice.contains("already has a name"), "{twice}");
+        let none = say(&mut faucet, "name", OLD_ACCOUNT, "n3", &address);
+        assert!(none.contains("no reservation"), "{none}");
+    }
+
+    #[test]
+    fn the_name_command_applies_the_same_gates_as_the_faucet() {
+        let (registry, seen) = fake_registry(vec![CONFIRMED]);
+        let (_parent, mut faucet) = faucet_with_names(registry);
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let young = snowflake_created_on(TODAY - 1);
+        let reply = say(&mut faucet, "name", &young, "n1", &address);
+        assert!(reply.contains("days old"), "{reply}");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a refused account never asks the registry"
+        );
+    }
+
+    #[test]
+    fn with_names_off_the_name_command_says_so_and_the_faucet_is_unchanged() {
+        let (_parent, mut faucet) = faucet();
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let reply = say(&mut faucet, "name", OLD_ACCOUNT, "n1", &address);
+        assert!(reply.contains("not switched on"), "{reply}");
+        let paid = say(&mut faucet, "faucet", OLD_ACCOUNT, "i1", &address);
+        assert!(
+            paid.starts_with("Queued") && !paid.contains("name"),
+            "{paid}"
+        );
+    }
+
+    #[test]
+    fn the_command_list_includes_name_with_a_required_address() {
+        let commands = command_definitions();
+        let name = commands
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|command| command["name"] == "name")
+            .unwrap();
+        assert_eq!(name["options"][0]["name"], "address");
+        assert_eq!(name["options"][0]["required"], true);
     }
 }

@@ -1,6 +1,6 @@
 # `.thry` names for the testnet
 
-Status: **design, for review; nothing built.** Names are an **off-chain**
+Status: **built and tested; not deployed.** (Registry: `crates/node/src/names.rs`, `names_service.rs`, `bin/chain-names.rs`. Faucet: `/name` and confirmation in `faucet_discord.rs`. Wallet: `deploy/wallet/app.js`.) Names are an **off-chain**
 convenience for the alpha: the chain never sees them, nothing about consensus
 changes, and the registry can be reset with the testnet.
 
@@ -127,6 +127,7 @@ faucet process. The faucet holds the funded key, and a public write endpoint
 should not share a process with it. Cost: one more unit, a Cloudflare Tunnel
 route (`names.thrylos.org`) and a DNS record.
 
+- `GET /names/available/<name>`: `{ "name", "valid", "available", "reason"? }`, for the wallet's live check.
 - `GET /names/<name>`: `{ "name", "address" }` if confirmed, else 404.
 - `GET /names/by-address/<thry1…>`: `{ "status": "confirmed", "name" }`, or
   `{ "status": "pending", "expiresAtMs" }` (no name), or 404.
@@ -216,3 +217,46 @@ using the registry's by-address lookup.
 5. Reserved-name list: **the one above**, extended as you like.
 6. Rate limits as stated (**yes**) or tighter.
 7. Existing wallets blocked from sending until named (**yes**) or a grace period.
+
+## Deploying
+
+Nothing about the chain changes, so there is no validator restart. Order matters
+because the wallet refuses to create a wallet without the registry:
+
+1. **Build and start the registry** (in a separate target directory, as for the
+   other services): `chain-names init /root/.thrylos-alpha/names --chain-id
+   20260923`, install `deploy/thrylos-names.service`, `systemctl enable --now
+   thrylos-names`. It listens on `127.0.0.1:8083`.
+2. **Route it.** Add a Cloudflare Tunnel ingress rule for `names.thrylos.org` to
+   `127.0.0.1:8083` and a DNS record for the hostname. **Do not route
+   `/internal/`**: the service also refuses any request bearing Cloudflare's
+   headers, but the route should not exist.
+3. **Point the faucet at it.** In `faucet.json` set
+   `"names_registry": "127.0.0.1:8083"` and `"names_secret_file":
+   "/root/.thrylos-alpha/names/names.secret"`, then restart the faucet.
+4. **Register the new Discord command.** `chain-faucet discord-commands` prints
+   the definitions, now including `/name`; post them to Discord's
+   application-command API as before.
+5. **Check it works before the wallet goes out:** `curl
+   https://names.thrylos.org/names/available/test` answers, and a signed
+   reservation from a scratch key is accepted.
+6. **Only then deploy the wallet** (`index.html`, `app.js`). Until the registry
+   answers at `names.thrylos.org`, the new wallet cannot create wallets.
+
+Wallets created before this shipped have no name; on unlock they are asked to
+reserve one, and confirm it with `/faucet` or `/name`.
+
+## What was verified
+
+- The registry, the service and the faucet integration have unit tests; the
+  running `chain-names` process is driven over real TCP in
+  `crates/node/tests/names_wire.rs` (reserve, confirm with and without the
+  secret and through tunnel headers, CORS, restart, slow clients).
+- **The wallet's JavaScript signature was verified by the Rust registry:** the
+  real wallet page, run against a real `chain-names`, reserved a name, was
+  confirmed, and resolved. Also exercised in the browser: live availability,
+  reserved and taken names, sending blocked while pending, name recipients
+  resolved with a second confirming press, an existing wallet with no name, and
+  creation refused with nothing stored when the registry is down.
+- Not exercised: the live Discord path (`/faucet` and `/name` from a real
+  account), and the public `names.thrylos.org` route.
