@@ -1,0 +1,15 @@
+# Redirects www.thrylos.org to thrylos.org (deploy/www-redirect.py), on loopback;
+# the Cloudflare Tunnel publishes it.
+[Unit]
+Description=Thrylos www redirect
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /root/thrylos-redirect/www-redirect.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
