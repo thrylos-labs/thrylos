@@ -1,7 +1,7 @@
 # Rolling the audit fixes out to the alpha VPS
 
-Status: **plan, nothing run.** Written 2026-09-24 from a read-only look at the
-VPS (`157.230.10.32`).
+Status: **carried out 2026-09-24** (commit `4f383ac`). Written from a read-only
+look at the VPS (`157.230.10.32`); the downtime figure is the measured one.
 
 ## What is being shipped
 
@@ -52,8 +52,7 @@ turns it off), wallet CSP and self-hosted crypto (already live).
 2. **Faucet age gate.** Default is 7 days. Discord accounts newer than that are
    turned away, so say so in the announcement, or set
    `"min_account_age_days"` in `faucet.json` to something lower (or 0).
-3. **Window.** The chain stops for roughly a minute. Blocks are 1 s, and
-   committed blocks are safe, but the mempool is in memory, so anything
+3. **Window.** The chain stops for about 3.5 minutes (measured on 2026-09-24: stopped 08:50, producing blocks again 08:53; the four nodes restore state on one vCPU and the RPC answers only after about 2.5 minutes). Committed blocks are safe, but the mempool is in memory, so anything
    pending at the restart is likely dropped; pick a quiet time and tell Discord.
 
 ## Steps
@@ -97,7 +96,7 @@ ssh root@157.230.10.32           # with -i ~/.ssh/id_ed25519_thrylos_alpha
 6. **Keep the old binaries**: `mkdir -p /root/releases/prev && cp -a
    target/release/chain-* target/release/thrylos /root/releases/prev/`.
 
-### 2. Switch (about a minute of downtime)
+### 2. Switch (about 3.5 minutes of downtime)
 
 1. Announce.
 2. `systemctl stop thrylos-faucet thrylos-explorer thrylos-validators`
