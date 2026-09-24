@@ -1,6 +1,6 @@
 # `.thry` names for the testnet
 
-Status: **built and tested; not deployed.** (Registry: `crates/node/src/names.rs`, `names_service.rs`, `bin/chain-names.rs`. Faucet: `/name` and confirmation in `faucet_discord.rs`. Wallet: `deploy/wallet/app.js`.) Names are an **off-chain**
+Status: **built, tested and deployed to the alpha on 2026-09-24.** (Registry: `crates/node/src/names.rs`, `names_service.rs`, `bin/chain-names.rs`. Faucet: `/name` and confirmation in `faucet_discord.rs`. Wallet: `deploy/wallet/app.js`.) Names are an **off-chain**
 convenience for the alpha: the chain never sees them, nothing about consensus
 changes, and the registry can be reset with the testnet.
 
@@ -253,6 +253,8 @@ reserve one, and confirm it with `/faucet` or `/name`.
 
 ## What was verified
 
+### In code and in tests
+
 - The registry, the service and the faucet integration have unit tests; the
   running `chain-names` process is driven over real TCP in
   `crates/node/tests/names_wire.rs` (reserve, confirm with and without the
@@ -263,5 +265,56 @@ reserve one, and confirm it with `/faucet` or `/name`.
   reserved and taken names, sending blocked while pending, name recipients
   resolved with a second confirming press, an existing wallet with no name, and
   creation refused with nothing stored when the registry is down.
-- Not exercised: the live Discord path (`/faucet` and `/name` from a real
-  account), and the public `names.thrylos.org` route.
+
+### Live on the alpha (2026-09-24)
+
+Deployed: `thrylos-names.service` on `127.0.0.1:8083`; a tunnel route for
+`names.thrylos.org` with a rule above it that answers 404 for `/internal`; the
+faucet on the new binary with `names_registry` and `names_secret_file` set; the
+three Discord commands registered; the new wallet.
+
+Observed working:
+
+- The public registry answers lookups, sends the CORS headers and answers the
+  browser preflight. `/internal/confirm` returns 404 at the tunnel, and would
+  return 401 at the service with a wrong secret or through the tunnel's headers.
+- The live wallet page requires a name; refuses a too-short name and a
+  reserved one; shows availability from the live registry; and creates the
+  wallet only after the live registry has accepted the signed reservation,
+  under the chain's real id. The key is stored encrypted.
+- **`/name` from a real Discord account confirmed a reserved name end to end:**
+  Discord's signed request, the faucet, the local call with the shared secret,
+  and the registry. The registry then held one confirmed name tied to that
+  address and Discord account, and the logs showed no errors.
+
+### Not yet verified live
+
+- Sending to a name from a second wallet (resolution, the full address shown,
+  the second confirming press). Only tested locally.
+- `/faucet` confirming a name in the same request as the payout. It needs a new
+  wallet and a new name on a day the account's faucet allowance is unused.
+- The refusals from a real account: too-young account, an account that already
+  has a name, no reservation for the address, a lapsed reservation.
+- A registry outage while the faucet pays out (tested against a stand-in only).
+- The rate limits, the 72-hour lapse, and the server-membership gate (off).
+
+### Problems found on the way
+
+- **A stale cached script ran beside the new page.** The first wallet deploy
+  left browsers holding the previous `app.js` for up to four hours, and that
+  script has no name step, so the live wallet created a wallet without asking
+  for a name. Found in the first live test; fixed by `scripts/deploy-wallet.sh`
+  (see step 6 above).
+- **Unexplained cross-origin errors.** During that first, stale session the
+  browser reported the RPC's preflight as lacking `Access-Control-Allow-Origin`.
+  The RPC's headers were correct when checked directly, and after the fix six
+  consecutive calls from the wallet's origin succeeded. The cause was not found;
+  if the wallet ever cannot reach the RPC from a browser, look here first.
+- **The registry's `POST /internal/confirm` was reachable through the tunnel**
+  (refused by the service, but reachable). Closed at the tunnel with the
+  `path: ^/internal` rule above.
+
+### Cost of running it
+
+The box has about 100 MB of free memory and no swap. The registry is small and
+fits, but a build on the VPS needs the temporary swapfile first.
