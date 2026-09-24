@@ -299,13 +299,18 @@
   </header>
 
   <div class="notice">
-    Test THRY only — it has no value. This wallet lives entirely in your browser; nothing but public, read-only chain queries and your own signed transactions ever leaves your device. Clearing your browser data deletes it — that's fine, it's testnet.
+    Test THRY only — it has no value. This wallet lives entirely in your browser; nothing but public, read-only chain queries and your own signed transactions ever leaves your device. The key is stored on this device encrypted under your password, so keep that password: it cannot be recovered. Clearing your browser data deletes the wallet — that's fine, it's testnet.
   </div>
 
   <div class="card">
     <!-- Empty state: no wallet yet -->
     <div class="empty" id="empty-state">
       <p>No wallet yet on this device.<br>Create one to get a testnet address.</p>
+      <div class="field" style="text-align: left;">
+        <label for="create-password">Password (encrypts the key stored on this device)</label>
+        <input id="create-password" type="password" placeholder="at least 8 characters" autocomplete="new-password" spellcheck="false">
+        <div class="field-error" id="create-password-error" hidden></div>
+      </div>
       <button class="btn-primary" id="create-btn">Create wallet</button>
       <button class="btn-link" id="empty-import-toggle">or import an existing wallet</button>
       <div class="import-form" id="empty-import-form" hidden style="text-align: left;">
@@ -314,8 +319,24 @@
           <input id="empty-import-input" placeholder="64-character hex key" autocomplete="off" spellcheck="false">
           <div class="field-error" id="empty-import-error" hidden></div>
         </div>
+        <div class="field">
+          <label for="empty-import-password">Password (encrypts the key stored on this device)</label>
+          <input id="empty-import-password" type="password" placeholder="at least 8 characters" autocomplete="new-password" spellcheck="false">
+        </div>
         <button class="btn-primary" id="empty-import-btn">Import</button>
       </div>
+    </div>
+
+    <!-- Locked state: an encrypted wallet is stored but not open -->
+    <div class="empty" id="lock-state" hidden>
+      <p>A wallet is saved on this device, encrypted.<br>Enter its password to open it.</p>
+      <div class="field" style="text-align: left;">
+        <label for="unlock-password">Password</label>
+        <input id="unlock-password" type="password" autocomplete="current-password" spellcheck="false">
+        <div class="field-error" id="unlock-error" hidden></div>
+      </div>
+      <button class="btn-primary" id="unlock-btn">Unlock</button>
+      <button class="btn-link" id="forget-btn">forgot the password? remove this wallet</button>
     </div>
 
     <!-- Wallet state -->
@@ -334,8 +355,19 @@
         <div class="balance-meta" id="balance-meta">checking…</div>
       </div>
 
+      <div class="import-form" id="protect-block" hidden>
+        <div class="key-warning">The key for this wallet is stored on this device unencrypted. Set a password to encrypt it; anything that can read this browser's storage could otherwise take it.</div>
+        <div class="field">
+          <label for="protect-password">Password</label>
+          <input id="protect-password" type="password" placeholder="at least 8 characters" autocomplete="new-password" spellcheck="false">
+          <div class="field-error" id="protect-error" hidden></div>
+        </div>
+        <button class="btn-primary" id="protect-btn">Encrypt</button>
+      </div>
+
       <div class="actions-row">
         <button class="btn-ghost" id="refresh-btn">Refresh balance</button>
+        <button class="btn-ghost" id="lock-btn" hidden>Lock</button>
         <button class="btn-ghost" id="reveal-btn">Show private key</button>
         <button class="btn-ghost" id="reset-btn">New wallet</button>
         <button class="btn-ghost" id="wallet-import-toggle">Import wallet</button>
@@ -355,6 +387,10 @@
           <label for="wallet-import-input">Private key (hex)</label>
           <input id="wallet-import-input" placeholder="64-character hex key" autocomplete="off" spellcheck="false">
           <div class="field-error" id="wallet-import-error" hidden></div>
+        </div>
+        <div class="field">
+          <label for="wallet-import-password">Password (encrypts the key stored on this device)</label>
+          <input id="wallet-import-password" type="password" placeholder="at least 8 characters" autocomplete="new-password" spellcheck="false">
         </div>
         <button class="btn-primary" id="wallet-import-btn">Import</button>
       </div>

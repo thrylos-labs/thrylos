@@ -149,6 +149,44 @@ fn old_enough(user_id: &str, day: u64, min_days: u32) -> bool {
         .is_some_and(|created| created.saturating_add(u64::from(min_days)) <= day)
 }
 
+/// The UTC day (days since the Unix epoch) of an RFC 3339 timestamp such as
+/// `2024-03-09T17:04:05.123000+00:00`, from its date part. `None` if it is not
+/// one. (Days from the civil date, as in Howard Hinnant's `days_from_civil`.)
+#[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+fn utc_day_of(timestamp: &str) -> Option<u64> {
+    let date = timestamp.get(..10)?;
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some()
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || !(1970..=9999).contains(&year)
+    {
+        return None;
+    }
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year / 400;
+    let year_of_era = year - era * 400;
+    let shifted_month = if month > 2 { month - 3 } else { month + 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    u64::try_from(era * 146_097 + day_of_era - 719_468).ok()
+}
+
+/// Whether the member has been in the server for at least `min_days` on `day`.
+/// With no join date (a DM, or a field Discord did not send) they never have.
+fn member_long_enough(interaction: &Value, day: u64, min_days: u32) -> bool {
+    if min_days == 0 {
+        return true;
+    }
+    interaction["member"]["joined_at"]
+        .as_str()
+        .and_then(utc_day_of)
+        .is_some_and(|joined| joined.saturating_add(u64::from(min_days)) <= day)
+}
+
 fn faucet_command(
     faucet: &mut Faucet,
     interaction: &Value,
@@ -173,6 +211,12 @@ fn faucet_command(
     if !old_enough(user_id, day, min_days) {
         return message(&format!(
             "The faucet is only open to Discord accounts at least {min_days} days old, to stop one person farming many new ones. Nothing was queued."
+        ));
+    }
+    let membership_days = faucet.config().min_server_membership_days;
+    if !member_long_enough(interaction, day, membership_days) {
+        return message(&format!(
+            "The faucet is only open to people who have been in this Discord server at least {membership_days} days, and it must be used in the server, not in a DM. Nothing was queued."
         ));
     }
     let request = FaucetRequest {
@@ -437,5 +481,46 @@ mod tests {
             .unwrap()
             .contains("days old"));
         assert!(faucet.request("interaction-new").is_none());
+    }
+
+    #[test]
+    fn a_timestamp_is_read_to_its_utc_day_and_nonsense_is_not() {
+        assert_eq!(utc_day_of("1970-01-01T00:00:00+00:00"), Some(0));
+        assert_eq!(utc_day_of("2000-03-01T12:00:00.5+00:00"), Some(11_017));
+        assert_eq!(utc_day_of("2026-09-24T08:15:43.000000+00:00"), Some(20_720));
+        assert_eq!(utc_day_of("not a date"), None);
+        assert_eq!(utc_day_of("2026-13-01T00:00:00Z"), None);
+        assert_eq!(utc_day_of("2026-09"), None);
+    }
+
+    #[test]
+    fn membership_needs_a_join_date_old_enough_and_a_dm_has_none() {
+        let joined = |at: &str| json!({ "member": { "joined_at": at } });
+        assert!(member_long_enough(&json!({}), TODAY, 0), "off");
+        assert!(
+            !member_long_enough(&json!({}), TODAY, 1),
+            "a DM has no join date"
+        );
+        assert!(!member_long_enough(&joined("garbage"), TODAY, 1));
+        // 20_720 is 2026-09-24.
+        assert!(
+            !member_long_enough(&joined("2026-09-24T00:00:00+00:00"), 20_720, 1),
+            "today"
+        );
+        assert!(member_long_enough(
+            &joined("2026-09-23T23:59:59+00:00"),
+            20_720,
+            1
+        ));
+        assert!(!member_long_enough(
+            &joined("2026-09-22T00:00:00+00:00"),
+            20_720,
+            3
+        ));
+        assert!(member_long_enough(
+            &joined("2026-09-21T00:00:00+00:00"),
+            20_720,
+            3
+        ));
     }
 }

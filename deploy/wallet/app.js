@@ -1,5 +1,10 @@
 const RPC_URL = "https://rpc.thrylos.org/";
+// The old, unencrypted form: read once so an existing wallet keeps working, and
+// removed the moment it is encrypted under a password.
 const STORAGE_KEY = "thrylos-testnet-seed-hex";
+const ENCRYPTED_KEY = "thrylos-testnet-seed-encrypted";
+const PBKDF2_ITERATIONS = 600000;
+const MIN_PASSWORD_LENGTH = 8;
 const BASE_UNITS_PER_THRY = 1000000000n;
 // Matches crates/exec/src/native.rs and crates/node/src/client.rs exactly.
 const COIN_PACKAGE_ADDRESS = new Uint8Array(32).fill(6);
@@ -10,6 +15,20 @@ const EXPIRES_AFTER = 1000n;
 const INCLUSION_TIMEOUT_MS = 60000;
 const INCLUSION_POLL_MS = 500;
 
+const lockState = document.getElementById("lock-state");
+const createPassword = document.getElementById("create-password");
+const createPasswordError = document.getElementById("create-password-error");
+const emptyImportPassword = document.getElementById("empty-import-password");
+const walletImportPassword = document.getElementById("wallet-import-password");
+const unlockPassword = document.getElementById("unlock-password");
+const unlockError = document.getElementById("unlock-error");
+const unlockBtn = document.getElementById("unlock-btn");
+const forgetBtn = document.getElementById("forget-btn");
+const protectBlock = document.getElementById("protect-block");
+const protectPassword = document.getElementById("protect-password");
+const protectError = document.getElementById("protect-error");
+const protectBtn = document.getElementById("protect-btn");
+const lockBtn = document.getElementById("lock-btn");
 const emptyState = document.getElementById("empty-state");
 const walletState = document.getElementById("wallet-state");
 const createBtn = document.getElementById("create-btn");
@@ -276,12 +295,66 @@ function loadSeed() {
     return null;
   }
 }
-function saveSeed(seed) {
+
+function loadEncrypted() {
   try {
-    localStorage.setItem(STORAGE_KEY, bytesToHex(seed));
+    const text = localStorage.getItem(ENCRYPTED_KEY);
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+// The seed is encrypted with AES-256-GCM under a key from PBKDF2-SHA-256 (WebCrypto,
+// 600,000 rounds, a random salt), so what is in storage is useless without the
+// password. A wrong password fails GCM's authentication, and is never guessed at.
+async function passwordKey(password, salt) {
+  const raw = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    raw,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+async function encryptSeed(seed, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await passwordKey(password, salt);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, seed));
+  return { v: 1, kdf: "pbkdf2-sha256", iterations: PBKDF2_ITERATIONS, salt: bytesToHex(salt), iv: bytesToHex(iv), ciphertext: bytesToHex(ciphertext) };
+}
+
+async function decryptSeed(blob, password) {
+  if (!blob || blob.v !== 1 || blob.kdf !== "pbkdf2-sha256") throw new Error("this saved wallet is in a format this page does not know");
+  // Whatever the file claims, never fewer rounds than this page writes.
+  if (!Number.isInteger(blob.iterations) || blob.iterations < PBKDF2_ITERATIONS) throw new Error("the saved wallet asks for too few key-derivation rounds");
+  const key = await passwordKey(password, hexToBytes(blob.salt));
+  try {
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: hexToBytes(blob.iv) }, key, hexToBytes(blob.ciphertext));
+    return new Uint8Array(plain);
+  } catch {
+    throw new Error("wrong password");
+  }
+}
+
+// Encrypts and stores `seed`, and only then removes any unencrypted copy.
+async function saveSeedEncrypted(seed, password) {
+  const blob = await encryptSeed(seed, password);
+  try {
+    localStorage.setItem(ENCRYPTED_KEY, JSON.stringify(blob));
+    localStorage.removeItem(STORAGE_KEY);
   } catch {
     // Private window or blocked storage: the wallet still works for this
     // load, it just won't be there on a refresh.
+  }
+}
+
+function checkPassword(password) {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    throw new Error("use at least " + MIN_PASSWORD_LENGTH + " characters");
   }
 }
 
@@ -297,9 +370,29 @@ async function showWallet(seed) {
   walletImportForm.hidden = true;
   setFieldError(walletImportInput, walletImportError, "");
   walletImportInput.value = "";
+  // An unencrypted saved wallet is offered encryption; an encrypted one can be locked.
+  const encrypted = loadEncrypted() !== null;
+  protectBlock.hidden = encrypted || loadSeed() === null;
+  protectPassword.value = "";
+  setFieldError(protectPassword, protectError, "");
+  lockBtn.hidden = !encrypted;
+  lockState.hidden = true;
   await refreshBalance(currentAddress);
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => refreshBalance(currentAddress), 10000);
+}
+
+function lockWallet() {
+  if (pollTimer) clearInterval(pollTimer);
+  currentSeed = null;
+  currentAddress = null;
+  keyBlock.hidden = true;
+  privateKeyText.textContent = "";
+  walletState.hidden = true;
+  emptyState.hidden = true;
+  lockState.hidden = false;
+  unlockPassword.value = "";
+  setFieldError(unlockPassword, unlockError, "");
 }
 
 async function refreshBalance(address) {
@@ -317,12 +410,20 @@ async function refreshBalance(address) {
 }
 
 createBtn.addEventListener("click", async () => {
+  setFieldError(createPassword, createPasswordError, "");
+  try {
+    checkPassword(createPassword.value);
+  } catch (err) {
+    setFieldError(createPassword, createPasswordError, err.message);
+    return;
+  }
   createBtn.disabled = true;
   createBtn.textContent = "Creating…";
   try {
     await loadCrypto();
     const seed = ed.utils.randomPrivateKey();
-    saveSeed(seed);
+    await saveSeedEncrypted(seed, createPassword.value);
+    createPassword.value = "";
     await showWallet(seed);
   } catch (err) {
     createBtn.disabled = false;
@@ -348,6 +449,7 @@ resetBtn.addEventListener("click", () => {
   }
   try {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(ENCRYPTED_KEY);
   } catch {}
   if (pollTimer) clearInterval(pollTimer);
   currentSeed = null;
@@ -402,7 +504,7 @@ function parseSeedHex(text) {
   return hexToBytes(text);
 }
 
-function wireImport({ toggleBtn, form, input, errorEl, submitBtn }) {
+function wireImport({ toggleBtn, form, input, passwordInput, errorEl, submitBtn }) {
   toggleBtn.addEventListener("click", () => {
     form.hidden = !form.hidden;
     if (form.hidden) {
@@ -416,6 +518,7 @@ function wireImport({ toggleBtn, form, input, errorEl, submitBtn }) {
     try {
       await loadCrypto();
       seed = parseSeedHex(input.value);
+      checkPassword(passwordInput.value);
     } catch (err) {
       setFieldError(input, errorEl, err.message);
       return;
@@ -423,7 +526,8 @@ function wireImport({ toggleBtn, form, input, errorEl, submitBtn }) {
     submitBtn.disabled = true;
     submitBtn.textContent = "Importing…";
     try {
-      saveSeed(seed);
+      await saveSeedEncrypted(seed, passwordInput.value);
+      passwordInput.value = "";
       await showWallet(seed);
       form.hidden = true;
       input.value = "";
@@ -440,6 +544,7 @@ wireImport({
   toggleBtn: emptyImportToggle,
   form: emptyImportForm,
   input: emptyImportInput,
+  passwordInput: emptyImportPassword,
   errorEl: emptyImportError,
   submitBtn: emptyImportBtn,
 });
@@ -447,6 +552,7 @@ wireImport({
   toggleBtn: walletImportToggle,
   form: walletImportForm,
   input: walletImportInput,
+  passwordInput: walletImportPassword,
   errorEl: walletImportError,
   submitBtn: walletImportBtn,
 });
@@ -586,11 +692,81 @@ sendBtn.addEventListener("click", async () => {
   }
 });
 
+unlockBtn.addEventListener("click", async () => {
+  setFieldError(unlockPassword, unlockError, "");
+  unlockBtn.disabled = true;
+  unlockBtn.textContent = "Unlocking…";
+  try {
+    const seed = await decryptSeed(loadEncrypted(), unlockPassword.value);
+    unlockPassword.value = "";
+    await showWallet(seed);
+  } catch (err) {
+    setFieldError(unlockPassword, unlockError, err.message);
+  } finally {
+    unlockBtn.disabled = false;
+    unlockBtn.textContent = "Unlock";
+  }
+});
+unlockPassword.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") unlockBtn.click();
+});
+
+let forgetArmed = false;
+forgetBtn.addEventListener("click", () => {
+  if (!forgetArmed) {
+    forgetArmed = true;
+    forgetBtn.textContent = "Click again: this deletes the saved wallet for good";
+    setTimeout(() => {
+      forgetArmed = false;
+      forgetBtn.textContent = "forgot the password? remove this wallet";
+    }, 4000);
+    return;
+  }
+  try {
+    localStorage.removeItem(ENCRYPTED_KEY);
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {}
+  forgetArmed = false;
+  forgetBtn.textContent = "forgot the password? remove this wallet";
+  lockState.hidden = true;
+  emptyState.hidden = false;
+});
+
+protectBtn.addEventListener("click", async () => {
+  setFieldError(protectPassword, protectError, "");
+  try {
+    checkPassword(protectPassword.value);
+  } catch (err) {
+    setFieldError(protectPassword, protectError, err.message);
+    return;
+  }
+  protectBtn.disabled = true;
+  protectBtn.textContent = "Encrypting…";
+  try {
+    await saveSeedEncrypted(currentSeed, protectPassword.value);
+    protectPassword.value = "";
+    protectBlock.hidden = true;
+    lockBtn.hidden = false;
+  } catch (err) {
+    setFieldError(protectPassword, protectError, "could not encrypt: " + err.message);
+  } finally {
+    protectBtn.disabled = false;
+    protectBtn.textContent = "Encrypt";
+  }
+});
+
+lockBtn.addEventListener("click", lockWallet);
+
 (async function init() {
-  // Crypto must be loaded before loadSeed() can decode anything from
-  // storage, so this always runs first — cheap, and avoids a load-order
-  // bug where a real saved wallet silently looks like "none found".
+  // Crypto must be loaded before anything in storage can be decoded, so this
+  // always runs first — cheap, and avoids a load-order bug where a real saved
+  // wallet silently looks like "none found".
   await loadCrypto();
+  if (loadEncrypted()) {
+    emptyState.hidden = true;
+    lockState.hidden = false;
+    return;
+  }
   const seed = loadSeed();
   if (seed) {
     await showWallet(seed);

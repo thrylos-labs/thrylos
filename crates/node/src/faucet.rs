@@ -93,6 +93,13 @@ pub struct FaucetConfig {
     /// per-user cap; `0` turns it off.
     #[serde(default = "default_min_account_age_days")]
     pub min_account_age_days: u32,
+    /// How many whole days someone must have been a member of the Discord
+    /// server the command is used in (Discord sends `member.joined_at` with
+    /// every server interaction). Stops a batch of aged accounts joined
+    /// yesterday. A command used outside a server (in a DM) carries no join
+    /// date and is refused while this is on. `0`, the default, turns it off.
+    #[serde(default)]
+    pub min_server_membership_days: u32,
     /// Discord application public key, as 64 hex digits. `null` until set.
     pub discord_public_key: Option<String>,
 }
@@ -111,6 +118,7 @@ impl Default for FaucetConfig {
             global_daily_claims: 100,
             max_pending: 1_000,
             min_account_age_days: default_min_account_age_days(),
+            min_server_membership_days: 0,
             discord_public_key: None,
         }
     }

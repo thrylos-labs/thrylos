@@ -128,6 +128,19 @@ pub const MAX_UNBONDING_ENTRIES_PER_PAIR: usize = 7;
 /// the per-pair cap alone is not a sufficient work bound.
 pub const MAX_UNBONDING_ENTRIES_PER_VALIDATOR: usize = 512;
 
+/// Extra room, beyond [`MAX_UNBONDING_ENTRIES_PER_VALIDATOR`], that only the
+/// validator's own operator can use. Anyone able to fill the shared queue
+/// (stake locked in every slot for the unbonding period) could otherwise also
+/// stop the operator leaving or reducing their own stake, and a validator that
+/// cannot exit is a worse failure than one that cannot take new delegators'
+/// exits. It is one staker's whole per-validator allowance, which is all the
+/// operator can use. The evidence path scans up to the sum, so it is still
+/// bounded.
+pub const OPERATOR_RESERVED_UNBONDING_ENTRIES: usize = MAX_UNBONDING_ENTRIES_PER_PAIR;
+
+const MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE: usize =
+    MAX_UNBONDING_ENTRIES_PER_VALIDATOR + OPERATOR_RESERVED_UNBONDING_ENTRIES;
+
 /// **A choice.** The most entries [`StakingRegistry::process`] matures in
 /// one call; the rest wait for the next.
 pub const MAX_MATURING_PER_CALL: usize = 256;
@@ -726,9 +739,9 @@ impl<S: ReadStore> StakingRegistry<S> {
     ) -> Result<(Vec<(u64, UnbondingEntry)>, u128), Corrupt> {
         let indexed = self.store.scan_prefix(
             &by_validator_prefix(id),
-            MAX_UNBONDING_ENTRIES_PER_VALIDATOR + 1,
+            MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE + 1,
         );
-        if indexed.len() > MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
+        if indexed.len() > MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE {
             return Err(Corrupt);
         }
         let mut entries = Vec::new();
@@ -935,14 +948,18 @@ impl<S: Store> StakingRegistry<S> {
         if usize::try_from(open).map_or(true, |open| open >= MAX_UNBONDING_ENTRIES_PER_PAIR) {
             return Err(RegistryError::TooManyUnbondingEntries);
         }
+        // The shared queue's limit, or, for the validator's own operator,
+        // that plus the room kept back for them.
+        let limit = if staker == validator.operator {
+            MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE
+        } else {
+            MAX_UNBONDING_ENTRIES_PER_VALIDATOR
+        };
         if self
             .store
-            .scan_prefix(
-                &by_validator_prefix(id),
-                MAX_UNBONDING_ENTRIES_PER_VALIDATOR,
-            )
+            .scan_prefix(&by_validator_prefix(id), limit)
             .len()
-            >= MAX_UNBONDING_ENTRIES_PER_VALIDATOR
+            >= limit
         {
             return Err(RegistryError::TooManyUnbondingEntries);
         }
@@ -1593,6 +1610,34 @@ mod tests {
         }
         assert_eq!(
             reg.begin_unstake(&params(), &id_of(1), staker(1), 1, T0),
+            Err(RegistryError::TooManyUnbondingEntries)
+        );
+    }
+
+    #[test]
+    fn the_operator_can_still_unstake_when_others_have_filled_the_queue_but_only_so_far() {
+        let mut reg = new_registry();
+        register(&mut reg, 1, 5_000);
+        for seq in 0..MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
+            reg.store.put(
+                by_validator_key(&id_of(1), u64::try_from(seq).unwrap()),
+                Vec::new(),
+            );
+        }
+        // Someone else is refused, as before.
+        reg.delegate(&id_of(1), staker(1), 100).unwrap();
+        assert_eq!(
+            reg.begin_unstake(&params(), &id_of(1), staker(1), 1, T0),
+            Err(RegistryError::TooManyUnbondingEntries)
+        );
+        // The operator still gets in, up to the room kept for them (which is
+        // one staker's whole per-validator allowance).
+        for _ in 0..OPERATOR_RESERVED_UNBONDING_ENTRIES {
+            let entered = reg.begin_unstake(&params(), &id_of(1), operator_of(1), 1, T0);
+            assert!(entered.is_ok(), "{entered:?}");
+        }
+        assert_eq!(
+            reg.begin_unstake(&params(), &id_of(1), operator_of(1), 1, T0),
             Err(RegistryError::TooManyUnbondingEntries)
         );
     }

@@ -103,7 +103,11 @@ bech32m address format as the CLI (`crates/text/src/address.rs`,
 `crates/types/src/address.rs`) and builds transactions with the same
 canonical encoding as `crates/node/src/client.rs`'s `signed_transfer`,
 verified byte-for-byte against it before shipping. The private key lives
-only in the browser's `localStorage`; the page can reveal it (to back up or
+only in the browser's `localStorage`, encrypted under a password the user
+chooses (AES-256-GCM, key from PBKDF2-SHA-256 at 600,000 rounds; a wrong
+password fails authentication and there is no recovery). A wallet saved by an
+earlier version, unencrypted, still opens and is offered encryption. The page
+can lock itself, reveal the key (to back up or
 move to another browser) or import one, but there is no server-side
 component and no recovery if local storage is cleared without a backup.
 
