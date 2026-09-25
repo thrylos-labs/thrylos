@@ -39,7 +39,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_core_types::vm_status::StatusCode;
-use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
+use move_vm_runtime::dev_utils::gas_schedule::Gas;
 use move_vm_runtime::execution::values::Value;
 use move_vm_runtime::natives::extensions::NativeContextExtensions;
 use move_vm_runtime::runtime::MoveRuntime;
@@ -247,13 +247,13 @@ fn addr(n: u8) -> AccountAddress {
 const SENDER: u8 = 1;
 
 const PINNED: [(&str, u64); 7] = [
-    ("put 101 bytes", 110),
-    ("put 8,002 bytes", 8153),
-    ("put a counter", 9),
-    ("read a counter", 5),
-    ("take and put a counter", 13),
-    ("has, put, has, has, take, has", 23),
-    ("build 8,000 bytes without the store", 4172),
+    ("put 101 bytes", 117),
+    ("put 8,002 bytes", 8839),
+    ("put a counter", 6),
+    ("read a counter", 6),
+    ("take and put a counter", 12),
+    ("has, put, has, has, take, has", 26),
+    ("build 8,000 bytes without the store", 8354),
 ];
 
 struct Ran {
@@ -295,7 +295,7 @@ fn run_with(
         )
         .unwrap();
     let module = ModuleId::new(AccountAddress::ZERO, Identifier::new("app").unwrap());
-    let mut meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(gas));
+    let mut meter = chain_exec::gas::ChainGas::new(Gas::new(gas));
     let result = vm
         .execute_function_bypass_visibility(
             &module,

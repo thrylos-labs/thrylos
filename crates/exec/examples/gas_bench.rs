@@ -43,7 +43,6 @@ module pkg::bench {
 
     public struct Counter has key, store, copy, drop { n: u64 }
     public struct Blob has key, store { data: vector<u8> }
-
     entry fun noop() {}
     entry fun arith(n: u64) {
         let mut i = 0u64;
@@ -90,6 +89,65 @@ module pkg::bench {
         let Blob { data } = store::take<Blob>(o, 0);
         assert!(data.length() > 0, 1);
         store::put(o, 0, Blob { data });
+    }
+}
+
+// A second module: the verifier allows a module only a few loops.
+module pkg::bench2 {
+    public struct P has copy, drop { a: u64, b: u64, c: u64 }
+
+    fun inc(x: u64): u64 { x + 1 }
+    entry fun calls(n: u64) {
+        let mut i = 0u64;
+        let mut s = 0u64;
+        while (i < n) { s = inc(s); i = i + 1; };
+        assert!(s == n, 1);
+    }
+    entry fun structs(n: u64) {
+        let mut p = P { a: 1, b: 2, c: 3 };
+        let mut i = 0u64;
+        while (i < n) {
+            p.a = i;
+            let q = P { a: p.c, b: p.a, c: p.b };
+            p = q;
+            i = i + 1;
+        };
+    }
+    entry fun vec_index(n: u64) {
+        let mut v = vector[];
+        let mut k = 0u64;
+        while (k < 64) { v.push_back(k); k = k + 1; };
+        let mut i = 0u64;
+        while (i < n) {
+            let j = i % 64;
+            let x = *v.borrow(j);
+            *v.borrow_mut((j + 1) % 64) = x + 1;
+            v.swap(0, j);
+            i = i + 1;
+        };
+    }
+    entry fun wide_math(n: u64) {
+        let mut a: u256 = 12345;
+        let mut i = 0u64;
+        while (i < n) { a = (a * 7 + 3) % 1000000007u256; i = i + 1; };
+        assert!(a > 0, 1);
+    }
+    // Copy a vector of `len` numbers, `n` times: the work is in the copy.
+    entry fun copy_big(n: u64, len: u64) {
+        let mut v = vector[];
+        let mut k = 0u64;
+        while (k < len) { v.push_back(k); k = k + 1; };
+        let mut i = 0u64;
+        while (i < n) { let w = copy v; assert!(w.length() == len, 1); i = i + 1; };
+    }
+    // Compare two vectors of `len` numbers, `n` times.
+    entry fun eq_big(n: u64, len: u64) {
+        let mut v = vector[];
+        let mut k = 0u64;
+        while (k < len) { v.push_back(k); k = k + 1; };
+        let w = copy v;
+        let mut i = 0u64;
+        while (i < n) { assert!(v == w, 1); i = i + 1; };
     }
 }";
 
@@ -149,7 +207,21 @@ fn main() {
                args: Vec<Vec<u8>>|
      -> (u64, Vec<Duration>) {
         let tx = {
-            let tx = owner.call(package, "bench", f, args);
+            let module = if [
+                "calls",
+                "structs",
+                "vec_index",
+                "wide_math",
+                "copy_big",
+                "eq_big",
+            ]
+            .contains(&f)
+            {
+                "bench2"
+            } else {
+                "bench"
+            };
+            let tx = owner.call(package, module, f, args);
             owner.sequence -= 1;
             tx
         };
@@ -203,6 +275,49 @@ fn main() {
     );
     add(
         &mut rows,
+        "calls x 5,000 (a small function)",
+        sim(&chain, &mut owner, "calls", vec![n(5_000)]),
+    );
+    add(
+        &mut rows,
+        "struct pack/unpack/fields x 5,000",
+        sim(&chain, &mut owner, "structs", vec![n(5_000)]),
+    );
+    add(
+        &mut rows,
+        "vector borrow/swap x 5,000",
+        sim(&chain, &mut owner, "vec_index", vec![n(5_000)]),
+    );
+    add(
+        &mut rows,
+        "u256 multiply/mod x 5,000",
+        sim(&chain, &mut owner, "wide_math", vec![n(5_000)]),
+    );
+    for len in [16u64, 512, 4_096] {
+        let count = (2_000_000 / (len + 4_000)).max(20);
+        add(
+            &mut rows,
+            &format!("copy a {len}-number vector x {count}"),
+            sim(
+                &chain,
+                &mut owner,
+                "copy_big",
+                vec![n(count), len.to_le_bytes().to_vec()],
+            ),
+        );
+        add(
+            &mut rows,
+            &format!("compare two {len}-number vectors x {count}"),
+            sim(
+                &chain,
+                &mut owner,
+                "eq_big",
+                vec![n(count), len.to_le_bytes().to_vec()],
+            ),
+        );
+    }
+    add(
+        &mut rows,
         "sha3_256 x 500",
         sim(&chain, &mut owner, "hashing", vec![n(500)]),
     );
@@ -226,7 +341,7 @@ fn main() {
             "make_blob",
             vec![big.to_le_bytes().to_vec()],
         );
-        tx.body.gas_limit = chain_types::GasAmount(2_000_000);
+        tx.body.gas_limit = chain_types::GasAmount(75_000);
         owner.resign(tx)
     };
     assert_eq!(
@@ -292,9 +407,9 @@ fn main() {
         }
         let mut times = Vec::new();
         for _ in 0..runs.min(7) {
-            let (fresh, mut who) = rich();
+            let (fresh, mut who) = rich_with_block_gas(600_000);
             let mut tx: Transaction = who.publish(bytes.clone());
-            tx.body.gas_limit = chain_types::GasAmount(2_000_000);
+            tx.body.gas_limit = chain_types::GasAmount(150_000);
             let tx = who.resign(tx);
             let root = fresh.executor.state_root();
             let block = fresh.executor.propose_block(
@@ -327,18 +442,18 @@ fn main() {
     // hostile call costs a validator, at a gas limit a user may choose ----
     let mut hostile: Vec<Row> = Vec::new();
     for (label, function, gas_limit) in [
-        ("arithmetic loop to 300,000 gas", "arith", 300_000u64),
-        ("arithmetic loop to 3,000,000 gas", "arith", 3_000_000),
-        ("sha3 loop to 300,000 gas", "hashing", 300_000),
+        ("arithmetic loop to 75,000 gas", "arith", 75_000u64),
+        ("arithmetic loop to 150,000 gas", "arith", 150_000),
+        ("sha3 loop to 150,000 gas", "hashing", 150_000),
     ] {
-        if quick && gas_limit > 300_000 {
+        if quick && gas_limit > 75_000 {
             continue;
         }
         let mut times = Vec::new();
         let mut gas = 0;
         for _ in 0..3 {
             let (fresh, mut who) = {
-                let (mut c, mut w) = rich();
+                let (mut c, mut w) = rich_with_block_gas(600_000);
                 let id = id_of(&w, 0);
                 let modules: Vec<_> = compile_with_system_packages(SOURCE).into_values().collect();
                 assert_eq!(c.run(w.publish(modules)), TransactionOutcome::Success);

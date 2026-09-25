@@ -25,7 +25,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_core_types::vm_status::StatusCode;
-use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
+use move_vm_runtime::dev_utils::gas_schedule::Gas;
 use move_vm_runtime::natives::extensions::NativeContextExtensions;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
 use std::cell::RefCell;
@@ -319,7 +319,7 @@ fn run_one(
     let Ok(function) = Identifier::new(test_name) else {
         return Outcome::Failed("not a function name".into());
     };
-    let mut meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(gas));
+    let mut meter = chain_exec::gas::ChainGas::new(Gas::new(gas));
     let result = vm.execute_function_bypass_visibility(
         module_id,
         &function,

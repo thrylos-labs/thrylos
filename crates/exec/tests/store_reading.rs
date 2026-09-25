@@ -439,7 +439,7 @@ fn a_simulation_needs_no_signature_no_sequence_number_and_no_account() {
     // A transaction from someone with no account, a wrong sequence number and a
     // signature that does not match: only its sender and call are read.
     let stranger = Publisher::new(120);
-    let mut tx = stranger.tx_with(999, 100_000, app.package, "who", vec![]);
+    let mut tx = stranger.tx_with(999, 50_000, app.package, "who", vec![]);
     tx.body.call.module_name = b"app".to_vec();
     tx.signature = app
         .owner

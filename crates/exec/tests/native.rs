@@ -832,7 +832,7 @@ fn governed_parameters_govern_execution_a_lowered_gas_limit_refuses_a_block_it_a
     let (mut chain, mut operator) = chain_with_validator();
     let mut lower = Vec::new();
     ProposalKind::ParameterChange(ParamChange {
-        max_block_gas: Some(10_000_000),
+        max_block_gas: Some(50_000),
         ..ParamChange::default()
     })
     .encode(&mut lower);
@@ -844,20 +844,20 @@ fn governed_parameters_govern_execution_a_lowered_gas_limit_refuses_a_block_it_a
     chain.block_after(TIMELOCK_MS, Vec::new());
     assert_eq!(
         chain.executor.params().unwrap().values().max_block_gas,
-        10_000_000
+        50_000
     );
 
-    // A transaction asking for 12M gas would have fit under the old 60M,
-    // but now exceeds one quarter of the governed 10M block limit.
+    // A transaction asking for 20,000 gas would have fit under the old 300,000,
+    // but now exceeds one quarter of the governed 50,000 block limit.
     let heavy = operator.call_with(
         operator.sequence,
-        12_000_000,
+        20_000,
         STAKING_PACKAGE_ADDRESS,
         STAKING_MODULE_NAME,
         UNJAIL,
         Vec::new(),
     );
-    chain.fund(&operator, 12_000_000 * u128::from(MAX_FEE));
+    chain.fund(&operator, 20_000 * u128::from(MAX_FEE));
     let root = chain.executor.state_root();
     let block = chain.executor.propose_block(
         chain.executor.tip_block_hash(),

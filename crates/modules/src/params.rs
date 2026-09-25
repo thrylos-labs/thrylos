@@ -13,7 +13,7 @@
 //!
 //! | Parameter | Spec | Here |
 //! |---|---|---|
-//! | Block gas limit | 10M–120M, never zero | `chain_modules::fees` |
+//! | Block gas limit | 50,000–600,000, never zero | `chain_modules::fees` |
 //! | Gas schedule entries | within 4x of genesis, per entry | **not built** — there is no gas schedule until real metering exists |
 //! | Min self-stake | strictly positive | `>= 1` |
 //! | Inflation | 0–10% annualised | 0..=1000 basis points |
@@ -78,13 +78,13 @@ pub const MAX_VETO_THRESHOLD_BPS: u16 = 5_000;
 pub const MAX_MIN_SELF_STAKE: u128 = 1_000_000_000_000_000;
 
 /// The parameters a chain starts with, unless its genesis says otherwise.
-/// The spec's own numbers where it gives one (60M block gas, base fee
+/// The spec's own numbers where it gives one (300,000 block gas, base fee
 /// denominator 8, 21-day unbonding, 3-5% inflation, quorum and veto at a
 /// third); **the minimum self-stake is a choice**, since the spec fixes
 /// only that it is positive and there is no token denomination yet to
 /// price it in. All are governance-adjustable within the clamps above.
 pub const GENESIS_PARAM_VALUES: ParamValues = ParamValues {
-    max_block_gas: 60_000_000,
+    max_block_gas: 300_000,
     base_fee_change_denominator: crate::fees::GENESIS_BASE_FEE_CHANGE_DENOMINATOR,
     min_self_stake: 1_000_000,
     inflation_bps: 400,
@@ -391,7 +391,7 @@ mod tests {
 
     fn valid() -> ParamValues {
         ParamValues {
-            max_block_gas: 60_000_000,
+            max_block_gas: 300_000,
             base_fee_change_denominator: 8,
             min_self_stake: 1_000,
             inflation_bps: 400,
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn fee_parameters_are_clamped_through_the_fee_module() {
         let mut values = valid();
-        values.max_block_gas = 9_999_999;
+        values.max_block_gas = 49_999;
         assert_eq!(
             GovernedParams::new(values),
             Err(ParamError::Fee(FeeError::BlockGasLimitOutOfRange))
@@ -597,7 +597,7 @@ mod tests {
         let params = GovernedParams::new(valid()).unwrap();
         let changed = params
             .with_change(&ParamChange {
-                max_block_gas: Some(120_000_000),
+                max_block_gas: Some(600_000),
                 ..ParamChange::default()
             })
             .unwrap();
@@ -641,7 +641,7 @@ mod tests {
     proptest! {
         #[test]
         fn a_set_is_accepted_exactly_when_every_value_is_inside_its_clamp(
-            max_block_gas in 0u64..=200_000_000,
+            max_block_gas in 0u64..=1_000_000,
             denominator in 0u64..=100,
             min_self_stake in 0u128..=10,
             inflation_bps in 0u16..=2_000,
@@ -659,7 +659,7 @@ mod tests {
                 veto_threshold_bps: veto_bps,
                 publish_enabled: true,
             };
-            let expected = (10_000_000..=120_000_000).contains(&max_block_gas)
+            let expected = (50_000..=600_000).contains(&max_block_gas)
                 && (2..=64).contains(&denominator)
                 && min_self_stake >= 1
                 && inflation_bps <= 1_000

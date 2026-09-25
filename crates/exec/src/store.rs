@@ -23,7 +23,6 @@ use move_binary_format::errors::PartialVMResult;
 use move_binary_format::partial_vm_error;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::gas_algebra::InternalGas;
-use move_core_types::vm_status::sub_status::NFE_OUT_OF_GAS;
 use move_vm_runtime::execution::values::Value;
 use move_vm_runtime::execution::Type;
 use move_vm_runtime::natives::extensions::NativeExtensionMarker;
@@ -38,9 +37,9 @@ use crate::drawer::{DrawerError, DrawerOverlay, DrawerValue, CODE_CORRUPT, CODE_
 /// byte written costs five times a byte read, since writing is what grows the
 /// state. Like the rest of the schedule these are a safety bound until measured
 /// on reference hardware.
-pub const STORE_BASE_GAS: u64 = 2_000;
-pub const STORE_READ_PER_BYTE: u64 = 100;
-pub const STORE_WRITE_PER_BYTE: u64 = 500;
+pub const STORE_BASE_GAS: u64 = 4_000;
+pub const STORE_READ_PER_BYTE: u64 = 12;
+pub const STORE_WRITE_PER_BYTE: u64 = 60;
 
 /// The store's part of a running call.
 #[derive(Tid)]
@@ -62,15 +61,14 @@ pub fn natives() -> Vec<(&'static str, NativeFunction)> {
 
 type Outcome = PartialVMResult<NativeResult>;
 
-/// Pay `amount` more, or end the call out of gas.
+/// Pay `amount` more, or end the call out of gas. Out of gas is the VM's own
+/// status, not an abort with a code of ours: an abort code of 1 would read as the
+/// store's "empty".
 fn pay(context: &NativeContext, amount: u64) -> PartialVMResult<Option<NativeResult>> {
     if context.charge_gas(InternalGas::new(amount))? {
         Ok(None)
     } else {
-        Ok(Some(NativeResult::err(
-            context.gas_budget(),
-            NFE_OUT_OF_GAS,
-        )))
+        Err(partial_vm_error!(OUT_OF_GAS))
     }
 }
 

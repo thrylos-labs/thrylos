@@ -139,9 +139,9 @@ fn the_limit_is_only_on_calls_to_users_packages() {
 #[test]
 fn a_block_with_a_call_over_the_limit_is_still_a_valid_block() {
     // The limits are a node's own: another proposer's block is judged by the chain's
-    // rules alone, so a call that declares far more than the limit still runs.
+    // rules alone, so a call that declares more than the limit (though within the chain's own ceiling) still runs.
     let mut w = world();
-    let big = w.call("noop", 5_000_000);
+    let big = w.call("noop", 70_000);
     let block = Block {
         parent_block_hash: w.chain.executor.tip_block_hash(),
         height: BlockHeight(w.chain.executor.head_height().unwrap() + 1),

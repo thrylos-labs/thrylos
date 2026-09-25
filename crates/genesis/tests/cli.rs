@@ -204,7 +204,7 @@ fn check_shows_the_parameters_in_units_a_person_can_read() {
     let text = stdout(&run(&["check", DEVNET]));
     for expected in [
         "parameters:",
-        "max block gas:                 60000000",
+        "max block gas:                 300000",
         "minimum self-stake:            0.001 THRY",
         "inflation:                     4.00% (400 bps)",
         "unbonding period:              21 d (1814400000 ms)",

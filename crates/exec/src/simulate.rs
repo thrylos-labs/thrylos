@@ -20,7 +20,7 @@ use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_core_types::runtime_value::MoveTypeLayout;
 use move_core_types::vm_status::StatusCode;
-use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
+use move_vm_runtime::dev_utils::gas_schedule::Gas;
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::runtime::MoveRuntime;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
@@ -34,10 +34,10 @@ use crate::store::StoreExtension;
 use crate::view::ViewValue;
 
 /// The most gas a simulation may use, whatever the transaction says.
-/// Measured on the alpha VPS in a release build (`docs/gas-calibration.md`): a
-/// unit of gas spent on plain instructions took 8 to 11 microseconds there, so
-/// this is about a tenth of a second of the node's thread at worst.
-pub const SIMULATE_MAX_GAS: u64 = 10_000;
+/// Gas is priced at about a microsecond a unit (`docs/gas-calibration.md`), so
+/// this is about 75 milliseconds of the node's thread at worst: what one
+/// transaction may spend at the chain's genesis limits, and no more.
+pub const SIMULATE_MAX_GAS: u64 = 75_000;
 
 /// What a simulated call did.
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +105,7 @@ pub(crate) fn simulate(
     state: &State,
     tx: &Transaction,
     ctx: &BlockCtx,
+    cap: u64,
 ) -> Result<Simulation, SimulationFailure> {
     let call = &tx.body.call;
     let id = AccountAddress::new(*call.module_address.as_bytes());
@@ -149,8 +150,8 @@ pub(crate) fn simulate(
         .map_err(|_| SimulationFailure::Internal)?;
     let identifier = Identifier::new(function_name).map_err(|_| unknown())?;
     let module_id = ModuleId::new(id, Identifier::new(module_name).map_err(|_| unknown())?);
-    let limit = tx.body.gas_limit.0.min(SIMULATE_MAX_GAS);
-    let mut meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(limit));
+    let limit = tx.body.gas_limit.0.min(cap);
+    let mut meter = crate::gas::ChainGas::new(Gas::new(limit));
     // `execute_function_bypass_visibility` so a `public` function that is not
     // `entry` can be called; what may be called was decided by `signature` above.
     let execution = vm.execute_function_bypass_visibility(

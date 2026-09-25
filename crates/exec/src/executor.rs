@@ -17,12 +17,14 @@ use chain_modules::{
     ActiveValidator, Governance, GovernedParams, ParamError, ParamValues, StakingRegistry,
     ValidatorId, DEAD_SHARES, MAX_ACTIVE_VALIDATORS,
 };
-use chain_state::{compute_root, StateChange, StateDiff, StateKey, StateRoot, StateValue};
+use chain_state::{
+    compute_root, StateChange, StateDiff, StateKey, StateRoot, StateValue, TrieIndex,
+};
 use chain_types::codec::{CodecError, Encode};
 use chain_types::{Address, BlockHeight, ChainId, GasAmount, GasPrice, Hash, Transaction};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
-use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
+use move_vm_runtime::dev_utils::gas_schedule::Gas;
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::execution::values::{Struct, Value};
 use move_vm_runtime::runtime::MoveRuntime;
@@ -184,6 +186,11 @@ pub struct Executor {
     chain_id: ChainId,
     state: BTreeMap<StateKey, StateValue>,
     state_root: StateRoot,
+    /// The state root kept up to date block by block, so that a block costs
+    /// what it changed and not the size of the state. It always describes
+    /// `state`, and gives the same root as [`compute_root`] (commitment
+    /// version 2, unchanged): that is what `chain_state::index` is tested for.
+    trie: TrieIndex,
     tip_block_hash: Hash,
     runtime: MoveRuntime,
     /// Compact commitments to recently checked candidates. Keeping hashes,
@@ -282,7 +289,25 @@ impl Executor {
                 reason: FinaliseErrorReason::NotOnCanonicalChain,
             });
         }
-        chain_state::apply(&mut self.state, &prepared.state_diff);
+        let update = self.trie.prepare(&prepared.state_diff);
+        if update.root() == prepared.state_root {
+            chain_state::apply(&mut self.state, &prepared.state_diff);
+            self.trie.commit(update);
+        } else {
+            // The maintained root disagrees with the one the block was checked
+            // against. Trust only the definition: rebuild from the resulting
+            // state, and refuse if that is not the block's root either.
+            let mut next = self.state.clone();
+            chain_state::apply(&mut next, &prepared.state_diff);
+            let trie = TrieIndex::from_state(&next);
+            if trie.root() != prepared.state_root {
+                return Err(FinaliseError {
+                    reason: FinaliseErrorReason::StateRootMismatch,
+                });
+            }
+            self.state = next;
+            self.trie = trie;
+        }
         self.state_root = prepared.state_root;
         self.tip_block_hash = prepared.block_hash;
         self.executions.get_mut().clear();
@@ -356,7 +381,7 @@ impl Executor {
                 GenesisConfigError::StateLimitExceeded,
             ));
         }
-        executor.state_root = compute_root(&executor.state);
+        executor.rebuild_root();
         executor.executions.get_mut().clear();
         Ok(executor)
     }
@@ -414,11 +439,13 @@ impl Executor {
         Governance::new(StateStore::new(&mut state))
             .init_genesis(params)
             .map_err(|err| ExecutorError::Modules(err.to_string()))?;
-        let state_root = compute_root(&state);
+        let trie = TrieIndex::from_state(&state);
+        let state_root = trie.root();
         Ok(Self {
             chain_id,
             state,
             state_root,
+            trie,
             tip_block_hash: tip,
             runtime: Self::new_runtime()?,
             executions: RefCell::new(VecDeque::new()),
@@ -456,7 +483,8 @@ impl Executor {
                 "the state exceeds the protocol's entry or byte limit",
             ));
         }
-        if compute_root(&state) != expected_root {
+        let trie = TrieIndex::from_state(&state);
+        if trie.root() != expected_root {
             return Err(ExecutorError::Restore(
                 "the state does not hash to the recorded root",
             ));
@@ -468,6 +496,7 @@ impl Executor {
             chain_id,
             state,
             state_root: expected_root,
+            trie,
             tip_block_hash,
             runtime: Self::new_runtime()?,
             executions: RefCell::new(VecDeque::new()),
@@ -582,6 +611,17 @@ impl Executor {
         &self,
         tx: &Transaction,
     ) -> Result<crate::simulate::Simulation, crate::simulate::SimulationFailure> {
+        self.simulate_up_to(tx, crate::simulate::SIMULATE_MAX_GAS)
+    }
+
+    /// [`Self::simulate`] with a gas cap of the caller's choosing. For measuring
+    /// what gas costs in time (`examples/gas_bench.rs`); a node never calls it.
+    #[doc(hidden)]
+    pub fn simulate_up_to(
+        &self,
+        tx: &Transaction,
+        cap: u64,
+    ) -> Result<crate::simulate::Simulation, crate::simulate::SimulationFailure> {
         use crate::simulate::SimulationFailure;
         let (height, timestamp) = read_head(&self.state).ok_or(SimulationFailure::Internal)?;
         let ctx = self
@@ -591,7 +631,14 @@ impl Executor {
                 timestamp.saturating_add(1),
             )
             .map_err(|_| SimulationFailure::Internal)?;
-        crate::simulate::simulate(&self.runtime, &self.state, tx, &ctx)
+        crate::simulate::simulate(&self.runtime, &self.state, tx, &ctx, cap)
+    }
+
+    /// Work the state root out again from the whole state, after the state
+    /// was changed other than by a block.
+    fn rebuild_root(&mut self) {
+        self.trie = TrieIndex::from_state(&self.state);
+        self.state_root = self.trie.root();
     }
 
     /// Credits `address`'s account by `amount`. `docs/spec.md` doesn't
@@ -603,12 +650,19 @@ impl Executor {
     /// Coin allocated this way is new supply, and is recorded as such.
     pub fn credit_account(&mut self, address: Address, amount: u128) -> Result<(), CodecError> {
         let previous = self.state.clone();
-        credit_account_state(&mut self.state, address, amount)?;
+        if let Err(err) = credit_account_state(&mut self.state, address, amount) {
+            self.state = previous;
+            return Err(err);
+        }
         if !state_within_limits(&self.state) {
             self.state = previous;
             return Err(CodecError::LengthTooLarge);
         }
-        self.state_root = compute_root(&self.state);
+        let update = self
+            .trie
+            .prepare(&chain_state::diff(&previous, &self.state));
+        self.state_root = update.root();
+        self.trie.commit(update);
         self.executions.get_mut().clear();
         Ok(())
     }
@@ -1007,7 +1061,7 @@ impl Executor {
         let mut vm = self
             .make_vm(state, SYSTEM_PACKAGE_ADDRESS)
             .map_err(|_| CallError::Internal)?;
-        let mut gas_meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(tx.body.gas_limit.0));
+        let mut gas_meter = crate::gas::ChainGas::new(Gas::new(tx.body.gas_limit.0));
         let execution = vm.execute_function_bypass_visibility(
             &module_id,
             &function_name,
@@ -1086,7 +1140,7 @@ impl Executor {
         let mut vm = self
             .make_vm(state, COUNTER_PACKAGE_ADDRESS)
             .map_err(|_| CallError::Internal)?;
-        let mut gas_meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(tx.body.gas_limit.0));
+        let mut gas_meter = crate::gas::ChainGas::new(Gas::new(tx.body.gas_limit.0));
         let execution = vm.execute_function_bypass_visibility(
             &module_id,
             &function_name,
@@ -1402,10 +1456,21 @@ impl Engine for Executor {
                 reason: RejectionReason::MalformedBlock,
             });
         }
+        let state_diff = chain_state::diff(&self.state, &scratch);
+        let mut state_root = self.trie.prepare(&state_diff).root();
+        // A check on the maintained root against the definition of it, on every
+        // block in a debug build and on one in 64 otherwise. If they ever
+        // differ the definition wins: the block is executed to the rebuilt root,
+        // and finalising it puts the maintained root right.
+        if cfg!(debug_assertions) || block.height.0.is_multiple_of(64) {
+            let rebuilt = compute_root(&scratch);
+            debug_assert_eq!(state_root, rebuilt, "the maintained state root drifted");
+            state_root = rebuilt;
+        }
         let executed = ExecutedBlock {
-            state_root: compute_root(&scratch),
+            state_root,
             gas_used,
-            state_diff: chain_state::diff(&self.state, &scratch),
+            state_diff,
             outcomes,
         };
         let block_hash = block.hash();
@@ -1630,6 +1695,7 @@ mod tests {
             executor.state.insert(key, StateValue::new(vec![0u8; 8]));
             next += 1;
         }
+        executor.rebuild_root();
     }
 
     /// A measurement, not a check: what one block costs as the state grows,
@@ -1662,7 +1728,7 @@ mod tests {
                     .insert(key, StateValue::new(vec![0u8; value_bytes]));
                 next += 1;
             }
-            executor.state_root = compute_root(&executor.state);
+            executor.rebuild_root();
             let limits = executor.block_limits().unwrap();
             let tx = coin_transfer(2, 0, Address::from_bytes([222; 32]), 10);
 

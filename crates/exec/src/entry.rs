@@ -25,7 +25,7 @@ use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use move_core_types::runtime_value::MoveTypeLayout;
-use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
+use move_vm_runtime::dev_utils::gas_schedule::Gas;
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::execution::values::Value;
 use move_vm_runtime::natives::extensions::NativeContextExtensions;
@@ -287,7 +287,7 @@ fn run(
         .map_err(|_| CallError::Internal)?;
     let identifier = Identifier::new(function_name).map_err(|_| unknown())?;
     let module_id = ModuleId::new(id, Identifier::new(module_name).map_err(|_| unknown())?);
-    let mut meter = GasStatus::new(&INITIAL_COST_SCHEDULE, Gas::new(tx.body.gas_limit.0));
+    let mut meter = crate::gas::ChainGas::new(Gas::new(tx.body.gas_limit.0));
     let execution = vm.execute_entry_function(&module_id, &identifier, vec![], values, &mut meter);
     let remaining: u64 = meter.remaining_gas().into();
     let gas_used = tx.body.gas_limit.0.saturating_sub(remaining);

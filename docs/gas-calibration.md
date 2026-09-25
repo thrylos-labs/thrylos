@@ -1,6 +1,6 @@
 # Gas calibration: what a unit of gas costs in time, measured
 
-Written 2026-09-25. **The finding that matters is at the top, and it is about the chain that is
+Written 2026-09-25. The recalibration it led to is at the end (built, not yet deployed). **The finding that matters is at the top, and it is about the chain that is
 running now.**
 
 ## The finding
@@ -127,12 +127,26 @@ validator pays it for every block. On the one-CPU VPS it will be several times t
 one-second block time. So the state cap and the block time are not compatible today, whatever the
 gas is set to; and it means the gas budget above (about 300 ms a block) is not the whole budget.
 
-The fix does not change consensus: the root's *value* stays exactly what it is (commitment
-version 2); only the way it is computed changes, from a rebuild to an update that touches only the
-entries a block changed. That can ship as an ordinary binary swap, before the reset, and the
-existing root tests (and a new one comparing incremental against full on random blocks) are the proof
-that it gives the same answer. The clone can go the same way (copy-on-write) but it is small by
-comparison.
+**Fixed the same day (built, not deployed).** The root's value is unchanged (commitment version
+2); only the way it is computed changed, from a rebuild to an update that touches only what the block
+changed (`chain_state::TrieIndex`, `crates/state/src/index.rs`). It is held to the definition by
+tests: the maintained root equals `compute_root` after every block of random runs of writes,
+overwrites and deletions, including entries that share a bucket, and the executor checks it against
+`compute_root` on every block in a debug build (so the whole test suite is a differential test) and
+on one block in 64 in a release build, where the definition wins if they ever differ. Same benchmark,
+after:
+
+| Entries in state | Value size | Execute a block, before | after |
+|---:|---:|---:|---:|
+| 25,000 | 8 B | 31 ms | 10 ms |
+| 99,900 | 8 B | 133 ms | 45 ms |
+| 99,900 | 640 B | 361 ms | **58 ms** |
+
+The root no longer shows up. What is left is also O(state): cloning the state to execute on it,
+comparing it with the result to find what changed (`chain_state::diff`), and the state-limit check
+(about 45 to 60 ms at the cap on the Mac). Removing those means executing against an overlay of
+writes instead of a copy, a larger change to the executor; it is not needed for correctness and can
+wait for a measurement on the VPS.
 
 **Also not yet measured:** the same run on the VPS.
 
@@ -182,3 +196,103 @@ same as trusting the operator's own nodes. Removing the limits needs no fork eit
 Whichever is chosen, the numbers above should be re-measured after the change with the same
 benchmark, and `THRYLOS_MAX_NS_PER_GAS` (the fuzz job's ceiling, now one million nanoseconds per
 unit of gas) should come down to something a calibrated chain can meet, such as two thousand.
+
+## The recalibration, as built (2026-09-25; ships with the third reset)
+
+Not deployed. It is a consensus change (gas is consensus), so it goes out with a reset, together with
+storage, reading state and the stage-3 rules.
+
+### The ruler
+
+**1 gas is about 1 microsecond on the alpha VPS, and 1 gas is 1,000 of the VM's internal units, so one
+internal unit is one nanosecond.** Every price is now written as the nanoseconds the operation was
+measured to take (`crates/exec/examples/opcode_bench.rs`), rounded up. Where overpricing and
+underpricing conflict, the price leans high: overpricing costs a user a fraction of a cent, underpricing
+lets one person hold every validator up.
+
+### Two things found in the VM's own schedule, and why it was replaced
+
+The chain had used the VM's built-in prices (`INITIAL_COST_SCHEDULE`), which come from a Diem-era table.
+Measuring each kind of instruction showed it could not be tuned by a multiplier:
+
+- **It priced by opcode, not by cost.** A plain instruction was priced at 2 internal units (2 ns) and
+  costs about 55; a function call was priced at over 2,000 and costs about 350; a vector borrow at over
+  1,300 and costs about 210. A single multiplier (which was the first thing tried, times 10) fixes the
+  first and makes calls and vector work absurdly dear, about 100 times too much.
+- **It did not count a vector's length when copying, comparing or reading it** (the VM's size measure
+  leaves vector contents out). A program could build a vector of thousands of numbers and copy it a
+  million times for the price of a million small copies. That is the same kind of hole as the one found
+  on 2026-09-25, in a different place.
+
+So `chain_exec::gas` is a meter of our own that implements the VM's `GasMeter` trait, priced by class,
+and that counts a vector's contents when it is copied, compared, or read through a reference.
+
+### The prices
+
+Measured on the VPS with the four validators running (the pessimistic reference), in nanoseconds:
+
+| Work | Measured | Priced |
+|---|---:|---:|
+| A plain instruction (load, store, branch, compare, borrow a field, bit operation) | 53 to 60 | **60** |
+| Add, subtract, multiply, divide, remainder (one price for every width, set by `u256`) | 100 to 270 | **280** |
+| A call | 320, and 110 for each argument | **350 + 120 per argument** |
+| Making or taking apart a struct | 135 for three fields | **90 + 30 per field** |
+| Borrow a vector element | 210 | **250** |
+| Swap two elements | 175 | **200** |
+| Push or pop | 85 | **100** |
+| A vector from its elements | 360 for four | **150 + 60 per element** |
+| A constant from the module | 107 to 135 | **150, and 1 per 16 bytes** |
+| Copy or compare a value | 0.8 and 1.25 per number | **a plain instruction, and 1 for every 4 units of size** (2 per number) |
+| A native | 0.5 to 4.4 microseconds | **1,000 fixed; 2,500 for strings; 4,500 for type names; 10 per byte** |
+| The store | about 4 microseconds an operation | **4,000 fixed; 60 per byte written; 12 per byte read** |
+| Publishing | 0.9 to 1.4 microseconds a byte | **2,500 + 1.5 per byte** |
+
+### The limits
+
+| | Before | After |
+|---|---|---|
+| Block gas limit | 60,000,000 (clamps 10M to 120M) | **300,000** (clamps 50,000 to 600,000) |
+| One transaction | 15,000,000 | **75,000** (a quarter of the block) |
+| The floor per transaction | 1,000 | 1,000 (a call's fixed cost is about a millisecond) |
+| `simulate` cap | 10,000 | **75,000** (what a transaction may spend) |
+
+Consequence to accept: with 1.5 gas a byte, the most a publish can be inside one transaction is about
+48 KB (the package limit of 128 KiB is no longer reachable). That is more than an application needs
+today; the block limit can be raised by governance within its new clamps if it turns out not to be.
+
+### How it checks out (the same benchmark, on the VPS, after)
+
+Nothing costs more than a microsecond a gas; the ordinary work costs between 0.5 and 0.95.
+
+| Work | ns per gas |
+|---|---:|
+| arithmetic loop, run to the end of 75,000 gas (a hostile call) | 510 |
+| the same to 150,000 gas | 490 |
+| sha3 loop to 150,000 gas | 600 |
+| calls, struct work, vector borrow and swap, `u256` | 525 to 930 |
+| copying or comparing a 4,096-number vector | 430 to 600 |
+| the store, 64 operations; taking and putting a 16,000-byte value | 700 to 730 |
+| publishing 2.8 KB, 28 KB, 63 KB | 630, 910, 950 |
+
+A hostile transaction that spends its whole 75,000 gas now holds a validator for about 40 ms (it was
+minutes), and a full block of them, at most about 0.3 second.
+
+### What is still open
+
+- **The per-block cost that is not gas.** With the state at its cap a block still costs 45 to 60 ms on
+  the Mac (several times that on the VPS) before anything runs: cloning the state, finding what changed,
+  and the limits check (see "what a block costs as the state grows"). That needs executing against an
+  overlay of writes instead of a copy.
+- **Widths.** `u128` and `u256` arithmetic costs more than `u64`, and the VM's opcodes do not say which
+  is being used, so all arithmetic is priced at the widest. Ordinary `u64` arithmetic is priced at about
+  three times its cost. Nobody will notice at these prices.
+- **The node-local stopgap** (`policy.rs`, the 20,000-gas mempool cap and the proposer's per-block
+  budget) is still in the tree. With this change it is redundant, since the chain's own limits now bound
+  what it bounded. Removing it is a decision for the operator, not something to do in passing.
+- **The fuzz job's ceiling** (`THRYLOS_MAX_NS_PER_GAS`, 1,000,000 in CI) is a placeholder that fits none
+  of this; it should be set from a measurement in that environment.
+- **Every gas figure in the tests** was moved to the new scale, and the genesis golden vectors changed
+  (recorded in `compatibility-vectors.md`).
+
+The two benchmarks are `examples/opcode_bench.rs` (nanoseconds per kind of instruction, the source of the
+table above) and `examples/gas_bench.rs` (whole calls, publishing, and hostile calls, the check).

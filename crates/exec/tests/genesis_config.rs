@@ -570,7 +570,7 @@ fn the_block_limits_follow_the_governed_parameters() {
     assert_eq!(limits.max_size_bytes, MAX_BLOCK_SIZE_BYTES);
 
     let mut params = GENESIS_PARAM_VALUES;
-    params.max_block_gas = 30_000_000;
+    params.max_block_gas = 150_000;
     let c = GenesisConfig::new(
         ChainId(1),
         GENESIS_TIME,
@@ -585,6 +585,6 @@ fn the_block_limits_follow_the_governed_parameters() {
             .block_limits()
             .unwrap()
             .max_gas,
-        30_000_000
+        150_000
     );
 }

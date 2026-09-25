@@ -50,8 +50,10 @@ pub const PUBLISH: &str = "publish";
 /// Gas for a publish: a base charge and a charge per byte published. It is
 /// what the call costs when it succeeds; the verifier's own work is bounded
 /// separately by its meter, so a package cannot cost more than this pays for.
-pub const PUBLISH_BASE_GAS: u64 = 20_000;
-pub const PUBLISH_GAS_PER_BYTE: u64 = 10;
+pub const PUBLISH_BASE_GAS: u64 = 2_500;
+/// Three gas for every two bytes: 1.5 a byte, which is what verifying a
+/// package was measured to cost (about 1.4 microseconds a byte).
+pub const PUBLISH_GAS_PER_TWO_BYTES: u64 = 3;
 
 /// Storage deposit per started KiB of package, on top of the flat entry
 /// deposit. Burned like the other deposits: 0.01 THRY per KiB, so a full
@@ -86,7 +88,8 @@ pub fn package_address(sender: &chain_types::Address, sequence_number: u64) -> A
 pub fn publish_gas(total_bytes: usize) -> u64 {
     u64::try_from(total_bytes)
         .unwrap_or(u64::MAX)
-        .saturating_mul(PUBLISH_GAS_PER_BYTE)
+        .saturating_mul(PUBLISH_GAS_PER_TWO_BYTES)
+        .div_ceil(2)
         .saturating_add(PUBLISH_BASE_GAS)
 }
 

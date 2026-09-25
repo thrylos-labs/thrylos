@@ -31,10 +31,12 @@
 
 pub mod account;
 pub mod diff;
+pub mod index;
 pub mod key_value;
 pub mod trie;
 
 pub use account::{Account, AccountError};
 pub use diff::{apply, diff, StateChange, StateDiff};
+pub use index::{TrieIndex, TrieUpdate};
 pub use key_value::{StateKey, StateValue};
 pub use trie::{compute_root, empty_root, StateRoot, TRIE_COMMITMENT_VERSION};

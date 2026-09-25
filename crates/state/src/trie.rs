@@ -65,7 +65,7 @@ fn empty_leaf_sentinel() -> Hash {
 /// depth: `table[0]` is [`empty_leaf_sentinel`], and each subsequent
 /// entry combines the previous one with itself. `table[256]` is the
 /// root of a completely empty state.
-fn empty_subtree_table() -> Vec<Hash> {
+pub(crate) fn empty_subtree_table() -> Vec<Hash> {
     let mut table = Vec::with_capacity(257);
     table.push(empty_leaf_sentinel());
     for _ in 0..256u32 {
@@ -81,25 +81,25 @@ pub fn empty_root() -> StateRoot {
     commit_root(table.last().copied().unwrap_or_else(empty_leaf_sentinel))
 }
 
-fn leaf_hash(key: &StateKey, value: &StateValue) -> Hash {
+pub(crate) fn leaf_hash(key: &StateKey, value: &StateValue) -> Hash {
     let mut bytes = Vec::new();
     key.encode(&mut bytes);
     value.encode(&mut bytes);
     hash_with_domain(DomainTag::TrieLeafV2, &bytes)
 }
 
-fn leaf_path(key: &StateKey) -> Hash {
+pub(crate) fn leaf_path(key: &StateKey) -> Hash {
     hash_with_domain(DomainTag::TrieKeyPathV2, key.as_bytes())
 }
 
-fn branch_hash(left: &Hash, right: &Hash) -> Hash {
+pub(crate) fn branch_hash(left: &Hash, right: &Hash) -> Hash {
     let mut bytes = Vec::with_capacity(64);
     bytes.extend_from_slice(left.as_bytes());
     bytes.extend_from_slice(right.as_bytes());
     hash_with_domain(DomainTag::TrieBranchV2, &bytes)
 }
 
-fn commit_root(node_root: Hash) -> StateRoot {
+pub(crate) fn commit_root(node_root: Hash) -> StateRoot {
     StateRoot(hash_with_domain(
         DomainTag::TrieRootV2,
         node_root.as_bytes(),
@@ -110,7 +110,7 @@ const BIT_MASKS: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
 
 /// `path`'s 256 bits, most-significant-first — the order the trie
 /// navigates in.
-fn path_bits(path: &Hash) -> Vec<bool> {
+pub(crate) fn path_bits(path: &Hash) -> Vec<bool> {
     let mut bits = Vec::with_capacity(256);
     for &byte in path.as_bytes() {
         for &mask in &BIT_MASKS {
@@ -120,15 +120,15 @@ fn path_bits(path: &Hash) -> Vec<bool> {
     bits
 }
 
-struct PathEntry {
-    bits: Vec<bool>,
-    leaf_hash: Hash,
+pub(crate) struct PathEntry {
+    pub(crate) bits: Vec<bool>,
+    pub(crate) leaf_hash: Hash,
 }
 
 /// The root of the subtree containing exactly `entries`, all of which
 /// share the first `depth` bits of their path (by construction of the
 /// caller's recursive descent). `entries` must be sorted by path.
-fn subtree_root(entries: &[PathEntry], depth: usize, empty_table: &[Hash]) -> Hash {
+pub(crate) fn subtree_root(entries: &[PathEntry], depth: usize, empty_table: &[Hash]) -> Hash {
     match entries {
         [] => {
             let height = 256usize.saturating_sub(depth);

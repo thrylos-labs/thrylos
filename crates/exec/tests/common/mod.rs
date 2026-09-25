@@ -23,7 +23,7 @@ use move_compiler::Compiler;
 
 pub const START_MS: u64 = 1_700_000_000_000;
 pub const MAX_FEE: u64 = 10;
-pub const PUBLISH_GAS: u64 = 200_000;
+pub const PUBLISH_GAS: u64 = 60_000;
 
 /// Compile `source` (modules written against the address `0x0`) to bytes,
 /// one entry per module, keyed by module name.
@@ -164,7 +164,7 @@ impl Publisher {
         function: &str,
         arguments: Vec<Vec<u8>>,
     ) -> Transaction {
-        let mut tx = self.tx_with(self.sequence, 100_000, package, function, arguments);
+        let mut tx = self.tx_with(self.sequence, 50_000, package, function, arguments);
         tx.body.call.module_name = module.as_bytes().to_vec();
         let mut bytes = Vec::new();
         tx.body.encode(&mut bytes);
@@ -253,6 +253,20 @@ impl Chain {
 
 pub const SUCCESS: TransactionOutcome = TransactionOutcome::Success;
 pub const REFUSED: TransactionOutcome = TransactionOutcome::Aborted(AbortReason::PublishRefused);
+
+/// A chain whose blocks may hold `max_block_gas`, so a transaction may ask for a
+/// quarter of it: for measuring, and for tests that need a larger transaction.
+pub fn rich_with_block_gas(max_block_gas: u64) -> (Chain, Publisher) {
+    let mut values = chain_modules::params::GENESIS_PARAM_VALUES;
+    values.max_block_gas = max_block_gas;
+    let mut chain = Chain {
+        executor: Executor::genesis_with_params(ChainId(1), values).unwrap(),
+        now_ms: START_MS,
+    };
+    let publisher = Publisher::new(1);
+    chain.fund(&publisher, 1_000_000_000_000);
+    (chain, publisher)
+}
 
 pub fn rich() -> (Chain, Publisher) {
     let mut chain = Chain::new();

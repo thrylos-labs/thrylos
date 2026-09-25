@@ -164,7 +164,7 @@ fn a_counter_lives_across_blocks_and_the_state_records_it() {
 #[test]
 fn creating_a_drawer_costs_the_deposit_and_updating_it_costs_none() {
     let mut app = deployed();
-    let fee_ceiling = 100_000u128; // a call's gas limit, at the base fee of 1
+    let fee_ceiling = 50_000u128; // a call's gas limit, at the base fee of 1
     let (b0, s0) = (app.balance(), app.chain.executor.supply().unwrap());
     assert_eq!(app.call("init", vec![]), OK);
     let (b1, s1) = (app.balance(), app.chain.executor.supply().unwrap());
@@ -232,7 +232,7 @@ fn a_sender_who_cannot_pay_the_deposit_aborts_and_writes_nothing() {
     let app = deployed();
     let (mut chain, package) = (app.chain, app.package);
     // Enough for a call's maximum fee and a little more, not for the deposit.
-    let keep = 100_000u128 * 10 + 1_000_000;
+    let keep = 50_000u128 * 10 + 1_000_000;
     let mut poor = Publisher::new(77);
     chain.fund(&poor, keep);
     let before = chain.balance(poor.address());
@@ -243,7 +243,7 @@ fn a_sender_who_cannot_pay_the_deposit_aborts_and_writes_nothing() {
     );
     let paid = before - chain.balance(poor.address());
     assert!(
-        paid > 0 && paid < 100_000,
+        paid > 0 && paid < 50_000,
         "charged what the VM metered, not the whole limit: {paid}"
     );
     let drawers = chain

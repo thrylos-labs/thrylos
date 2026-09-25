@@ -274,16 +274,16 @@ why: `the call would fail: aborted with code 1 in 0x2::store`.
 
 `view` uses the node's `simulate` method, which runs Move code on the node's own thread. A
 node serves it only if its configuration turns it on (`"rpc": { ..., "simulate": true }`), it
-is capped at 10,000 gas, and a node answers one a second. A local network has it on. The
+is capped at 75,000 gas, and a node answers one a second. A local network has it on. The
 public testnet's nodes have it off unless said otherwise on the Discord.
 
 ## What it costs
 
 | | |
 |---|---|
-| Gas for publishing | 20,000, plus 10 for each byte |
+| Gas for publishing | 2,500, plus 1.5 for each byte |
 | Storage deposit for a package | 0.01 THRY for each started KiB, plus 0.01 THRY. Kept by the network. Packages cannot be deleted. |
-| Gas for a store operation | about 2 gas, plus 0.1 gas for each byte read and 0.5 for each byte written |
+| Gas for a store operation | 4 gas, plus 0.012 gas for each byte read and 0.06 for each byte written |
 | Storage deposit for a drawer | when a call makes a drawer that did not exist: 0.01 THRY, plus 0.01 THRY for each started KiB it holds. When a call makes an existing drawer bigger: 0.01 THRY for each extra KiB. Nothing when it stays the same size or shrinks |
 | Fee | gas used times the base fee (currently 1 base unit) |
 
@@ -295,8 +295,11 @@ and nothing more for each update (a few gas). A 2 KiB package costs about 0.03 T
 small fee. If you cannot pay the deposit the call aborts with `InsufficientBalance` and
 writes nothing.
 
-The gas figures are the VM's own schedule plus the store's; they are not yet calibrated to real
-hardware, so treat them as a bound and not a price.
+Gas is priced by time: **one unit of gas is about a microsecond of a validator's work**, measured
+on the small server the testnet runs on (`docs/gas-calibration.md`). A plain instruction costs
+0.06 gas, a call about 0.35, and a hash about 1. A block holds 300,000 gas and one transaction may
+use at most a quarter of that, 75,000, which is about 75 milliseconds of work; that is also the
+most a package can cost to publish (about 48 KB of bytecode).
 
 ## Limits
 

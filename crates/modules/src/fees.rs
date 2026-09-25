@@ -38,7 +38,7 @@
 //! proposes or timelocks a change to them.
 //!
 //! Every numeric bound below is a choice, not something the spec pins
-//! down: it says the block gas limit is clamped to 10M–120M (used
+//! down: it says the block gas limit is clamped to 50,000–600,000 (used
 //! as-is) and that the base fee denominator is "bounded ... non-
 //! degenerate" without giving a range.
 
@@ -59,10 +59,10 @@ pub const GENESIS_BASE_FEE: u64 = 1;
 /// denominator).
 pub const ELASTICITY_MULTIPLIER: u64 = 2;
 
-/// `docs/spec.md`, "Governance, minimal": "Block gas limit: 10M–120M,
+/// `docs/spec.md`, "Governance, minimal": "Block gas limit: 50,000–600,000,
 /// never zero."
-pub const MIN_BLOCK_GAS_LIMIT: u64 = 10_000_000;
-pub const MAX_BLOCK_GAS_LIMIT: u64 = 120_000_000;
+pub const MIN_BLOCK_GAS_LIMIT: u64 = 50_000;
+pub const MAX_BLOCK_GAS_LIMIT: u64 = 600_000;
 
 /// EIP-1559's own value: a block that is completely full raises the
 /// base fee by 12.5%. That was chosen for 12-second blocks; at this
@@ -214,7 +214,7 @@ mod tests {
 
     fn params() -> FeeParams {
         // Target = 30M.
-        FeeParams::new(60_000_000, 8).unwrap()
+        FeeParams::new(300_000, 8).unwrap()
     }
 
     #[test]
@@ -244,49 +244,49 @@ mod tests {
     fn params_reject_a_denominator_outside_the_clamp() {
         for bad in [0, 1, MAX_BASE_FEE_CHANGE_DENOMINATOR + 1, u64::MAX] {
             assert_eq!(
-                FeeParams::new(60_000_000, bad),
+                FeeParams::new(300_000, bad),
                 Err(FeeError::DenominatorOutOfRange),
                 "denominator {bad}"
             );
         }
-        assert!(FeeParams::new(60_000_000, MIN_BASE_FEE_CHANGE_DENOMINATOR).is_ok());
-        assert!(FeeParams::new(60_000_000, MAX_BASE_FEE_CHANGE_DENOMINATOR).is_ok());
+        assert!(FeeParams::new(300_000, MIN_BASE_FEE_CHANGE_DENOMINATOR).is_ok());
+        assert!(FeeParams::new(300_000, MAX_BASE_FEE_CHANGE_DENOMINATOR).is_ok());
     }
 
     #[test]
     fn target_is_half_the_block_gas_limit() {
-        assert_eq!(params().target_gas(), 30_000_000);
+        assert_eq!(params().target_gas(), 150_000);
     }
 
     #[test]
     fn base_fee_holds_exactly_on_target() {
-        assert_eq!(next_base_fee(&params(), 1_000, 30_000_000), 1_000);
+        assert_eq!(next_base_fee(&params(), 1_000, 150_000), 1_000);
     }
 
     #[test]
     fn a_completely_full_block_raises_the_base_fee_by_one_denominator() {
-        // 1000 + 1000 * (60M - 30M) / 30M / 8 = 1000 + 125.
-        assert_eq!(next_base_fee(&params(), 1_000, 60_000_000), 1_125);
+        // 1000 + 1000 * (300k - 150k) / 150k / 8 = 1000 + 125.
+        assert_eq!(next_base_fee(&params(), 1_000, 300_000), 1_125);
     }
 
     #[test]
     fn an_empty_block_lowers_the_base_fee_by_one_denominator() {
-        // 1000 - 1000 * 30M / 30M / 8 = 1000 - 125.
+        // 1000 - 1000 * 150k / 150k / 8 = 1000 - 125.
         assert_eq!(next_base_fee(&params(), 1_000, 0), 875);
     }
 
     #[test]
     fn the_change_is_proportional_to_how_far_from_target_the_block_was() {
-        // Halfway between target and full: 1000 * 15M / 30M / 8 = 62.5,
+        // Halfway between target and full: 1000 * 75k / 150k / 8 = 62.5,
         // floored to 62.
-        assert_eq!(next_base_fee(&params(), 1_000, 45_000_000), 1_062);
+        assert_eq!(next_base_fee(&params(), 1_000, 225_000), 1_062);
     }
 
     #[test]
     fn the_base_fee_can_always_rise_even_when_the_proportional_step_rounds_to_zero() {
-        // 1 * 30M / 30M / 8 = 0.125, floored to 0 — but a full block
+        // 1 * 150k / 150k / 8 = 0.125, floored to 0 — but a full block
         // must still move it, or it could never leave a tiny value.
-        assert_eq!(next_base_fee(&params(), 1, 60_000_000), 2);
+        assert_eq!(next_base_fee(&params(), 1, 300_000), 2);
     }
 
     #[test]
@@ -299,7 +299,7 @@ mod tests {
     fn a_sustained_run_of_full_blocks_keeps_raising_it() {
         let mut fee = GENESIS_BASE_FEE;
         for _ in 0..200 {
-            let next = next_base_fee(&params(), fee, 60_000_000);
+            let next = next_base_fee(&params(), fee, 300_000);
             assert!(next > fee);
             fee = next;
         }
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn saturates_instead_of_overflowing_at_the_top_of_the_range() {
-        assert_eq!(next_base_fee(&params(), u64::MAX, 60_000_000), u64::MAX);
+        assert_eq!(next_base_fee(&params(), u64::MAX, 300_000), u64::MAX);
     }
 
     #[test]

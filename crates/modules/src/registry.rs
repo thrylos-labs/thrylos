@@ -1288,7 +1288,7 @@ mod tests {
 
     fn params_with(unbonding_period_ms: u64) -> GovernedParams {
         GovernedParams::new(ParamValues {
-            max_block_gas: 60_000_000,
+            max_block_gas: 300_000,
             base_fee_change_denominator: 8,
             min_self_stake: MIN_SELF_STAKE,
             inflation_bps: 400,

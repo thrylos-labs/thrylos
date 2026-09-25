@@ -180,8 +180,8 @@ fn hashing_is_charged_per_call_and_a_long_loop_of_it_runs_out_of_gas() {
         "a thousand hashes cost more than two hundred: {many} vs {few}"
     );
     // The natives' own charge is in it: without it a thousand hashes cost
-    // about 2,400 in all.
-    assert!(many > 5_000, "{many}");
+    // about 1,100 in all (the loop and the calls); with it, 2,767.
+    assert!(many > 2_000, "{many}");
     assert_eq!(
         call(
             &mut chain,

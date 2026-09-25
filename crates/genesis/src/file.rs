@@ -17,7 +17,7 @@
 //!   "chain_id": 1,
 //!   "genesis_time_ms": 1700000000000,
 //!   "parameters": {
-//!     "max_block_gas": 60000000,
+//!     "max_block_gas": 300000,
 //!     "base_fee_change_denominator": 8,
 //!     "min_self_stake": "1000000",
 //!     "inflation_bps": 400,

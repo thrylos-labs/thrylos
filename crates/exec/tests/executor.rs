@@ -180,7 +180,7 @@ fn fund(executor: &mut Executor, tx: &Transaction) {
 
 fn default_limits() -> BlockLimits {
     BlockLimits {
-        max_gas: 60_000_000,
+        max_gas: 300_000,
         max_size_bytes: 4 * 1024 * 1024,
     }
 }
@@ -813,7 +813,7 @@ fn heavy_transaction(seed: u8, sequence_number: u64, gas_limit: u64, max_fee: u6
 const GENESIS_LIMIT: u64 = chain_engine_api::GENESIS_MAX_BLOCK_GAS;
 const MAX_TRANSACTION_GAS: u64 = chain_engine_api::max_transaction_gas(GENESIS_LIMIT);
 /// The gas usage at which the base fee holds steady: half the limit.
-const TARGET: u64 = 30_000_000;
+const TARGET: u64 = 150_000;
 const _: () = assert!(TARGET * 2 == GENESIS_LIMIT);
 
 fn block_filling_transactions(first_seed: u8, sequence: u64, max_fee: u64) -> Vec<Transaction> {
@@ -1626,7 +1626,7 @@ fn a_state_missing_what_a_chain_needs_is_refused_and_says_what() {
     // The governed parameters: find their entry by what changes when the
     // parameters do, then damage it.
     let mut other = chain_modules::params::GENESIS_PARAM_VALUES;
-    other.max_block_gas = 50_000_000;
+    other.max_block_gas = 400_000;
     let changed = chain_state::diff(
         &stored(&Executor::genesis(ChainId(1)).unwrap()),
         &stored(&Executor::genesis_with_params(ChainId(1), other).unwrap()),

@@ -25,10 +25,14 @@ The input is the deterministic four-validator configuration returned by
 
 | Commitment | Expected hash |
 |---|---|
-| Genesis configuration | `c9275496e7532fc48075e9b1b2846376efce3a7408f10287644fd6d0d41d0d35` |
-| Materialised genesis state | `9cca51a355ceada91c1508e577abaa8c38415fb91c6402a3cc0f37b2b1c81503` |
+| Genesis configuration | `1e441e8b66d3f61a3a08c762e38614a28038b0bb68b6dd1c06730fdbf50d844d` |
+| Materialised genesis state | `880924bb68774bf30cf720e9b550ff386eb70e55f65071f12ce96ff588cdf81d` |
 
 The executable assertions are in `chain-genesis::devnet::tests`.
+
+*Changed 2026-09-25, on purpose:* the gas recalibration (`gas-calibration.md`) moved the
+genesis block gas limit from 60,000,000 to 300,000, which is in the configuration and so in both
+hashes. They were `c9275496…0d35` and `9cca51a3…1503`.
 
 ## Signed transaction
 

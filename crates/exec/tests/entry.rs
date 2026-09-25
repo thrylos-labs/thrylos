@@ -90,7 +90,7 @@ fn a_move_abort_is_an_execution_failure_that_costs_less_than_the_limit() {
     assert_eq!(out, aborted(AbortReason::ExecutionFailed));
     let paid = before - chain.balance(p.address());
     assert!(
-        paid < 100_000,
+        paid < 50_000,
         "charged the metered amount, not the whole limit: {paid}"
     );
     assert!(paid >= 1_000);
@@ -102,7 +102,7 @@ fn a_call_that_never_ends_runs_out_of_gas_and_pays_the_limit() {
     let before = chain.balance(p.address());
     let out = call(&mut chain, &mut p, id, "loops", vec![]);
     assert_eq!(out, aborted(AbortReason::ExecutionFailed));
-    assert_eq!(before - chain.balance(p.address()), 100_000);
+    assert_eq!(before - chain.balance(p.address()), 50_000);
 }
 
 #[test]

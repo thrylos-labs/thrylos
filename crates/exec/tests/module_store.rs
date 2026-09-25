@@ -23,7 +23,7 @@ const T0: u64 = 200 * DAY_MS;
 
 fn params() -> GovernedParams {
     GovernedParams::new(ParamValues {
-        max_block_gas: 60_000_000,
+        max_block_gas: 300_000,
         base_fee_change_denominator: 8,
         min_self_stake: 1_000,
         inflation_bps: 400,

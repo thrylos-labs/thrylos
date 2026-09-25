@@ -1,6 +1,6 @@
 # Thrylos — technical spec
 
-Last amended 2026-09-21
+Last amended 2026-09-25
 
 Implementation status and evidence are tracked separately in
 [`spec-conformance.md`](spec-conformance.md). This document defines the
@@ -75,7 +75,7 @@ BFT proof-of-stake with single-slot deterministic finality: a committed block is
 | Block time | 1s target, 2s timeout | Timeout > 3x observed p99 propagation |
 | Finality | 1 block, 2/3+ stake | No reorg assumptions downstream |
 | Proposer selection | VRF, stake-weighted | Schedule is unpredictable in advance, so proposers cannot be targeted for DDoS |
-| Max block gas | 60M, governance-adjustable within clamps | Repricing a broken schedule must not require a fork |
+| Max block gas | 300,000 (was 60M until the gas recalibration, `docs/gas-calibration.md`), governance-adjustable within clamps | 1 gas is about 1 microsecond of validator time, so a block is about 300 ms of work; repricing a broken schedule must not require a fork |
 | Max block size | 4 MiB hard cap | Independent of gas; caps gossip cost |
 | Unbonding period | 21 days | Must exceed max evidence age (see key management) |
 | Max evidence age | 14 days | Must exceed weak-subjectivity horizon |
@@ -168,7 +168,7 @@ These modules hold the funds, so they get the invariant-testing budget. Fees and
 
 Every parameter carries a compiled-in clamp, checked at application time, and a proposal outside the clamp fails rather than passing and bricking the chain:
 
-- Block gas limit: 10M–120M, never zero.
+- Block gas limit: 50,000–600,000, never zero (was 10M–120M before the gas recalibration).
 - Gas schedule entries: within 4x of their genesis value, per entry.
 - Min self-stake: strictly positive, never zero.
 - Inflation: 0–10% annualised.

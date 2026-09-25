@@ -124,11 +124,11 @@ mod tests {
         let report = crate::check::report(&config).unwrap();
         assert_eq!(
             report.genesis_hash.to_string(),
-            "c9275496e7532fc48075e9b1b2846376efce3a7408f10287644fd6d0d41d0d35"
+            "1e441e8b66d3f61a3a08c762e38614a28038b0bb68b6dd1c06730fdbf50d844d"
         );
         assert_eq!(
             report.state_root.to_string(),
-            "9cca51a355ceada91c1508e577abaa8c38415fb91c6402a3cc0f37b2b1c81503"
+            "880924bb68774bf30cf720e9b550ff386eb70e55f65071f12ce96ff588cdf81d"
         );
     }
 

@@ -15,7 +15,7 @@ use crate::block::{Block, ExecutedBlock};
 
 /// A block's gas and size ceiling. `max_gas` is governance-adjustable
 /// within clamps; `max_size_bytes` is a hard cap that no governance
-/// vote can raise (`docs/spec.md`, "Consensus": "Max block gas: 60M,
+/// vote can raise (`docs/spec.md`, "Consensus": "Max block gas: 300,000,
 /// governance-adjustable within clamps" / "Max block size: 4 MiB hard
 /// cap"). Callers pass the currently-active values in; this crate does
 /// not read governance state.
@@ -41,9 +41,9 @@ pub const fn max_transaction_gas(block_gas_limit: u64) -> u64 {
 }
 
 /// The genesis default for [`BlockLimits::max_gas`]. Governance may move
-/// this within its clamp (10M–120M); this constant is only the starting
+/// this within its clamp (50,000–600,000); this constant is only the starting
 /// value, not an enforced ceiling.
-pub const GENESIS_MAX_BLOCK_GAS: u64 = 60_000_000;
+pub const GENESIS_MAX_BLOCK_GAS: u64 = 300_000;
 
 /// Why a transaction caused its whole block to be rejected outright,
 /// rather than merely aborting during execution. `docs/spec.md`,

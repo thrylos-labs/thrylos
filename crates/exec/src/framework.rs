@@ -50,13 +50,18 @@ pub struct BlockInfo {
 
 impl<'a> NativeExtensionMarker<'a> for BlockInfo {}
 
-/// Native charges, in the VM's internal units (1000 to one unit of gas). The
-/// standard library's natives are never free: hashing and encoding scale with
-/// their input, everything else costs a small fixed amount. Like the rest of
-/// the gas schedule they are a safety bound until measured on reference
-/// hardware.
-const BASE: u64 = 2_000;
-const PER_BYTE: u64 = 100;
+/// Native charges, in the VM's internal units, which are nanoseconds (see
+/// `crate::gas`). Measured (`examples/opcode_bench.rs`): a hash costs a fixed
+/// few hundred nanoseconds and then a few for each byte; encoding a number
+/// about the same fixed cost; a string check or a type name a good deal more,
+/// nearly all of it fixed. So every native has a fixed charge that covers the
+/// slowest of them, and the ones that read their input add a charge per byte.
+const BASE: u64 = 1_000;
+/// Checking a string, taking part of one, searching in one.
+const STRING_BASE: u64 = 2_500;
+/// Naming a type.
+const TYPE_NAME_BASE: u64 = 4_500;
+const PER_BYTE: u64 = 10;
 
 fn per_byte() -> InternalGasPerByte {
     InternalGasPerByte::new(PER_BYTE)
@@ -64,6 +69,10 @@ fn per_byte() -> InternalGasPerByte {
 
 fn base() -> InternalGas {
     InternalGas::new(BASE)
+}
+
+fn string_base() -> InternalGas {
+    InternalGas::new(STRING_BASE)
 }
 
 fn gas_parameters() -> GasParameters {
@@ -94,26 +103,28 @@ fn gas_parameters() -> GasParameters {
         },
         string: string::GasParameters {
             check_utf8: string::CheckUtf8GasParameters {
-                base: base(),
+                base: string_base(),
                 per_byte: per_byte(),
             },
-            is_char_boundary: string::IsCharBoundaryGasParameters { base: base() },
+            is_char_boundary: string::IsCharBoundaryGasParameters {
+                base: string_base(),
+            },
             sub_string: string::SubStringGasParameters {
-                base: base(),
+                base: string_base(),
                 per_byte: per_byte(),
             },
             index_of: string::IndexOfGasParameters {
-                base: base(),
+                base: string_base(),
                 per_byte_pattern: per_byte(),
                 per_byte_searched: per_byte(),
             },
         },
         type_name: type_name::GasParameters {
             get: type_name::GetGasParameters {
-                base: base(),
+                base: InternalGas::new(TYPE_NAME_BASE),
                 per_byte: per_byte(),
             },
-            id: type_name::IdGasParameters::new(Some(BASE)),
+            id: type_name::IdGasParameters::new(Some(TYPE_NAME_BASE)),
         },
         vector: vector::GasParameters {
             empty: vector::EmptyGasParameters { base: base() },

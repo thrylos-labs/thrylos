@@ -111,6 +111,7 @@ mod effects;
 pub mod entry;
 pub mod executor;
 pub mod framework;
+pub mod gas;
 pub mod genesis;
 pub mod genesis_config;
 pub mod hooks;

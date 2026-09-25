@@ -361,6 +361,7 @@ impl Disk {
 /// A node's chain: an executor in memory, or one kept in a database that a
 /// restart closes and opens again. Derefs to the executor, so a test reads the
 /// chain the same way whichever it is.
+#[allow(clippy::large_enum_variant)]
 enum Chain {
     Memory(Executor),
     Durable {
