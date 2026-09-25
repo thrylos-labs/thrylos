@@ -1643,3 +1643,173 @@ fn a_package_written_with_the_tools_and_one_that_depends_on_it_run_on_a_network(
     assert!(!bad.status.success());
     assert!(stderr(&bad).contains("ExecutionFailed"), "{}", stderr(&bad));
 }
+
+#[test]
+fn a_package_that_remembers_keeps_its_state_on_four_nodes_across_a_node_restart() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+    let scratch = tempfile::tempdir().unwrap();
+    let wallet = scratch.path().join("wallet.key");
+    let rpc = |network: &Network, index: usize| {
+        NodeConfig::load(&network.nodes[index].config())
+            .unwrap()
+            .rpc_listen
+            .unwrap()
+            .to_string()
+    };
+    let cli = |rpc: &str, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_thrylos"))
+            .args(args)
+            .args(["--rpc", rpc, "--wallet"])
+            .arg(&wallet)
+            .arg("--yes")
+            .current_dir(scratch.path())
+            .output()
+            .unwrap()
+    };
+    let ok = |output: &Output| {
+        assert!(
+            output.status.success(),
+            "{}{}",
+            stdout(output),
+            stderr(output)
+        );
+    };
+
+    let made = Command::new(env!("CARGO_BIN_EXE_thrylos"))
+        .args(["setup", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    let address = stdout(&made)
+        .lines()
+        .find_map(|line| line.strip_prefix("Address: ").map(str::to_owned))
+        .unwrap();
+    let funded = run(&[
+        "devnet",
+        "fund",
+        &dir,
+        &address,
+        "--node",
+        "1",
+        "--account",
+        "1",
+        "--amount",
+        "50",
+    ]);
+    assert_eq!(
+        funded.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&funded),
+        stderr(&funded)
+    );
+
+    // A package with a counter that lives in a drawer, tested with the tools.
+    let first = rpc(&network, 0);
+    ok(&cli(&first, &["move", "new", "ledger"]));
+    std::fs::write(
+        scratch.path().join("ledger/sources/ledger.move"),
+        "module pkg::ledger;
+         use thrylos::store;
+         use thrylos::signer;
+
+         public struct Counter has key, store, copy, drop { n: u64 }
+
+         entry fun init(s: &signer) { store::put(signer::address_of(s), 0, Counter { n: 0 }); }
+         entry fun bump(s: &signer) {
+             let o = signer::address_of(s);
+             let mut c = store::take<Counter>(o, 0);
+             c.n = c.n + 1;
+             store::put(o, 0, c);
+         }
+         entry fun check(s: &signer, want: u64) {
+             assert!(store::read<Counter>(signer::address_of(s), 0).n == want, 100);
+         }
+         entry fun init_for(_s: &signer, o: address) { store::put(o, 0, Counter { n: 0 }); }
+         entry fun bump_for(_s: &signer, o: address) {
+             let mut c = store::take<Counter>(o, 0);
+             c.n = c.n + 1;
+             store::put(o, 0, c);
+         }
+
+         #[test] fun counts() {
+             store::put(@0xa, 0, Counter { n: 0 });
+             let mut c = store::take<Counter>(@0xa, 0);
+             c.n = c.n + 1;
+             store::put(@0xa, 0, c);
+             assert!(store::read<Counter>(@0xa, 0).n == 1, 1);
+         }",
+    )
+    .unwrap();
+    let tested = cli(&first, &["move", "test", "ledger"]);
+    ok(&tested);
+    assert!(
+        stdout(&tested).contains("[ PASS ] ledger::counts"),
+        "{}",
+        stdout(&tested)
+    );
+    ok(&cli(&first, &["move", "build", "ledger"]));
+    let published = cli(&first, &["move", "publish", "ledger"]);
+    ok(&published);
+    let package = stdout(&published)
+        .lines()
+        .find_map(|line| line.strip_prefix("Package address: ").map(str::to_owned))
+        .unwrap();
+
+    // The counter, changed through different nodes and read back through others.
+    let call = |network: &Network, node: usize, function: &str, extra: &[&str]| {
+        let mut args = vec!["move", "call", package.as_str(), "ledger", function];
+        args.extend_from_slice(extra);
+        cli(&rpc(network, node), &args)
+    };
+    ok(&call(&network, 0, "init", &[]));
+    for node in [1, 2, 0] {
+        ok(&call(&network, node, "bump", &[]));
+    }
+    ok(&call(&network, 3, "check", &["u64:3"]));
+    let wrong = call(&network, 2, "check", &["u64:4"]);
+    assert!(!wrong.status.success(), "a wrong expectation must fail");
+
+    // Someone else's drawer needs declaring.
+    let other = chain_text::format_address(&chain_types::Address::from_bytes([61; 32]));
+    let arg = format!("address:{other}");
+    let undeclared = call(&network, 1, "init_for", &[arg.as_str()]);
+    assert!(!undeclared.status.success());
+    assert!(
+        stderr(&undeclared).contains("ExecutionFailed"),
+        "{}",
+        stderr(&undeclared)
+    );
+    ok(&call(
+        &network,
+        1,
+        "init_for",
+        &[arg.as_str(), "--input", other.as_str()],
+    ));
+    ok(&call(
+        &network,
+        2,
+        "bump_for",
+        &[arg.as_str(), "--input", other.as_str()],
+    ));
+
+    // A node killed and started again finds the drawers in its own state and goes on.
+    let victim = 3;
+    network.await_height(victim, 5);
+    network.kill_node(victim);
+    network.kill_signer(victim);
+    let crashed_at = network.height(victim);
+    network.await_height(0, crashed_at + 2);
+    network.start_signer(victim);
+    network.start_node(victim, u64::MAX);
+    network.await_height(victim, crashed_at + 4);
+    ok(&call(&network, victim, "bump", &[]));
+    ok(&call(&network, 1, "check", &["u64:4"]));
+    ok(&call(&network, victim, "check", &["u64:4"]));
+
+    let height = (0..4).map(|i| network.height(i)).min().unwrap();
+    assert_one_chain(&network.nodes, height.saturating_sub(1));
+}

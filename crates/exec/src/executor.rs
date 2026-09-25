@@ -600,6 +600,8 @@ impl Executor {
     pub fn audit(&self) -> Result<(), ExecutorError> {
         audit_supply(&self.state)
             .map_err(|err| ExecutorError::Audit(format!("supply: {err:?}")))?;
+        crate::drawer::audit(&self.state)
+            .map_err(|err| ExecutorError::Audit(format!("drawers: {err}")))?;
         self.with_registry(|registry| registry.assert_invariants())
             .map_err(|err| ExecutorError::Audit(format!("registry: {err:?}")))?;
         self.with_governance(|governance| governance.assert_invariants())

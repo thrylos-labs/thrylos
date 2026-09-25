@@ -14,8 +14,9 @@
 //!
 //! Anything else (an object reference, a struct, a type argument) makes the
 //! function not callable in this stage and the call aborts. Running it is
-//! metered against the transaction's gas limit; a call has no writes yet, so
-//! what it costs is all it does, other than aborting or not.
+//! metered against the transaction's gas limit. What a call writes goes to its
+//! drawers (`crate::store`), held back until it succeeds; keeping them costs a
+//! deposit (`crate::drawer`).
 
 use chain_engine_api::AbortReason;
 use chain_types::Transaction;
@@ -33,11 +34,17 @@ use move_vm_runtime::shared::linkage_context::LinkageContext;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use chain_state::StateValue;
+use chain_types::codec::Encode;
+
+use crate::accounting::read_supply;
+use crate::drawer::{Access, DrawerOverlay};
 use crate::effects::{BlockCtx, CallEffects, CallError};
 use crate::framework::BlockInfo;
-use crate::keys::package_key;
+use crate::keys::{package_key, supply_key};
 use crate::module_resolver::{ChainStateModuleResolver, ResolverError};
-use crate::native::State;
+use crate::native::{debit_sender, State};
+use crate::store::StoreExtension;
 
 /// How deeply vectors may nest in an argument: `vector<vector<u8>>` is 2.
 pub const MAX_VECTOR_DEPTH: usize = 3;
@@ -197,8 +204,29 @@ fn run(
         time_ms: ctx.timestamp_ms,
         chain_id: ctx.chain_id.0,
     });
+    // The call's drawers: the sender's, and those it declared, on top of the
+    // state as it stands. Its writes stay in the overlay until the call is over.
+    extensions.borrow_mut().add(StoreExtension {
+        overlay: DrawerOverlay::new(
+            state,
+            Access {
+                sender,
+                declared: tx
+                    .body
+                    .declared_inputs
+                    .iter()
+                    .map(|address| AccountAddress::new(*address.as_bytes()))
+                    .collect(),
+                unrestricted: false,
+            },
+        ),
+    });
     let mut vm = runtime
-        .make_vm_with_native_extensions(ChainStateModuleResolver::new(state), linkage, extensions)
+        .make_vm_with_native_extensions(
+            ChainStateModuleResolver::new(state),
+            linkage,
+            extensions.clone(),
+        )
         .map_err(|_| CallError::Internal)?;
     let identifier = Identifier::new(function_name).map_err(|_| unknown())?;
     let module_id = ModuleId::new(id, Identifier::new(module_name).map_err(|_| unknown())?);
@@ -210,8 +238,28 @@ fn run(
         reason: AbortReason::ExecutionFailed,
         gas_used,
     })?;
-    Ok(CallEffects {
-        changes: Vec::new(),
-        gas_used,
-    })
+    // The VM holds the other reference to the extensions until it is dropped.
+    drop(vm);
+    let store = extensions
+        .borrow_mut()
+        .remove::<StoreExtension>()
+        .map_err(|_| CallError::Internal)?;
+
+    // What the call wrote to its drawers, and what that costs to keep: taken from
+    // the sender and burned, in the same effects, so it all lands or none does.
+    // A sender who cannot pay ends the call at what it had metered.
+    let deposit = store.overlay.deposit();
+    let mut changes = store.overlay.changes();
+    if deposit > 0 {
+        debit_sender(state, tx, deposit, &mut changes).map_err(|error| match error {
+            CallError::Abort(reason) => CallError::MeteredAbort { reason, gas_used },
+            other => other,
+        })?;
+        let supply = read_supply(state).ok_or(CallError::Internal)?;
+        let after = supply.checked_sub(deposit).ok_or(CallError::Internal)?;
+        let mut bytes = Vec::new();
+        after.encode(&mut bytes);
+        changes.push((supply_key(), Some(StateValue::new(bytes))));
+    }
+    Ok(CallEffects { changes, gas_used })
 }

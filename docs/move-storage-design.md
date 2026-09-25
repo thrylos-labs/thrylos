@@ -289,8 +289,19 @@ Acceptance:
    `crates/exec/tests/store_ownership.rs` publishes each attempt through the real chain, and
    each part of the rule was broken in turn to check a test notices. The address-and-name test
    is exact: a package's own module called `store` is not treated as the framework's.
-5. Wire the `StoreView` into `entry::call`; effects and deposits; the counter acceptance
-   test.
+5. **Wire the store into `entry::call`; effects and deposits; the counter acceptance test
+   (done):** `entry.rs` installs a `StoreExtension` (a `DrawerOverlay` over the state, the
+   sender, and the transaction's `declared_inputs`) next to `BlockInfo`; after the call it
+   applies the overlay's changes and, if the drawers grew, debits the deposit from the sender
+   and burns it from the supply in the same effects. A sender who cannot pay ends the call at
+   the gas it had metered, with `InsufficientBalance` and nothing written. `Executor::audit`
+   now checks every drawer is well formed. `thrylos move test` runs store-using tests (each
+   with empty drawers and every address open) and `thrylos move call --input <address>` declares
+   inputs. Tests: `crates/exec/tests/store_calls.rs` (counter across blocks, deposits for a
+   new, grown, shrunk and emptied drawer, aborts leaving nothing, declared inputs, restart from
+   state, two independent nodes agreeing on the state root, the state cap) and a four-process
+   network test that publishes a counter written with the tools, changes it through different
+   nodes, restarts one, and checks all four agree.
 6. The publish fuzz target extended with store-calling modules.
 7. Stage 2b (RPC, simulate, CLI, explorer), the guide, then calibration and the reset
    rehearsal.

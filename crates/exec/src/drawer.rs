@@ -151,17 +151,61 @@ impl Decode for DrawerValue {
 pub struct Access {
     pub sender: AccountAddress,
     pub declared: Vec<AccountAddress>,
+    /// Any owner at all. Only for running a package's own tests
+    /// (`thrylos move test`), where there is no transaction to declare
+    /// anything; a chain never sets it.
+    pub unrestricted: bool,
 }
 
 impl Access {
+    /// For tests of a package, which may touch any address's drawers.
+    pub fn everything() -> Self {
+        Self {
+            sender: AccountAddress::ZERO,
+            declared: Vec::new(),
+            unrestricted: true,
+        }
+    }
+
     fn allows(&self, owner: AccountAddress) -> bool {
-        owner == self.sender || self.declared.contains(&owner)
+        self.unrestricted || owner == self.sender || self.declared.contains(&owner)
     }
 }
 
 /// The started KiBs in `bytes`: 0 for 0 bytes, 1 for 1 to 1024, 2 for 1025...
 fn kib(bytes: usize) -> u128 {
     u128::try_from(bytes.div_ceil(1024)).unwrap_or(u128::MAX)
+}
+
+/// Every drawer in `state` is well formed: its key is the key its own contents
+/// give (owner and slot read from the key, type name from the value), and its
+/// value decodes within the limits. O(state), for `Executor::audit`.
+pub fn audit(state: &BTreeMap<StateKey, StateValue>) -> Result<(), String> {
+    let tag = crate::keys::drawer_tag();
+    let first = StateKey::new(vec![tag]);
+    for (key, value) in state.range(first..) {
+        let bytes = key.as_bytes();
+        if bytes.first() != Some(&tag) {
+            break;
+        }
+        let drawer = DrawerValue::from_state(value)
+            .map_err(|_| "a drawer holds a value that does not decode".to_owned())?;
+        let (owner, slot) = match (bytes.get(1..33), bytes.get(33..41)) {
+            (Some(owner), Some(slot)) if bytes.len() == 73 => (
+                AccountAddress::from_bytes(owner)
+                    .map_err(|_| "a drawer key holds a bad owner".to_owned())?,
+                u64::from_be_bytes(
+                    slot.try_into()
+                        .map_err(|_| "a drawer key holds a bad slot".to_owned())?,
+                ),
+            ),
+            _ => return Err("a drawer key is not 73 bytes".to_owned()),
+        };
+        if *key != drawer_key(owner, slot, &drawer.type_name) {
+            return Err("a drawer's key is not the one its owner, slot and type give".to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// One call's view of the drawers: the state as it found it, and what the call
@@ -337,6 +381,7 @@ mod tests {
         Access {
             sender: addr(ME),
             declared: vec![],
+            unrestricted: false,
         }
     }
 
@@ -559,6 +604,7 @@ mod tests {
             Access {
                 sender: addr(ME),
                 declared: vec![addr(OTHER)],
+                unrestricted: false,
             },
         );
         assert_eq!(declared.take(addr(OTHER), 0, "T").unwrap(), value("T", 4));
@@ -837,6 +883,7 @@ mod tests {
                 Access {
                     sender: addr(ME),
                     declared: vec![addr(OTHER)],
+                    unrestricted: false,
                 },
             );
             let mut working = model.clone();

@@ -18,6 +18,7 @@ use ed25519_dalek::{Signer, SigningKey};
 /// most a runaway function can burn.
 pub const DEFAULT_CALL_GAS: u64 = 200_000;
 
+#[allow(clippy::too_many_arguments)]
 fn sign(
     key: &SigningKey,
     chain_id: u64,
@@ -25,6 +26,7 @@ fn sign(
     expiry: u64,
     gas_limit: u64,
     max_fee_per_gas: u64,
+    declared_inputs: Vec<Address>,
     call: MoveCall,
 ) -> Result<Transaction, String> {
     let sender = PublicKey::from_ed25519_bytes(key.verifying_key().to_bytes())
@@ -36,7 +38,7 @@ fn sign(
         expiry: BlockHeight(expiry),
         gas_limit: GasAmount(gas_limit),
         max_fee_per_gas: GasPrice(max_fee_per_gas),
-        declared_inputs: Vec::new(),
+        declared_inputs,
         call,
     };
     let mut bytes = Vec::new();
@@ -63,6 +65,7 @@ pub fn signed_publish(
         expiry,
         publish_gas(total),
         max_fee_per_gas,
+        Vec::new(),
         MoveCall {
             module_address: Address::from_bytes(MOVE_PACKAGE_ADDRESS),
             module_name: MOVE_MODULE_NAME.as_bytes().to_vec(),
@@ -74,6 +77,8 @@ pub fn signed_publish(
 }
 
 /// A signed call of `package::module::function` with already-encoded arguments.
+/// `declared_inputs` are the addresses, besides the sender, whose stored values
+/// the call will touch: the chain refuses a call that touches any other.
 #[allow(clippy::too_many_arguments)]
 pub fn signed_call(
     key: &SigningKey,
@@ -82,6 +87,7 @@ pub fn signed_call(
     expiry: u64,
     gas_limit: u64,
     max_fee_per_gas: u64,
+    declared_inputs: Vec<Address>,
     package: Address,
     module: &str,
     function: &str,
@@ -94,6 +100,7 @@ pub fn signed_call(
         expiry,
         gas_limit,
         max_fee_per_gas,
+        declared_inputs,
         MoveCall {
             module_address: package,
             module_name: module.as_bytes().to_vec(),
@@ -333,12 +340,14 @@ mod tests {
             100,
             DEFAULT_CALL_GAS,
             2,
+            vec![Address::from_bytes([5; 32])],
             package,
             "demo",
             "run",
             vec![vec![1]],
         )
         .unwrap();
+        assert_eq!(tx.body.declared_inputs, vec![Address::from_bytes([5; 32])]);
         assert_eq!(tx.body.call.module_address, package);
         assert_eq!(tx.body.call.module_name, b"demo");
         assert_eq!(tx.body.call.function_name, b"run");

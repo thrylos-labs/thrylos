@@ -8,11 +8,13 @@
 
 use std::collections::BTreeMap;
 
+use chain_exec::drawer::{Access, DrawerOverlay};
 use chain_exec::framework::{
     native_table, BlockInfo, FRAMEWORK_ADDRESS, FRAMEWORK_BUNDLE, STD_ADDRESS, STD_BUNDLE,
 };
 use chain_exec::keys::package_key;
 use chain_exec::module_resolver::ChainStateModuleResolver;
+use chain_exec::store::StoreExtension;
 use chain_state::{StateKey, StateValue};
 use chain_types::codec::Encode;
 use move_compiler::compiled_unit::NamedCompiledModule;
@@ -292,11 +294,17 @@ fn run_one(
     let Ok(linkage) = LinkageContext::new(package.linkage_table.clone()) else {
         return Outcome::Failed("the test's package could not be linked".into());
     };
+    // Declared first, so it outlives the extensions that borrow it.
+    let drawers = BTreeMap::new();
     let extensions = Rc::new(RefCell::new(NativeContextExtensions::default()));
     extensions.borrow_mut().add(BlockInfo {
         height: 1,
         time_ms: 1_700_000_000_000,
         chain_id: 0,
+    });
+    // Each test starts with empty drawers and may touch any address's.
+    extensions.borrow_mut().add(StoreExtension {
+        overlay: DrawerOverlay::new(&drawers, Access::everything()),
     });
     let mut vm = match runtime.make_vm_with_native_extensions(
         ChainStateModuleResolver::allowing_test_modules(state),

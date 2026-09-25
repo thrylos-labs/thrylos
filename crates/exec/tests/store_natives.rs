@@ -282,6 +282,7 @@ fn run_with(
             Access {
                 sender: addr(SENDER),
                 declared,
+                unrestricted: false,
             },
         ),
     });

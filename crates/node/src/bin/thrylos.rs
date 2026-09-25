@@ -34,7 +34,7 @@ Usage:
   thrylos move build [dir] [--dep <name>=<dir>@<thry1...>]...
   thrylos move test [dir] [--dep <name>=<dir>@<thry1...>]... [--filter <text>] [--gas <n>]
   thrylos move publish <package dir | module.mv...> [--yes]
-  thrylos move call <package> <module> <function> [type:value ...] [--gas <n>] [--yes]
+  thrylos move call <package> <module> <function> [type:value ...] [--input <address>]... [--gas <n>] [--yes]
   thrylos status
   thrylos network add <name> <rpc>
   thrylos network use <name>
@@ -54,6 +54,9 @@ Options:
   --dep <n>=<dir>@<a> with `move build`/`test`, a package already published at
                        address <a>, whose sources are in <dir>; this package
                        refers to it as <n>::module (repeatable)
+  --input <address>   with `move call`, another address whose stored values the
+                       call touches (repeatable). A call may touch only its
+                       sender's, and those it declares.
   --filter <text>     with `move test`, only tests whose name contains this
   --name <module>     with `move new`, the first module's name
   --hex               with `address`, print the raw public key instead
@@ -88,6 +91,7 @@ struct Options {
     gas: Option<u64>,
     deps: Vec<String>,
     filter: Option<String>,
+    inputs: Vec<String>,
     name: Option<String>,
     hex: bool,
     positional: Vec<String>,
@@ -125,6 +129,7 @@ fn parse_options() -> Result<Options, String> {
     let mut gas = None;
     let mut deps = Vec::new();
     let mut filter = None;
+    let mut inputs = Vec::new();
     let mut name = None;
     let mut hex_flag = false;
     let mut positional = Vec::new();
@@ -143,6 +148,7 @@ fn parse_options() -> Result<Options, String> {
             }
             "--dep" => deps.push(option_value("--dep", &mut args)?),
             "--filter" => filter = Some(option_value("--filter", &mut args)?),
+            "--input" => inputs.push(option_value("--input", &mut args)?),
             "--name" => name = Some(option_value("--name", &mut args)?),
             "--hex" => hex_flag = true,
             flag if flag.starts_with("--") && flag != "--help" && flag != "--version" => {
@@ -161,6 +167,7 @@ fn parse_options() -> Result<Options, String> {
         gas,
         deps,
         filter,
+        inputs,
         name,
         positional,
     })
@@ -647,6 +654,14 @@ fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
             arguments.join(" ")
         }
     );
+    let declared = options
+        .inputs
+        .iter()
+        .map(|text| parse_address(text).map_err(|error| format!("--input {text}: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    for address in &declared {
+        println!("Also touches: {}", format_address(address));
+    }
     println!("Maximum network fee: {}", format_amount(maximum_fee));
     if !options.yes {
         ask("Type yes to send: ")?;
@@ -658,6 +673,7 @@ fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
         at.height.saturating_add(EXPIRES_AFTER),
         gas,
         at.max_fee_per_gas,
+        declared,
         package,
         module,
         function,

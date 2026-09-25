@@ -255,3 +255,31 @@ fn build_tells_a_developer_when_a_module_stores_a_type_it_does_not_define() {
     );
     check(&build(&options(ok.path())).unwrap()).unwrap();
 }
+
+#[test]
+fn tests_can_use_the_store_and_each_starts_with_empty_drawers() {
+    let dir = package(
+        "module pkg::m;
+         use thrylos::store;
+         public struct Counter has key, store, copy, drop { n: u64 }
+
+         #[test] fun remembers() {
+             store::put(@0xa, 0, Counter { n: 1 });
+             assert!(store::has<Counter>(@0xa, 0), 1);
+             let mut c = store::take<Counter>(@0xa, 0);
+             c.n = c.n + 1;
+             store::put(@0xa, 0, c);
+             assert!(store::read<Counter>(@0xa, 0).n == 2, 2);
+         }
+         // Another test's drawer is not here.
+         #[test] #[expected_failure(abort_code = 1)] fun starts_empty() {
+             let _c = store::take<Counter>(@0xa, 0);
+         }
+         #[test] #[expected_failure(abort_code = 2)] fun put_twice() {
+             store::put(@0xb, 0, Counter { n: 1 });
+             store::put(@0xb, 0, Counter { n: 2 });
+         }",
+    );
+    let report = run_tests(&options(dir.path()), None, GAS).unwrap();
+    assert!(report.ok() && report.passed() == 3, "{report:?}");
+}
