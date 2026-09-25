@@ -102,7 +102,10 @@ bytes:0x0a0b     string:hello       (both are a vector<u8>)
 vec:u64:1,2,3    raw:0x...          (raw: bytes you have already encoded)
 ```
 
-A call is charged for the gas it uses, up to `--gas` (default 200,000). A Move abort
+A call is charged for the gas it uses, up to `--gas` (default and maximum **20,000** while the
+network's gas prices are being recalibrated: nodes refuse a call to a package that declares
+more, see `docs/gas-calibration.md`; 20,000 is thousands of times what an ordinary call
+uses). A Move abort
 costs what had been used; running out of gas, or a call the network cannot make sense
 of, costs the whole limit.
 

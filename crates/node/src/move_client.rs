@@ -13,10 +13,11 @@ use chain_types::{
 };
 use ed25519_dalek::{Signer, SigningKey};
 
-/// The gas a call is given unless the user says otherwise. A call is charged
-/// for what it uses, so a generous limit costs nothing extra; it only sets the
-/// most a runaway function can burn.
-pub const DEFAULT_CALL_GAS: u64 = 200_000;
+/// The gas a call is given unless the user says otherwise: the most nodes accept
+/// for a call to a package (`chain_exec::policy`). A call is charged for what it
+/// uses, so the full limit costs nothing extra; it only sets the most a runaway
+/// function can burn.
+pub const DEFAULT_CALL_GAS: u64 = chain_exec::policy::MOVE_CALL_GAS_LIMIT;
 
 #[allow(clippy::too_many_arguments)]
 fn sign(

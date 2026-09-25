@@ -52,7 +52,7 @@ Options:
   --wallet <file>     wallet key (default ~/.thrylos/wallet.key or THRYLOS_WALLET)
   --yes               send without the confirmation prompt
   --gas <n>           with `move call`, the most gas the call may use
-                       (default 200000; only what is used is charged); with
+                       (default 20000, also the most nodes accept; only what is used is charged); with
                        `move test`, the most a test may use
   --dep <n>=<dir>@<a> with `move build`/`test`, a package already published at
                        address <a>, whose sources are in <dir>; this package

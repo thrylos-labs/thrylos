@@ -53,6 +53,12 @@ pub enum AdmissionError {
     /// distinct sequence numbers pending, and this isn't a replacement
     /// of one of them.
     PerSenderPendingLimitReached,
+    /// A call to a package a user published declares more gas than this node
+    /// accepts for one (a node's own limit, not a rule of the chain: see
+    /// `chain_exec::policy`). Never raised by the pool itself; the node raises it
+    /// before the pool sees the transaction, since only the node knows what a
+    /// package call is.
+    MoveCallGasTooHigh,
 }
 
 impl core::fmt::Display for AdmissionError {
@@ -67,6 +73,7 @@ impl core::fmt::Display for AdmissionError {
             Self::InsufficientBalance => f.write_str("the sender's balance is below the worst-case fee, gas limit times max fee per gas"),
             Self::ReplacementFeeTooLow => f.write_str("a transaction is already pending at this sequence number and the fee is not raised enough to replace it"),
             Self::PerSenderPendingLimitReached => f.write_str("the sender already has the maximum number of pending transactions"),
+            Self::MoveCallGasTooHigh => f.write_str("a call to a package declares more gas than this node accepts for one (see `thrylos move call --gas`)"),
         }
     }
 }

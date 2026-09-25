@@ -1248,6 +1248,8 @@ impl Engine for Executor {
     ) -> Block {
         let mut transactions = Vec::new();
         let mut gas_so_far: u64 = 0;
+        // Gas the Move calls packed so far actually used (`crate::policy`).
+        let mut move_gas_used: u64 = 0;
         let transaction_gas_ceiling = max_transaction_gas(limits.max_gas);
         let max_size =
             usize::try_from(limits.max_size_bytes.min(MAX_BLOCK_SIZE_BYTES)).unwrap_or(usize::MAX);
@@ -1298,6 +1300,13 @@ impl Engine for Executor {
                 continue;
             }
 
+            // A node's own limit on Move work per block (`crate::policy`), not a
+            // rule of the chain: once the calls already packed have used their
+            // share, the rest wait for a later block.
+            let user_move_call = crate::policy::is_user_move_call(&tx);
+            if user_move_call && move_gas_used >= crate::policy::MOVE_GAS_PER_PROPOSED_BLOCK {
+                continue;
+            }
             if let (Some(ctx), Some(state)) = (ctx, scratch.as_mut()) {
                 let would_be_index = transactions.len();
                 // `Err` means nothing was written — every rejecting check
@@ -1317,30 +1326,37 @@ impl Engine for Executor {
                 // is needed again.
                 if try_on_copy {
                     let mut attempt = state.clone();
-                    if self
-                        .apply_transaction(&mut attempt, &tx, would_be_index, &ctx)
-                        .is_ok()
+                    if let Ok(applied) =
+                        self.apply_transaction(&mut attempt, &tx, would_be_index, &ctx)
                     {
                         if !state_within_limits(&attempt) {
                             continue;
                         }
                         *state = attempt;
+                        if user_move_call {
+                            move_gas_used = move_gas_used.saturating_add(applied.gas_used);
+                        }
                     }
-                } else if self
-                    .apply_transaction(state, &tx, would_be_index, &ctx)
-                    .is_ok()
-                    && !state_within_limits(state)
+                } else if let Ok(applied) = self.apply_transaction(state, &tx, would_be_index, &ctx)
                 {
-                    let mut rebuilt = self.state.clone();
-                    for (index, kept) in transactions.iter().enumerate() {
-                        // Replaying what was already accepted: it applied
-                        // cleanly against exactly this state a moment ago.
-                        let _ = self.apply_transaction(&mut rebuilt, kept, index, &ctx);
+                    if !state_within_limits(state) {
+                        let mut rebuilt = self.state.clone();
+                        for (index, kept) in transactions.iter().enumerate() {
+                            // Replaying what was already accepted: it applied
+                            // cleanly against exactly this state a moment ago.
+                            let _ = self.apply_transaction(&mut rebuilt, kept, index, &ctx);
+                        }
+                        *state = rebuilt;
+                        try_on_copy = true;
+                        continue;
                     }
-                    *state = rebuilt;
-                    try_on_copy = true;
-                    continue;
+                    if user_move_call {
+                        move_gas_used = move_gas_used.saturating_add(applied.gas_used);
+                    }
                 }
+            } else if user_move_call {
+                // No scratch state to try it on: count what it may use.
+                move_gas_used = move_gas_used.saturating_add(tx.body.gas_limit.0);
             }
 
             gas_so_far = next_total;

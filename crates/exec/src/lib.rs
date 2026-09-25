@@ -119,6 +119,7 @@ pub mod module_resolver;
 pub mod module_store;
 pub mod move_config;
 pub mod native;
+pub mod policy;
 pub mod publish;
 pub mod simulate;
 pub mod store;

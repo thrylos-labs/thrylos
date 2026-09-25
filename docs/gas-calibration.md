@@ -111,6 +111,32 @@ O(state), because every block clones the state and recomputes its root; that is 
 with the number of entries, not with gas, and it needs its own measurement at the state cap. And
 the same benchmark should be run on hardware you would call the reference, if that is not the VPS.
 
+## Status: option C is built (2026-09-25); not yet deployed
+
+`chain_exec::policy` holds the node-local limits, tested in `crates/exec/tests/move_policy.rs`
+and `crates/node/src/txpool.rs`:
+
+- **A node's mempool refuses a call to a user's package that declares more than 20,000 gas**
+  (`MoveCallGasTooHigh`), for transactions from RPC and from peers alike. Protocol calls,
+  publishing and the two demonstration packages are not limited.
+- **A node's proposer stops packing Move calls into a block once the calls already packed have
+  actually used 60,000 gas** (counted as it tries each one, at the protocol's 1,000-gas floor
+  at least). The rest wait for a later block. With the 1,000-gas floor that is at least 60 calls
+  a block; a block of calls that all burn their whole limit holds three.
+- The `thrylos` command's default and maximum gas for `move call` is 20,000.
+
+At the worst rate measured (about 11 microseconds a unit) a block's Move work is bounded at about
+0.6 to 0.8 seconds, one transaction at about 0.2 seconds. That is still slow for a one-second
+block, which is why this is a stopgap and the calibration below is the fix.
+
+**Not a consensus rule.** A block from another proposer that carries a call over these limits is
+still valid, and every validator still runs it. So this protects the network from users but not from
+a validator that proposes such a block: all four validators here are the operator's, so that is the
+same as trusting the operator's own nodes. Removing the limits needs no fork either.
+
+**Users on an older `thrylos` will be refused** (`MoveCallGasTooHigh`) until they pass
+`--gas 20000` or less.
+
 ## Ways to act
 
 - **A. Fix the live chain now, then reset later.** A hotfix that caps a Move call's gas at a small

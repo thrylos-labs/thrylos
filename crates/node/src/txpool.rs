@@ -191,6 +191,13 @@ impl NodeMempool {
 
     /// Admits `transaction` as if it had arrived from a peer.
     pub fn admit(&self, transaction: Transaction) -> Result<(), AdmissionError> {
+        // The node's own limit on Move calls (`chain_exec::policy`), checked before
+        // anything else since it costs nothing and a call over it is never wanted.
+        if chain_exec::policy::is_user_move_call(&transaction)
+            && transaction.body.gas_limit.0 > chain_exec::policy::MOVE_CALL_GAS_LIMIT
+        {
+            return Err(AdmissionError::MoveCallGasTooHigh);
+        }
         let height = self.height();
         self.pool.borrow_mut().admit(transaction, height)
     }
@@ -408,5 +415,63 @@ mod tests {
         pool.submit(bump(101, DEVNET_CHAIN, 0, 1), 0).unwrap();
         assert_eq!(as_source.candidates(10).len(), 1);
         assert_eq!(as_source.len(), 1);
+    }
+
+    /// A call to a package at `package`, declaring `gas`, from a funded devnet account.
+    fn call_declaring(seed: u8, sequence: u64, package: [u8; 32], gas: u64) -> Transaction {
+        use chain_types::{Encode, Signature};
+        use ed25519_dalek::Signer as _;
+        let mut tx = bump(seed, DEVNET_CHAIN, sequence, 1);
+        tx.body.call.module_address = Address::from_bytes(package);
+        tx.body.declared_inputs = Vec::new();
+        tx.body.gas_limit = chain_types::GasAmount(gas);
+        let mut bytes = Vec::new();
+        tx.body.encode(&mut bytes);
+        tx.signature = Signature::from_ed25519_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+                .sign(&bytes)
+                .to_bytes(),
+        );
+        tx
+    }
+
+    #[test]
+    fn a_call_to_a_users_package_may_declare_only_so_much_gas_and_nothing_else_is_limited() {
+        use chain_exec::policy::MOVE_CALL_GAS_LIMIT;
+        let (_dir, _engine, pool) = chain();
+        let user_package = [0x77u8; 32];
+        // At the limit is taken; one over is refused, before anything else is looked at.
+        assert_eq!(
+            pool.admit(call_declaring(101, 0, user_package, MOVE_CALL_GAS_LIMIT)),
+            Ok(())
+        );
+        assert_eq!(
+            pool.admit(call_declaring(
+                102,
+                0,
+                user_package,
+                MOVE_CALL_GAS_LIMIT + 1
+            )),
+            Err(AdmissionError::MoveCallGasTooHigh)
+        );
+        assert_eq!(
+            pool.admit(call_declaring(103, 0, user_package, 15_000_000)),
+            Err(AdmissionError::MoveCallGasTooHigh)
+        );
+        // The chain's own protocol calls, publishing (whose gas is by size) and the
+        // two fixed demonstration packages are not this limit's business.
+        for package in [
+            chain_exec::native::COIN_PACKAGE_ADDRESS,
+            chain_exec::native::STAKING_PACKAGE_ADDRESS,
+            chain_exec::publish::MOVE_PACKAGE_ADDRESS,
+            [1u8; 32],
+            [2u8; 32],
+        ] {
+            assert_ne!(
+                pool.admit(call_declaring(104, 0, package, 1_000_000)),
+                Err(AdmissionError::MoveCallGasTooHigh),
+                "{package:?}"
+            );
+        }
     }
 }

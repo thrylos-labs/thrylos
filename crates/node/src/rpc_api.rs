@@ -480,6 +480,7 @@ const fn reason(error: AdmissionError) -> &'static str {
         AdmissionError::InsufficientBalance => "InsufficientBalance",
         AdmissionError::ReplacementFeeTooLow => "ReplacementFeeTooLow",
         AdmissionError::PerSenderPendingLimitReached => "PerSenderPendingLimitReached",
+        AdmissionError::MoveCallGasTooHigh => "MoveCallGasTooHigh",
     }
 }
 
