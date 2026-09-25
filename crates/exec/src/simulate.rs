@@ -34,7 +34,10 @@ use crate::store::StoreExtension;
 use crate::view::ViewValue;
 
 /// The most gas a simulation may use, whatever the transaction says.
-pub const SIMULATE_MAX_GAS: u64 = 100_000;
+/// Measured on the alpha VPS in a release build (`docs/gas-calibration.md`): a
+/// unit of gas spent on plain instructions took 8 to 11 microseconds there, so
+/// this is about a tenth of a second of the node's thread at worst.
+pub const SIMULATE_MAX_GAS: u64 = 10_000;
 
 /// What a simulated call did.
 #[derive(Debug, Clone, PartialEq)]

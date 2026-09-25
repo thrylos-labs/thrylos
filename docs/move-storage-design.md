@@ -312,7 +312,7 @@ Acceptance:
    already refused by the bytecode verifier, so those two are defence in depth, and a unit
    test shows the scan catches the relabelling by itself. Not yet run under a real fuzzer
    locally (it needs nightly); CI runs it.
-7. **Stage 2b: reading state (done, except the guide):** RPC `move_resource` (one drawer: its
+7. **Stage 2b: reading state (done; the developer guide, `move-developer-guide.md`, is updated for storage and reading and its walkthrough was run against a real local network):** RPC `move_resource` (one drawer: its
    bytes and its value decoded by its type, with numbers as text), `move_resources` (an
    address's drawers, at most 100) and `simulate` (`crates/exec/src/simulate.rs`); CLI
    `thrylos move resource`, `resources` and `view`; the explorer shows an account's stored
@@ -322,9 +322,9 @@ Acceptance:
    it reports the gas, what it returned, and the drawers and deposit it *would* have
    changed. **`simulate` runs a Move call on the node's own thread, the one that also runs
    consensus, so it is off by default (`rpc.simulate` in `node.json`; `devnet init` turns it
-   on), capped at 100,000 gas, and spaced to one a second per node.** The cap and spacing are
-   set from debug-build timing (a 100,000-gas loop took several seconds there); they must be
-   re-measured on a release build on the VPS before any public node turns it on. Then the
+   on), capped at 10,000 gas, and spaced to one a second per node.** The cap was set from a release
+   build measured on the alpha VPS (`gas-calibration.md`): at the schedule's current prices
+   10,000 gas of plain instructions is about a tenth of a second there. Then the
    guide, gas calibration and the reset rehearsal.
 
 ## Not in this stage
