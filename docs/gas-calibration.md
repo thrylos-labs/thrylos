@@ -106,10 +106,35 @@ arithmetic iterations), which is the point of it, and it means moving the block 
 clamps, which live in `chain-modules` and in genesis. It also means the per-block Move work is
 bounded by construction instead of by a hope.
 
-**Not yet measured, and needed before fixing the numbers:** the time to execute a block is also
-O(state), because every block clones the state and recomputes its root; that is a cost that scales
-with the number of entries, not with gas, and it needs its own measurement at the state cap. And
-the same benchmark should be run on hardware you would call the reference, if that is not the VPS.
+### Measured: what a block costs as the state grows (2026-09-25)
+
+The per-block cost that does not depend on gas at all. Every block computes the state root from
+scratch, over every entry (`chain_state::compute_root` rebuilds the whole trie), and clones the
+state to execute it. Measured with one transfer in the block, so the numbers are the overhead and
+not the transaction (`block_cost_by_state_size`, an ignored test in `crates/exec/src/executor.rs`;
+release build on the development Mac, which is faster than the VPS):
+
+| Entries in state | Value size | Execute a block | of which the root | of which the clone |
+|---:|---:|---:|---:|---:|
+| 10 | 8 B | 0.3 ms | 0.2 ms | 0 |
+| 25,000 | 8 B | 31 ms | 21 ms | 1.5 ms |
+| 99,900 | 8 B | 133 ms | 90 ms | 6 ms |
+| 99,900 | 640 B | **361 ms** | **310 ms** | 11 ms |
+
+At the state cap (100,000 entries, 64 MiB) with realistically sized values, **executing an empty-ish
+block costs a third of a second on a fast machine before a single instruction runs**, and every
+validator pays it for every block. On the one-CPU VPS it will be several times that, more than the
+one-second block time. So the state cap and the block time are not compatible today, whatever the
+gas is set to; and it means the gas budget above (about 300 ms a block) is not the whole budget.
+
+The fix does not change consensus: the root's *value* stays exactly what it is (commitment
+version 2); only the way it is computed changes, from a rebuild to an update that touches only the
+entries a block changed. That can ship as an ordinary binary swap, before the reset, and the
+existing root tests (and a new one comparing incremental against full on random blocks) are the proof
+that it gives the same answer. The clone can go the same way (copy-on-write) but it is small by
+comparison.
+
+**Also not yet measured:** the same run on the VPS.
 
 ## Status: option C is built and deployed to the live testnet (2026-09-25)
 

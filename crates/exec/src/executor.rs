@@ -1632,6 +1632,86 @@ mod tests {
         }
     }
 
+    /// A measurement, not a check: what one block costs as the state grows,
+    /// with a single transfer in it, so the cost shown is the per-block
+    /// overhead (clone, root, diff) and not the transaction. Run it on the
+    /// hardware that matters, in release:
+    ///
+    /// ```text
+    /// cargo test --release -p chain-exec --lib block_cost_by_state_size -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement; run it by hand in a release build"]
+    #[allow(
+        clippy::print_stdout,
+        clippy::disallowed_methods,
+        clippy::float_arithmetic
+    )]
+    fn block_cost_by_state_size() {
+        use std::time::Instant;
+        for (entries, value_bytes) in [(0usize, 8usize), (25_000, 8), (99_900, 8), (99_900, 640)] {
+            let mut executor = Executor::genesis(ChainId(1)).unwrap();
+            executor
+                .credit_account(address_of(2), 1_000_000_000)
+                .unwrap();
+            let mut next = 0u64;
+            while executor.state.len() < entries {
+                let key = StateKey::new(format!("load-test-padding-{next}").into_bytes());
+                executor
+                    .state
+                    .insert(key, StateValue::new(vec![0u8; value_bytes]));
+                next += 1;
+            }
+            executor.state_root = compute_root(&executor.state);
+            let limits = executor.block_limits().unwrap();
+            let tx = coin_transfer(2, 0, Address::from_bytes([222; 32]), 10);
+
+            let best = |mut f: Box<dyn FnMut() + '_>| {
+                (0..3)
+                    .map(|_| {
+                        let start = Instant::now();
+                        f();
+                        start.elapsed().as_secs_f64() * 1000.0
+                    })
+                    .fold(f64::MAX, f64::min)
+            };
+            let block = executor.propose_block(
+                executor.tip_block_hash(),
+                executor.state_root(),
+                BlockHeight(1),
+                1_000,
+                vec![tx.clone()],
+                limits,
+            );
+            let propose = best(Box::new(|| {
+                let _ = executor.propose_block(
+                    executor.tip_block_hash(),
+                    executor.state_root(),
+                    BlockHeight(1),
+                    1_000,
+                    vec![tx.clone()],
+                    limits,
+                );
+            }));
+            let execute = best(Box::new(|| {
+                let _ = executor
+                    .execute_block(executor.state_root(), &block)
+                    .unwrap();
+            }));
+            let clone = best(Box::new(|| {
+                let _ = executor.state.clone();
+            }));
+            let root = best(Box::new(|| {
+                let _ = compute_root(&executor.state);
+            }));
+            let audit = best(Box::new(|| executor.audit().unwrap()));
+            println!(
+                "entries {:>7}  value {:>3} B | propose {:>8.1} ms | execute {:>8.1} ms | (clone {:>7.1}, root {:>7.1}) | audit {:>7.1} ms",
+                executor.state.len(), value_bytes, propose, execute, clone, root, audit
+            );
+        }
+    }
+
     #[test]
     fn proposal_drops_a_transaction_that_would_breach_the_state_entry_cap() {
         let mut executor = Executor::genesis(ChainId(1)).unwrap();

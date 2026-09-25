@@ -6,7 +6,8 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
-    clippy::panic
+    clippy::panic,
+    clippy::integer_division
 )]
 
 mod common;
@@ -109,7 +110,7 @@ fn the_limit_is_only_on_calls_to_users_packages() {
     // Native transfers offered after the Move budget is spent are still packed.
     let mut transfers = Vec::new();
     for _ in 0..3 {
-        let mut sender = Publisher::new(w.next_seed);
+        let sender = Publisher::new(w.next_seed);
         w.next_seed += 1;
         w.chain.fund(&sender, 1_000_000_000_000);
         let recipient = Publisher::new(200).address();
