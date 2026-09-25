@@ -6,7 +6,8 @@ audit fixes, the `.thry` names service and the landing page went live. It
 describes one host; nothing here is a design for more than one.
 
 Related: `rollout-audit-fixes.md` and `rollout-batch-2.md` (how the two chain
-rollouts were done), `thry-names.md` (the names service), `release-signing.md`.
+rollouts were done), `rollout-move-reset.md` (the planned reset that ships Move
+publishing, with `scripts/reset-testnet.sh`), `thry-names.md` (the names service), `release-signing.md`.
 
 ## The machine
 
