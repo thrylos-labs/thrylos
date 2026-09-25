@@ -264,3 +264,76 @@ fn silent_and_dripping_clients_do_not_stop_a_real_request_being_answered() {
         began.elapsed()
     );
 }
+
+#[test]
+fn a_silent_name_registry_does_not_hold_up_other_requests_to_the_real_faucet() {
+    // The faucet used to call the name registry while holding its one lock, so
+    // a registry that never answered stalled every other request, and the
+    // payout worker, for its whole timeout.
+    let hang = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let registry = hang.local_addr().unwrap();
+    let _silent = std::thread::spawn(move || {
+        let mut open = Vec::new();
+        for stream in hang.incoming().take(4) {
+            open.push(stream.unwrap());
+        }
+        std::thread::sleep(Duration::from_secs(6));
+    });
+
+    let parent = tempfile::tempdir().unwrap();
+    let dir = parent.path().join("faucet");
+    let discord_key = SigningKey::from_bytes(&[13; 32]);
+    init_faucet(&dir, &discord_key);
+    let config_path = dir.join("faucet.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["names_registry"] = json!(registry.to_string());
+    config["names_secret_file"] = json!("names.secret");
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    std::fs::write(dir.join("names.secret"), "a-shared-secret\n").unwrap();
+    let faucet = start(&dir);
+
+    let recipient = chain_text::format_address(&chain_types::Address::from_bytes([31; 32]));
+    let claim = json!({
+        "id": "silent-registry-1",
+        "type": 2,
+        "member": { "user": { "id": "80351110224678912" } },
+        "data": { "name": "faucet", "options": [{ "name": "address", "value": recipient }] }
+    });
+    let address = faucet.address.clone();
+    let key_for_claim = SigningKey::from_bytes(&[13; 32]);
+    let slow = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let (status, body) = post_interaction(&address, &key_for_claim, "1700000000", &claim, true);
+        (started.elapsed(), status, body)
+    });
+
+    // While that one waits on the silent registry, a second request is served at once.
+    std::thread::sleep(Duration::from_millis(400));
+    let started = std::time::Instant::now();
+    let (status, body) = post_interaction(
+        &faucet.address,
+        &discord_key,
+        "1700000001",
+        &json!({ "type": 1 }),
+        true,
+    );
+    let quick = started.elapsed();
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    assert_eq!(body["type"], 1);
+    assert!(
+        quick < Duration::from_millis(800),
+        "answered after {quick:?}, behind the registry call"
+    );
+
+    let (took, status, body) = slow.join().unwrap();
+    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+    let content = body["data"]["content"].as_str().unwrap();
+    assert!(
+        content.starts_with("Queued"),
+        "the payout is not lost: {content}"
+    );
+    assert!(
+        took > Duration::from_millis(700),
+        "the first request did wait on the registry: {took:?}"
+    );
+}

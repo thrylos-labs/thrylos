@@ -7,9 +7,36 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /root/thrylos-redirect/www-redirect.py
+ExecStart=/usr/bin/python3 /srv/thrylos/redirect/www-redirect.py
 Restart=on-failure
 RestartSec=5
+User=thrylos-web
+Group=thrylos-web
+UMask=0077
+# The servers are static, read only and on loopback: they need no privileges, no
+# home directory, no write access anywhere and no network but IP. What they serve
+# is owned by root, so a compromised server cannot change the files it serves.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 
 [Install]
 WantedBy=multi-user.target

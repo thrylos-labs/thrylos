@@ -20,8 +20,6 @@ use crate::names::{
 
 /// Reservations one source may make in [`HOUR_MS`].
 pub const RESERVATIONS_PER_SOURCE_PER_HOUR: usize = 5;
-/// Reservations everyone together may make in [`HOUR_MS`].
-pub const RESERVATIONS_PER_HOUR: usize = 500;
 /// Lookups one source may make in a minute.
 pub const LOOKUPS_PER_SOURCE_PER_MINUTE: usize = 60;
 /// The most a request body may be.
@@ -110,7 +108,6 @@ pub struct NamesService {
     /// The secret the faucet presents to confirm a name.
     secret: Vec<u8>,
     per_source: RateLimiter,
-    overall: RateLimiter,
     lookups: RateLimiter,
 }
 
@@ -121,7 +118,6 @@ impl NamesService {
             chain_id,
             secret,
             per_source: RateLimiter::default(),
-            overall: RateLimiter::default(),
             lookups: RateLimiter::default(),
         }
     }
@@ -233,17 +229,6 @@ impl NamesService {
                 "Too Many Requests",
                 "RateLimited",
                 "too many reservations from here; try again in an hour",
-            );
-        }
-        if !self
-            .overall
-            .allow("all", now_ms, RESERVATIONS_PER_HOUR, HOUR_MS)
-        {
-            return Response::failure(
-                429,
-                "Too Many Requests",
-                "RateLimited",
-                "the registry is busy; try again later",
             );
         }
         let reservation = match parse_reservation(&request.body) {
@@ -385,6 +370,14 @@ mod tests {
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    /// A key for any number, for tests that need thousands of distinct ones.
+    fn key_n(n: u32) -> SigningKey {
+        let mut seed = [0u8; 32];
+        seed[..4].copy_from_slice(&n.to_le_bytes());
+        seed[31] = 0xA5;
+        SigningKey::from_bytes(&seed)
     }
 
     fn address_of(key: &SigningKey) -> Address {
@@ -581,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn reservations_are_limited_per_source_and_overall() {
+    fn reservations_are_limited_per_source_and_many_sources_cannot_lock_out_an_honest_user() {
         let (_dir, mut service) = service();
         let keys: Vec<SigningKey> = (1..=8).map(key).collect();
         let mut statuses = Vec::new();
@@ -605,15 +598,7 @@ mod tests {
             &[429; 3],
             "the sixth from one source is refused"
         );
-        // Another source is unaffected, and after the hour the first is too.
-        let other = service.handle(
-            NOW,
-            &from_source(
-                request("POST", "/names", reserve_body(&key(20), "fresh1", NOW)),
-                "9.9.9.8",
-            ),
-        );
-        assert_eq!(other.status, 200);
+        // After the hour the same source is allowed again.
         let later = service.handle(
             NOW + HOUR_MS,
             &from_source(
@@ -626,6 +611,59 @@ mod tests {
             ),
         );
         assert_eq!(later.status, 200);
+
+        // There used to be an hourly budget shared by everyone, which a hundred
+        // sources could use up so that an honest new user got 429. Now each
+        // source has its own allowance and nobody else's use of theirs matters.
+        for ip in 0..100u32 {
+            for n in 0..5u32 {
+                let name = format!("flood{ip}x{n}");
+                let k = key_n(1_000 + ip * 10 + n);
+                let r = service.handle(
+                    NOW + 2 * HOUR_MS,
+                    &from_source(
+                        request("POST", "/names", reserve_body(&k, &name, NOW + 2 * HOUR_MS)),
+                        &format!("10.0.{ip}.1"),
+                    ),
+                );
+                assert_eq!(r.status, 200, "{ip}/{n}: {:?}", r.body);
+            }
+        }
+        let honest = service.handle(
+            NOW + 2 * HOUR_MS + 60_000,
+            &from_source(
+                request(
+                    "POST",
+                    "/names",
+                    reserve_body(&key_n(999_999), "realperson", NOW + 2 * HOUR_MS + 60_000),
+                ),
+                "203.0.113.7",
+            ),
+        );
+        assert_eq!(honest.status, 200, "{:?}", honest.body);
+    }
+
+    #[test]
+    fn a_name_that_imitates_the_project_is_refused_over_the_wire() {
+        let (_dir, mut service) = service();
+        for (index, bad) in ["thrylos-support", "admin1", "validator-1"]
+            .iter()
+            .enumerate()
+        {
+            let r = service.handle(
+                NOW,
+                &from_source(
+                    request(
+                        "POST",
+                        "/names",
+                        reserve_body(&key(200 + u8::try_from(index).unwrap()), bad, NOW),
+                    ),
+                    &format!("7.7.7.{index}"),
+                ),
+            );
+            assert_eq!((r.status, code(&r)), (400, "Reserved"), "{bad}");
+        }
+        assert_eq!(service.registry().pending_count(), 0);
     }
 
     #[test]

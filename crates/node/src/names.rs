@@ -73,6 +73,33 @@ const RESERVED: &[&str] = &[
     "www",
 ];
 
+/// Words that make a name read as the project, or as someone with authority
+/// over it. Refused wherever they stand as a whole part of a name (`admin`,
+/// `admin1`, `support-thrylos`, `faucet-official`), not only as the whole name.
+const OFFICIAL_PARTS: &[&str] = &[
+    "admin",
+    "administrator",
+    "explorer",
+    "faucet",
+    "foundation",
+    "moderator",
+    "official",
+    "root",
+    "rpc",
+    "security",
+    "staff",
+    "support",
+    "team",
+    "treasury",
+    "validator",
+    "wallet",
+];
+
+/// The project's own name. Refused anywhere inside a name once look-alike
+/// digits are read as the letters they imitate, and once hyphens are dropped
+/// (`thrylos-team`, `th-rylos`, `thry1os`).
+const BRAND: &str = "thrylos";
+
 const STATE_FILE: &str = "names.json";
 const STATE_VERSION: u32 = 1;
 
@@ -167,10 +194,48 @@ pub fn validate_name(raw: &str) -> Result<String, NameError> {
     if bare.contains("--") {
         return Err(NameError::InvalidName("do not use -- "));
     }
-    if RESERVED.contains(&bare) {
+    if RESERVED.contains(&bare) || impersonates(bare) {
         return Err(NameError::Reserved);
     }
     Ok(bare.to_owned())
+}
+
+/// The ways a part of a name may be read: as written with its digits dropped
+/// (`admin1`), and with digits read as the letters they imitate (`thry1os`,
+/// where `1` may stand for either `l` or `i`).
+fn readings(part: &str) -> [String; 3] {
+    let dropped: String = part.chars().filter(|c| !c.is_ascii_digit()).collect();
+    let letters = |one: char| -> String {
+        part.chars()
+            .map(|c| match c {
+                '0' => 'o',
+                '1' => one,
+                '3' => 'e',
+                '4' => 'a',
+                '5' => 's',
+                '7' => 't',
+                other => other,
+            })
+            .collect()
+    };
+    [dropped, letters('l'), letters('i')]
+}
+
+/// Whether `name` (already checked to be lowercase `a-z`, `0-9` and `-`) would
+/// pass for the project or for someone in charge of it.
+fn impersonates(name: &str) -> bool {
+    let joined: String = name.chars().filter(|c| *c != '-').collect();
+    if readings(&joined)
+        .iter()
+        .any(|reading| reading.contains(BRAND))
+    {
+        return true;
+    }
+    name.split('-').any(|part| {
+        readings(part)
+            .iter()
+            .any(|reading| reading == "thry" || OFFICIAL_PARTS.contains(&reading.as_str()))
+    })
 }
 
 /// The bytes a wallet signs to reserve `name` for `address`.
@@ -386,8 +451,10 @@ impl Registry {
         }
     }
 
-    /// Reserves `name` for `address`, replacing any reservation that address
-    /// already has. Returns when it lapses.
+    /// Reserves `name` for `address`, replacing any different reservation that
+    /// address already has. Returns when it lapses (unchanged if the address
+    /// already held this name). A full queue drops its oldest unconfirmed
+    /// reservation to make room.
     pub fn reserve(
         &mut self,
         now_ms: u64,
@@ -407,13 +474,37 @@ impl Registry {
                 return Err(NameError::Taken.into());
             }
         }
-        // Replacing the address's own earlier reservation frees its old name.
+        // Asking again for the name it already holds changes nothing: the hold
+        // is not extended, so a name cannot be kept for ever by renewing it
+        // without ever confirming it. It lapses, and is then free to anyone.
+        if let Some(existing) = self.pending.get(name) {
+            if existing.address == address_text {
+                return Ok(existing.expires_ms);
+            }
+        }
+        // Reserving a different name replaces the address's earlier reservation
+        // and frees its old name.
         if let Some(old) = self.pending_by_address.get(&address_text).cloned() {
             self.pending.remove(&old);
             self.pending_by_address.remove(&address_text);
         }
-        if self.pending.len() >= MAX_PENDING {
-            return Err(NameError::Full.into());
+        // A full queue makes room by dropping the oldest reservation nobody
+        // has confirmed, rather than turning the next person away. A person
+        // registering now is confirming within minutes; what is oldest has
+        // been waiting longest. So filling the queue with junk costs an
+        // attacker their own reservations, not other people's ability to sign up.
+        while self.pending.len() >= MAX_PENDING {
+            let Some(oldest) = self
+                .pending
+                .values()
+                .min_by_key(|record| record.expires_ms)
+                .map(|record| record.name.clone())
+            else {
+                break;
+            };
+            if let Some(record) = self.pending.remove(&oldest) {
+                self.pending_by_address.remove(&record.address);
+            }
         }
         let expires_ms = now_ms.saturating_add(PENDING_TTL_MS);
         self.pending.insert(
@@ -597,6 +688,14 @@ mod tests {
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    /// A key for any number, for tests that need thousands of distinct ones.
+    fn key_n(n: u32) -> SigningKey {
+        let mut seed = [0u8; 32];
+        seed[..4].copy_from_slice(&n.to_le_bytes());
+        seed[31] = 0xA5;
+        SigningKey::from_bytes(&seed)
     }
 
     fn address_of(key: &SigningKey) -> Address {
@@ -887,8 +986,10 @@ mod tests {
             "the old name is free again"
         );
         registry.reserve(NOW + 6, "first", &bob).unwrap();
-        // The same address re-reserving the same name is allowed and just renews it.
-        registry.reserve(NOW + 7, "second", &alice).unwrap();
+        // The same address asking again for the name it holds is allowed, and does
+        // not move the deadline.
+        let held = registry.reserve(NOW + 7, "second", &alice).unwrap();
+        assert_eq!(held, NOW + 5 + PENDING_TTL_MS);
     }
 
     #[test]
@@ -982,10 +1083,28 @@ mod tests {
     }
 
     #[test]
-    fn the_pending_queue_is_capped() {
+    fn asking_again_for_a_held_name_never_extends_the_hold() {
+        // Renewing used to push the deadline out each time, so one request every
+        // three days held a name for ever without confirming it.
         let (_dir, mut registry) = registry();
-        for index in 0..MAX_PENDING {
-            let name = format!("n{index}x");
+        let (squatter, other) = (address_of(&key(1)), address_of(&key(2)));
+        let first = registry.reserve(NOW, "wanted", &squatter).unwrap();
+        for hour in 1..=70 {
+            let again = registry
+                .reserve(NOW + hour * 3_600_000, "wanted", &squatter)
+                .unwrap();
+            assert_eq!(again, first, "the deadline stays where it was");
+        }
+        assert_eq!(
+            refused(registry.reserve(first - 1, "wanted", &other)),
+            NameError::Taken
+        );
+        // It lapsed on schedule, so anyone can have it.
+        registry.reserve(first, "wanted", &other).unwrap();
+    }
+
+    fn fill_pending(registry: &mut Registry, count: usize, first_expiry: u64) {
+        for index in 0..count {
             let address = Address::from_bytes([
                 u8::try_from(index & 0xff).unwrap(),
                 u8::try_from((index >> 8) & 0xff).unwrap(),
@@ -1020,23 +1139,121 @@ mod tests {
                 0,
                 0,
             ]);
-            // Insert directly: saving 20,000 times would only test the disk.
+            let name = format!("n{index}x");
             let text = format_address(&address);
+            // Inserted directly: saving tens of thousands of times would only test the disk.
             registry.pending.insert(
                 name.clone(),
                 PendingRecord {
                     name: name.clone(),
                     address: text.clone(),
-                    expires_ms: NOW + 1,
+                    expires_ms: first_expiry + u64::try_from(index).unwrap(),
                 },
             );
             registry.pending_by_address.insert(text, name);
         }
-        let extra = address_of(&key(9));
-        assert_eq!(
-            refused(registry.reserve(NOW, "onemore", &extra)),
-            NameError::Full
+    }
+
+    #[test]
+    fn a_full_queue_drops_its_oldest_reservation_instead_of_turning_a_new_person_away() {
+        let (_dir, mut registry) = registry();
+        fill_pending(
+            &mut registry,
+            MAX_PENDING,
+            NOW + PENDING_TTL_MS.div_euclid(2),
         );
+        assert_eq!(registry.pending_count(), MAX_PENDING);
+
+        let newcomer = address_of(&key(9));
+        registry.reserve(NOW, "newcomer", &newcomer).unwrap();
+        assert_eq!(
+            registry.pending_count(),
+            MAX_PENDING,
+            "still at the cap, not over it"
+        );
+        assert!(
+            matches!(
+                registry.status(NOW, &newcomer),
+                AddressStatus::Pending { .. }
+            ),
+            "the newcomer got in"
+        );
+        assert!(registry.is_available(NOW, "n0x"), "the oldest one made way");
+        assert!(
+            !registry.is_available(NOW, "n1x"),
+            "the next oldest is still held"
+        );
+    }
+
+    #[test]
+    fn what_makes_way_is_the_oldest_by_deadline_not_by_name_or_address() {
+        let (_dir, mut registry) = registry();
+        fill_pending(&mut registry, MAX_PENDING, NOW + 1_000_000);
+        for round in 0..3u64 {
+            let who = address_of(&key_n(u32::try_from(round).unwrap() + 50));
+            registry
+                .reserve(NOW + round, &format!("arrival{round}"), &who)
+                .unwrap();
+        }
+        for gone in ["n0x", "n1x", "n2x"] {
+            assert!(registry.is_available(NOW, gone), "{gone}");
+        }
+        assert!(!registry.is_available(NOW, "n3x"));
+    }
+
+    #[test]
+    fn names_that_imitate_the_project_or_someone_in_charge_of_it_are_refused() {
+        for bad in [
+            "thrylos-support",
+            "thrylos-team",
+            "support-thrylos",
+            "thrylos0",
+            "th-rylos",
+            "thry1os",
+            "thryl0s",
+            "the-thrylos-fan",
+            "thrylos2",
+            "admin1",
+            "admin-2",
+            "faucet-official",
+            "validator-1",
+            "thrylos-foundation",
+            "wallet-help",
+            "my-official-page",
+            "security-team",
+            "root9",
+            "thry",
+            "thry7",
+            "Thrylos-Support",
+        ] {
+            assert_eq!(
+                validate_name(bad),
+                Err(NameError::Reserved),
+                "{bad} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_names_that_only_look_similar_are_still_allowed() {
+        // Whole parts are what count, so words that merely contain a reserved one are fine.
+        for fine in [
+            "alice",
+            "bob-the-builder",
+            "ned",
+            "thrive",
+            "thrones",
+            "author",
+            "steam-punk",
+            "administrate",
+            "rooted",
+            "supporters",
+            "teammate",
+            "walleted",
+            "footeam",
+        ] {
+            assert!(validate_name(fine).is_ok(), "{fine} should be allowed");
+        }
     }
 
     // ---- limits ---------------------------------------------------------

@@ -15,7 +15,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VPS="${VPS:-root@157.230.10.32}"
 KEY="${KEY:-$HOME/.ssh/id_ed25519_thrylos_alpha}"
-DEST="${DEST:-/root/thrylos-site/}"
+DEST="${DEST:-/srv/thrylos/site/}"
 SRC=deploy/site
 
 digest() {
@@ -33,5 +33,10 @@ for asset in site.css site.js; do
 done
 grep -o '"site\.[a-z]*?v=[0-9a-f]*"' "$stage/index.html"
 
-rsync -av -e "ssh -i $KEY -o IdentitiesOnly=yes -o ConnectTimeout=15" \
+rsync -rltv --no-owner --no-group -e "ssh -i $KEY -o IdentitiesOnly=yes -o ConnectTimeout=15" \
   "$stage/index.html" "$stage/site.css" "$stage/site.js" "$stage/thrylos-logo.png" "$VPS:$DEST"
+
+# What is served is owned by root and cannot be changed by the account the web
+# server runs as. (macOS's rsync has no --chown, so this is set on the server.)
+ssh -i "$KEY" -o IdentitiesOnly=yes -o ConnectTimeout=15 "$VPS" \
+  "chown -R root:root '$DEST' && find '$DEST' -type d -exec chmod 755 {} + && find '$DEST' -type f -exec chmod 644 {} +"

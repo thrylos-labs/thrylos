@@ -1,14 +1,14 @@
-# Serves the thrylos.org landing page (deploy/site) on loopback; the Cloudflare
-# Tunnel publishes it. Deployed with scripts/deploy-site.sh to /srv/thrylos/site.
+# The browser wallet (deploy/wallet) on loopback; the Cloudflare Tunnel publishes it
+# as wallet.thrylos.org. Deployed with scripts/deploy-wallet.sh to /srv/thrylos/wallet.
 [Unit]
-Description=Thrylos landing page (thrylos.org)
+Description=Thrylos alpha static wallet page
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/srv/thrylos/site
-ExecStart=/usr/bin/python3 -m http.server 8084 --bind 127.0.0.1
+WorkingDirectory=/srv/thrylos/wallet
+ExecStart=/usr/bin/python3 -m http.server 8082 --bind 127.0.0.1
 Restart=on-failure
 RestartSec=5
 User=thrylos-web

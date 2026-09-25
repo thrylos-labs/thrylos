@@ -30,10 +30,18 @@ Eight systemd units, all enabled at boot.
 | `thrylos-faucet` | Discord faucet (`chain-faucet run`) | `8081` | `faucet.thrylos.org` |
 | `thrylos-explorer` | read-only explorer (`chain-explorer`) | `8080` | `explorer.thrylos.org` |
 | `thrylos-names` | `.thry` name registry (`chain-names run`) | `8083` | `names.thrylos.org` |
-| `thrylos-wallet` | static wallet page (`python3 -m http.server`) | `8082` | `wallet.thrylos.org` |
-| `thrylos-site` | static landing page (`python3 -m http.server`) | `8084` | `thrylos.org` |
-| `thrylos-redirect` | `deploy/www-redirect.py`, redirects to the apex | `8085` | `www.thrylos.org` |
+| `thrylos-wallet` | static wallet page (`python3 -m http.server`), **as `thrylos-web`** | `8082` | `wallet.thrylos.org` |
+| `thrylos-site` | static landing page (`python3 -m http.server`), **as `thrylos-web`** | `8084` | `thrylos.org` |
+| `thrylos-redirect` | `deploy/www-redirect.py`, redirects to the apex, **as `thrylos-web`** | `8085` | `www.thrylos.org` |
 | `thrylos-tunnel` | `cloudflared`, the tunnel that publishes all of the above | none | |
+
+**Least privilege, so far:** only the three static units run as an unprivileged
+account with systemd hardening (no capabilities, read-only filesystem except
+nothing, no access to `/root`, no network but IP, no writable or executable
+memory). The chain, faucet, explorer, names and tunnel units **still run as
+root**, because their data and binaries live under `/root`. Moving them out
+(to `/var/lib` and `/opt`, each under its own account) needs a chain restart
+and is planned, not done.
 
 Binaries run from `/root/thrylos-rust/target/release/`. There is **one chain
 process tree**: stopping `thrylos-validators` stops all four nodes and all four
@@ -51,10 +59,10 @@ moment a second operator runs a node.
 | `/root/.thrylos-alpha/faucet/` | `faucet.json`, the faucet wallet `faucet.key`, `state.json` |
 | `/root/.thrylos-alpha/names/` | `names-config.json`, `names.json` (the registry), `names.secret` |
 | `/root/.thrylos-alpha/discord-commands.json` | An **old** copy of the Discord command list (two commands). Not used; the current list comes from `chain-faucet discord-commands`. |
-| `/root/thrylos-wallet/`, `/root/thrylos-site/`, `/root/thrylos-redirect/` | The static files and script those three units serve |
+| `/srv/thrylos/{wallet,site,redirect}/` | What the three static units serve. **Owned by root, read-only to the account they run as** (`thrylos-web`), which cannot read anything under `/root`. The old copies in `/root/thrylos-wallet`, `/root/thrylos-site` and `/root/thrylos-redirect` are unused and can be deleted. |
 | `/root/.cloudflared/` | `config.yml` (the tunnel's routes), `cert.pem`, the tunnel credentials, and `config.yml.bak-*` |
 | `/root/releases/{prev,batch1,batch2}/` | Old binaries kept for rollback (see below) |
-| `/root/backups/` | Nightly archives of `/root/.thrylos-alpha` |
+| `/root/backups/` | Nightly archives of `/root/.thrylos-alpha`. **Directory `0700`, archives `0600`**, made by `scripts/backup-vps.sh` (installed as `/root/backup.sh`) |
 | `/etc/systemd/system/thrylos-*.service` | The units (copies of `deploy/*.service` in the repo, plus the older ones) |
 
 **Secrets** (never commit, never paste): every `signer.key`, `network.key` and
@@ -150,7 +158,7 @@ scripts/deploy-wallet.sh
 scripts/deploy-site.sh
 ```
 
-Both stamp a hash of each asset into its URL. **Do not deploy these with a bare
+Both stamp a hash of each asset into its URL, and set the copied files to root ownership on the server (macOS's `rsync` has no `--chown`). **Do not deploy these with a bare
 `rsync`.** Cloudflare has browsers cache `.js`, `.css` and images for four hours,
 and a stale script beside a new page is not cosmetic: it once ran the old wallet
 create flow, which has no name step, next to the new page.
@@ -184,11 +192,14 @@ so going back to older binaries does not need the database changed.
 
 ## Backups
 
-`/root/backup.sh` runs from cron at **03:17** every day and writes
+`/root/backup.sh` (`scripts/backup-vps.sh` in the repo) runs from cron at **03:17** every day and writes
 `/root/backups/thrylos-alpha-<UTC timestamp>.tar.gz` of `/root/.thrylos-alpha`,
 keeping the newest 14. `tar` reporting "file changed as we read it" is expected:
 the database is copy-on-write and is copied while running. Take one by hand
 before any change to the chain: `/root/backup.sh`.
+
+The archives hold every key on the machine, so the script makes them private to root
+whatever the caller's umask. They are still unencrypted and on the same disk.
 
 **These have not been restored.** A copy of one made on 2026-09-24 would not start
 on a Mac (the pre-audit binaries failed on it the same way), which most likely
@@ -215,7 +226,9 @@ ruled out. A restore has never been rehearsed on Linux.
 - **One machine, one operator.** No failover. A consensus-rule change is only
   safe because all four validators restart together.
 - **Backups are on the same disk and same host** as the data, so they do not
-  protect against losing the droplet, and they contain every key.
+  protect against losing the droplet, and they contain every key. They are now
+  private to root but not encrypted, and not copied anywhere else.
+- **The chain, faucet, explorer, names and tunnel still run as root** (see above).
 - **No monitoring or alerts.** Alerting was considered and declined. Nothing
   notices the chain halting except someone looking.
 - **The restore path is untested** (above).

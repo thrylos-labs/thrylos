@@ -142,10 +142,31 @@ route (`names.thrylos.org`) and a DNS record.
   request deadline) so slow clients cannot hold it up.
 - **Rate limits** on reservations (they cost nothing to make): 5 an hour per
   source address (the tunnel's `CF-Connecting-IP`, trusted only because the
-  service listens on loopback behind the tunnel), 500 an hour overall, and 60
-  lookups a minute per source. With the 72-hour expiry and the pending cap, a
-  script cannot hold names it never confirms for long, and it cannot confirm
-  without an aged Discord account that passes the faucet's gates.
+  service listens on loopback behind the tunnel), and 60 lookups a minute per
+  source. **There is deliberately no hourly budget shared by everyone.** There
+  used to be (500 an hour), and about a hundred sources could use all of it, so
+  that an honest new user was refused and, because a wallet needs a name, could
+  not sign up. Each source now has its own allowance and nobody's use of theirs
+  affects anyone else.
+- **A full pending queue drops its oldest unconfirmed reservation** instead of
+  refusing the next person. Junk that fills the queue therefore costs its owner
+  their reservations, not other people's ability to reserve, and a real person
+  (who confirms within minutes) is never the oldest.
+- **Asking again for a name you already hold does not extend it.** It used to
+  renew the 72 hours, which let one request every three days hold a name for
+  ever without confirming it. The hold now lapses on schedule.
+- **Names that imitate the project or someone in charge of it are refused,**
+  beyond the exact reserved words: any name containing `thrylos` once hyphens
+  are dropped and look-alike digits are read as letters (`thrylos-team`,
+  `th-rylos`, `thry1os`), and any hyphen-separated part that is `thry` or one of
+  `admin`, `administrator`, `explorer`, `faucet`, `foundation`, `moderator`,
+  `official`, `root`, `rpc`, `security`, `staff`, `support`, `team`, `treasury`,
+  `validator`, `wallet`, with or without digits (`admin1`, `faucet-official`).
+  Words that merely contain one (`steam-punk`, `administrate`) are fine.
+- **What this does not stop:** someone who rotates through fresh keys can still
+  hold a wanted name by re-reserving it from a new address each time it lapses.
+  It takes continuous effort and never confirms, so it is a nuisance, not a way
+  to keep a name.
 
 ## The wallet
 
@@ -214,8 +235,9 @@ using the registry's by-address lookup.
 3. Pending reservation lasts **72 hours** (24 is the alternative).
 4. A separate `/name` command for confirming without a payout (**yes**), or
    confirm only through `/faucet`.
-5. Reserved-name list: **the one above**, extended as you like.
-6. Rate limits as stated (**yes**) or tighter.
+5. Reserved-name list: **the one above**, extended as you like (plus the
+   look-alike rule).
+6. Per-source rate limits as stated (**yes**) or tighter.
 7. Existing wallets blocked from sending until named (**yes**) or a grace period.
 
 ## Deploying

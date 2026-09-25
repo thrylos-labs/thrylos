@@ -22,7 +22,7 @@ use chain_node::faucet::{
     FaucetRequest, NextWork, WorkResult,
 };
 use chain_node::faucet_discord::{
-    command_definitions, handle_interaction, public_key, DiscordResponse,
+    command_definitions, handle_interaction_locked, public_key, DiscordResponse, Handled,
 };
 use chain_text::{format_address, parse_address};
 
@@ -353,8 +353,11 @@ fn serve_one(mut stream: TcpStream, faucet: &Mutex<Faucet>, key: &ed25519_dalek:
             return;
         }
     };
-    let response = match faucet.lock() {
-        Ok(mut faucet) => handle_interaction(
+    // The lock is held only while the faucet's own state is read and changed;
+    // it is let go before the name registry is called, which can take seconds and
+    // which the payout worker would otherwise wait behind.
+    let handled = match faucet.lock() {
+        Ok(mut faucet) => handle_interaction_locked(
             &mut faucet,
             key,
             request
@@ -368,11 +371,16 @@ fn serve_one(mut stream: TcpStream, faucet: &Mutex<Faucet>, key: &ed25519_dalek:
             &request.body,
             day,
         ),
-        Err(_) => DiscordResponse {
+        Err(_) => Handled::Done(DiscordResponse {
             status: 503,
             reason: "Service Unavailable",
             body: Vec::new(),
-        },
+        }),
+    };
+    // Here the lock is already released.
+    let response = match handled {
+        Handled::Done(response) => response,
+        Handled::FollowUp(follow_up) => follow_up.finish(),
     };
     write_response(&mut stream, &response);
 }

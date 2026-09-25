@@ -138,14 +138,31 @@ fn start_node(
             validator: Some(validator(other)),
         });
     }
-    let network = TcpNetwork::bind(
-        bind,
-        identity(seed),
-        trusted,
-        transport(io_timeout),
-        Arc::new(|_, _: &Message| true),
-    )
-    .unwrap();
+    // A node brought back on the address it just left can find the old socket
+    // not yet released, because the stopped network's accept thread lets go of
+    // it a moment after `shutdown` returns. That is this test running two
+    // "processes" in one, not something a restarted node meets (a new process
+    // starts after the old one has gone), so wait for the address to free up
+    // instead of failing on it. CI runners are slow enough to lose this race.
+    let started = Instant::now();
+    let network = loop {
+        match TcpNetwork::bind(
+            bind,
+            identity(seed),
+            trusted.clone(),
+            transport(io_timeout),
+            Arc::new(|_, _: &Message| true),
+        ) {
+            Ok(network) => break network,
+            Err(chain_p2p::NetworkError::Io(error))
+                if error.kind() == std::io::ErrorKind::AddrInUse
+                    && started.elapsed() < Duration::from_secs(10) =>
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("could not bind {bind}: {error:?}"),
+        }
+    };
     let address = network.local_addr().unwrap();
     Node {
         seed,

@@ -44,6 +44,62 @@ impl DiscordResponse {
     }
 }
 
+/// What is left to do for a reply once the faucet's lock has been let go: ask
+/// the name registry to confirm a reservation, and word the answer. It is a
+/// separate step because it is a network call that may take seconds, and the
+/// faucet's one lock must never be held across one: the payout worker needs
+/// the same lock, so a slow registry would stall every payout and every other
+/// request behind it.
+pub struct NameFollowUp {
+    registry: std::net::SocketAddr,
+    secret: String,
+    address: chain_types::Address,
+    user_id: String,
+    /// The person asked for a name (`/name`), so they hear about every outcome.
+    explicit: bool,
+    /// What the reply already says, which the note about the name follows.
+    prefix: String,
+}
+
+/// The result of handling an interaction under the faucet's lock.
+pub enum Handled {
+    /// The reply is ready.
+    Done(DiscordResponse),
+    /// The reply needs the registry's answer; call [`NameFollowUp::finish`]
+    /// **after releasing the lock**.
+    FollowUp(NameFollowUp),
+}
+
+impl NameFollowUp {
+    /// Asks the registry and builds the reply. Blocks for up to about two seconds.
+    pub fn finish(self) -> DiscordResponse {
+        let note = match names_client::confirm(
+            self.registry,
+            &self.secret,
+            &format_address(&self.address),
+            &self.user_id,
+        ) {
+            Confirmation::Confirmed { name } => {
+                format!("\nYour name `{name}.thry` is confirmed.")
+            }
+            Confirmation::Refused { code, .. } if code == "NoReservation" && !self.explicit => {
+                String::new()
+            }
+            Confirmation::Refused { code, .. } if code == "NoReservation" => {
+                "\nThere is no reservation for that address, or it has lapsed. Reserve a name in the wallet first.".into()
+            }
+            Confirmation::Refused { message, .. } => {
+                format!("\nYour name was not confirmed: {message}.")
+            }
+            Confirmation::Unavailable => {
+                "\nYour name could not be confirmed right now. Use `/name` with the same address in a few minutes.".into()
+            }
+        };
+        let text = format!("{}{note}", self.prefix);
+        message(text.trim_start())
+    }
+}
+
 pub fn public_key(faucet: &Faucet) -> Result<VerifyingKey, FaucetError> {
     let text = faucet
         .config()
@@ -95,37 +151,56 @@ pub fn handle_interaction(
     body: &[u8],
     day: u64,
 ) -> DiscordResponse {
-    let (Some(signature), Some(timestamp)) = (signature, timestamp) else {
-        return DiscordResponse::empty(401, "Unauthorized");
-    };
-    if !verifies(key, signature, timestamp, body) {
-        return DiscordResponse::empty(401, "Unauthorized");
-    }
-    let Ok(interaction) = serde_json::from_slice::<Value>(body) else {
-        return DiscordResponse::empty(400, "Bad Request");
-    };
-    match interaction["type"].as_u64() {
-        Some(1) => DiscordResponse::json(&json!({ "type": 1 })),
-        Some(2) => command(faucet, &interaction, day),
-        _ => message("This interaction type is not supported."),
+    match handle_interaction_locked(faucet, key, signature, timestamp, body, day) {
+        Handled::Done(response) => response,
+        Handled::FollowUp(follow_up) => follow_up.finish(),
     }
 }
 
-fn command(faucet: &mut Faucet, interaction: &Value, day: u64) -> DiscordResponse {
+/// [`handle_interaction`] without the network call to the name registry: for a
+/// caller that holds the faucet's lock, which must let it go before calling
+/// [`NameFollowUp::finish`].
+pub fn handle_interaction_locked(
+    faucet: &mut Faucet,
+    key: &VerifyingKey,
+    signature: Option<&str>,
+    timestamp: Option<&str>,
+    body: &[u8],
+    day: u64,
+) -> Handled {
+    let (Some(signature), Some(timestamp)) = (signature, timestamp) else {
+        return Handled::Done(DiscordResponse::empty(401, "Unauthorized"));
+    };
+    if !verifies(key, signature, timestamp, body) {
+        return Handled::Done(DiscordResponse::empty(401, "Unauthorized"));
+    }
+    let Ok(interaction) = serde_json::from_slice::<Value>(body) else {
+        return Handled::Done(DiscordResponse::empty(400, "Bad Request"));
+    };
+    match interaction["type"].as_u64() {
+        Some(1) => Handled::Done(DiscordResponse::json(&json!({ "type": 1 }))),
+        Some(2) => command(faucet, &interaction, day),
+        _ => Handled::Done(message("This interaction type is not supported.")),
+    }
+}
+
+fn command(faucet: &mut Faucet, interaction: &Value, day: u64) -> Handled {
     let Some(user_id) = interaction["member"]["user"]["id"]
         .as_str()
         .or_else(|| interaction["user"]["id"].as_str())
     else {
-        return message("Discord did not identify the requesting user.");
+        return Handled::Done(message("Discord did not identify the requesting user."));
     };
     match interaction["data"]["name"].as_str() {
         Some("faucet") => faucet_command(faucet, interaction, user_id, day),
         Some("name") => name_command(faucet, interaction, user_id, day),
-        Some("faucet-status") => match faucet.latest_for_user(user_id) {
+        Some("faucet-status") => Handled::Done(match faucet.latest_for_user(user_id) {
             Some(record) => message(&record_message(record)),
             None => message("You have no faucet request yet. Use `/faucet` with your address."),
-        },
-        _ => message("Unknown command. Use `/faucet`, `/name` or `/faucet-status`."),
+        }),
+        _ => Handled::Done(message(
+            "Unknown command. Use `/faucet`, `/name` or `/faucet-status`.",
+        )),
     }
 }
 
@@ -189,35 +264,57 @@ fn member_long_enough(interaction: &Value, day: u64, min_days: u32) -> bool {
         .is_some_and(|joined| joined.saturating_add(u64::from(min_days)) <= day)
 }
 
-fn faucet_command(
-    faucet: &mut Faucet,
-    interaction: &Value,
+/// The rest of a reply that needs the name registry: a [`NameFollowUp`] if names
+/// are switched on, otherwise the reply as it stands (with a line saying names
+/// are off, for someone who asked for one).
+fn name_step(
+    faucet: &Faucet,
+    address: chain_types::Address,
     user_id: &str,
-    day: u64,
-) -> DiscordResponse {
+    explicit: bool,
+    prefix: String,
+) -> Handled {
+    match faucet.names_settings() {
+        Some((registry, secret)) => Handled::FollowUp(NameFollowUp {
+            registry,
+            secret,
+            address,
+            user_id: user_id.to_owned(),
+            explicit,
+            prefix,
+        }),
+        None if explicit => Handled::Done(message(
+            format!("{prefix}\nNames are not switched on for this faucet.").trim_start(),
+        )),
+        None => Handled::Done(message(&prefix)),
+    }
+}
+
+fn faucet_command(faucet: &mut Faucet, interaction: &Value, user_id: &str, day: u64) -> Handled {
+    let done = |text: &str| Handled::Done(message(text));
     let Some(request_id) = interaction["id"].as_str() else {
-        return message("Discord did not provide a request ID; nothing was queued.");
+        return done("Discord did not provide a request ID; nothing was queued.");
     };
     let address_text = interaction["data"]["options"]
         .as_array()
         .and_then(|options| options.iter().find(|option| option["name"] == "address"))
         .and_then(|option| option["value"].as_str());
     let Some(address_text) = address_text else {
-        return message("Give `/faucet` a Thrylos address beginning `thry1`. Nothing was queued.");
+        return done("Give `/faucet` a Thrylos address beginning `thry1`. Nothing was queued.");
     };
     let address = match parse_address(address_text) {
         Ok(address) => address,
-        Err(error) => return message(&format!("That address is not valid: {error}")),
+        Err(error) => return done(&format!("That address is not valid: {error}")),
     };
     let min_days = faucet.config().min_account_age_days;
     if !old_enough(user_id, day, min_days) {
-        return message(&format!(
+        return done(&format!(
             "The faucet is only open to Discord accounts at least {min_days} days old, to stop one person farming many new ones. Nothing was queued."
         ));
     }
     let membership_days = faucet.config().min_server_membership_days;
     if !member_long_enough(interaction, day, membership_days) {
-        return message(&format!(
+        return done(&format!(
             "The faucet is only open to people who have been in this Discord server at least {membership_days} days, and it must be used in the server, not in a DM. Nothing was queued."
         ));
     }
@@ -230,100 +327,62 @@ fn faucet_command(
         Ok(EnqueueResult::Queued) => {
             // A reserved name is confirmed by the same request, so the person
             // does one thing, not two. It never decides whether they are paid.
-            let name_note = confirm_name(faucet, &address, user_id, false);
-            message(&format!(
-                "Queued {} for {}. Request `{request_id}`. Use `/faucet-status` to check it.{name_note}",
+            let queued = format!(
+                "Queued {} for {}. Request `{request_id}`. Use `/faucet-status` to check it.",
                 faucet.config().payout,
                 format_address(&address)
-            ))
+            );
+            name_step(faucet, address, user_id, false, queued)
         }
-        Ok(EnqueueResult::Existing(status)) => message(&format!(
+        Ok(EnqueueResult::Existing(status)) => done(&format!(
             "Request `{request_id}` was already received and is {}.",
             status.label()
         )),
         Ok(EnqueueResult::UserDailyLimit) => {
-            message("You have reached your faucet limit for today. Try again after 00:00 UTC.")
+            done("You have reached your faucet limit for today. Try again after 00:00 UTC.")
         }
-        Ok(EnqueueResult::AddressDailyLimit) => message(
-            "That address has reached its faucet limit for today. Try again after 00:00 UTC.",
-        ),
+        Ok(EnqueueResult::AddressDailyLimit) => {
+            done("That address has reached its faucet limit for today. Try again after 00:00 UTC.")
+        }
         Ok(EnqueueResult::GlobalDailyLimit) => {
-            message("The testnet faucet has reached its daily cap. Try again after 00:00 UTC.")
+            done("The testnet faucet has reached its daily cap. Try again after 00:00 UTC.")
         }
         Ok(EnqueueResult::QueueFull) => {
-            message("The faucet is busy. Nothing was queued; please try again shortly.")
+            done("The faucet is busy. Nothing was queued; please try again shortly.")
         }
-        Err(error) => message(&format!("The faucet could not save the request: {error}")),
-    }
-}
-
-/// Asks the name registry to confirm the reservation for `address`, and words
-/// the answer for the user, with a leading line break so it can follow another
-/// message. Empty when names are off. `explicit` is a person who asked for a
-/// name (`/name`): they hear about every outcome, where a `/faucet` claim stays
-/// quiet if there was simply no reservation (a wallet with no name reserved).
-fn confirm_name(
-    faucet: &Faucet,
-    address: &chain_types::Address,
-    user_id: &str,
-    explicit: bool,
-) -> String {
-    let Some((registry, secret)) = faucet.names_settings() else {
-        return if explicit {
-            "\nNames are not switched on for this faucet.".into()
-        } else {
-            String::new()
-        };
-    };
-    match names_client::confirm(registry, &secret, &format_address(address), user_id) {
-        Confirmation::Confirmed { name } => {
-            format!("\nYour name `{name}.thry` is confirmed.")
-        }
-        Confirmation::Refused { code, .. } if code == "NoReservation" && !explicit => String::new(),
-        Confirmation::Refused { code, .. } if code == "NoReservation" => {
-            "\nThere is no reservation for that address, or it has lapsed. Reserve a name in the wallet first.".into()
-        }
-        Confirmation::Refused { message, .. } => format!("\nYour name was not confirmed: {message}."),
-        Confirmation::Unavailable => {
-            "\nYour name could not be confirmed right now. Use `/name` with the same address in a few minutes.".into()
-        }
+        Err(error) => done(&format!("The faucet could not save the request: {error}")),
     }
 }
 
 /// `/name address:<thry1…>`: confirm a reserved name without asking for coin.
 /// It has to pass the same gates as the faucet, or a fresh Discord account
 /// could take a name the faucet would have refused it.
-fn name_command(
-    faucet: &mut Faucet,
-    interaction: &Value,
-    user_id: &str,
-    day: u64,
-) -> DiscordResponse {
+fn name_command(faucet: &mut Faucet, interaction: &Value, user_id: &str, day: u64) -> Handled {
+    let done = |text: &str| Handled::Done(message(text));
     let address_text = interaction["data"]["options"]
         .as_array()
         .and_then(|options| options.iter().find(|option| option["name"] == "address"))
         .and_then(|option| option["value"].as_str());
     let Some(address_text) = address_text else {
-        return message("Give `/name` the Thrylos address (`thry1…`) you reserved your name for.");
+        return done("Give `/name` the Thrylos address (`thry1…`) you reserved your name for.");
     };
     let address = match parse_address(address_text) {
         Ok(address) => address,
-        Err(error) => return message(&format!("That address is not valid: {error}")),
+        Err(error) => return done(&format!("That address is not valid: {error}")),
     };
     let min_days = faucet.config().min_account_age_days;
     if !old_enough(user_id, day, min_days) {
-        return message(&format!(
+        return done(&format!(
             "Names are only open to Discord accounts at least {min_days} days old. Nothing was confirmed."
         ));
     }
     let membership_days = faucet.config().min_server_membership_days;
     if !member_long_enough(interaction, day, membership_days) {
-        return message(&format!(
+        return done(&format!(
             "Names are only open to people who have been in this Discord server at least {membership_days} days, used in the server rather than a DM. Nothing was confirmed."
         ));
     }
-    let outcome = confirm_name(faucet, &address, user_id, true);
-    message(outcome.trim_start())
+    name_step(faucet, address, user_id, true, String::new())
 }
 
 fn record_message(record: &RequestRecord) -> String {
@@ -404,7 +463,7 @@ pub fn command_definitions() -> Value {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::disallowed_methods)]
 
     use chain_types::Address;
     use ed25519_dalek::{Signer, SigningKey};
@@ -797,5 +856,89 @@ mod tests {
             .unwrap();
         assert_eq!(name["options"][0]["name"], "address");
         assert_eq!(name["options"][0]["required"], true);
+    }
+
+    #[test]
+    fn a_registry_that_never_answers_does_not_hold_the_faucets_lock() {
+        // A registry that accepts and then says nothing. The old code called it
+        // while holding the faucet's one lock, so everything else (including the
+        // payout worker) waited behind the two seconds it took to give up.
+        let hang = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let registry = hang.local_addr().unwrap();
+        let _held = std::thread::spawn(move || {
+            let mut open = Vec::new();
+            for stream in hang.incoming().take(3) {
+                open.push(stream.unwrap());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(4));
+        });
+        let (_parent, faucet) = faucet_with_names(registry);
+        let faucet = std::sync::Arc::new(std::sync::Mutex::new(faucet));
+
+        let key = SigningKey::from_bytes(&[8; 32]);
+        let address = format_address(&Address::from_bytes([7; 32]));
+        let body = serde_json::to_vec(&json!({
+            "id": "slow-1",
+            "type": 2,
+            "member": { "user": { "id": OLD_ACCOUNT } },
+            "data": { "name": "faucet", "options": [{ "name": "address", "value": address }] }
+        }))
+        .unwrap();
+        let signature = signed(&key, "123", &body);
+
+        // What the binary does: handle under the lock, release it, then finish.
+        let worker = {
+            let faucet = std::sync::Arc::clone(&faucet);
+            let verifying = key.verifying_key();
+            std::thread::spawn(move || {
+                let handled = {
+                    let mut guard = faucet.lock().unwrap();
+                    handle_interaction_locked(
+                        &mut guard,
+                        &verifying,
+                        Some(&signature),
+                        Some("123"),
+                        &body,
+                        TODAY,
+                    )
+                };
+                let Handled::FollowUp(follow_up) = handled else {
+                    panic!("a queued claim with names on needs the registry's answer")
+                };
+                let started = std::time::Instant::now();
+                let response = follow_up.finish();
+                (started.elapsed(), response)
+            })
+        };
+        // While that waits on the silent registry, the lock must be free at once.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let guard = faucet.lock().unwrap();
+        let waited = started.elapsed();
+        assert!(
+            guard.request("slow-1").is_some(),
+            "the claim itself was queued"
+        );
+        drop(guard);
+        assert!(
+            waited < std::time::Duration::from_millis(100),
+            "the lock was held for {waited:?}"
+        );
+
+        let (took, response) = worker.join().unwrap();
+        assert!(
+            took >= std::time::Duration::from_millis(500),
+            "it really did wait on the registry ({took:?})"
+        );
+        let value: Value = serde_json::from_slice(&response.body).unwrap();
+        let text = value["data"]["content"].as_str().unwrap();
+        assert!(
+            text.starts_with("Queued"),
+            "the person is still paid and told: {text}"
+        );
+        assert!(
+            text.contains("`/name`"),
+            "and told to try /name later: {text}"
+        );
     }
 }
