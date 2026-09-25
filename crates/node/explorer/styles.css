@@ -59,27 +59,16 @@ code, .hash { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 13px;
   min-width: max-content;
   text-decoration: none;
+  color: var(--text);
   font-weight: 650;
-  letter-spacing: -.015em;
 }
 
-.logo-crop {
-  width: 56px;
-  height: 56px;
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-}
+.brand-mark { width: 38px; height: 33px; display: block; flex: 0 0 auto; }
 
-.logo-crop img {
-  width: 56px;
-  height: 56px;
-  display: block;
-  object-fit: contain;
-}
+.brand-word { font-size: 17px; font-weight: 750; letter-spacing: .3em; line-height: 1; }
 
 .main-nav { display: flex; align-items: center; gap: 24px; margin-left: auto; }
 .main-nav a { color: var(--muted); text-decoration: none; padding: 10px 0; }
@@ -105,7 +94,7 @@ code, .hash { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 
 main { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
 .hero { position: relative; overflow: hidden; padding: 72px 0 54px; border-bottom: 1px solid var(--border); }
-.hero-mark { position: absolute; width: 360px; height: 360px; right: -26px; top: -80px; opacity: .15; object-fit: contain; mix-blend-mode: screen; pointer-events: none; }
+.hero-mark { position: absolute; width: 380px; height: auto; right: -20px; top: -10px; opacity: .1; pointer-events: none; }
 .health-line { display: flex; align-items: center; gap: 9px; color: var(--good); margin: 0 0 14px; }
 h1 { max-width: 720px; margin: 0; font-size: clamp(38px, 6vw, 72px); line-height: .99; letter-spacing: -.055em; font-weight: 650; }
 .hero-copy { max-width: 620px; margin: 18px 0 0; color: var(--muted); font-size: 17px; line-height: 1.55; }

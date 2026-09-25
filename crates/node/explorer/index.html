@@ -6,15 +6,17 @@
     <meta name="theme-color" content="#071014">
     <meta name="description" content="A read-only explorer for the Thrylos blockchain">
     <title>Thrylos Explorer</title>
-    <link rel="icon" href="/favicon.ico">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="stylesheet" href="/assets/styles.css?v=1">
     <script defer src="/assets/app.js?v=1"></script>
   </head>
   <body>
     <header class="site-header">
       <a class="brand" href="#top" aria-label="Thrylos Explorer home">
-        <span class="logo-crop"><img src="/assets/thrylos-logo.png" alt="Thrylos logo"></span>
-        <!-- <span>Thrylos Explorer</span> -->
+        <img class="brand-mark" src="/assets/thrylos-mark.svg" alt="">
+        <span class="brand-word">THRYLOS</span>
       </a>
       <button class="menu-button" id="menu-button" type="button" aria-expanded="false" aria-controls="main-nav">Menu</button>
       <nav class="main-nav" id="main-nav" aria-label="Explorer navigation">
@@ -28,7 +30,7 @@
 
     <main id="top">
       <section class="hero">
-        <img class="hero-mark" src="/assets/thrylos-logo.png" alt="">
+        <img class="hero-mark" src="/assets/thrylos-mark.svg" alt="">
         <p class="health-line"><span class="status-dot" id="hero-dot"></span><span id="health-line">Connecting to the network…</span></p>
          <h1>Explore the Thrylos network.</h1>
         <p class="hero-copy">Search blocks, transactions and accounts, or check validator health in real time.</p>

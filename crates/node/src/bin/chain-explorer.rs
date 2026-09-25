@@ -27,7 +27,10 @@ use serde_json::{json, Value};
 const INDEX: &[u8] = include_bytes!("../../explorer/index.html");
 const STYLES: &[u8] = include_bytes!("../../explorer/styles.css");
 const APP: &[u8] = include_bytes!("../../explorer/app.js");
-const LOGO: &[u8] = include_bytes!("../../explorer/thrylos-logo.png");
+const MARK: &[u8] = include_bytes!("../../explorer/thrylos-mark.svg");
+const FAVICON_SVG: &[u8] = include_bytes!("../../explorer/favicon.svg");
+const FAVICON_PNG: &[u8] = include_bytes!("../../explorer/favicon-32.png");
+const APPLE_TOUCH_ICON: &[u8] = include_bytes!("../../explorer/apple-touch-icon.png");
 
 const DEFAULT_PORT: u16 = 8_080;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -403,8 +406,14 @@ fn route(explorer: &Explorer, request: Request) -> Response {
         ("GET", "/assets/app.js") => {
             Response::asset("text/javascript; charset=utf-8", APP, "no-store")
         }
-        ("GET", "/assets/thrylos-logo.png" | "/favicon.ico") => {
-            Response::asset("image/png", LOGO, "no-store")
+        ("GET", "/assets/thrylos-mark.svg") => Response::asset("image/svg+xml", MARK, "no-store"),
+        ("GET", "/favicon.svg") => Response::asset("image/svg+xml", FAVICON_SVG, "no-store"),
+        // `/favicon.ico` is what browsers ask for unprompted; a PNG is fine there.
+        ("GET", "/favicon-32.png" | "/favicon.ico") => {
+            Response::asset("image/png", FAVICON_PNG, "no-store")
+        }
+        ("GET", "/apple-touch-icon.png") => {
+            Response::asset("image/png", APPLE_TOUCH_ICON, "no-store")
         }
         ("GET", "/api/info") => Response::json(explorer.info()),
         ("GET", "/api/health") => match explorer.health() {
@@ -543,9 +552,15 @@ mod tests {
     }
 
     #[test]
-    fn the_supplied_logo_is_embedded() {
-        assert!(LOGO.starts_with(b"\x89PNG\r\n\x1a\n"));
-        assert!(LOGO.len() > 1_000);
+    fn the_logo_files_are_embedded() {
+        for png in [FAVICON_PNG, APPLE_TOUCH_ICON] {
+            assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+            assert!(png.len() > 500);
+        }
+        for svg in [MARK, FAVICON_SVG] {
+            assert!(svg.starts_with(b"<svg"));
+            assert!(svg.windows(4).any(|w| w == b"<pol"));
+        }
     }
 
     #[test]
@@ -587,16 +602,25 @@ mod tests {
             .windows(16)
             .any(|window| window == b"Thrylos Explorer"));
 
-        let logo = route(
-            &explorer,
-            Request {
-                method: "GET".into(),
-                path: "/favicon.ico".into(),
-                body: vec![],
-            },
-        );
-        assert_eq!(logo.content_type, "image/png");
-        assert_eq!(logo.body, LOGO);
+        for (path, content_type, body) in [
+            ("/favicon.ico", "image/png", FAVICON_PNG),
+            ("/favicon-32.png", "image/png", FAVICON_PNG),
+            ("/apple-touch-icon.png", "image/png", APPLE_TOUCH_ICON),
+            ("/favicon.svg", "image/svg+xml", FAVICON_SVG),
+            ("/assets/thrylos-mark.svg", "image/svg+xml", MARK),
+        ] {
+            let logo = route(
+                &explorer,
+                Request {
+                    method: "GET".into(),
+                    path: path.into(),
+                    body: vec![],
+                },
+            );
+            assert_eq!(logo.status, 200, "{path}");
+            assert_eq!(logo.content_type, content_type, "{path}");
+            assert_eq!(logo.body, body, "{path}");
+        }
 
         let missing = route(
             &explorer,
