@@ -1277,6 +1277,7 @@ dependencies = [
 name = "chain-exec"
 version = "0.1.0"
 dependencies = [
+ "better_any",
  "blake3",
  "blst",
  "chain-engine-api",
@@ -1292,6 +1293,7 @@ dependencies = [
  "move-vm-config",
  "move-vm-runtime",
  "ruint",
+ "smallvec",
  "tempfile",
 ]
 

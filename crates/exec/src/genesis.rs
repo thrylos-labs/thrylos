@@ -20,7 +20,7 @@ use move_binary_format::file_format::CompiledModule;
 use move_compiler::Compiler as MoveCompiler;
 use move_core_types::account_address::AccountAddress;
 
-use crate::keys::{module_key, object_key};
+use crate::keys::{module_key, object_key, package_key};
 
 pub const SYSTEM_PACKAGE_ADDRESS: AccountAddress =
     AccountAddress::new([1u8; AccountAddress::LENGTH]);
@@ -100,6 +100,16 @@ pub fn genesis_state() -> Result<BTreeMap<StateKey, StateValue>, GenesisError> {
         "#
     );
     publish_module(&mut state, COUNTER_PACKAGE_ADDRESS, &counter_source)?;
+
+    // The system packages, as fixed bytes: nothing is compiled for these.
+    state.insert(
+        package_key(crate::framework::STD_ADDRESS),
+        StateValue::new(crate::framework::STD_BUNDLE.to_vec()),
+    );
+    state.insert(
+        package_key(crate::framework::FRAMEWORK_ADDRESS),
+        StateValue::new(crate::framework::FRAMEWORK_BUNDLE.to_vec()),
+    );
 
     state.insert(
         object_key(INITIAL_COUNTER_ADDRESS),

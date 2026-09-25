@@ -25,6 +25,8 @@ move-vm-config.workspace = true
 move-vm-runtime.workspace = true
 ruint = "1"
 tempfile.workspace = true
+better_any = "0.1.1"
+smallvec = "1"
 
 [dev-dependencies]
 blst.workspace = true

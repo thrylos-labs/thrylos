@@ -431,7 +431,7 @@ impl Executor {
     /// The Move runtime every executor uses, however it was made: the same
     /// configuration for a chain that is starting and one that is restarting.
     fn new_runtime() -> Result<MoveRuntime, ExecutorError> {
-        let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
+        let natives = NativeFunctions::new(crate::framework::native_table()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
         })?;
         // Explicit and fixed (`crate::move_config`): the dependency's own
@@ -928,7 +928,7 @@ impl Executor {
             && call.function_name == COUNTER_BUMP_FUNCTION.as_bytes()
         {
             self.call_counter_bump(state, tx)
-        } else if let Some(result) = crate::entry::call(&self.runtime, state, tx) {
+        } else if let Some(result) = crate::entry::call(&self.runtime, state, tx, ctx) {
             result
         } else {
             Err(AbortReason::UnknownFunction.into())

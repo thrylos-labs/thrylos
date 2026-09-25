@@ -28,14 +28,51 @@ pub const PUBLISH_GAS: u64 = 200_000;
 /// Compile `source` (modules written against the address `0x0`) to bytes,
 /// one entry per module, keyed by module name.
 pub fn compile(source: &str) -> BTreeMap<String, Vec<u8>> {
+    compile_against(source, false)
+}
+
+fn move_sources(dir: &str) -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../move");
+    let mut files: Vec<String> = std::fs::read_dir(root.join(dir).join("sources"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().to_str().unwrap().to_string())
+        .collect();
+    files.sort();
+    files
+}
+
+/// Like [`compile`], for a package that imports the standard library (`std`,
+/// at `0x1`) and the Thrylos framework (`thrylos`, at `0x2`).
+pub fn compile_with_system_packages(source: &str) -> BTreeMap<String, Vec<u8>> {
+    compile_against(source, true)
+}
+
+fn compile_against(source: &str, system: bool) -> BTreeMap<String, Vec<u8>> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("package.move");
     writeln!(std::fs::File::create(&path).unwrap(), "{source}").unwrap();
+    let mut addresses = BTreeMap::<String, move_compiler::shared::NumericalAddress>::new();
+    let mut dependencies = Vec::new();
+    if system {
+        for (name, last) in [("std", 1u8), ("thrylos", 2u8)] {
+            let mut bytes = [0u8; 32];
+            bytes[31] = last;
+            addresses.insert(
+                name.to_string(),
+                move_compiler::shared::NumericalAddress::new(
+                    bytes,
+                    move_compiler::shared::NumberFormat::Hex,
+                ),
+            );
+        }
+        dependencies.extend(move_sources("stdlib"));
+        dependencies.extend(move_sources("framework"));
+    }
     let (_, units) = Compiler::from_files(
         None,
         vec![path.to_str().unwrap().to_string()],
-        vec![],
-        BTreeMap::<String, move_compiler::shared::NumericalAddress>::new(),
+        dependencies,
+        addresses,
     )
     .build_and_report()
     .expect("the test source compiles");
@@ -191,6 +228,14 @@ impl Chain {
             .state_entries()
             .find(|(k, _)| **k == key)
             .map(|(_, v)| v.as_bytes().to_vec())
+    }
+
+    /// The height and timestamp the next block will have.
+    pub fn next_block(&self) -> (u64, u64) {
+        (
+            self.executor.head_height().unwrap() + 1,
+            self.now_ms + 1_000,
+        )
     }
 
     pub fn balance(&self, who: Address) -> u128 {

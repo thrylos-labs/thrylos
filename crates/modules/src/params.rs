@@ -684,7 +684,7 @@ mod tests {
     fn parameter_values_round_trip_and_are_strict() {
         let bytes = encoded(&valid());
         assert_eq!(decode_exact::<ParamValues>(&bytes).unwrap(), valid());
-        assert_eq!(bytes.len(), 8 + 8 + 16 + 2 + 8 + 2 + 2, "fixed width");
+        assert_eq!(bytes.len(), 8 + 8 + 16 + 2 + 8 + 2 + 2 + 1, "fixed width");
         assert!(decode_exact::<ParamValues>(&bytes[..bytes.len() - 1]).is_err());
         let mut longer = bytes;
         longer.push(0);

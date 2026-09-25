@@ -27,10 +27,14 @@ use move_core_types::runtime_value::MoveTypeLayout;
 use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::execution::values::Value;
+use move_vm_runtime::natives::extensions::NativeContextExtensions;
 use move_vm_runtime::runtime::MoveRuntime;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-use crate::effects::{CallEffects, CallError};
+use crate::effects::{BlockCtx, CallEffects, CallError};
+use crate::framework::BlockInfo;
 use crate::keys::package_key;
 use crate::module_resolver::{ChainStateModuleResolver, ResolverError};
 use crate::native::State;
@@ -117,19 +121,21 @@ pub(crate) fn call(
     runtime: &MoveRuntime,
     state: &State,
     tx: &Transaction,
+    ctx: &BlockCtx,
 ) -> Option<Result<CallEffects, CallError>> {
     let call = &tx.body.call;
     let id = AccountAddress::new(*call.module_address.as_bytes());
     if !state.contains_key(&package_key(id)) {
         return None;
     }
-    Some(run(runtime, state, tx, id))
+    Some(run(runtime, state, tx, ctx, id))
 }
 
 fn run(
     runtime: &MoveRuntime,
     state: &State,
     tx: &Transaction,
+    ctx: &BlockCtx,
     id: AccountAddress,
 ) -> Result<CallEffects, CallError> {
     let call = &tx.body.call;
@@ -185,8 +191,14 @@ fn run(
 
     let linkage =
         LinkageContext::new(package.linkage_table.clone()).map_err(|_| CallError::Internal)?;
+    let extensions = Rc::new(RefCell::new(NativeContextExtensions::default()));
+    extensions.borrow_mut().add(BlockInfo {
+        height: ctx.height.0,
+        time_ms: ctx.timestamp_ms,
+        chain_id: ctx.chain_id.0,
+    });
     let mut vm = runtime
-        .make_vm(ChainStateModuleResolver::new(state), linkage)
+        .make_vm_with_native_extensions(ChainStateModuleResolver::new(state), linkage, extensions)
         .map_err(|_| CallError::Internal)?;
     let identifier = Identifier::new(function_name).map_err(|_| unknown())?;
     let module_id = ModuleId::new(id, Identifier::new(module_name).map_err(|_| unknown())?);

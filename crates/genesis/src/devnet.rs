@@ -128,7 +128,7 @@ mod tests {
         );
         assert_eq!(
             report.state_root.to_string(),
-            "d238da93723d0ca04400901d622991a1ae3ff5499f14b2f65586d441f6f433cb"
+            "1793dfb8154199fc35ba3d5fe1c115ccb2e6f1447635f6dbb6307e9149535826"
         );
     }
 
