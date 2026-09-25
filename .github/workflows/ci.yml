@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [codecs, state_transitions, protocol_calls, metering_ratio]
+        target: [codecs, state_transitions, protocol_calls, metering_ratio, move_publish]
     env:
       # cargo-fuzz needs a nightly compiler (`-Zsanitizer=address`), and the
       # repository's rust-toolchain.toml pins 1.92.0, which the toolchain

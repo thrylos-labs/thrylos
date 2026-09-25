@@ -1,12 +1,17 @@
 # Continuous fuzzing
 
-The four targets correspond to the audit boundaries in `docs/spec.md`:
+The five targets correspond to the audit boundaries in `docs/spec.md`:
 
 - `codecs`: malformed canonical, consensus-wire and durable-record bytes;
 - `state_transitions`: direct full-state mutation versus incremental
   `StateDiff` application, including roots after every block;
 - `protocol_calls`: all seven fixed staking/governance entry points with
   structured and malformed arguments; and
+- `move_publish`: publishing arbitrary bytes, and byte-level mutations of real
+  compiled modules (`fuzz/seeds`), as a Move package: it must never panic or
+  reject its block, and only succeed or be refused (`crates/exec/tests/
+  publish_mutations.rs` runs 3,000 deterministic rounds of the same check on
+  every test run); and
 - `metering_ratio`: the same protocol calls, with libFuzzer coverage buckets
   biased toward larger elapsed-time-per-gas ratios and a hard ceiling.
 
@@ -22,5 +27,6 @@ Run a target locally with nightly Rust and `cargo-fuzz`:
 cargo +nightly fuzz run codecs -- -max_len=4096 -max_total_time=60
 cargo +nightly fuzz run state_transitions -- -max_len=4096 -max_total_time=60
 cargo +nightly fuzz run protocol_calls -- -max_len=4096 -max_total_time=60
+cargo +nightly fuzz run move_publish -- -max_len=4096 -max_total_time=60
 cargo +nightly fuzz run metering_ratio -- -max_len=4096 -max_total_time=60
 ```

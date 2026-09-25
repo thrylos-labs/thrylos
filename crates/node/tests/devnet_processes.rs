@@ -1358,3 +1358,154 @@ fn the_devnet_commands_say_what_is_wrong_and_exit_accordingly() {
     assert!(stderr(&output).contains("not empty"), "{}", stderr(&output));
     assert_eq!(std::fs::read(Path::new(dir).join("keep")).unwrap(), b"me");
 }
+
+/// Runs the `thrylos` CLI against a node.
+fn thrylos(rpc: &str, wallet: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_thrylos"))
+        .args(args)
+        .args(["--rpc", rpc, "--wallet"])
+        .arg(wallet)
+        .args(["--yes"])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_package_published_with_the_cli_is_called_with_the_cli_on_a_four_node_network() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+    let scratch = tempfile::tempdir().unwrap();
+    let wallet = scratch.path().join("wallet.key");
+    let rpc = |index: usize| {
+        NodeConfig::load(&network.nodes[index].config())
+            .unwrap()
+            .rpc_listen
+            .unwrap()
+            .to_string()
+    };
+
+    // A new wallet, funded from a development account.
+    let made = Command::new(env!("CARGO_BIN_EXE_thrylos"))
+        .args(["setup", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{}", stderr(&made));
+    let address = stdout(&made)
+        .lines()
+        .find_map(|line| line.strip_prefix("Address: ").map(str::to_owned))
+        .unwrap();
+    let funded = run(&[
+        "devnet",
+        "fund",
+        &dir,
+        &address,
+        "--node",
+        "1",
+        "--account",
+        "1",
+        "--amount",
+        "50",
+    ]);
+    assert_eq!(
+        funded.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&funded),
+        stderr(&funded)
+    );
+
+    // Publish a package that imports the standard library, through node 1.
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/demo.mv");
+    let published = thrylos(&rpc(0), &wallet, &["move", "publish", fixture]);
+    let text = stdout(&published);
+    assert!(published.status.success(), "{text}{}", stderr(&published));
+    let package = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Package address: ").map(str::to_owned))
+        .unwrap_or_else(|| panic!("no package address in: {text}"));
+    assert!(package.starts_with("thry1"));
+
+    // Call it, through a different node: one that succeeds, one whose Move
+    // code aborts, and one that uses the library.
+    let ok = thrylos(
+        &rpc(2),
+        &wallet,
+        &[
+            "move",
+            "call",
+            &package,
+            "demo",
+            "sum_is_ten",
+            "u64:4",
+            "u64:6",
+        ],
+    );
+    assert!(ok.status.success(), "{}{}", stdout(&ok), stderr(&ok));
+    assert!(stdout(&ok).contains("Success"));
+    let aborted = thrylos(
+        &rpc(2),
+        &wallet,
+        &[
+            "move",
+            "call",
+            &package,
+            "demo",
+            "sum_is_ten",
+            "u64:1",
+            "u64:1",
+        ],
+    );
+    assert!(!aborted.status.success());
+    assert!(
+        stderr(&aborted).contains("ExecutionFailed"),
+        "{}",
+        stderr(&aborted)
+    );
+    let library = thrylos(
+        &rpc(3),
+        &wallet,
+        &["move", "call", &package, "demo", "hashes"],
+    );
+    assert!(
+        library.status.success(),
+        "{}{}",
+        stdout(&library),
+        stderr(&library)
+    );
+
+    // A call the chain cannot make sense of is an argument error, and a
+    // mistyped one never reaches the network at all.
+    let wrong = thrylos(
+        &rpc(1),
+        &wallet,
+        &["move", "call", &package, "demo", "sum_is_ten", "u64:1"],
+    );
+    assert!(!wrong.status.success());
+    assert!(
+        stderr(&wrong).contains("InvalidArguments"),
+        "{}",
+        stderr(&wrong)
+    );
+    let typo = thrylos(
+        &rpc(1),
+        &wallet,
+        &[
+            "move",
+            "call",
+            &package,
+            "demo",
+            "sum_is_ten",
+            "u64:x",
+            "u64:1",
+        ],
+    );
+    assert!(!typo.status.success());
+    assert!(stderr(&typo).contains("u64:x"), "{}", stderr(&typo));
+
+    // Every node holds the same chain afterwards.
+    let height = (0..4).map(|i| network.height(i)).min().unwrap();
+    assert_one_chain(&network.nodes, height.saturating_sub(1));
+}

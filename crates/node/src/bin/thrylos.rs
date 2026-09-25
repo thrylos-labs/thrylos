@@ -30,6 +30,8 @@ Usage:
   thrylos balance [address]
   thrylos send <amount> <address> [--yes]
   thrylos tx <hash>
+  thrylos move publish <module.mv>... [--yes]
+  thrylos move call <package> <module> <function> [type:value ...] [--gas <n>] [--yes]
   thrylos status
   thrylos network add <name> <rpc>
   thrylos network use <name>
@@ -43,6 +45,8 @@ Options:
                        saved network)
   --wallet <file>     wallet key (default ~/.thrylos/wallet.key or THRYLOS_WALLET)
   --yes               send without the confirmation prompt
+  --gas <n>           with `move call`, the most gas the call may use
+                       (default 200000; only what is used is charged)
   --hex               with `address`, print the raw public key instead
                        (what a genesis allocation or validator entry needs;
                        an address cannot be turned back into one)
@@ -56,12 +60,20 @@ Examples:
   thrylos send 2.5 thry1...
   thrylos network add testnet-alpha https://rpc.testnet.example
   thrylos network use testnet-alpha
-  thrylos balance";
+  thrylos balance
+  thrylos move publish build/hello.mv
+  thrylos move call thry1... hello answer
+  thrylos move call thry1... counter add u64:2 u64:3
+
+Arguments to `move call` are written type:value: bool:true, u8:7 to u256:9,
+address:thry1..., bytes:0x0a0b, string:text, vec:u64:1,2,3, or raw:0x... for
+bytes you have already encoded.";
 
 struct Options {
     rpc: Endpoint,
     wallet: PathBuf,
     yes: bool,
+    gas: Option<u64>,
     hex: bool,
     positional: Vec<String>,
 }
@@ -95,6 +107,7 @@ fn parse_options() -> Result<Options, String> {
     let mut rpc_flag = None;
     let mut wallet = chain_node::wallet::default_path().map_err(|error| error.to_string())?;
     let mut yes = false;
+    let mut gas = None;
     let mut hex_flag = false;
     let mut positional = Vec::new();
 
@@ -103,6 +116,13 @@ fn parse_options() -> Result<Options, String> {
             "--rpc" => rpc_flag = Some(option_value("--rpc", &mut args)?),
             "--wallet" => wallet = PathBuf::from(option_value("--wallet", &mut args)?),
             "--yes" => yes = true,
+            "--gas" => {
+                let text = option_value("--gas", &mut args)?;
+                gas = Some(
+                    text.parse::<u64>()
+                        .map_err(|_| format!("--gas needs a whole number, not {text:?}"))?,
+                );
+            }
             "--hex" => hex_flag = true,
             flag if flag.starts_with("--") && flag != "--help" && flag != "--version" => {
                 return Err(format!("unknown option {flag:?}"));
@@ -117,6 +137,7 @@ fn parse_options() -> Result<Options, String> {
         wallet,
         hex: hex_flag,
         yes,
+        gas,
         positional,
     })
 }
@@ -307,6 +328,198 @@ fn send(options: &Options, amount_text: &str, recipient_text: &str) -> Result<()
     describe_inclusion(&hash, &found)
 }
 
+/// What a transaction needs to know about the network and the sender's account.
+struct Position {
+    chain_id: u64,
+    height: u64,
+    max_fee_per_gas: u64,
+    sequence: u64,
+    balance: u128,
+}
+
+fn position(client: &Endpoint, sender: chain_types::Address) -> Result<Position, String> {
+    let network = client
+        .call("status", &json!({}))
+        .map_err(|error| error.to_string())?;
+    let base_fee = field_u64(&network, "baseFee", "status")?;
+    let current = account(client, sender)?;
+    Ok(Position {
+        chain_id: field_u64(&network, "chainId", "status")?,
+        height: field_u64(&network["latest"], "height", "status")?,
+        max_fee_per_gas: base_fee.saturating_mul(2).max(1),
+        sequence: field_u64(&current, "nextSequenceNumber", "account")?,
+        balance: current["balance"]
+            .as_str()
+            .ok_or_else(|| "the RPC's account response has no balance".to_owned())?
+            .parse()
+            .map_err(|_| "the RPC returned an invalid account balance".to_owned())?,
+    })
+}
+
+fn ask(question: &str) -> Result<(), String> {
+    print!("{question}");
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| error.to_string())?;
+    if answer.trim().eq_ignore_ascii_case("yes") {
+        Ok(())
+    } else {
+        Err("cancelled; nothing was sent".into())
+    }
+}
+
+fn submit_and_wait(
+    client: &Endpoint,
+    transaction: &chain_types::Transaction,
+) -> Result<(), String> {
+    let hash = submit_transaction(client, transaction).map_err(|error| error.to_string())?;
+    println!("Sent: {hash}");
+    println!("Waiting for inclusion…");
+    let found = wait_for_inclusion(client, &hash).map_err(|error| error.to_string())?;
+    describe_inclusion(&hash, &found)
+}
+
+fn move_publish(options: &Options, files: &[String]) -> Result<(), String> {
+    use chain_exec::move_config::{MAX_MODULES_PER_PACKAGE, MAX_MODULE_BYTES, MAX_PACKAGE_BYTES};
+    use chain_exec::native::NEW_ENTRY_STORAGE_DEPOSIT;
+    use chain_exec::publish::{package_address, publish_gas, PUBLISH_DEPOSIT_PER_KIB};
+
+    if files.is_empty() {
+        return Err("usage: thrylos move publish <module.mv>... [--yes]".into());
+    }
+    if files.len() > MAX_MODULES_PER_PACKAGE {
+        return Err(format!(
+            "a package has at most {MAX_MODULES_PER_PACKAGE} modules; {} were given",
+            files.len()
+        ));
+    }
+    let mut modules = Vec::with_capacity(files.len());
+    let mut total = 0usize;
+    for file in files {
+        let bytes = std::fs::read(file).map_err(|error| format!("cannot read {file}: {error}"))?;
+        if bytes.len() > MAX_MODULE_BYTES {
+            return Err(format!(
+                "{file} is {} bytes; a module can be at most {MAX_MODULE_BYTES}",
+                bytes.len()
+            ));
+        }
+        total = total.saturating_add(bytes.len());
+        modules.push(bytes);
+    }
+    if total > MAX_PACKAGE_BYTES {
+        return Err(format!(
+            "the package is {total} bytes; the most allowed is {MAX_PACKAGE_BYTES}"
+        ));
+    }
+
+    let wallet = load_wallet(&options.wallet)?;
+    let at = position(&options.rpc, wallet.address())?;
+    let id = chain_types::Address::from_bytes(
+        package_address(&wallet.address(), at.sequence).into_bytes(),
+    );
+    let maximum_fee = u128::from(publish_gas(total)).saturating_mul(u128::from(at.max_fee_per_gas));
+    let deposit = u128::try_from(total.div_ceil(1024))
+        .unwrap_or(u128::MAX)
+        .saturating_mul(PUBLISH_DEPOSIT_PER_KIB)
+        .saturating_add(NEW_ENTRY_STORAGE_DEPOSIT);
+    let needed = maximum_fee.saturating_add(deposit);
+    if needed > at.balance {
+        return Err(format!(
+            "not enough THRY: the wallet has {}, but a deposit of {} plus a maximum fee of {} is needed",
+            format_amount(at.balance),
+            format_amount(deposit),
+            format_amount(maximum_fee)
+        ));
+    }
+    println!(
+        "Publish {} module(s), {total} bytes. A package cannot be changed or removed once published.",
+        modules.len()
+    );
+    println!("It will live at: {}", format_address(&id));
+    println!(
+        "Storage deposit (kept by the network): {}",
+        format_amount(deposit)
+    );
+    println!("Maximum network fee: {}", format_amount(maximum_fee));
+    if !options.yes {
+        ask("Type yes to publish: ")?;
+    }
+    let transaction = chain_node::move_client::signed_publish(
+        wallet.signing_key(),
+        at.chain_id,
+        at.sequence,
+        at.height.saturating_add(EXPIRES_AFTER),
+        modules,
+        at.max_fee_per_gas,
+    )?;
+    submit_and_wait(&options.rpc, &transaction)?;
+    println!("Package address: {}", format_address(&id));
+    Ok(())
+}
+
+fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
+    let [package, module, function, arguments @ ..] = rest else {
+        return Err(
+            "usage: thrylos move call <package> <module> <function> [type:value ...] [--gas <n>] [--yes]"
+                .into(),
+        );
+    };
+    let package =
+        parse_address(package).map_err(|error| format!("the package address: {error}"))?;
+    let encoded = arguments
+        .iter()
+        .map(|argument| chain_node::move_client::encode_argument(argument))
+        .collect::<Result<Vec<_>, _>>()?;
+    let gas = options
+        .gas
+        .unwrap_or(chain_node::move_client::DEFAULT_CALL_GAS);
+    if gas < chain_types::MIN_GAS_LIMIT {
+        return Err(format!(
+            "--gas must be at least {}",
+            chain_types::MIN_GAS_LIMIT
+        ));
+    }
+
+    let wallet = load_wallet(&options.wallet)?;
+    let at = position(&options.rpc, wallet.address())?;
+    let maximum_fee = u128::from(gas).saturating_mul(u128::from(at.max_fee_per_gas));
+    if maximum_fee > at.balance {
+        return Err(format!(
+            "not enough THRY: the wallet has {}, but a maximum fee of {} is needed",
+            format_amount(at.balance),
+            format_amount(maximum_fee)
+        ));
+    }
+    println!("Call {module}::{function} in {}", format_address(&package));
+    println!(
+        "Arguments: {}",
+        if arguments.is_empty() {
+            "none".to_owned()
+        } else {
+            arguments.join(" ")
+        }
+    );
+    println!("Maximum network fee: {}", format_amount(maximum_fee));
+    if !options.yes {
+        ask("Type yes to send: ")?;
+    }
+    let transaction = chain_node::move_client::signed_call(
+        wallet.signing_key(),
+        at.chain_id,
+        at.sequence,
+        at.height.saturating_add(EXPIRES_AFTER),
+        gas,
+        at.max_fee_per_gas,
+        package,
+        module,
+        function,
+        encoded,
+    )?;
+    submit_and_wait(&options.rpc, &transaction)
+}
+
 fn transaction(client: &Endpoint, hash: &str) -> Result<(), String> {
     let found = client
         .call("transaction", &json!({ "hash": hash }))
@@ -435,6 +648,11 @@ fn run(options: &Options) -> Result<(), String> {
             };
             send(options, amount, recipient)
         }
+        "move" => match rest.split_first() {
+            Some((sub, tail)) if sub == "publish" => move_publish(options, tail),
+            Some((sub, tail)) if sub == "call" => move_call(options, tail),
+            _ => Err("usage: thrylos move <publish <module.mv>... | call <package> <module> <function> [type:value ...]>".into()),
+        },
         "tx" => {
             let values = exactly(rest, 1, "thrylos tx <hash>")?;
             let Some(hash) = values.first() else {

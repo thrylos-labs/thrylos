@@ -48,3 +48,10 @@ path = "fuzz_targets/metering_ratio.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "move_publish"
+path = "fuzz_targets/move_publish.rs"
+test = false
+doc = false
+bench = false

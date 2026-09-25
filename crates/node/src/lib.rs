@@ -64,6 +64,7 @@ pub mod faucet_discord;
 pub mod health;
 pub mod launch;
 pub mod mark_store;
+pub mod move_client;
 pub mod names;
 pub mod names_client;
 pub mod names_service;

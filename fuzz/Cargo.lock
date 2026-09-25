@@ -755,16 +755,21 @@ dependencies = [
 name = "chain-exec"
 version = "0.1.0"
 dependencies = [
+ "better_any",
+ "blake3",
  "chain-engine-api",
  "chain-modules",
  "chain-state",
  "chain-types",
  "move-binary-format",
+ "move-bytecode-verifier",
+ "move-bytecode-verifier-meter",
  "move-compiler",
  "move-core-types",
  "move-vm-config",
  "move-vm-runtime",
  "ruint",
+ "smallvec",
  "tempfile",
 ]
 
