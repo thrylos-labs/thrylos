@@ -130,6 +130,11 @@ pub enum PublishError {
         module: String,
         reason: String,
     },
+    StoreTypeNotOwned {
+        module: String,
+        function: String,
+        found: String,
+    },
 }
 
 impl core::fmt::Display for PublishError {
@@ -168,6 +173,15 @@ impl core::fmt::Display for PublishError {
             Self::Verification { module, reason } => {
                 write!(f, "module {module} failed bytecode verification: {reason}")
             }
+            Self::StoreTypeNotOwned {
+                module,
+                function,
+                found,
+            } => write!(
+                f,
+                "module {module} calls thrylos::store::{function} with {found}, which the module does \
+                 not define; only the module that defines a type may keep it in a drawer"
+            ),
         }
     }
 }
@@ -258,7 +272,105 @@ pub fn prepare(
             }
         })?;
     }
+    for module in &modules {
+        if let Some(violation) = store_violations(module).into_iter().next() {
+            return Err(PublishError::StoreTypeNotOwned {
+                module: module.self_id().name().to_string(),
+                function: violation.function,
+                found: violation.found,
+            });
+        }
+    }
     Ok(modules)
+}
+
+/// A call to a `thrylos::store` function that the calling module may not make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreViolation {
+    /// The store function called: `put`, `take`, `has` or `read`.
+    pub function: String,
+    /// What it was called with, for a person to read.
+    pub found: String,
+}
+
+/// Every call in `module` to a function of `thrylos::store` whose type argument
+/// is not a type the module itself defines. **The rule that makes storage safe**
+/// (`docs/move-storage-design.md`, D7): Move lets only a struct's or enum's
+/// defining module build it or take it apart, so if only that module may put
+/// it in a drawer and take it out, no other code can ever hold or forge a
+/// drawer of that type.
+///
+/// A type argument is accepted only if it is a struct or an enum that this
+/// module both **names as its own and has a definition for** (the second half
+/// so that a hand-made handle claiming a foreign type is ours proves nothing),
+/// instantiated with anything. A bare type parameter is not accepted, since a
+/// public function generic over the stored type would let anyone store any type
+/// through it; nor is a type from another module, another package, or the
+/// standard library; nor is any other kind of type.
+///
+/// Decided from the bytecode alone, so it is the same on every node. Call this
+/// on a module that has passed the verifier, whose indices are then in range.
+pub fn store_violations(module: &CompiledModule) -> Vec<StoreViolation> {
+    use move_binary_format::file_format::{DatatypeHandleIndex, SignatureToken};
+
+    let defines = |handle: DatatypeHandleIndex| {
+        module.datatype_handle_at(handle).module == module.self_handle_idx()
+            && (module
+                .struct_defs()
+                .iter()
+                .any(|definition| definition.struct_handle == handle)
+                || module
+                    .enum_defs()
+                    .iter()
+                    .any(|definition| definition.enum_handle == handle))
+    };
+    let describe = |token: &SignatureToken| match token {
+        SignatureToken::Datatype(handle) => datatype_name(module, *handle),
+        SignatureToken::DatatypeInstantiation(instantiation) => {
+            datatype_name(module, instantiation.0)
+        }
+        SignatureToken::TypeParameter(_) => "a type parameter".to_owned(),
+        other => format!("the type {other:?}"),
+    };
+
+    let mut found = Vec::new();
+    for instantiation in module.function_instantiations() {
+        let handle = module.function_handle_at(instantiation.handle);
+        let of = module.module_handle_at(handle.module);
+        if *module.address_identifier_at(of.address) != crate::framework::FRAMEWORK_ADDRESS
+            || module.identifier_at(of.name).as_str() != "store"
+        {
+            continue;
+        }
+        let function = module.identifier_at(handle.name).to_string();
+        for token in &module.signature_at(instantiation.type_parameters).0 {
+            let owned = match token {
+                SignatureToken::Datatype(handle) => defines(*handle),
+                SignatureToken::DatatypeInstantiation(instantiation) => defines(instantiation.0),
+                _ => false,
+            };
+            if !owned {
+                found.push(StoreViolation {
+                    function: function.clone(),
+                    found: describe(token),
+                });
+            }
+        }
+    }
+    found
+}
+
+fn datatype_name(
+    module: &CompiledModule,
+    handle: move_binary_format::file_format::DatatypeHandleIndex,
+) -> String {
+    let datatype = module.datatype_handle_at(handle);
+    let of = module.module_handle_at(datatype.module);
+    format!(
+        "{}::{}",
+        module.identifier_at(of.name),
+        module.identifier_at(datatype.name)
+    )
 }
 
 fn refused() -> CallError {

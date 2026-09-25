@@ -53,6 +53,14 @@ fn compile_against(source: &str, system: bool) -> BTreeMap<String, Vec<u8>> {
     writeln!(std::fs::File::create(&path).unwrap(), "{source}").unwrap();
     let mut addresses = BTreeMap::<String, move_compiler::shared::NumericalAddress>::new();
     let mut dependencies = Vec::new();
+    // `pkg` is the package being published, at 0x0.
+    addresses.insert(
+        "pkg".to_string(),
+        move_compiler::shared::NumericalAddress::new(
+            [0u8; 32],
+            move_compiler::shared::NumberFormat::Hex,
+        ),
+    );
     if system {
         for (name, last) in [("std", 1u8), ("thrylos", 2u8)] {
             let mut bytes = [0u8; 32];

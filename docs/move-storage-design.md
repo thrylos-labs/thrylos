@@ -280,7 +280,15 @@ Acceptance:
    native must never do that; and the gas of every operation is pinned to the unit by a test,
    since gas is consensus. Also tested: a type too large for the VM to lay out aborts with 4
    and does not panic, and each rule was broken in turn to check a test notices.
-4. The D7 pass in `prepare`, with its bypass tests.
+4. **The D7 pass in `prepare`, with its bypass tests (done):** `chain_exec::publish::store_violations`,
+   run by `prepare` on every module after the verifier, so the chain and `thrylos move build`
+   apply it identically. It accepts a type argument only if it is a struct or enum the module
+   names as its own **and has a definition for** (a hand-made handle claiming a foreign type
+   proves nothing), instantiated with anything, and refuses a bare type parameter, another
+   module's type (same package or another), a type from `std`, and any other kind of type.
+   `crates/exec/tests/store_ownership.rs` publishes each attempt through the real chain, and
+   each part of the rule was broken in turn to check a test notices. The address-and-name test
+   is exact: a package's own module called `store` is not treated as the framework's.
 5. Wire the `StoreView` into `entry::call`; effects and deposits; the counter acceptance
    test.
 6. The publish fuzz target extended with store-calling modules.

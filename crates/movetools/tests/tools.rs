@@ -232,3 +232,26 @@ fn a_build_that_the_chain_would_refuse_is_caught_by_check() {
     let built = build(&options(dir.path())).unwrap();
     assert!(check(&built).unwrap_err().contains("0x0"));
 }
+
+#[test]
+fn build_tells_a_developer_when_a_module_stores_a_type_it_does_not_define() {
+    let dir = package(
+        "module pkg::m;
+         use thrylos::store;
+         public fun leak<T: key>(owner: address, value: T) { store::put(owner, 0, value); }",
+    );
+    let built = build(&options(dir.path())).unwrap();
+    let error = check(&built).unwrap_err();
+    assert!(
+        error.contains("thrylos::store::put") && error.contains("does not define"),
+        "{error}"
+    );
+    // The same call with the module's own type builds and passes.
+    let ok = package(
+        "module pkg::m;
+         use thrylos::store;
+         public struct Mine has key, store { n: u64 }
+         entry fun f(owner: address) { store::put(owner, 0, Mine { n: 1 }); }",
+    );
+    check(&build(&options(ok.path())).unwrap()).unwrap();
+}
