@@ -1,6 +1,6 @@
 # Rollout: the Move gas stopgap (option C)
 
-Status: **plan, built and tested, nothing run on the VPS.** Written 2026-09-25. Why:
+Status: **deployed to the VPS on 2026-09-25 and verified live (see the end).** Written 2026-09-25. Why:
 `gas-calibration.md`. This is the **node-local** stopgap: it changes no consensus rule, no
 state and no on-disk format, so it needs a restart of the validators and nothing else. It is
 a restart of the same chain, not a reset.
@@ -93,3 +93,12 @@ proposal* can carry, because it is not a consensus rule. All four validators are
 It also leaves the block's Move work at up to 0.6 to 0.8 seconds in the worst case, which is
 slow for a one-second block. The recalibration (`gas-calibration.md`) in the next reset is the
 fix; remove this stopgap only after that.
+
+## Done, 2026-09-25
+
+Deployed as planned (backup `thrylos-alpha-20260925T164040Z.tar.gz`, old binaries in
+`/root/releases/policy-before/`, about a minute of downtime, height 13003 to 13007 across the
+restart, chain id unchanged, all eight units active). Checked live: the old `thrylos` at its
+default 200,000 gas was refused by the node with `MoveCallGasTooHigh`; the new `thrylos` at its
+default gas was accepted and included (the call itself aborted, as intended: the package did not
+exist); the new `thrylos --gas 20001` refused before sending; a native transfer was unaffected.

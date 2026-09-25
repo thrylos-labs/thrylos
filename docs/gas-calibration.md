@@ -111,7 +111,7 @@ O(state), because every block clones the state and recomputes its root; that is 
 with the number of entries, not with gas, and it needs its own measurement at the state cap. And
 the same benchmark should be run on hardware you would call the reference, if that is not the VPS.
 
-## Status: option C is built (2026-09-25); not yet deployed
+## Status: option C is built and deployed to the live testnet (2026-09-25)
 
 `chain_exec::policy` holds the node-local limits, tested in `crates/exec/tests/move_policy.rs`
 and `crates/node/src/txpool.rs`:
