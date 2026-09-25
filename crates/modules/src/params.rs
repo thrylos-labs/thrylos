@@ -91,6 +91,7 @@ pub const GENESIS_PARAM_VALUES: ParamValues = ParamValues {
     unbonding_period_ms: MIN_UNBONDING_PERIOD_MS,
     quorum_bps: 3_340,
     veto_threshold_bps: 3_340,
+    publish_enabled: true,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +188,9 @@ pub struct ParamValues {
     pub unbonding_period_ms: u64,
     pub quorum_bps: u16,
     pub veto_threshold_bps: u16,
+    /// Whether new Move packages may be published. Governance can switch it
+    /// off in an emergency and back on; it does not affect running packages.
+    pub publish_enabled: bool,
 }
 
 impl Encode for ParamValues {
@@ -198,6 +202,7 @@ impl Encode for ParamValues {
         self.unbonding_period_ms.encode(out);
         self.quorum_bps.encode(out);
         self.veto_threshold_bps.encode(out);
+        self.publish_enabled.encode(out);
     }
 }
 
@@ -210,6 +215,7 @@ impl Decode for ParamValues {
         let (unbonding_period_ms, offset) = decode_field::<u64>(input, offset)?;
         let (quorum_bps, offset) = decode_field::<u16>(input, offset)?;
         let (veto_threshold_bps, offset) = decode_field::<u16>(input, offset)?;
+        let (publish_enabled, offset) = decode_field::<bool>(input, offset)?;
         Ok((
             Self {
                 max_block_gas,
@@ -219,6 +225,7 @@ impl Decode for ParamValues {
                 unbonding_period_ms,
                 quorum_bps,
                 veto_threshold_bps,
+                publish_enabled,
             },
             offset,
         ))
@@ -236,6 +243,7 @@ pub struct ParamChange {
     pub unbonding_period_ms: Option<u64>,
     pub quorum_bps: Option<u16>,
     pub veto_threshold_bps: Option<u16>,
+    pub publish_enabled: Option<bool>,
 }
 
 impl Encode for ParamChange {
@@ -247,6 +255,7 @@ impl Encode for ParamChange {
         encode_option(&self.unbonding_period_ms, out);
         encode_option(&self.quorum_bps, out);
         encode_option(&self.veto_threshold_bps, out);
+        encode_option(&self.publish_enabled, out);
     }
 }
 
@@ -259,6 +268,7 @@ impl Decode for ParamChange {
         let (unbonding_period_ms, offset) = decode_option::<u64>(input, offset)?;
         let (quorum_bps, offset) = decode_option::<u16>(input, offset)?;
         let (veto_threshold_bps, offset) = decode_option::<u16>(input, offset)?;
+        let (publish_enabled, offset) = decode_option::<bool>(input, offset)?;
         Ok((
             Self {
                 max_block_gas,
@@ -268,6 +278,7 @@ impl Decode for ParamChange {
                 unbonding_period_ms,
                 quorum_bps,
                 veto_threshold_bps,
+                publish_enabled,
             },
             offset,
         ))
@@ -283,6 +294,7 @@ impl ParamChange {
             && self.unbonding_period_ms.is_none()
             && self.quorum_bps.is_none()
             && self.veto_threshold_bps.is_none()
+            && self.publish_enabled.is_none()
     }
 
     fn merged_onto(&self, base: &ParamValues) -> ParamValues {
@@ -296,6 +308,7 @@ impl ParamChange {
             unbonding_period_ms: self.unbonding_period_ms.unwrap_or(base.unbonding_period_ms),
             quorum_bps: self.quorum_bps.unwrap_or(base.quorum_bps),
             veto_threshold_bps: self.veto_threshold_bps.unwrap_or(base.veto_threshold_bps),
+            publish_enabled: self.publish_enabled.unwrap_or(base.publish_enabled),
         }
     }
 }
@@ -385,12 +398,45 @@ mod tests {
             unbonding_period_ms: MIN_UNBONDING_PERIOD_MS,
             quorum_bps: 3_340,
             veto_threshold_bps: 3_340,
+            publish_enabled: true,
         }
     }
 
     #[test]
     fn the_specs_genesis_values_are_accepted() {
         assert!(GovernedParams::new(valid()).is_ok());
+    }
+
+    #[test]
+    fn publishing_can_be_switched_off_and_on_by_a_parameter_change_and_nothing_else_moves() {
+        let on = GovernedParams::new(valid()).unwrap();
+        assert!(on.values().publish_enabled);
+        let off = on
+            .with_change(&ParamChange {
+                publish_enabled: Some(false),
+                ..ParamChange::default()
+            })
+            .unwrap();
+        assert!(!off.values().publish_enabled);
+        assert_eq!(
+            ParamValues {
+                publish_enabled: true,
+                ..*off.values()
+            },
+            *on.values()
+        );
+        let back = off
+            .with_change(&ParamChange {
+                publish_enabled: Some(true),
+                ..ParamChange::default()
+            })
+            .unwrap();
+        assert_eq!(back, on);
+        assert!(!ParamChange {
+            publish_enabled: Some(false),
+            ..ParamChange::default()
+        }
+        .is_empty());
     }
 
     #[test]
@@ -611,6 +657,7 @@ mod tests {
                 unbonding_period_ms: unbonding,
                 quorum_bps,
                 veto_threshold_bps: veto_bps,
+                publish_enabled: true,
             };
             let expected = (10_000_000..=120_000_000).contains(&max_block_gas)
                 && (2..=64).contains(&denominator)
@@ -681,6 +728,7 @@ mod tests {
                 unbonding_period_ms: Some(0),
                 quorum_bps: Some(1),
                 veto_threshold_bps: Some(3),
+                publish_enabled: Some(false),
             },
         ] {
             let bytes = encoded(&change);

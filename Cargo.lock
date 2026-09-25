@@ -1285,6 +1285,8 @@ dependencies = [
  "chain-types",
  "ed25519-dalek",
  "move-binary-format",
+ "move-bytecode-verifier",
+ "move-bytecode-verifier-meter",
  "move-compiler",
  "move-core-types",
  "move-vm-config",

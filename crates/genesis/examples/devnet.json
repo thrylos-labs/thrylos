@@ -8,7 +8,8 @@
     "inflation_bps": 400,
     "unbonding_period_ms": 1814400000,
     "quorum_bps": 3340,
-    "veto_threshold_bps": 3340
+    "veto_threshold_bps": 3340,
+    "publish_enabled": true
   },
   "allocations": [
     {

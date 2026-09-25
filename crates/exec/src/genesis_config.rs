@@ -801,6 +801,7 @@ mod tests {
             |p: &mut ParamValues| p.unbonding_period_ms += 1,
             |p: &mut ParamValues| p.quorum_bps += 1,
             |p: &mut ParamValues| p.veto_threshold_bps += 1,
+            |p: &mut ParamValues| p.publish_enabled = !p.publish_enabled,
         ] {
             let mut params = p;
             tweak(&mut params);

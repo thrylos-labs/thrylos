@@ -121,6 +121,14 @@ fn check(path: &Path) -> ExitCode {
         percent_bps(u128::from(p.veto_threshold_bps)),
         p.veto_threshold_bps
     );
+    println!(
+        "  publishing Move packages:      {}",
+        if p.publish_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
     if !report.warnings.is_empty() {
         println!("warnings:");
         for warning in &report.warnings {

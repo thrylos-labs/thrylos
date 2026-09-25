@@ -23,7 +23,8 @@
 //!     "inflation_bps": 400,
 //!     "unbonding_period_ms": 1814400000,
 //!     "quorum_bps": 3340,
-//!     "veto_threshold_bps": 3340
+//!     "veto_threshold_bps": 3340,
+//!     "publish_enabled": true
 //!   },
 //!   "allocations": [
 //!     { "public_key": "<64 hex digits>", "amount": "1000000000" }
@@ -171,6 +172,7 @@ pub struct ParametersFile {
     pub unbonding_period_ms: u64,
     pub quorum_bps: u16,
     pub veto_threshold_bps: u16,
+    pub publish_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +219,7 @@ impl GenesisFile {
             unbonding_period_ms: self.parameters.unbonding_period_ms,
             quorum_bps: self.parameters.quorum_bps,
             veto_threshold_bps: self.parameters.veto_threshold_bps,
+            publish_enabled: self.parameters.publish_enabled,
         };
 
         let mut allocations = Vec::with_capacity(self.allocations.len());
@@ -278,6 +281,7 @@ impl GenesisFile {
                 unbonding_period_ms: parameters.unbonding_period_ms,
                 quorum_bps: parameters.quorum_bps,
                 veto_threshold_bps: parameters.veto_threshold_bps,
+                publish_enabled: parameters.publish_enabled,
             },
             allocations: config
                 .allocations()

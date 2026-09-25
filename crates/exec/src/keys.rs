@@ -24,6 +24,7 @@ enum KeyTag {
     Supply = chain_state::account::KEY_TAG + 7,
     TimeCheckpoint = chain_state::account::KEY_TAG + 8,
     RewardClock = chain_state::account::KEY_TAG + 9,
+    Package = chain_state::account::KEY_TAG + 10,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -37,6 +38,12 @@ fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
 /// comment).
 pub fn module_key(address: AccountAddress) -> StateKey {
     tagged_key(KeyTag::ModuleBytecode, address)
+}
+
+/// Where a published Move package is stored, keyed by its address: every
+/// module of the package, in one entry.
+pub fn package_key(address: AccountAddress) -> StateKey {
+    tagged_key(KeyTag::Package, address)
 }
 
 /// Where a Move object's data lives, keyed by its address.

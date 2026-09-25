@@ -1295,6 +1295,7 @@ mod tests {
             unbonding_period_ms,
             quorum_bps: 3_340,
             veto_threshold_bps: 3_340,
+            publish_enabled: true,
         })
         .unwrap()
     }

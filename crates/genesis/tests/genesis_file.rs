@@ -156,6 +156,7 @@ fn every_field_is_required() {
         "unbonding_period_ms",
         "quorum_bps",
         "veto_threshold_bps",
+        "publish_enabled",
     ] {
         let mut value = devnet_value();
         value["parameters"].as_object_mut().unwrap().remove(field);

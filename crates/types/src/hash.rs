@@ -81,6 +81,10 @@ pub enum DomainTag {
     /// published state root to the v2 trie construction rather than only
     /// to whichever node happens to occur at the top of the tree.
     TrieRootV2 = 12,
+    /// The address of a published Move package: derived from the publisher
+    /// and the sequence number of the publishing transaction, so it cannot
+    /// be chosen and cannot repeat.
+    MovePackageV1 = 13,
 }
 
 /// Hash `payload` under `tag`'s domain-separation prefix.
@@ -110,6 +114,7 @@ mod tests {
         assert_eq!(DomainTag::TrieBranchV2 as u8, 10);
         assert_eq!(DomainTag::TrieKeyPathV2 as u8, 11);
         assert_eq!(DomainTag::TrieRootV2 as u8, 12);
+        assert_eq!(DomainTag::MovePackageV1 as u8, 13);
     }
 
     #[test]
@@ -129,6 +134,7 @@ mod tests {
             DomainTag::TrieBranchV2,
             DomainTag::TrieKeyPathV2,
             DomainTag::TrieRootV2,
+            DomainTag::MovePackageV1,
         ];
         let hashes: std::collections::BTreeSet<Hash> = tags
             .into_iter()

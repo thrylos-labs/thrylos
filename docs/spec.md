@@ -305,7 +305,7 @@ Replay-from-genesis alone is not safe. A node syncing from nothing can be fed an
 
 ## Native module boundary
 
-Signed transactions transfer native coin and reach staking and governance through eight frozen protocol calls, dispatched by reserved package and module names and changed only by a fork:
+Signed transactions transfer native coin and reach staking and governance through nine frozen protocol calls, dispatched by reserved package and module names and changed only by a fork:
 
 - `transfer(recipient, amount)`
 - `register_validator(consensus_key, proof_of_possession, self_stake)` (development-chain bootstrap only; a production genesis already contains its complete validator set)
@@ -315,6 +315,7 @@ Signed transactions transfer native coin and reach staking and governance throug
 - `submit_evidence(evidence)`
 - `submit_proposal(proposal)`
 - `vote(proposal_id, vote)`
+- `publish(module, ...)`, the one call to the reserved `move` package: each argument is one compiled module, and together they are an immutable package. The package's address is derived from the publisher and the transaction's sequence number, never chosen. It is refused while the governed `publish_enabled` parameter is off, and otherwise checked in a fixed order before the VM sees it: size and count limits, module format, imports (only the frozen standard library and the Thrylos framework in the first stage), then the bytecode verifier under a deterministic work meter. It is charged a base amount plus a per-byte amount in gas and a per-KiB storage deposit, and counts against the same per-block cap as staking and governance calls.
 
 These are protocol calls handled at the executor boundary, not custom MoveVM native functions callable from arbitrary bytecode. That smaller boundary avoids representing validator administration, evidence and governance capabilities as a second set of Move resources before there is an application requirement for contract-level composability. Rewards compound into the staking share price and are realised by unstaking, so a separate `claim_rewards` call would duplicate accounting state. Consensus reads the validator set through the read-only engine view rather than a transaction call.
 

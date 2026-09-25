@@ -22,7 +22,6 @@ use chain_types::codec::{CodecError, Encode};
 use chain_types::{Address, BlockHeight, ChainId, GasAmount, GasPrice, Hash, Transaction};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
-use move_vm_config::runtime::VMConfig;
 use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::execution::values::{Struct, Value};
@@ -435,12 +434,10 @@ impl Executor {
         let natives = NativeFunctions::new(std::iter::empty()).map_err(|err| {
             ExecutorError::Runtime(format!("failed to build native function table: {err}"))
         })?;
-        // `new_for_test` is the only constructor this dependency exposes
-        // (see `crate`'s doc comment on the pinned MoveVM dependency);
-        // `allow_unpublishable_code_execution: false` is the more
-        // restrictive, production-appropriate setting despite the name.
-        let vm_config = VMConfig::new_for_test(false, None);
-        Ok(MoveRuntime::new(natives, vm_config))
+        // Explicit and fixed (`crate::move_config`): the dependency's own
+        // constructors are for tests, and its defaults leave most verifier
+        // limits unbounded.
+        Ok(MoveRuntime::new(natives, crate::move_config::vm_config()))
     }
 
     /// Rebuilds the executor of a chain that was already running, from the
@@ -916,6 +913,9 @@ impl Executor {
         // packages is theirs, whatever else it looks like.
         if let Some(result) = native::call(state, tx, ctx) {
             return result;
+        }
+        if crate::publish::is_publish_call(tx) {
+            return crate::publish::call(&self.runtime, state, tx, ctx);
         }
         let call = &tx.body.call;
         if call.module_address == Address::from_bytes(SYSTEM_PACKAGE_ADDRESS.into_bytes())

@@ -139,8 +139,8 @@ pub const NEW_ENTRY_STORAGE_DEPOSIT: u128 = NEW_ACCOUNT_STORAGE_DEPOSIT;
 /// least this much, burned.
 pub const UNBONDING_ENTRY_STORAGE_DEPOSIT: u128 = 3 * NEW_ENTRY_STORAGE_DEPOSIT;
 
-type State = BTreeMap<StateKey, StateValue>;
-type Changes = Vec<(StateKey, Option<StateValue>)>;
+pub(crate) type State = BTreeMap<StateKey, StateValue>;
+pub(crate) type Changes = Vec<(StateKey, Option<StateValue>)>;
 
 // ---- argument decoding ---------------------------------------------------
 
@@ -227,7 +227,7 @@ fn run<T>(
 
 /// Debits the sender's balance by `amount`, out of what is left after
 /// setting aside the most their fee can come to.
-fn debit_sender(
+pub(crate) fn debit_sender(
     state: &State,
     tx: &Transaction,
     amount: u128,
@@ -365,13 +365,16 @@ pub(crate) fn is_protocol_call(tx: &Transaction) -> bool {
     package == COIN_PACKAGE_ADDRESS
         || package == STAKING_PACKAGE_ADDRESS
         || package == GOVERNANCE_PACKAGE_ADDRESS
+        || package == crate::publish::MOVE_PACKAGE_ADDRESS
 }
 
-/// Whether a call counts against the separate cap for staking and governance
-/// work. Coin transfer is constant-time and is bounded by ordinary block gas.
+/// Whether a call counts against the separate cap for staking, governance and
+/// publishing work (verifying a package is the heaviest thing a call does). Coin transfer is constant-time and is bounded by ordinary block gas.
 pub(crate) fn is_limited_protocol_call(tx: &Transaction) -> bool {
     let package = *tx.body.call.module_address.as_bytes();
-    package == STAKING_PACKAGE_ADDRESS || package == GOVERNANCE_PACKAGE_ADDRESS
+    package == STAKING_PACKAGE_ADDRESS
+        || package == GOVERNANCE_PACKAGE_ADDRESS
+        || package == crate::publish::MOVE_PACKAGE_ADDRESS
 }
 
 // ---- coin ----------------------------------------------------------------

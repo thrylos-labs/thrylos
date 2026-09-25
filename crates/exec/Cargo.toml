@@ -17,6 +17,8 @@ chain-modules = { path = "../modules", version = "0.1.0" }
 chain-state = { path = "../state", version = "0.1.0" }
 chain-types = { path = "../types", version = "0.1.0" }
 move-binary-format.workspace = true
+move-bytecode-verifier.workspace = true
+move-bytecode-verifier-meter.workspace = true
 move-compiler.workspace = true
 move-core-types.workspace = true
 move-vm-config.workspace = true

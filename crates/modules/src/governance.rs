@@ -1200,6 +1200,7 @@ mod tests {
             unbonding_period_ms: MIN_UNBONDING_PERIOD_MS,
             quorum_bps: 3_340,
             veto_threshold_bps: 3_340,
+            publish_enabled: true,
         })
         .unwrap()
     }
@@ -2257,6 +2258,7 @@ mod tests {
             unbonding_period_ms: None,
             quorum_bps: Some(2),
             veto_threshold_bps: None,
+            publish_enabled: Some(false),
         }));
         round_trips(ProposalKind::ForkActivation {
             fork: ForkName::new("v2-final_1").unwrap(),

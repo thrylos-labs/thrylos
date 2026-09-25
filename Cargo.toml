@@ -60,6 +60,8 @@ move-core-types = { version = "0.0.4", git = "https://github.com/MystenLabs/sui"
 move-binary-format = { version = "0.0.3", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 move-compiler = { version = "0.0.1", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 move-vm-config = { version = "0.1.0", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
+move-bytecode-verifier = { version = "0.1.0", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
+move-bytecode-verifier-meter = { version = "0.1.0", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 
 # Malachite's BFT consensus engine, pinned to a specific circlefin/malachite
 # commit. `docs/spec.md`, "Consensus": "Use an existing engine (Malachite

@@ -119,11 +119,14 @@ pub enum AbortReason {
     /// The caller may not do this: proposing needs a seat in the active
     /// validator set, unjailing needs the validator's own operator.
     Unauthorised,
+    /// A Move package was refused publication: malformed, over a limit,
+    /// failed verification, or publishing is switched off.
+    PublishRefused,
 }
 
 impl AbortReason {
     /// Every reason, for whoever must go through them all.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::UnknownFunction,
         Self::InvalidArguments,
         Self::UndeclaredObjectAccess,
@@ -133,6 +136,7 @@ impl AbortReason {
         Self::GovernanceRefused,
         Self::EvidenceRefused,
         Self::Unauthorised,
+        Self::PublishRefused,
     ];
 
     /// The number this reason is stored as, from 1. Written out rather than
@@ -149,6 +153,7 @@ impl AbortReason {
             Self::GovernanceRefused => 7,
             Self::EvidenceRefused => 8,
             Self::Unauthorised => 9,
+            Self::PublishRefused => 10,
         }
     }
 
@@ -164,6 +169,7 @@ impl AbortReason {
             7 => Self::GovernanceRefused,
             8 => Self::EvidenceRefused,
             9 => Self::Unauthorised,
+            10 => Self::PublishRefused,
             _ => return None,
         })
     }
@@ -180,6 +186,7 @@ impl AbortReason {
             Self::GovernanceRefused => "GovernanceRefused",
             Self::EvidenceRefused => "EvidenceRefused",
             Self::Unauthorised => "Unauthorised",
+            Self::PublishRefused => "PublishRefused",
         }
     }
 }
@@ -196,6 +203,7 @@ impl core::fmt::Display for AbortReason {
             Self::GovernanceRefused => f.write_str("the governance module refused the call"),
             Self::EvidenceRefused => f.write_str("the evidence was not admitted"),
             Self::Unauthorised => f.write_str("the caller is not allowed to make this call"),
+            Self::PublishRefused => f.write_str("the Move package was refused publication"),
         }
     }
 }
@@ -332,17 +340,18 @@ mod display_tests {
         codes.sort_unstable();
         assert_eq!(
             codes,
-            (0..=9).collect::<Vec<u8>>(),
+            (0..=10).collect::<Vec<u8>>(),
             "distinct, and 0 is success"
         );
         // Numbers that were never given out read as nothing, not as something.
-        for code in 10..=255u8 {
+        for code in 11..=255u8 {
             assert_eq!(TransactionOutcome::from_code(code), None, "{code}");
         }
         // Pinned, so that a renumbering is a deliberate act: these are on disk.
         assert_eq!(AbortReason::UnknownFunction.code(), 1);
         assert_eq!(AbortReason::ExecutionFailed.code(), 4);
         assert_eq!(AbortReason::Unauthorised.code(), 9);
+        assert_eq!(AbortReason::PublishRefused.code(), 10);
     }
 
     #[test]
@@ -362,6 +371,7 @@ mod display_tests {
             AbortReason::InsufficientBalance,
             AbortReason::StakingRefused,
             AbortReason::GovernanceRefused,
+            AbortReason::PublishRefused,
             AbortReason::EvidenceRefused,
             AbortReason::Unauthorised,
         ]);

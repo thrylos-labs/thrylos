@@ -30,6 +30,7 @@ fn params() -> GovernedParams {
         unbonding_period_ms: MIN_UNBONDING_PERIOD_MS,
         quorum_bps: 3_340,
         veto_threshold_bps: 3_340,
+        publish_enabled: true,
     })
     .unwrap()
 }

@@ -1,29 +1,28 @@
 //! Bridges `chain-state`'s flat key-value store to MoveVM's module
 //! resolution interface (`move_core_types::resolver::ModuleResolver`).
 //!
-//! Reconstructs a `SerializedPackage` from stored module bytecode on
-//! every lookup rather than persisting a package's linkage/type-origin
-//! metadata separately: for a single, dependency-free package — all
-//! this pass handles, see `crate`'s doc comment — that reconstruction
-//! is fully deterministic and needs nothing beyond the raw module
-//! bytes themselves.
+//! A package is looked up under [`package_key`] (a published, multi-module
+//! package, see `crate::publish`) and otherwise under the older
+//! [`module_key`] (the two single-module demo packages made at genesis).
+//! Either way the `SerializedPackage` is rebuilt from the stored module bytes
+//! on every lookup, by [`build_package`], rather than stored with its own
+//! linkage and type-origin tables: everything in them follows from the
+//! modules, so there is one way to build it and nothing to keep in step.
 //!
-//! Uses `move_vm_runtime::dev_utils::storage::StoredPackage`'s
-//! `..._for_testing` constructor to do that reconstruction. It's a
-//! dev-only helper, used here because a production-grade package-
-//! publishing pipeline (real multi-module, multi-dependency, multi-
-//! version packages) is its own separate piece of work, not part of
-//! this pass — see `crate`'s doc comment for what's deferred.
+//! Packages are immutable and have no upgrade path, so a package's version
+//! is always 0 and its original id is its own address.
 
 use std::collections::BTreeMap;
+
+use chain_types::codec::decode_exact;
 
 use chain_state::{StateKey, StateValue};
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::resolver::{ModuleResolver, SerializedPackage};
-use move_vm_runtime::dev_utils::storage::StoredPackage;
+use move_vm_runtime::dev_utils::storage::generate_type_origins;
 
-use crate::keys::module_key;
+use crate::keys::{module_key, package_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolverError;
@@ -49,15 +48,60 @@ impl<'a> ChainStateModuleResolver<'a> {
         &self,
         address: AccountAddress,
     ) -> Result<Option<SerializedPackage>, ResolverError> {
+        let config = crate::move_config::binary_config();
+        if let Some(value) = self.state.get(&package_key(address)) {
+            let module_bytes: Vec<Vec<u8>> =
+                decode_exact(value.as_bytes()).map_err(|_| ResolverError)?;
+            let modules = module_bytes
+                .iter()
+                .map(|bytes| CompiledModule::deserialize_with_config(bytes, &config))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ResolverError)?;
+            return build_package(address, modules).map(Some);
+        }
         let Some(value) = self.state.get(&module_key(address)) else {
             return Ok(None);
         };
         let module = CompiledModule::deserialize_with_defaults(value.as_bytes())
             .map_err(|_| ResolverError)?;
-        let stored = StoredPackage::from_modules_for_testing(address, vec![module])
-            .map_err(|_| ResolverError)?;
-        Ok(Some(stored.into_serialized_package()))
+        build_package(address, vec![module]).map(Some)
     }
+}
+
+/// The package `modules` make when published at `id`: each module's bytes
+/// by name, linked to itself and to every other package its modules import
+/// (which must be published at exactly those addresses), with every type
+/// defined here.
+pub fn build_package(
+    id: AccountAddress,
+    modules: Vec<CompiledModule>,
+) -> Result<SerializedPackage, ResolverError> {
+    if modules.is_empty() {
+        return Err(ResolverError);
+    }
+    let mut linkage_table = BTreeMap::from([(id, id)]);
+    let mut serialized = BTreeMap::new();
+    for module in &modules {
+        if *module.self_id().address() != id {
+            return Err(ResolverError);
+        }
+        for dependency in module.immediate_dependencies() {
+            linkage_table.insert(*dependency.address(), *dependency.address());
+        }
+        let mut bytes = Vec::new();
+        module
+            .serialize_with_version(module.version, &mut bytes)
+            .map_err(|_| ResolverError)?;
+        serialized.insert(module.self_id().name().to_owned(), bytes);
+    }
+    Ok(SerializedPackage {
+        version_id: id,
+        original_id: id,
+        modules: serialized,
+        linkage_table,
+        type_origin_table: generate_type_origins(id, &modules),
+        version: 0,
+    })
 }
 
 impl ModuleResolver for ChainStateModuleResolver<'_> {
