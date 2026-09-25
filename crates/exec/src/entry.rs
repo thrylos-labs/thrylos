@@ -53,7 +53,7 @@ pub const MAX_VECTOR_DEPTH: usize = 3;
 pub const MAX_ARGUMENTS: usize = 32;
 
 /// What one parameter needs from the call.
-enum Param {
+pub(crate) enum Param {
     /// The sender, by value.
     Signer,
     /// The sender, by reference.
@@ -62,7 +62,7 @@ enum Param {
     Argument(MoveTypeLayout),
 }
 
-fn layout(token: &SignatureToken, depth: usize) -> Option<MoveTypeLayout> {
+pub(crate) fn layout(token: &SignatureToken, depth: usize) -> Option<MoveTypeLayout> {
     Some(match token {
         SignatureToken::Bool => MoveTypeLayout::Bool,
         SignatureToken::U8 => MoveTypeLayout::U8,
@@ -92,18 +92,50 @@ fn param(token: &SignatureToken) -> Option<Param> {
     }
 }
 
-/// The parameters of `module`'s entry function `name`, if it is one this
-/// stage can call.
-fn parameters(module: &CompiledModule, name: &str) -> Option<Vec<Param>> {
+/// Which functions of a module a call may name.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Callable {
+    /// What a transaction may call: an `entry` function that returns nothing.
+    Entry,
+    /// What a simulation may also call: any `public` function, which may return
+    /// primitives and vectors of them (a "view").
+    EntryOrPublic,
+}
+
+/// What a callable function takes and gives back.
+pub(crate) struct Signature {
+    pub params: Vec<Param>,
+    pub returns: Vec<MoveTypeLayout>,
+}
+
+/// The signature of `module`'s function `name`, if it is one this stage can call
+/// in the way `callable` says.
+pub(crate) fn signature(
+    module: &CompiledModule,
+    name: &str,
+    callable: Callable,
+) -> Option<Signature> {
+    use move_binary_format::file_format::Visibility;
     let definition = module.function_defs().iter().find(|definition| {
         let handle = module.function_handle_at(definition.function);
         module.identifier_at(handle.name).as_str() == name
     })?;
     let handle = module.function_handle_at(definition.function);
-    if !definition.is_entry
-        || !handle.type_parameters.is_empty()
-        || !module.signature_at(handle.return_).0.is_empty()
-    {
+    let reachable = match callable {
+        Callable::Entry => definition.is_entry,
+        Callable::EntryOrPublic => {
+            definition.is_entry || definition.visibility == Visibility::Public
+        }
+    };
+    if !reachable || !handle.type_parameters.is_empty() {
+        return None;
+    }
+    let return_tokens = &module.signature_at(handle.return_).0;
+    let returns: Vec<MoveTypeLayout> = return_tokens
+        .iter()
+        .map(|token| layout(token, 1))
+        .collect::<Option<_>>()?;
+    if callable == Callable::Entry && !returns.is_empty() {
         return None;
     }
     let tokens = &module.signature_at(handle.parameters).0;
@@ -119,7 +151,77 @@ fn parameters(module: &CompiledModule, name: &str) -> Option<Vec<Param>> {
     {
         return None;
     }
-    Some(params)
+    Some(Signature { params, returns })
+}
+
+/// The values a call's parameters take: the sender where a `signer` is asked
+/// for, and each argument decoded by its layout otherwise. `heap` must outlive
+/// the call, since a `&signer` points into it.
+pub(crate) fn decode_arguments(
+    params: &[Param],
+    arguments: &[Vec<u8>],
+    sender: AccountAddress,
+    heap: &mut BaseHeap,
+) -> Result<Vec<Value>, CallError> {
+    let wanted = params
+        .iter()
+        .filter(|p| matches!(p, Param::Argument(_)))
+        .count();
+    if arguments.len() != wanted {
+        return Err(AbortReason::InvalidArguments.into());
+    }
+    let mut supplied = arguments.iter();
+    let mut values = Vec::with_capacity(params.len());
+    for p in params {
+        values.push(match p {
+            Param::Signer => Value::signer(sender),
+            Param::SignerRef => {
+                heap.allocate_and_borrow_loc(Value::signer(sender))
+                    .map_err(|_| CallError::Internal)?
+                    .1
+            }
+            Param::Argument(layout) => {
+                let bytes = supplied
+                    .next()
+                    .ok_or(CallError::Abort(AbortReason::InvalidArguments))?;
+                Value::simple_deserialize(bytes, layout)
+                    .ok_or(CallError::Abort(AbortReason::InvalidArguments))?
+            }
+        });
+    }
+    Ok(values)
+}
+
+/// What a running call can reach besides its arguments: the block it runs in,
+/// and its drawers (the sender's, and those it declared, on top of `state`,
+/// held back until the call is over).
+pub(crate) fn extensions_for<'a>(
+    state: &'a State,
+    tx: &Transaction,
+    ctx: &BlockCtx,
+) -> Rc<RefCell<NativeContextExtensions<'a>>> {
+    let extensions = Rc::new(RefCell::new(NativeContextExtensions::default()));
+    extensions.borrow_mut().add(BlockInfo {
+        height: ctx.height.0,
+        time_ms: ctx.timestamp_ms,
+        chain_id: ctx.chain_id.0,
+    });
+    extensions.borrow_mut().add(StoreExtension {
+        overlay: DrawerOverlay::new(
+            state,
+            Access {
+                sender: AccountAddress::new(*tx.sender_address().as_bytes()),
+                declared: tx
+                    .body
+                    .declared_inputs
+                    .iter()
+                    .map(|address| AccountAddress::new(*address.as_bytes()))
+                    .collect(),
+                unrestricted: false,
+            },
+        ),
+    });
+    extensions
 }
 
 /// Run `tx`'s call. `None` if no published package has that address, so the
@@ -164,63 +266,18 @@ fn run(
     let module =
         CompiledModule::deserialize_with_config(module_bytes, &crate::move_config::binary_config())
             .map_err(|_| CallError::Internal)?;
-    let params = parameters(&module, function_name).ok_or_else(unknown)?;
+    let signature = signature(&module, function_name, Callable::Entry).ok_or_else(unknown)?;
     if !call.type_arguments.is_empty() {
-        return Err(invalid());
-    }
-
-    let wanted = params
-        .iter()
-        .filter(|p| matches!(p, Param::Argument(_)))
-        .count();
-    if call.arguments.len() != wanted {
         return Err(invalid());
     }
 
     let sender = AccountAddress::new(*tx.sender_address().as_bytes());
     let mut heap = BaseHeap::new();
-    let mut supplied = call.arguments.iter();
-    let mut values = Vec::with_capacity(params.len());
-    for p in &params {
-        values.push(match p {
-            Param::Signer => Value::signer(sender),
-            Param::SignerRef => {
-                heap.allocate_and_borrow_loc(Value::signer(sender))
-                    .map_err(|_| CallError::Internal)?
-                    .1
-            }
-            Param::Argument(layout) => {
-                let bytes = supplied.next().ok_or_else(invalid)?;
-                Value::simple_deserialize(bytes, layout).ok_or_else(invalid)?
-            }
-        });
-    }
+    let values = decode_arguments(&signature.params, &call.arguments, sender, &mut heap)?;
 
     let linkage =
         LinkageContext::new(package.linkage_table.clone()).map_err(|_| CallError::Internal)?;
-    let extensions = Rc::new(RefCell::new(NativeContextExtensions::default()));
-    extensions.borrow_mut().add(BlockInfo {
-        height: ctx.height.0,
-        time_ms: ctx.timestamp_ms,
-        chain_id: ctx.chain_id.0,
-    });
-    // The call's drawers: the sender's, and those it declared, on top of the
-    // state as it stands. Its writes stay in the overlay until the call is over.
-    extensions.borrow_mut().add(StoreExtension {
-        overlay: DrawerOverlay::new(
-            state,
-            Access {
-                sender,
-                declared: tx
-                    .body
-                    .declared_inputs
-                    .iter()
-                    .map(|address| AccountAddress::new(*address.as_bytes()))
-                    .collect(),
-                unrestricted: false,
-            },
-        ),
-    });
+    let extensions = extensions_for(state, tx, ctx);
     let mut vm = runtime
         .make_vm_with_native_extensions(
             ChainStateModuleResolver::new(state),

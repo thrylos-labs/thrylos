@@ -238,6 +238,7 @@ pub fn run_node(
                 genesis.chain_id(),
                 genesis.hash(),
                 config.validator,
+                config.rpc_simulate,
             )));
             Some(server)
         }

@@ -1277,6 +1277,7 @@ dependencies = [
 name = "chain-exec"
 version = "0.1.0"
 dependencies = [
+ "bcs",
  "better_any",
  "blake3",
  "blst",
@@ -1372,6 +1373,7 @@ dependencies = [
  "chain-types",
  "ed25519-dalek",
  "getrandom 0.3.4",
+ "move-core-types",
  "rustls",
  "serde",
  "serde_json",

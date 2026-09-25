@@ -1,6 +1,6 @@
 //! The JSON-RPC 2.0 messages: what is asked, and how the answer is written.
 //!
-//! Six methods, and only these (`docs/spec.md` does not name any; these are what
+//! Nine methods, and only these (`docs/spec.md` does not name any; these are what
 //! its gates need of an interface):
 //!
 //! | Method | Params | Why it exists |
@@ -11,6 +11,9 @@
 //! | `account` | `address` | The next sequence number and the balance a client needs to build a valid transaction |
 //! | `send_transaction` | `transaction`: the canonical encoding, in hex | Submitting one |
 //! | `transaction` | `hash`: 64 hex digits | What became of one: still pending, or in which block, and whether it succeeded or aborted and why |
+//! | `move_resource` | `owner`, `type`, `slot` (default 0) | What a Move package has stored: one drawer, its bytes and its value read by its type |
+//! | `move_resources` | `owner` | The drawers an address has |
+//! | `simulate` | `transaction`: the canonical encoding, in hex | What a call to a published package would do, without committing it. Off unless the node's `rpc.simulate` is set |
 //!
 //! Parameters are a JSON object, or absent. Addresses are `thry1…`, hashes and
 //! byte strings are hex, and a token amount is a decimal string in base units
@@ -36,11 +39,33 @@ pub fn transaction_hash(transaction: &Transaction) -> Hash {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
     Status,
-    Block { height: Option<u64>, full: bool },
-    Commit { height: Option<u64> },
-    Account { address: Address },
-    SendTransaction { transaction: Box<Transaction> },
-    Transaction { hash: Hash },
+    Block {
+        height: Option<u64>,
+        full: bool,
+    },
+    Commit {
+        height: Option<u64>,
+    },
+    Account {
+        address: Address,
+    },
+    SendTransaction {
+        transaction: Box<Transaction>,
+    },
+    Transaction {
+        hash: Hash,
+    },
+    MoveResource {
+        owner: Address,
+        type_name: String,
+        slot: u64,
+    },
+    MoveResources {
+        owner: Address,
+    },
+    Simulate {
+        transaction: Box<Transaction>,
+    },
 }
 
 /// An error in JSON-RPC's shape. The codes from -32768 to -32000 are the
@@ -230,6 +255,32 @@ fn string_param(params: &mut Map<String, Value>, name: &str) -> Result<String, R
     }
 }
 
+/// Takes `name` out of `params` as an address in its `thry1…` text form.
+fn address_param(params: &mut Map<String, Value>, name: &str) -> Result<Address, RpcError> {
+    let text = string_param(params, name)?;
+    chain_text::parse_address(&text)
+        .map_err(|error| RpcError::invalid_params(format!("`{name}`: {error}")))
+}
+
+/// Takes `transaction` out of `params`: the canonical encoding, in hex.
+fn transaction_param(params: &mut Map<String, Value>) -> Result<Box<Transaction>, RpcError> {
+    let text = string_param(params, "transaction")?;
+    // The size is checked on the text, before it is turned into bytes.
+    if text.len() > MAX_TRANSACTION_BYTES.saturating_mul(2).saturating_add(2) {
+        return Err(RpcError::invalid_params(format!(
+            "`transaction` is over the {MAX_TRANSACTION_BYTES}-byte limit"
+        )));
+    }
+    let bytes = hex::decode(&text)
+        .map_err(|error| RpcError::invalid_params(format!("`transaction` {error}")))?;
+    let transaction: Transaction = decode_exact(&bytes).map_err(|error| {
+        RpcError::invalid_params(format!(
+            "`transaction` is not a transaction in the canonical encoding: {error}"
+        ))
+    })?;
+    Ok(Box::new(transaction))
+}
+
 fn nothing_else(params: Map<String, Value>) -> Result<(), RpcError> {
     match params.keys().next() {
         Some(name) => Err(RpcError::invalid_params(format!(
@@ -268,24 +319,9 @@ fn call_from(method: &str, mut params: Map<String, Value>) -> Result<Call, RpcEr
             Ok(Call::Account { address })
         }
         "send_transaction" => {
-            let text = string_param(&mut params, "transaction")?;
+            let transaction = transaction_param(&mut params)?;
             nothing_else(params)?;
-            // The size is checked on the text, before it is turned into bytes.
-            if text.len() > MAX_TRANSACTION_BYTES.saturating_mul(2).saturating_add(2) {
-                return Err(RpcError::invalid_params(format!(
-                    "`transaction` is over the {MAX_TRANSACTION_BYTES}-byte limit"
-                )));
-            }
-            let bytes = hex::decode(&text)
-                .map_err(|error| RpcError::invalid_params(format!("`transaction` {error}")))?;
-            let transaction: Transaction = decode_exact(&bytes).map_err(|error| {
-                RpcError::invalid_params(format!(
-                    "`transaction` is not a transaction in the canonical encoding: {error}"
-                ))
-            })?;
-            Ok(Call::SendTransaction {
-                transaction: Box::new(transaction),
-            })
+            Ok(Call::SendTransaction { transaction })
         }
         "transaction" => {
             let text = string_param(&mut params, "hash")?;
@@ -299,9 +335,29 @@ fn call_from(method: &str, mut params: Map<String, Value>) -> Result<Call, RpcEr
                 hash: Hash::from_bytes(bytes),
             })
         }
+        "move_resource" => {
+            let owner = address_param(&mut params, "owner")?;
+            let type_name = string_param(&mut params, "type")?;
+            if type_name.len() > 256 {
+                return Err(RpcError::invalid_params("`type` is over 256 bytes"));
+            }
+            let slot = height_param(&mut params, "slot")?.unwrap_or(0);
+            nothing_else(params)?;
+            Ok(Call::MoveResource { owner, type_name, slot })
+        }
+        "move_resources" => {
+            let owner = address_param(&mut params, "owner")?;
+            nothing_else(params)?;
+            Ok(Call::MoveResources { owner })
+        }
+        "simulate" => {
+            let transaction = transaction_param(&mut params)?;
+            nothing_else(params)?;
+            Ok(Call::Simulate { transaction })
+        }
         other => Err(RpcError::new(
             RpcError::METHOD_NOT_FOUND,
-            format!("no method `{other}`; there are status, block, commit, account, send_transaction and transaction"),
+            format!("no method `{other}`; there are status, block, commit, account, send_transaction, transaction, move_resource, move_resources and simulate"),
         )),
     }
 }
@@ -633,5 +689,59 @@ mod tests {
         point[0] = 0x58;
         point[1..].fill(0x66);
         point
+    }
+
+    #[test]
+    fn the_storage_methods_read_their_parameters_strictly() {
+        let owner = chain_text::format_address(&Address::from_bytes([3; 32]));
+        let ok = |body: String| request(&body).unwrap().call;
+        assert_eq!(
+            ok(format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{{"owner":"{owner}","type":"0x1::m::T"}}}}"#
+            )),
+            Call::MoveResource {
+                owner: Address::from_bytes([3; 32]),
+                type_name: "0x1::m::T".into(),
+                slot: 0
+            },
+            "the slot defaults to 0"
+        );
+        assert_eq!(
+            ok(format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{{"owner":"{owner}","type":"T","slot":9}}}}"#
+            )),
+            Call::MoveResource {
+                owner: Address::from_bytes([3; 32]),
+                type_name: "T".into(),
+                slot: 9
+            }
+        );
+        assert_eq!(
+            ok(format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"move_resources","params":{{"owner":"{owner}"}}}}"#
+            )),
+            Call::MoveResources {
+                owner: Address::from_bytes([3; 32])
+            }
+        );
+        let bad = |body: String| request(&body).unwrap_err();
+        for body in [
+            // No owner, no type, a bad owner, a negative or fractional slot, an unknown member.
+            r#"{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{"type":"T"}}"#.to_owned(),
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{{"owner":"{owner}"}}}}"#),
+            r#"{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{"owner":"nope","type":"T"}}"#.to_owned(),
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{{"owner":"{owner}","type":"T","slot":-1}}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{{"owner":"{owner}","type":"T","slot":1.5}}}}"#),
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"move_resources","params":{{"owner":"{owner}","limit":5}}}}"#),
+            format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"move_resource","params":{{"owner":"{owner}","type":"{}"}}}}"#,
+                "x".repeat(257)
+            ),
+            r#"{"jsonrpc":"2.0","id":1,"method":"simulate","params":{}}"#.to_owned(),
+            r#"{"jsonrpc":"2.0","id":1,"method":"simulate","params":{"transaction":"zz"}}"#.to_owned(),
+        ] {
+            let error = bad(body.clone());
+            assert_eq!(error.error.code, RpcError::INVALID_PARAMS, "{body}");
+        }
     }
 }

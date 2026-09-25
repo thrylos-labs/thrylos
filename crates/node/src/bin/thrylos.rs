@@ -35,6 +35,9 @@ Usage:
   thrylos move test [dir] [--dep <name>=<dir>@<thry1...>]... [--filter <text>] [--gas <n>]
   thrylos move publish <package dir | module.mv...> [--yes]
   thrylos move call <package> <module> <function> [type:value ...] [--input <address>]... [--gas <n>] [--yes]
+  thrylos move view <package> <module> <function> [type:value ...] [--input <address>]...
+  thrylos move resources <owner>
+  thrylos move resource <owner> <type> [--slot <n>]
   thrylos status
   thrylos network add <name> <rpc>
   thrylos network use <name>
@@ -59,6 +62,7 @@ Options:
                        sender's, and those it declares.
   --filter <text>     with `move test`, only tests whose name contains this
   --name <module>     with `move new`, the first module's name
+  --slot <n>          with `move resource`, which slot of the owner's drawers (default 0)
   --hex               with `address`, print the raw public key instead
                        (what a genesis allocation or validator entry needs;
                        an address cannot be turned back into one)
@@ -92,6 +96,7 @@ struct Options {
     deps: Vec<String>,
     filter: Option<String>,
     inputs: Vec<String>,
+    slot: Option<u64>,
     name: Option<String>,
     hex: bool,
     positional: Vec<String>,
@@ -130,6 +135,7 @@ fn parse_options() -> Result<Options, String> {
     let mut deps = Vec::new();
     let mut filter = None;
     let mut inputs = Vec::new();
+    let mut slot = None;
     let mut name = None;
     let mut hex_flag = false;
     let mut positional = Vec::new();
@@ -149,6 +155,13 @@ fn parse_options() -> Result<Options, String> {
             "--dep" => deps.push(option_value("--dep", &mut args)?),
             "--filter" => filter = Some(option_value("--filter", &mut args)?),
             "--input" => inputs.push(option_value("--input", &mut args)?),
+            "--slot" => {
+                let text = option_value("--slot", &mut args)?;
+                slot = Some(
+                    text.parse::<u64>()
+                        .map_err(|_| format!("--slot needs a whole number, not {text:?}"))?,
+                );
+            }
             "--name" => name = Some(option_value("--name", &mut args)?),
             "--hex" => hex_flag = true,
             flag if flag.starts_with("--") && flag != "--help" && flag != "--version" => {
@@ -168,6 +181,7 @@ fn parse_options() -> Result<Options, String> {
         deps,
         filter,
         inputs,
+        slot,
         name,
         positional,
     })
@@ -612,6 +626,154 @@ fn move_test(options: &Options, rest: &[String]) -> Result<(), String> {
     }
 }
 
+/// A type as the network names it: `0x<64 hex>::module::Name`. A package
+/// address written as `thry1…` is turned into that; anything else is left as given.
+fn canonical_type(text: &str) -> String {
+    match text.split_once("::") {
+        Some((first, rest)) => match parse_address(first) {
+            Ok(address) => format!("0x{}::{rest}", hex::encode(address.as_bytes())),
+            Err(_) => text.to_owned(),
+        },
+        None => text.to_owned(),
+    }
+}
+
+fn move_resources(options: &Options, rest: &[String]) -> Result<(), String> {
+    let [owner] = rest else {
+        return Err("usage: thrylos move resources <owner>".into());
+    };
+    let address = parse_address(owner).map_err(|error| format!("the owner: {error}"))?;
+    let found = options
+        .rpc
+        .call(
+            "move_resources",
+            &json!({ "owner": format_address(&address) }),
+        )
+        .map_err(|error| error.to_string())?;
+    let list = found["resources"].as_array().cloned().unwrap_or_default();
+    if list.is_empty() {
+        println!("{} has nothing stored.", format_address(&address));
+        return Ok(());
+    }
+    println!(
+        "{} has {} stored value(s):",
+        format_address(&address),
+        list.len()
+    );
+    for drawer in &list {
+        println!(
+            "  slot {}  {}  ({} bytes)",
+            drawer["slot"],
+            drawer["type"].as_str().unwrap_or("?"),
+            drawer["bytes"]
+        );
+    }
+    Ok(())
+}
+
+fn move_resource(options: &Options, rest: &[String]) -> Result<(), String> {
+    let [owner, type_name] = rest else {
+        return Err("usage: thrylos move resource <owner> <type> [--slot <n>]".into());
+    };
+    let address = parse_address(owner).map_err(|error| format!("the owner: {error}"))?;
+    let found = options
+        .rpc
+        .call(
+            "move_resource",
+            &json!({
+                "owner": format_address(&address),
+                "type": canonical_type(type_name),
+                "slot": options.slot.unwrap_or(0),
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+    println!("Type: {}", found["type"].as_str().unwrap_or("?"));
+    println!("Slot: {}", found["slot"]);
+    println!("At height: {}", found["height"]);
+    match found.get("value").filter(|value| !value.is_null()) {
+        Some(value) => println!(
+            "Value: {}",
+            serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
+        ),
+        None => println!("Value: (its type could not be read; the raw bytes are below)"),
+    }
+    println!("Bytes: 0x{}", found["bytes"].as_str().unwrap_or(""));
+    Ok(())
+}
+
+/// Ask the node what a call would do, without sending it: a `public` function
+/// can be called and can return values, and a call's changes are reported and
+/// not made.
+fn move_view(options: &Options, rest: &[String]) -> Result<(), String> {
+    let [package, module, function, arguments @ ..] = rest else {
+        return Err(
+            "usage: thrylos move view <package> <module> <function> [type:value ...] [--input <address>]..."
+                .into(),
+        );
+    };
+    let package =
+        parse_address(package).map_err(|error| format!("the package address: {error}"))?;
+    let encoded = arguments
+        .iter()
+        .map(|argument| chain_node::move_client::encode_argument(argument))
+        .collect::<Result<Vec<_>, _>>()?;
+    let declared = options
+        .inputs
+        .iter()
+        .map(|text| parse_address(text).map_err(|error| format!("--input {text}: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let wallet = load_wallet(&options.wallet)?;
+    let at = position(&options.rpc, wallet.address())?;
+    let transaction = chain_node::move_client::signed_call(
+        wallet.signing_key(),
+        at.chain_id,
+        at.sequence,
+        at.height.saturating_add(EXPIRES_AFTER),
+        chain_node::move_client::DEFAULT_CALL_GAS,
+        at.max_fee_per_gas,
+        declared,
+        package,
+        module,
+        function,
+        encoded,
+    )?;
+    let mut bytes = Vec::new();
+    chain_types::Encode::encode(&transaction, &mut bytes);
+    let answer = options
+        .rpc
+        .call("simulate", &json!({ "transaction": hex::encode(&bytes) }))
+        .map_err(|error| error.to_string())?;
+    let gas = &answer["gasUsed"];
+    if answer["status"] == "failed" {
+        return Err(format!(
+            "the call would fail: {} (used {gas} gas of at most {})",
+            answer["reason"].as_str().unwrap_or("?"),
+            answer["gasCap"]
+        ));
+    }
+    println!("The call would succeed, using {gas} gas.");
+    let returns = answer["returns"].as_array().cloned().unwrap_or_default();
+    for (index, value) in returns.iter().enumerate() {
+        println!(
+            "Returns[{index}]: {}",
+            serde_json::to_string(value).map_err(|error| error.to_string())?
+        );
+    }
+    let changed = answer["drawersChanged"].as_u64().unwrap_or(0);
+    if changed > 0 {
+        let deposit: u128 = answer["deposit"]
+            .as_str()
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(0);
+        println!(
+            "It would change {changed} stored value(s), with a storage deposit of {}.",
+            format_amount(deposit)
+        );
+    }
+    println!("Nothing was sent or changed.");
+    Ok(())
+}
+
 fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
     let [package, module, function, arguments @ ..] = rest else {
         return Err(
@@ -816,7 +978,10 @@ fn run(options: &Options) -> Result<(), String> {
             Some((sub, tail)) if sub == "test" => move_test(options, tail),
             Some((sub, tail)) if sub == "publish" => move_publish(options, tail),
             Some((sub, tail)) if sub == "call" => move_call(options, tail),
-            _ => Err("usage: thrylos move <new | build | test | publish | call> ...  (thrylos --help lists each)".into()),
+            Some((sub, tail)) if sub == "view" => move_view(options, tail),
+            Some((sub, tail)) if sub == "resources" => move_resources(options, tail),
+            Some((sub, tail)) if sub == "resource" => move_resource(options, tail),
+            _ => Err("usage: thrylos move <new | build | test | publish | call | view | resource | resources> ...  (thrylos --help lists each)".into()),
         },
         "tx" => {
             let values = exactly(rest, 1, "thrylos tx <hash>")?;

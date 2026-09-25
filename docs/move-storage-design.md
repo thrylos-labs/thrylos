@@ -302,9 +302,30 @@ Acceptance:
    state, two independent nodes agreeing on the state root, the state cap) and a four-process
    network test that publishes a counter written with the tools, changes it through different
    nodes, restarts one, and checks all four agree.
-6. The publish fuzz target extended with store-calling modules.
-7. Stage 2b (RPC, simulate, CLI, explorer), the guide, then calibration and the reset
-   rehearsal.
+6. **The publish fuzz target extended with store-calling modules (done):** seeds that use the
+   store well and badly, a table mutator, and an independent oracle (`fuzz/oracle.rs`, shared by
+   the fuzz target and `crates/exec/tests/publish_mutations.rs`) that walks the instruction
+   stream and requires everything the chain publishes to obey the ownership rule. Broken on
+   purpose, the deterministic run fails immediately when the rule accepts a type parameter or
+   is not applied. Two halves of the rule (that the datatype handle names the module, and that
+   the module defines it) each survive the other being removed: a hand-relabelled handle is
+   already refused by the bytecode verifier, so those two are defence in depth, and a unit
+   test shows the scan catches the relabelling by itself. Not yet run under a real fuzzer
+   locally (it needs nightly); CI runs it.
+7. **Stage 2b: reading state (done, except the guide):** RPC `move_resource` (one drawer: its
+   bytes and its value decoded by its type, with numbers as text), `move_resources` (an
+   address's drawers, at most 100) and `simulate` (`crates/exec/src/simulate.rs`); CLI
+   `thrylos move resource`, `resources` and `view`; the explorer shows an account's stored
+   values (and does not offer `simulate`). A simulation runs the real call code against the
+   committed state, may also call a `public` function that returns primitives and vectors (a
+   view), needs no signature, sequence number or account, and changes and charges nothing;
+   it reports the gas, what it returned, and the drawers and deposit it *would* have
+   changed. **`simulate` runs a Move call on the node's own thread, the one that also runs
+   consensus, so it is off by default (`rpc.simulate` in `node.json`; `devnet init` turns it
+   on), capped at 100,000 gas, and spaced to one a second per node.** The cap and spacing are
+   set from debug-build timing (a 100,000-gas loop took several seconds there); they must be
+   re-measured on a release build on the VPS before any public node turns it on. Then the
+   guide, gas calibration and the reset rehearsal.
 
 ## Not in this stage
 

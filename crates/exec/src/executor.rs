@@ -539,6 +539,61 @@ impl Executor {
         chain_state::account::read_account(&self.state, address)
     }
 
+    /// What the package stored at (`owner`, `slot`, `type_name`) holds, as of the
+    /// committed state. `type_name` is the type's canonical name
+    /// (`0x<64 hex>::module::Name`, with `<...>` for a generic type).
+    pub fn read_drawer(
+        &self,
+        owner: move_core_types::account_address::AccountAddress,
+        slot: u64,
+        type_name: &str,
+    ) -> Result<Option<crate::drawer::DrawerValue>, crate::drawer::DrawerError> {
+        let key = crate::keys::drawer_key(owner, slot, type_name);
+        match self.state.get(&key) {
+            None => Ok(None),
+            Some(stored) => {
+                let value = crate::drawer::DrawerValue::from_state(stored)?;
+                Ok((value.type_name == type_name).then_some(value))
+            }
+        }
+    }
+
+    /// The drawers `owner` has, at most `limit`.
+    pub fn drawers_of(
+        &self,
+        owner: move_core_types::account_address::AccountAddress,
+        limit: usize,
+    ) -> Vec<crate::view::DrawerSummary> {
+        crate::view::drawers_of(&self.state, owner, limit)
+    }
+
+    /// A drawer's value read by its type, if the type's layout can be had.
+    pub fn render_drawer(
+        &self,
+        drawer: &crate::drawer::DrawerValue,
+    ) -> Option<crate::view::ViewValue> {
+        crate::view::render_drawer(&self.runtime, &self.state, drawer)
+    }
+
+    /// What `tx`'s call would do, run against the committed state without
+    /// committing it (`crate::simulate`). The transaction is not checked: no
+    /// signature, sequence number or balance is needed, and none is used.
+    pub fn simulate(
+        &self,
+        tx: &Transaction,
+    ) -> Result<crate::simulate::Simulation, crate::simulate::SimulationFailure> {
+        use crate::simulate::SimulationFailure;
+        let (height, timestamp) = read_head(&self.state).ok_or(SimulationFailure::Internal)?;
+        let ctx = self
+            .block_ctx(
+                &self.state,
+                BlockHeight(height.saturating_add(1)),
+                timestamp.saturating_add(1),
+            )
+            .map_err(|_| SimulationFailure::Internal)?;
+        crate::simulate::simulate(&self.runtime, &self.state, tx, &ctx)
+    }
+
     /// Credits `address`'s account by `amount`. `docs/spec.md` doesn't
     /// specify a genesis allocation table yet (only that fixed system
     /// state exists at genesis — see `crate::genesis`), so this is the

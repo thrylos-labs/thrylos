@@ -1734,6 +1734,7 @@ fn a_package_that_remembers_keeps_its_state_on_four_nodes_across_a_node_restart(
              c.n = c.n + 1;
              store::put(o, 0, c);
          }
+         public fun mine(s: &signer): u64 { store::read<Counter>(signer::address_of(s), 0).n }
 
          #[test] fun counts() {
              store::put(@0xa, 0, Counter { n: 0 });
@@ -1759,6 +1760,11 @@ fn a_package_that_remembers_keeps_its_state_on_four_nodes_across_a_node_restart(
         .find_map(|line| line.strip_prefix("Package address: ").map(str::to_owned))
         .unwrap();
 
+    let call_view = |network: &Network, node: usize, function: &str, extra: &[&str]| {
+        let mut args = vec!["move", "view", package.as_str(), "ledger", function];
+        args.extend_from_slice(extra);
+        cli(&rpc(network, node), &args)
+    };
     // The counter, changed through different nodes and read back through others.
     let call = |network: &Network, node: usize, function: &str, extra: &[&str]| {
         let mut args = vec!["move", "call", package.as_str(), "ledger", function];
@@ -1809,6 +1815,82 @@ fn a_package_that_remembers_keeps_its_state_on_four_nodes_across_a_node_restart(
     ok(&call(&network, victim, "bump", &[]));
     ok(&call(&network, 1, "check", &["u64:4"]));
     ok(&call(&network, victim, "check", &["u64:4"]));
+
+    // Reading it back: the stored value by its type, the list of what an address
+    // has, and a view that returns it, each through a different node.
+    let counter_type = format!("{package}::ledger::Counter");
+    let resource = cli(
+        &rpc(&network, 2),
+        &["move", "resource", address.as_str(), counter_type.as_str()],
+    );
+    ok(&resource);
+    assert!(
+        stdout(&resource).contains("\"n\": \"4\""),
+        "{}",
+        stdout(&resource)
+    );
+    assert!(
+        stdout(&resource).contains("Bytes: 0x0400000000000000"),
+        "{}",
+        stdout(&resource)
+    );
+    let listed = cli(&rpc(&network, 1), &["move", "resources", address.as_str()]);
+    ok(&listed);
+    assert!(
+        stdout(&listed).contains("slot 0") && stdout(&listed).contains("::ledger::Counter"),
+        "{}",
+        stdout(&listed)
+    );
+    let missing = cli(
+        &rpc(&network, 2),
+        &[
+            "move",
+            "resource",
+            address.as_str(),
+            counter_type.as_str(),
+            "--slot",
+            "5",
+        ],
+    );
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("slot 5"), "{}", stderr(&missing));
+
+    let view = call_view(&network, 0, "mine", &[]);
+    ok(&view);
+    assert!(
+        stdout(&view).contains("Returns[0]: \"4\""),
+        "{}",
+        stdout(&view)
+    );
+    assert!(
+        stdout(&view).contains("Nothing was sent or changed"),
+        "{}",
+        stdout(&view)
+    );
+    // A call that would change something says so, and does not.
+    let dry = call_view(&network, 1, "bump", &[]);
+    ok(&dry);
+    assert!(
+        stdout(&dry).contains("would change 1 stored value"),
+        "{}",
+        stdout(&dry)
+    );
+    let still = cli(
+        &rpc(&network, 3),
+        &["move", "resource", address.as_str(), counter_type.as_str()],
+    );
+    assert!(
+        stdout(&still).contains("\"n\": \"4\""),
+        "a simulation must not change what is stored"
+    );
+    // A call that would fail says why.
+    let doomed = call_view(&network, 2, "check", &["u64:99"]);
+    assert!(!doomed.status.success());
+    assert!(
+        stderr(&doomed).contains("would fail") && stderr(&doomed).contains("code 100"),
+        "{}",
+        stderr(&doomed)
+    );
 
     let height = (0..4).map(|i| network.height(i)).min().unwrap();
     assert_one_chain(&network.nodes, height.saturating_sub(1));

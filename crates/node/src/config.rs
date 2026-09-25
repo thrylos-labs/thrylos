@@ -106,6 +106,10 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawRpc {
     listen: SocketAddr,
+    /// Whether the `simulate` method is served. Off unless set: a simulation runs
+    /// a Move call on the node's own thread, which is more than the other
+    /// read-only methods do.
+    simulate: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,6 +162,8 @@ pub struct NodeConfig {
     pub peers: Vec<PeerSpec>,
     /// Where the RPC listens (always a loopback address), if the node serves one.
     pub rpc_listen: Option<SocketAddr>,
+    /// Whether the RPC serves `simulate` (`rpc.simulate`; off by default).
+    pub rpc_simulate: bool,
     pub network: PeerNetworkConfig,
     /// How long a peer may take over a handshake or a stalled frame.
     pub io_timeout: Duration,
@@ -250,6 +256,11 @@ impl NodeConfig {
             });
         }
 
+        let rpc_simulate = raw
+            .rpc
+            .as_ref()
+            .and_then(|rpc| rpc.simulate)
+            .unwrap_or(false);
         let rpc_listen = match raw.rpc {
             None => None,
             Some(rpc) => {
@@ -318,6 +329,7 @@ impl NodeConfig {
             )?,
             peers,
             rpc_listen,
+            rpc_simulate,
             network,
             io_timeout: millis(
                 "tuning.io_timeout_ms",
@@ -452,6 +464,29 @@ mod tests {
             config.network.inbound_queue,
             PeerNetworkConfig::default().inbound_queue
         );
+    }
+
+    #[test]
+    fn simulate_is_off_unless_the_rpc_section_turns_it_on() {
+        let rpc = |extra: &str| {
+            parse(&config_with(
+                "",
+                &format!(r#", "rpc": {{ "listen": "127.0.0.1:9100"{extra} }}"#),
+            ))
+            .unwrap()
+        };
+        assert!(!rpc("").rpc_simulate);
+        assert!(!rpc(r#", "simulate": false"#).rpc_simulate);
+        assert!(rpc(r#", "simulate": true"#).rpc_simulate);
+        assert!(
+            !parse(&config_with("", "")).unwrap().rpc_simulate,
+            "no rpc, nothing to simulate on"
+        );
+        assert!(parse(&config_with(
+            "",
+            r#", "rpc": { "listen": "127.0.0.1:9100", "simulate": "yes" }"#
+        ))
+        .is_err());
     }
 
     #[test]

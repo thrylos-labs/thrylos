@@ -178,7 +178,13 @@ impl From<ExplorerError> for ApiFailure {
 fn read_method(method: &str) -> bool {
     matches!(
         method,
-        "status" | "block" | "commit" | "account" | "transaction"
+        "status"
+            | "block"
+            | "commit"
+            | "account"
+            | "transaction"
+            | "move_resource"
+            | "move_resources"
     )
 }
 
@@ -543,10 +549,19 @@ mod tests {
 
     #[test]
     fn only_read_methods_are_available() {
-        for method in ["status", "block", "commit", "account", "transaction"] {
+        for method in [
+            "status",
+            "block",
+            "commit",
+            "account",
+            "transaction",
+            "move_resource",
+            "move_resources",
+        ] {
             assert!(read_method(method), "{method}");
         }
-        for method in ["send_transaction", "broadcast", ""] {
+        // `simulate` is not among them: it runs code, which an explorer does not do.
+        for method in ["send_transaction", "simulate", "broadcast", ""] {
             assert!(!read_method(method), "{method}");
         }
     }

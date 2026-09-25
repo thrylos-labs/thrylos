@@ -17,6 +17,7 @@ chain-exec = { path = "../crates/exec" }
 chain-modules = { path = "../crates/modules" }
 chain-state = { path = "../crates/state" }
 chain-types = { path = "../crates/types" }
+move-binary-format = { version = "0.0.3", git = "https://github.com/MystenLabs/sui", rev = "ceaaff1cc84c1ba2f12c4e7928914ece81fbdd0f" }
 
 [workspace]
 members = ["."]

@@ -293,7 +293,7 @@ fn node_config_text(plan: &Plan, plans: &[Plan], block_interval_ms: u64) -> Stri
   "validator": "{}",
   "signer": {{ "socket": "{SIGNER_SOCKET}", "credential": "{SIGNER_CREDENTIAL}" }},
   "peers": [{peers}],
-  "rpc": {{ "listen": "{}" }},
+  "rpc": {{ "listen": "{}", "simulate": true }},
   "tuning": {{ "block_interval_ms": {block_interval_ms} }}
 }}
 "#,

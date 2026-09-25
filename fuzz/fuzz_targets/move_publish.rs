@@ -16,18 +16,30 @@ use chain_engine_api::{
 use chain_exec::keys::package_key;
 use chain_exec::publish::{package_address, MOVE_MODULE_NAME, MOVE_PACKAGE_ADDRESS, PUBLISH};
 use chain_exec::Executor;
+use chain_state::StateChange;
 use chain_types::{
     Address, BlockHeight, ChainId, Encode, GasAmount, GasPrice, MoveCall, PublicKey,
     SequenceNumber, Signature, Transaction, TransactionBody,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use libfuzzer_sys::fuzz_target;
+use move_binary_format::file_format::CompiledModule;
 
-const SEEDS: [&[u8]; 3] = [
+#[path = "../oracle.rs"]
+mod oracle;
+
+const SEEDS: [&[u8]; 7] = [
     include_bytes!("../seeds/hello.mv"),
     include_bytes!("../seeds/first.mv"),
     include_bytes!("../seeds/second.mv"),
+    include_bytes!("../seeds/own.mv"),
+    include_bytes!("../seeds/victim.mv"),
+    include_bytes!("../seeds/thief.mv"),
+    include_bytes!("../seeds/leak.mv"),
 ];
+/// Which seeds make a package: plain ones, a well-behaved storing module, a
+/// thief and its victim, a module generic over the stored type, and all of them.
+const SETS: [&[usize]; 7] = [&[0], &[1, 2], &[0, 1, 2], &[3], &[4, 5], &[6, 3], &[3, 4, 5, 6]];
 const SENDER_SEED: u8 = 9;
 const GAS_LIMIT: u64 = 400_000;
 
@@ -56,25 +68,42 @@ fn executor() -> Executor {
 /// The modules an input describes.
 fn modules(input: &[u8]) -> Vec<Vec<u8>> {
     let (mode, rest) = input.split_first().map_or((0, &[][..]), |(m, r)| (*m, r));
-    if mode % 4 == 0 {
+    if mode % 3 == 0 {
         // The fuzzer's own bytes, cut into one to four modules.
         let count = usize::from(rest.first().copied().unwrap_or(0) % 4) + 1;
         let body = rest.get(1..).unwrap_or_default();
         let size = body.len().div_ceil(count).max(1);
         return body.chunks(size).map(<[u8]>::to_vec).collect();
     }
-    // Real modules with bytes changed: three bytes an edit (position, value).
-    let seeds: Vec<Vec<u8>> = match mode % 4 {
-        1 => vec![SEEDS[0].to_vec()],
-        2 => vec![SEEDS[1].to_vec(), SEEDS[2].to_vec()],
-        _ => SEEDS.iter().map(|seed| seed.to_vec()).collect(),
+    let set = SETS[(usize::from(mode) / 3) % SETS.len()];
+    let mut seeds: Vec<Vec<u8>> = set.iter().map(|i| SEEDS[*i].to_vec()).collect();
+
+    // Structural edits first, on the decoded modules; bytes read from the input.
+    let mut position = 1usize;
+    let mut next = || {
+        let a = rest.get(position).copied().unwrap_or(position as u8);
+        let b = rest.get(position + 1).copied().unwrap_or(0);
+        position += 2;
+        (u64::from(a) << 8) | u64::from(b)
     };
-    let mut seeds = seeds;
-    for edit in rest.chunks_exact(3) {
+    let edits = rest.first().copied().unwrap_or(0) % 5;
+    for _ in 0..edits {
+        let which = (next() % seeds.len() as u64) as usize;
+        let Some(bytes) = seeds.get(which) else { continue };
+        let Ok(mut module) = CompiledModule::deserialize_with_defaults(bytes) else { continue };
+        oracle::mutate(&mut module, &mut next);
+        let mut out = Vec::new();
+        if module.serialize_with_version(module.version, &mut out).is_ok() {
+            seeds[which] = out;
+        }
+    }
+
+    // Then bytes: three to an edit (which module, where, what).
+    for edit in rest.get(position..).unwrap_or_default().chunks_exact(3) {
         let which = usize::from(edit[0]) % seeds.len();
         if let Some(module) = seeds.get_mut(which) {
-            let position = usize::from(edit[1]) % module.len().max(1);
-            if let Some(byte) = module.get_mut(position) {
+            let at = usize::from(edit[1]) % module.len().max(1);
+            if let Some(byte) = module.get_mut(at) {
                 *byte = edit[2];
             }
         }
@@ -135,10 +164,25 @@ fuzz_target!(|input: &[u8]| {
             TransactionOutcome::Success => {
                 let id = package_address(&sender, 0);
                 let wanted = package_key(id);
-                assert!(
-                    executed.state_diff.iter().any(|(key, _)| *key == wanted),
-                    "a successful publish stored no package"
-                );
+                let stored = executed
+                    .state_diff
+                    .iter()
+                    .find(|(key, _)| **key == wanted)
+                    .map(|(_, change)| change)
+                    .unwrap_or_else(|| panic!("a successful publish stored no package"));
+                // What the chain accepted must obey the storage rule, by a check
+                // of our own: every module of the stored package.
+                let StateChange::Put(value) = stored else {
+                    panic!("a publish deleted a package")
+                };
+                let modules: Vec<Vec<u8>> = chain_types::codec::decode_exact(value.as_bytes())
+                    .unwrap_or_else(|error| panic!("a stored package does not decode: {error:?}"));
+                for bytes in modules {
+                    let module = CompiledModule::deserialize_with_defaults(&bytes)
+                        .unwrap_or_else(|error| panic!("a stored module does not decode: {error:?}"));
+                    let broken = oracle::violations(&module);
+                    assert!(broken.is_empty(), "the chain published a module that breaks the storage rule: {broken:?}");
+                }
             }
             TransactionOutcome::Aborted(AbortReason::PublishRefused) => {}
             other => panic!("a publish ended as {other:?}"),

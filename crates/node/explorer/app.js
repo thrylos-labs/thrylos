@@ -304,6 +304,33 @@ async function showAccount(address) {
     renderResult("Account", short(address, 15, 10), result);
   } catch (error) {
     searchError(error.message);
+    return;
+  }
+  await showStoredValues(address);
+}
+
+// What Move packages keep for an address, if the node can say (an older node
+// answers "no such method", which is not an error worth showing).
+async function showStoredValues(address) {
+  try {
+    const list = await rpc("move_resources", { owner: address });
+    const items = Array.isArray(list.resources) ? list.resources : [];
+    if (items.length === 0) return;
+    const wrapper = make("div", "");
+    wrapper.append(make("dt", "", `Stored values (${items.length})`));
+    const description = make("dd", "detail-value");
+    for (const item of items.slice(0, 10)) {
+      const one = await rpc("move_resource", { owner: address, type: item.type, slot: item.slot });
+      description.append(make("div", "row-meta", `slot ${item.slot} · ${String(item.type).replace(/^0x0*([0-9a-f]{6})[0-9a-f]*::/, "0x…$1::")}`));
+      const pre = make("pre", "");
+      pre.append(make("code", "", JSON.stringify(one.value ?? `0x${one.bytes}`, null, 2)));
+      description.append(pre);
+    }
+    if (items.length > 10) description.append(make("div", "row-meta", `and ${items.length - 10} more`));
+    wrapper.append(description);
+    byId("result-details").append(wrapper);
+  } catch (_) {
+    // No stored values to show.
   }
 }
 

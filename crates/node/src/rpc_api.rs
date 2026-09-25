@@ -1,4 +1,4 @@
-//! The node's answers to its RPC: what each of the six methods says, from the
+//! The node's answers to its RPC: what each of the nine methods says, from the
 //! chain, the pool and the loop.
 //!
 //! [`NodeApi`] runs on the event loop's thread (the loop hands it the chance
@@ -9,12 +9,15 @@
 
 use chain_consensus::host::CommitRecord;
 use chain_engine_api::{ChainView, Head, TransactionOutcome};
+use chain_exec::simulate::{SimulationFailure, SIMULATE_MAX_GAS};
+use chain_exec::view::ViewValue;
 use chain_mempool::AdmissionError;
 use chain_rpc::call::transaction_hash;
 use chain_rpc::hex;
 use chain_rpc::{Call, Inbox, Reply, RpcError};
 use chain_text::format_address;
 use chain_types::{Address, BlockHeight, ChainId, Encode, Hash, Transaction};
+use move_core_types::account_address::AccountAddress;
 use serde_json::{json, Value};
 
 use crate::event_loop::{NodeFacts, RpcPort};
@@ -31,7 +34,21 @@ pub struct NodeApi {
     chain_id: ChainId,
     genesis_hash: Hash,
     validator: Address,
+    /// Whether `simulate` is served (`rpc.simulate`).
+    simulate: bool,
+    /// When the last simulation started. Wall-clock time, used only to space
+    /// simulations out; nothing consensus reads it.
+    last_simulation: std::cell::Cell<Option<std::time::Instant>>,
 }
+
+/// The least time between two simulations. One runs a Move call on the thread
+/// that also runs consensus, so they are rationed: at [`SIMULATE_MAX_GAS`] each
+/// takes a fraction of a second at most, and this keeps them to a fraction of the
+/// thread's time however hard the RPC is pushed.
+pub const SIMULATION_SPACING: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The most drawers `move_resources` lists.
+pub const MAX_LISTED_DRAWERS: usize = 100;
 
 impl NodeApi {
     pub const fn new(
@@ -41,6 +58,7 @@ impl NodeApi {
         chain_id: ChainId,
         genesis_hash: Hash,
         validator: Address,
+        simulate: bool,
     ) -> Self {
         Self {
             engine,
@@ -49,6 +67,8 @@ impl NodeApi {
             chain_id,
             genesis_hash,
             validator,
+            simulate,
+            last_simulation: std::cell::Cell::new(None),
         }
     }
 
@@ -61,6 +81,13 @@ impl NodeApi {
             Call::Account { address } => self.account(address),
             Call::SendTransaction { transaction } => self.send(transaction, facts),
             Call::Transaction { hash } => self.transaction(hash),
+            Call::MoveResource {
+                owner,
+                type_name,
+                slot,
+            } => self.move_resource(owner, type_name, *slot),
+            Call::MoveResources { owner } => self.move_resources(owner),
+            Call::Simulate { transaction } => self.simulate(transaction),
         }
     }
 
@@ -246,6 +273,100 @@ impl NodeApi {
         }))
     }
 
+    fn move_resource(&self, owner: &Address, type_name: &str, slot: u64) -> Reply {
+        let head = self.head()?;
+        let account = AccountAddress::new(*owner.as_bytes());
+        let found = self
+            .engine
+            .with(|engine| {
+                let executor = engine.executor();
+                executor
+                    .read_drawer(account, slot, type_name)
+                    .map(|drawer| {
+                        drawer.map(|drawer| {
+                            let value = executor.render_drawer(&drawer);
+                            (drawer, value)
+                        })
+                    })
+            })
+            .map_err(|_| RpcError::unavailable("a stored value is damaged"))?;
+        let Some((drawer, value)) = found else {
+            return Err(RpcError::not_found(format!(
+                "no {type_name} is stored in slot {slot} of {}",
+                format_address(owner)
+            )));
+        };
+        Ok(json!({
+            "owner": format_address(owner),
+            "slot": slot,
+            "type": drawer.type_name,
+            "bytes": hex::encode(&drawer.bytes),
+            "value": value.as_ref().map(view_json),
+            "height": head.height.0,
+        }))
+    }
+
+    fn move_resources(&self, owner: &Address) -> Reply {
+        let head = self.head()?;
+        let account = AccountAddress::new(*owner.as_bytes());
+        let drawers = self
+            .engine
+            .with(|engine| engine.executor().drawers_of(account, MAX_LISTED_DRAWERS));
+        Ok(json!({
+            "owner": format_address(owner),
+            "height": head.height.0,
+            "resources": drawers
+                .iter()
+                .map(|d| json!({ "slot": d.slot, "type": d.type_name, "bytes": d.bytes }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    #[allow(clippy::disallowed_methods)] // the spacing is wall-clock, and no consensus rule reads it
+    fn simulate(&self, transaction: &Transaction) -> Reply {
+        if !self.simulate {
+            return Err(RpcError::unavailable(
+                "this node does not serve simulate (its `rpc.simulate` is off)",
+            ));
+        }
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_simulation.get() {
+            if now.duration_since(last) < SIMULATION_SPACING {
+                return Err(RpcError::unavailable(
+                    "a simulation was run a moment ago; try again in a second",
+                ));
+            }
+        }
+        self.last_simulation.set(Some(now));
+        let head = self.head()?;
+        let outcome = self
+            .engine
+            .with(|engine| engine.executor().simulate(transaction));
+        match outcome {
+            Ok(simulation) => Ok(json!({
+                "status": "success",
+                "gasUsed": simulation.gas_used,
+                "gasCap": SIMULATE_MAX_GAS,
+                "returns": simulation.returns.iter().map(view_json).collect::<Vec<_>>(),
+                "drawersChanged": simulation.drawers_changed,
+                "deposit": simulation.deposit.to_string(),
+                "height": head.height.0,
+            })),
+            // The call failing is an answer, the same as it would have been on the chain.
+            Err(SimulationFailure::Failed { gas_used, reason }) => Ok(json!({
+                "status": "failed",
+                "reason": reason,
+                "gasUsed": gas_used,
+                "gasCap": SIMULATE_MAX_GAS,
+                "height": head.height.0,
+            })),
+            Err(SimulationFailure::Internal) => {
+                Err(RpcError::unavailable("the simulation could not be run"))
+            }
+            Err(other) => Err(RpcError::invalid_params(other.to_string())),
+        }
+    }
+
     fn send(&self, transaction: &Transaction, facts: &dyn NodeFacts) -> Reply {
         let hash = transaction_hash(transaction);
         match self.pool.admit(transaction.clone()) {
@@ -269,6 +390,38 @@ impl RpcPort for NodeApi {
             };
             let reply = self.answer(&pending.call, facts);
             pending.answer(reply);
+        }
+    }
+}
+
+/// A decoded Move value as JSON: numbers as decimal text (JSON numbers cannot hold
+/// a `u128`), addresses as `thry1…`, structs as objects with a `_type` member.
+fn view_json(value: &ViewValue) -> Value {
+    match value {
+        ViewValue::Bool(b) => json!(b),
+        ViewValue::Number(n) => json!(n),
+        ViewValue::Address(a) => json!(format_address(&Address::from_bytes(a.into_bytes()))),
+        ViewValue::Vector(items) => Value::Array(items.iter().map(view_json).collect()),
+        ViewValue::Struct { type_name, fields } => {
+            let mut object = serde_json::Map::new();
+            object.insert("_type".into(), json!(type_name));
+            for (name, field) in fields {
+                object.insert(name.clone(), view_json(field));
+            }
+            Value::Object(object)
+        }
+        ViewValue::Variant {
+            type_name,
+            variant,
+            fields,
+        } => {
+            let mut object = serde_json::Map::new();
+            object.insert("_type".into(), json!(type_name));
+            object.insert("_variant".into(), json!(variant));
+            for (name, field) in fields {
+                object.insert(name.clone(), view_json(field));
+            }
+            Value::Object(object)
         }
     }
 }
@@ -426,6 +579,10 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
+        fixture_with(true)
+    }
+
+    fn fixture_with(simulate: bool) -> Fixture {
         let (dir, engine, pool) = chain();
         let (server, inbox) =
             Server::start(ServerConfig::at("127.0.0.1:0".parse().unwrap())).unwrap();
@@ -437,6 +594,7 @@ mod tests {
             genesis.chain_id(),
             genesis.hash(),
             Address::from_bytes([9; 32]),
+            simulate,
         );
         Fixture {
             _dir: dir,
@@ -871,6 +1029,120 @@ mod tests {
     }
 
     #[test]
+    fn an_address_with_nothing_stored_lists_no_drawers_and_an_empty_one_is_not_found() {
+        let f = fixture();
+        let facts = Facts::new();
+        let owner = account_of(1);
+        let listed = ok(f.api.answer(&Call::MoveResources { owner }, &facts));
+        assert_eq!(listed["resources"], json!([]));
+        assert_eq!(listed["owner"], format_address(&owner));
+        let reply = f.api.answer(
+            &Call::MoveResource {
+                owner,
+                type_name: "0x1::m::T".into(),
+                slot: 3,
+            },
+            &facts,
+        );
+        let error = reply.unwrap_err();
+        assert_eq!(error.code, RpcError::NOT_FOUND);
+        assert!(
+            error.message.contains("slot 3") && error.message.contains("0x1::m::T"),
+            "{}",
+            error.message
+        );
+    }
+
+    fn a_transfer(seed: u8) -> Transaction {
+        signed_transfer(
+            &ed25519_dalek::SigningKey::from_bytes(&[seed; 32]),
+            1,
+            0,
+            100,
+            account_of(9),
+            1,
+            2,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn simulate_is_off_unless_the_node_says_so() {
+        let f = fixture_with(false);
+        let error = f
+            .api
+            .answer(
+                &Call::Simulate {
+                    transaction: Box::new(a_transfer(1)),
+                },
+                &Facts::new(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, RpcError::UNAVAILABLE);
+        assert!(error.message.contains("rpc.simulate"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_simulation_of_something_that_is_not_a_package_call_says_so_and_they_are_spaced_out() {
+        let f = fixture();
+        let facts = Facts::new();
+        let call = Call::Simulate {
+            transaction: Box::new(a_transfer(1)),
+        };
+        let error = f.api.answer(&call, &facts).unwrap_err();
+        assert_eq!(error.code, RpcError::INVALID_PARAMS);
+        assert!(
+            error.message.contains("published packages"),
+            "{}",
+            error.message
+        );
+        // Straight after, another is refused as busy, whatever it is.
+        let again = f.api.answer(&call, &facts).unwrap_err();
+        assert_eq!(again.code, RpcError::UNAVAILABLE);
+        assert!(again.message.contains("a moment ago"), "{}", again.message);
+        // And after the spacing, it is served again.
+        std::thread::sleep(SIMULATION_SPACING + std::time::Duration::from_millis(50));
+        assert_eq!(
+            f.api.answer(&call, &facts).unwrap_err().code,
+            RpcError::INVALID_PARAMS
+        );
+    }
+
+    #[test]
+    fn decoded_values_become_json_with_numbers_as_text() {
+        let value = ViewValue::Struct {
+            type_name: "0x1::m::T".into(),
+            fields: vec![
+                ("n".into(), ViewValue::Number(u128::MAX.to_string())),
+                ("ok".into(), ViewValue::Bool(true)),
+                (
+                    "who".into(),
+                    ViewValue::Address(AccountAddress::new([7; 32])),
+                ),
+                (
+                    "xs".into(),
+                    ViewValue::Vector(vec![ViewValue::Number("1".into())]),
+                ),
+                (
+                    "k".into(),
+                    ViewValue::Variant {
+                        type_name: "0x1::m::K".into(),
+                        variant: "B".into(),
+                        fields: vec![],
+                    },
+                ),
+            ],
+        };
+        let json = view_json(&value);
+        assert_eq!(json["_type"], "0x1::m::T");
+        assert_eq!(json["n"], u128::MAX.to_string());
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["who"], format_address(&Address::from_bytes([7; 32])));
+        assert_eq!(json["xs"], json!(["1"]));
+        assert_eq!(json["k"]["_variant"], "B");
+    }
+
+    #[test]
     fn a_commit_the_node_does_not_hold_is_not_found_and_one_past_the_head_says_so() {
         let f = fixture();
         let facts = Facts::new();
@@ -925,6 +1197,7 @@ mod tests {
             genesis.chain_id(),
             genesis.hash(),
             Address::from_bytes([9; 32]),
+            false,
         );
 
         let answered = Arc::new(AtomicUsize::new(0));

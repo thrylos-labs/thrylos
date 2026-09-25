@@ -3701,6 +3701,7 @@ dependencies = [
  "chain-types",
  "ed25519-dalek",
  "libfuzzer-sys",
+ "move-binary-format",
 ]
 
 [[package]]
