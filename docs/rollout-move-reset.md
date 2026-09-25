@@ -1,6 +1,7 @@
 # Rollout: Move publishing, and the testnet reset it needs
 
-Status: **plan, rehearsed locally, nothing run on the VPS.** Written 2026-09-25.
+Status: **done, 2026-09-25 12:15 UTC.** Rehearsed locally first. See the section
+in `operations-vps.md` for what was run and where the old chain is.
 Follows `rollout-batch-2.md` for the mechanics of a chain change, but this one
 is different in kind: it **starts the chain over**.
 

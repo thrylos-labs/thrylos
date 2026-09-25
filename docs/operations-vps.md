@@ -178,6 +178,22 @@ State is `names.json`. The service can be restarted freely; the wallet refuses t
 create a wallet while it is down. `names.secret` is shared with the faucet's
 `names_secret_file`; if it is ever changed, restart both.
 
+## The 2026-09-25 reset (Move publishing)
+
+At 12:15 UTC on 2026-09-25 the chain was **started over** with a new genesis, to
+ship Move package publishing (`rollout-move-reset.md`). Chain id `20260926`
+(was `20260923`); the old chain ended at height about 123,700. Nothing carried over
+except the operator wallets, the faucet key and settings, and the names configuration.
+Every balance, `.thry` name and faucet record was wiped. The old chain is at
+`/root/.thrylos-alpha/network.old-20260923-20260925T121521Z`, the old faucet and
+names state beside their replacements as `*.old-20260923`, the old binaries in
+`/root/releases/move-before/`, and the backup taken just before is
+`thrylos-alpha-20260925T121425Z.tar.gz`. Downtime was about 40 seconds (nothing had to
+restore). Checked on the live chain afterwards: the faucet held its 100,000 THRY
+allocation, a wallet was funded through the faucet's offline path, published a package
+importing the standard library, and called it. `scripts/reset-testnet.sh` is how to do
+it again. Rolling back to the old chain is in `rollout-move-reset.md`.
+
 ## Rolling back
 
 | What | Undo |
