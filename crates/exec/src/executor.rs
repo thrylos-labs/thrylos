@@ -928,6 +928,8 @@ impl Executor {
             && call.function_name == COUNTER_BUMP_FUNCTION.as_bytes()
         {
             self.call_counter_bump(state, tx)
+        } else if let Some(result) = crate::entry::call(&self.runtime, state, tx) {
+            result
         } else {
             Err(AbortReason::UnknownFunction.into())
         }

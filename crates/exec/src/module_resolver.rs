@@ -44,6 +44,14 @@ impl<'a> ChainStateModuleResolver<'a> {
         Self { state }
     }
 
+    /// The package published at `address`, if there is one.
+    pub fn package(
+        &self,
+        address: AccountAddress,
+    ) -> Result<Option<SerializedPackage>, ResolverError> {
+        self.load_package(address)
+    }
+
     fn load_package(
         &self,
         address: AccountAddress,
