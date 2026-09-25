@@ -1,6 +1,6 @@
 # Move storage: letting a package remember things (stage 2)
 
-Status: **design, defaults approved 2026-09-25. Nothing in this document is built.**
+Status: **design, defaults approved 2026-09-25, slot kept. The spike is done and passed (see "Spike results"); the store itself is not built.**
 Follows `move-publishing-design.md` (stage 1, live, and stage 3, the tooling, built).
 Written against the code at that date and the pinned MoveVM (`MystenLabs/sui` rev
 `ceaaff1`).
@@ -131,9 +131,8 @@ public native fun read<T: key + copy>(owner: address, slot: u64): T;
 - Abort codes: 1 empty, 2 occupied, 3 owner not declared, 4 value too large, 5 too many
   operations. They are raised from the module `0x2::store`, so a developer can tell them
   from their own.
-- `T` must have `key`, the ability that means "may be stored at the top level". *To
-  confirm in the spike:* that the pinned compiler accepts `key` on a struct without a
-  `UID` field, which is a Sui-mode rule. If it does not, the requirement becomes `store`.
+- `T` must have `key`, the ability that means "may be stored at the top level". The spike
+  confirmed the pinned compiler accepts `key` on a struct or an enum with no `UID` field.
 
 ### D7. Only the defining module may use its type's drawers.
 
@@ -261,9 +260,9 @@ Acceptance:
 
 ## Order of work
 
-1. **A spike, before anything is committed to:** a native that serialises and deserialises a
-   `Value` from its type argument, reading and writing through an extension, and the `key`
-   ability question. If either fails, this design changes; better to learn it first.
+1. **The spike (done, passed):** a native that serialises and deserialises a `Value` from
+   its type argument, reading and writing through an extension, and the `key` ability
+   question.
 2. Keys, the state value format, the overlay, and the deposit calculation, with tests that
    need no VM.
 3. The four natives and their gas; the `thrylos::store` source; regenerate the framework
@@ -283,8 +282,53 @@ struct or object arguments to entry functions, and package upgrades. Each can be
 later; the ones that touch the framework's API wait for the next reset, which is the reason
 D5 and D6 are the part to argue about now.
 
+## Spike results (2026-09-25)
+
+`crates/exec/tests/store_spike.rs`, seven tests, all passing. It is throwaway evidence: it
+gives the natives an in-memory store and no deposits, gas or limits, and the real
+implementation replaces it. What it settled:
+
+- **`has key` without a `UID` compiles**, for structs and enums, so D6 stands as written.
+- **A native can store and load a value from its type argument.** `type_to_type_layout` and
+  `type_to_type_tag` on the `T` a native is given, then `Value::typed_serialize` to write and
+  `Value::simple_deserialize` to read, round-tripped a one-field struct, a struct with an
+  address, a vector, a nested struct with a `u128` and a `vector<u16>`, an `Option<u64>` and
+  a `vector<bool>`, a generic `Wrapper<u64>` and `Wrapper<Inner>`, and an enum with unit,
+  tuple and struct variants. A value with no `drop` (`Linear`) can be taken and unpacked.
+- **The bytes are BCS and the same every run:** a two-node comparison of the bytes written by
+  the same calls was identical. A `Counter { n: 43 }` is the 8 bytes of `43`.
+- **Two drawers of different types at one owner and slot coexist**, because the type is part
+  of the key (the key holds the type's canonical string, e.g.
+  `0x0…0::spike::Wrapper<u64>`, which will carry the real package address on the chain).
+- **An extension can borrow the state.** `StoreView<'a> { base: &'a BTreeMap, overlay }`
+  works as a native extension; the overlay is taken back out with `remove` after the VM is
+  dropped. So the real store can hold `&state` and return its writes as `CallEffects`.
+- **A native's abort reaches the caller as `ABORTED` with the native's own code and the
+  location `0x2::store`**, so D6's codes are distinguishable from a developer's.
+- **The ownership rule (D7) is decidable from bytecode.** Scanning a module's function
+  instantiations for `thrylos::store` calls found exactly the two bad ones in a test module:
+  `put<T>` with a bare type parameter and `put` of a type defined in a different module, and
+  none of the module's own types (plain, generic or enum).
+
+What the spike did **not** prove, and the real work must:
+
+- **No `expect`.** The spike unwraps two things the real natives must turn into aborts:
+  `type_to_type_layout` returning `None` (a type too large or deep for the VM's limits) and
+  `typed_serialize` returning `None`. Both become `store` aborts (code 4), never a panic,
+  and there must be a test for a type at the layout limit.
+- **Size before cost.** A value's serialised size is known only after serialising it, so the
+  native charges for the bytes after doing the work and aborts if the budget or the 16 KiB
+  cap is passed. The work is bounded by the gas the function already spent building the
+  value, but that needs a test with a large vector.
+- **Everything around it:** gas per operation, deposits, the declared-inputs check, the key
+  format, the state cap, persistence across restart and four-node agreement.
+- Two API notes for whoever builds it: the value argument is taken with `args.pop_back()`
+  (`pop_arg!` does not cast to a bare `Value`), and `Type` is `move_vm_runtime::execution::Type`.
+
+The design does not change. The next step is item 2 of "Order of work".
+
 ## For your review
 
-Two things in this document are mine and were not in what you approved: the **slot** in D5,
-and the **`key` versus `store`** ability in D6, which the spike decides. Everything else is
-the four defaults, made specific.
+Two things in this document are mine and were not in what you approved: the **slot** in D5
+(kept, 2026-09-25) and the **`key` versus `store`** ability in D6 (settled by the spike:
+`key`). Everything else is the four defaults, made specific.
