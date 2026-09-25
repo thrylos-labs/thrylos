@@ -24,17 +24,18 @@ digest() {
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-cp "$SRC"/index.html "$SRC"/site.css "$SRC"/site.js "$SRC"/thrylos-logo.png "$stage/"
+ASSETS=(site.css site.js thrylos-mark.svg favicon.svg favicon-32.png apple-touch-icon.png)
+cp "$SRC"/index.html "${ASSETS[@]/#/$SRC/}" "$stage/"
 
-for asset in site.css site.js; do
+for asset in "${ASSETS[@]}"; do
   grep -q "\"$asset\"" "$stage/index.html" || { echo "error: index.html does not reference \"$asset\"" >&2; exit 1; }
-  sed "s#\"$asset\"#\"$asset?v=$(digest "$SRC/$asset")\"#" "$stage/index.html" > "$stage/index.html.stamped"
+  sed "s#\"$asset\"#\"$asset?v=$(digest "$SRC/$asset")\"#g" "$stage/index.html" > "$stage/index.html.stamped"
   mv "$stage/index.html.stamped" "$stage/index.html"
 done
-grep -o '"site\.[a-z]*?v=[0-9a-f]*"' "$stage/index.html"
+grep -o '"[a-z0-9-]*\.[a-z0-9]*?v=[0-9a-f]*"' "$stage/index.html"
 
 rsync -rltv --no-owner --no-group -e "ssh -i $KEY -o IdentitiesOnly=yes -o ConnectTimeout=15" \
-  "$stage/index.html" "$stage/site.css" "$stage/site.js" "$stage/thrylos-logo.png" "$VPS:$DEST"
+  "$stage/index.html" "${ASSETS[@]/#/$stage/}" "$VPS:$DEST"
 
 # What is served is owned by root and cannot be changed by the account the web
 # server runs as. (macOS's rsync has no --chown, so this is set on the server.)

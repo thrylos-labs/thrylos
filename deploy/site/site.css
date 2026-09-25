@@ -40,9 +40,9 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; co
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(18px);
 }
-.brand { display: flex; align-items: center; min-width: max-content; text-decoration: none; }
-.logo-crop { width: 56px; height: 56px; display: grid; place-items: center; flex: 0 0 auto; }
-.logo-crop img { width: 56px; height: 56px; display: block; object-fit: contain; }
+.brand { display: flex; align-items: center; gap: 13px; min-width: max-content; text-decoration: none; color: var(--text); }
+.brand-mark { width: 38px; height: 33px; display: block; flex: 0 0 auto; }
+.brand-word { font-size: 17px; font-weight: 750; letter-spacing: .3em; line-height: 1; }
 .main-nav { display: flex; align-items: center; gap: 24px; margin-left: auto; }
 .main-nav a { color: var(--muted); text-decoration: none; padding: 10px 0; }
 .main-nav a:hover, .main-nav a:focus-visible { color: var(--text); }
@@ -73,7 +73,7 @@ code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; co
 main { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
 
 .hero { position: relative; overflow: hidden; padding: 88px 0 64px; border-bottom: 1px solid var(--border); }
-.hero-mark { position: absolute; width: 420px; height: 420px; right: -30px; top: -70px; opacity: .15; object-fit: contain; mix-blend-mode: screen; pointer-events: none; }
+.hero-mark { position: absolute; width: 440px; height: auto; right: -20px; top: -10px; opacity: .1; pointer-events: none; }
 .eyebrow-line { display: flex; align-items: center; gap: 9px; color: var(--good); margin: 0 0 14px; position: relative; }
 h1 { position: relative; max-width: 780px; margin: 0; font-size: clamp(38px, 6vw, 72px); line-height: .99; letter-spacing: -.055em; font-weight: 650; }
 .hero-copy { position: relative; max-width: 640px; margin: 20px 0 0; color: var(--muted); font-size: 18px; line-height: 1.6; }
