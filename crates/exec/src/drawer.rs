@@ -45,6 +45,10 @@ pub const CODE_OCCUPIED: u64 = 2;
 pub const CODE_NOT_DECLARED: u64 = 3;
 pub const CODE_TOO_LARGE: u64 = 4;
 pub const CODE_TOO_MANY_OPERATIONS: u64 = 5;
+/// A stored drawer could not be read back. State damage, which no transaction
+/// can cause; an abort of its own (not an invariant error, which the VM turns
+/// into a panic in debug builds) so the call ends deterministically.
+pub const CODE_CORRUPT: u64 = 6;
 
 /// Why an operation on a drawer was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,21 +65,20 @@ pub enum DrawerError {
     /// [`MAX_DRAWERS_WRITTEN_PER_CALL`] drawers written.
     TooManyOperations,
     /// A stored entry that is not a drawer value: damaged state. Not a thing a
-    /// transaction can cause, so the call fails rather than aborts.
+    /// transaction can cause.
     Corrupt,
 }
 
 impl DrawerError {
-    /// The code the native aborts with. `Corrupt` has none: it is an internal
-    /// failure.
-    pub const fn abort_code(self) -> Option<u64> {
+    /// The code the native aborts with.
+    pub const fn abort_code(self) -> u64 {
         match self {
-            Self::Empty => Some(CODE_EMPTY),
-            Self::Occupied => Some(CODE_OCCUPIED),
-            Self::NotDeclared => Some(CODE_NOT_DECLARED),
-            Self::TooLarge => Some(CODE_TOO_LARGE),
-            Self::TooManyOperations => Some(CODE_TOO_MANY_OPERATIONS),
-            Self::Corrupt => None,
+            Self::Empty => CODE_EMPTY,
+            Self::Occupied => CODE_OCCUPIED,
+            Self::NotDeclared => CODE_NOT_DECLARED,
+            Self::TooLarge => CODE_TOO_LARGE,
+            Self::TooManyOperations => CODE_TOO_MANY_OPERATIONS,
+            Self::Corrupt => CODE_CORRUPT,
         }
     }
 }
@@ -614,7 +617,7 @@ mod tests {
         let base = BTreeMap::from([(key, StateValue::new(vec![1, 2, 3]))]);
         let mut o = DrawerOverlay::new(&base, access());
         assert_eq!(o.has(addr(ME), 0, "T"), Err(DrawerError::Corrupt));
-        assert_eq!(DrawerError::Corrupt.abort_code(), None);
+        assert_eq!(DrawerError::Corrupt.abort_code(), CODE_CORRUPT);
     }
 
     #[test]
@@ -629,11 +632,12 @@ mod tests {
 
     #[test]
     fn every_refusal_has_the_designs_code() {
-        assert_eq!(DrawerError::Empty.abort_code(), Some(1));
-        assert_eq!(DrawerError::Occupied.abort_code(), Some(2));
-        assert_eq!(DrawerError::NotDeclared.abort_code(), Some(3));
-        assert_eq!(DrawerError::TooLarge.abort_code(), Some(4));
-        assert_eq!(DrawerError::TooManyOperations.abort_code(), Some(5));
+        assert_eq!(DrawerError::Empty.abort_code(), 1);
+        assert_eq!(DrawerError::Occupied.abort_code(), 2);
+        assert_eq!(DrawerError::NotDeclared.abort_code(), 3);
+        assert_eq!(DrawerError::TooLarge.abort_code(), 4);
+        assert_eq!(DrawerError::TooManyOperations.abort_code(), 5);
+        assert_eq!(DrawerError::Corrupt.abort_code(), 6);
     }
 
     // ---- what a call changes, and what it costs ---------------------------

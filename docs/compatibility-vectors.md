@@ -26,7 +26,7 @@ The input is the deterministic four-validator configuration returned by
 | Commitment | Expected hash |
 |---|---|
 | Genesis configuration | `c9275496e7532fc48075e9b1b2846376efce3a7408f10287644fd6d0d41d0d35` |
-| Materialised genesis state | `1793dfb8154199fc35ba3d5fe1c115ccb2e6f1447635f6dbb6307e9149535826` |
+| Materialised genesis state | `9cca51a355ceada91c1508e577abaa8c38415fb91c6402a3cc0f37b2b1c81503` |
 
 The executable assertions are in `chain-genesis::devnet::tests`.
 

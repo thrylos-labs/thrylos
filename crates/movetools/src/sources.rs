@@ -98,6 +98,10 @@ pub const SYSTEM_SOURCES: &[(&str, &str)] = &[
         "framework/sources/signer.move",
         include_str!("../../../move/framework/sources/signer.move"),
     ),
+    (
+        "framework/sources/store.move",
+        include_str!("../../../move/framework/sources/store.move"),
+    ),
 ];
 
 /// Two more library modules that exist only while testing: `std::unit_test`,

@@ -158,6 +158,12 @@ pub fn native_table() -> NativeFunctionTable {
     ));
     table.extend(make_table(
         FRAMEWORK_ADDRESS,
+        crate::store::natives()
+            .into_iter()
+            .map(|(name, native)| ("store", name, native)),
+    ));
+    table.extend(make_table(
+        FRAMEWORK_ADDRESS,
         signer::make_all(signer::GasParameters {
             borrow_address: signer::BorrowAddressGasParameters { base: base() },
         })

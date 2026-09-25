@@ -129,7 +129,7 @@ public native fun read<T: key + copy>(owner: address, slot: u64): T;
   cannot be silently destroyed, which is the whole point of Move's types.
 - `take` and `read` abort if the drawer is empty. `read` leaves the value in place.
 - Abort codes: 1 empty, 2 occupied, 3 owner not declared, 4 value too large, 5 too many
-  operations. They are raised from the module `0x2::store`, so a developer can tell them
+  operations, 6 corrupt (a stored value could not be read back: damaged state). They are raised from the module `0x2::store`, so a developer can tell them
   from their own.
 - `T` must have `key`, the ability that means "may be stored at the top level". The spike
   confirmed the pinned compiler accepts `key` on a struct or an enum with no `UID` field.
@@ -272,8 +272,14 @@ Acceptance:
    leave out writes ending where they began, and the deposit from the state before to the
    state after. Checked against a plain model over 2,000 random calls, and by breaking each
    rule in turn.
-3. The four natives and their gas; the `thrylos::store` source; regenerate the framework
-   bundle.
+3. **The four natives and their gas; the `thrylos::store` source; the regenerated framework
+   bundle (done):** `crates/exec/src/store.rs`, `move/framework/sources/store.move`,
+   `move/bytecode/thrylos.bundle`. Two changes from the design as written: a stored value that
+   cannot be read back aborts with a sixth code, **6, corrupt**, instead of failing the call,
+   because the VM turns its own invariant errors into panics in debug builds and a store
+   native must never do that; and the gas of every operation is pinned to the unit by a test,
+   since gas is consensus. Also tested: a type too large for the VM to lay out aborts with 4
+   and does not panic, and each rule was broken in turn to check a test notices.
 4. The D7 pass in `prepare`, with its bypass tests.
 5. Wire the `StoreView` into `entry::call`; effects and deposits; the counter acceptance
    test.
@@ -291,9 +297,9 @@ D5 and D6 are the part to argue about now.
 
 ## Spike results (2026-09-25)
 
-`crates/exec/tests/store_spike.rs`, seven tests, all passing. It is throwaway evidence: it
-gives the natives an in-memory store and no deposits, gas or limits, and the real
-implementation replaces it. What it settled:
+`store_spike.rs`, seven tests, all passing. It was throwaway evidence (in-memory store, no
+deposits, gas or limits) and is deleted now that the real natives exist and are tested by
+`crates/exec/tests/store_natives.rs`. What it settled:
 
 - **`has key` without a `UID` compiles**, for structs and enums, so D6 stands as written.
 - **A native can store and load a value from its type argument.** `type_to_type_layout` and

@@ -120,5 +120,6 @@ pub mod module_store;
 pub mod move_config;
 pub mod native;
 pub mod publish;
+pub mod store;
 
 pub use executor::{Executor, ExecutorError};
