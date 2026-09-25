@@ -6,6 +6,16 @@
 //! beside its files (`signer.log`, `node.log`), appended to, so a restart keeps
 //! what came before.
 //!
+//! **A node or signer that dies is started again** when the network is run as a
+//! service (no height given): after a wait that doubles from a few seconds up to
+//! a minute, and only if it did not run for a while before it died the last
+//! several times, so a node that fails at once does not spin. A validator that
+//! stops itself because it could not reach its signer (which is what it does
+//! rather than risk signing twice) used to stay down for good while the others
+//! carried on without it, and with two of four down the network stopped for
+//! nine hours. Starting it again is the recovery that halt is designed for: the
+//! node restores its chain and replays what it had signed.
+//!
 //! It returns when every node has exited, or, if it was given a height, when
 //! every node still running has committed it (it reads that from the node's
 //! log) and stops them. It does not give the nodes the height to stop at
@@ -108,6 +118,63 @@ pub struct LaunchOptions<'a> {
     /// Stop the network once every node still running has committed this
     /// height.
     pub until_height: Option<u64>,
+    /// Start a node or signer that dies again, as a service should. `None`
+    /// leaves it dead, as a run to a set height wants.
+    pub restart: Option<RestartPolicy>,
+}
+
+/// How a dead node or signer is started again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartPolicy {
+    /// The wait before the first restart; it doubles for each one after.
+    pub initial_wait: Duration,
+    /// The longest the wait grows to.
+    pub max_wait: Duration,
+    /// A run at least this long counts as having worked, and forgets the
+    /// failures before it.
+    pub stable_after: Duration,
+    /// Give up on a node after this many failures in a row, none of which ran
+    /// for `stable_after`. It stays down, and says so.
+    pub give_up_after: u32,
+}
+
+impl RestartPolicy {
+    /// What a network run as a service uses.
+    pub const fn service() -> Self {
+        Self {
+            initial_wait: Duration::from_secs(5),
+            max_wait: Duration::from_secs(60),
+            stable_after: Duration::from_secs(120),
+            give_up_after: 8,
+        }
+    }
+
+    /// The wait before the restart that follows the `failures`th failure in a row.
+    pub fn wait_after(&self, failures: u32) -> Duration {
+        let doublings = failures.saturating_sub(1).min(16);
+        self.initial_wait
+            .saturating_mul(1u32 << doublings)
+            .min(self.max_wait)
+    }
+}
+
+/// Where a node or signer is in being kept running.
+struct Upkeep {
+    started: Instant,
+    /// Failures in a row that did not run for the policy's `stable_after`.
+    failures: u32,
+    /// When to start it again, if it is waiting to be.
+    retry_at: Option<Instant>,
+}
+
+impl Upkeep {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            failures: 0,
+            retry_at: None,
+        }
+    }
 }
 
 /// Processes to kill when it goes out of scope, however that happens.
@@ -155,6 +222,39 @@ fn spawn(
             what,
             error: error.to_string(),
         })
+}
+
+fn spawn_node(node: &NodeDir, node_exe: &Path) -> Result<Child, LaunchError> {
+    let mut command = Command::new(node_exe);
+    command
+        .arg("run")
+        .arg(node.config())
+        .arg("--stop-when-stdin-closes");
+    spawn(
+        format!("node {}", node.number),
+        &mut command,
+        Stdio::piped(),
+        &node.node_log(),
+    )
+}
+
+fn spawn_signer(
+    node: &NodeDir,
+    config: &NodeConfig,
+    signer_exe: &Path,
+) -> Result<Child, LaunchError> {
+    let mut command = Command::new(signer_exe);
+    command
+        .arg(&config.signer_socket)
+        .arg(node.signer_key())
+        .arg(&config.signer_credential)
+        .arg(node.signer_mark());
+    spawn(
+        format!("the signer of node {}", node.number),
+        &mut command,
+        Stdio::null(),
+        &node.signer_log(),
+    )
 }
 
 /// Waits until something accepts connections at `socket`. A leftover socket
@@ -210,19 +310,9 @@ pub fn launch(
 
     let mut signers = Children::default();
     for (node, config) in &nodes {
-        let mut command = Command::new(options.signer_exe);
-        command
-            .arg(&config.signer_socket)
-            .arg(node.signer_key())
-            .arg(&config.signer_credential)
-            .arg(node.signer_mark());
-        let child = spawn(
-            format!("the signer of node {}", node.number),
-            &mut command,
-            Stdio::null(),
-            &node.signer_log(),
-        )?;
-        signers.0.push(child);
+        signers
+            .0
+            .push(spawn_signer(node, config, options.signer_exe)?);
     }
     for ((node, config), signer) in nodes.iter().zip(signers.0.iter_mut()) {
         wait_for_signer(&config.signer_socket, signer, node.number)?;
@@ -235,17 +325,7 @@ pub fn launch(
     for ((node, config), signer) in nodes.iter().zip(signers.0.iter()) {
         // The log is appended to across runs: only what this run writes counts.
         logs_from.push(fs::metadata(node.node_log()).map_or(0, |meta| meta.len()));
-        let mut command = Command::new(options.node_exe);
-        command
-            .arg("run")
-            .arg(node.config())
-            .arg("--stop-when-stdin-closes");
-        let mut child = spawn(
-            format!("node {}", node.number),
-            &mut command,
-            Stdio::piped(),
-            &node.node_log(),
-        )?;
+        let mut child = spawn_node(node, options.node_exe)?;
         stoppers.push(child.stdin.take());
         say(format!(
             "node {}  {}  listening on {}  pid {} (signer pid {})  log {}",
@@ -277,6 +357,8 @@ pub fn launch(
     let mut ended: Vec<Option<ExitStatus>> = vec![None; nodes.len()];
     let mut reached = vec![false; nodes.len()];
     let mut signer_gone = vec![false; nodes.len()];
+    let mut node_upkeep: Vec<Upkeep> = nodes.iter().map(|_| Upkeep::new()).collect();
+    let mut signer_upkeep: Vec<Upkeep> = nodes.iter().map(|_| Upkeep::new()).collect();
     // Done when no node is both still running and short of the height: with no
     // height to reach, when every node has ended.
     while ended
@@ -284,14 +366,88 @@ pub fn launch(
         .zip(&reached)
         .any(|(ended, reached)| ended.is_none() && !reached)
     {
-        for (((node, _), child), outcome) in
-            nodes.iter().zip(processes.0.iter_mut()).zip(&mut ended)
-        {
-            if outcome.is_none() {
-                if let Ok(Some(status)) = child.try_wait() {
-                    say(format!("node {} {}", node.number, describe(status)));
-                    *outcome = Some(status);
+        for index in 0..nodes.len() {
+            let Some((node, _)) = nodes.get(index) else {
+                continue;
+            };
+            if ended.get(index).is_some_and(Option::is_some) {
+                continue;
+            }
+            let (Some(child), Some(upkeep), Some(outcome)) = (
+                processes.0.get_mut(index),
+                node_upkeep.get_mut(index),
+                ended.get_mut(index),
+            ) else {
+                continue;
+            };
+            // Waiting to be started again.
+            if let Some(at) = upkeep.retry_at {
+                if Instant::now() < at {
+                    continue;
                 }
+                match spawn_node(node, options.node_exe) {
+                    Ok(mut fresh) => {
+                        if let Some(slot) = stoppers.get_mut(index) {
+                            *slot = fresh.stdin.take();
+                        }
+                        say(format!(
+                            "node {} started again (pid {}, failure {} in a row)",
+                            node.number,
+                            fresh.id(),
+                            upkeep.failures
+                        ));
+                        *child = fresh;
+                        upkeep.started = Instant::now();
+                        upkeep.retry_at = None;
+                    }
+                    Err(error) => {
+                        say(format!(
+                            "node {} could not be started again: {error}",
+                            node.number
+                        ));
+                        upkeep.failures = upkeep.failures.saturating_add(1);
+                        let Some(policy) = options.restart else {
+                            continue;
+                        };
+                        if upkeep.failures >= policy.give_up_after {
+                            say(format!("giving up on node {}", node.number));
+                            *outcome = child.try_wait().ok().flatten().or(*outcome);
+                        } else {
+                            upkeep.retry_at =
+                                Instant::now().checked_add(policy.wait_after(upkeep.failures));
+                        }
+                    }
+                }
+                continue;
+            }
+            let Ok(Some(status)) = child.try_wait() else {
+                continue;
+            };
+            say(format!("node {} {}", node.number, describe(status)));
+            match options.restart {
+                // A service keeps its nodes running; only a clean finish is left alone.
+                Some(policy) if !status.success() => {
+                    if upkeep.started.elapsed() >= policy.stable_after {
+                        upkeep.failures = 0;
+                    }
+                    upkeep.failures = upkeep.failures.saturating_add(1);
+                    if upkeep.failures >= policy.give_up_after {
+                        say(format!(
+                            "node {} keeps failing straight after it starts ({} times in a row); leaving it stopped, and its log will say why",
+                            node.number, upkeep.failures
+                        ));
+                        *outcome = Some(status);
+                    } else {
+                        let wait = policy.wait_after(upkeep.failures);
+                        say(format!(
+                            "node {} will be started again in {}s",
+                            node.number,
+                            wait.as_secs()
+                        ));
+                        upkeep.retry_at = Instant::now().checked_add(wait);
+                    }
+                }
+                _ => *outcome = Some(status),
             }
         }
         if let Some(target) = options.until_height {
@@ -305,16 +461,72 @@ pub fn launch(
                 }
             }
         }
-        for (((node, _), signer), gone) in
-            nodes.iter().zip(signers.0.iter_mut()).zip(&mut signer_gone)
-        {
-            if !*gone {
-                if let Ok(Some(status)) = signer.try_wait() {
+        for index in 0..nodes.len() {
+            let Some((node, config)) = nodes.get(index) else {
+                continue;
+            };
+            let (Some(signer), Some(gone), Some(upkeep)) = (
+                signers.0.get_mut(index),
+                signer_gone.get_mut(index),
+                signer_upkeep.get_mut(index),
+            ) else {
+                continue;
+            };
+            if *gone {
+                continue;
+            }
+            let Ok(Some(status)) = signer.try_wait() else {
+                continue;
+            };
+            let Some(policy) = options.restart else {
+                say(format!(
+                    "the signer of node {} exited with {status}; that node cannot vote on",
+                    node.number
+                ));
+                *gone = true;
+                continue;
+            };
+            // A signer that died is started again at once, and waited for, since its node
+            // cannot sign without it. It goes through the same limit as a node does.
+            if upkeep.started.elapsed() >= policy.stable_after {
+                upkeep.failures = 0;
+            }
+            upkeep.failures = upkeep.failures.saturating_add(1);
+            say(format!(
+                "the signer of node {} exited with {status}",
+                node.number
+            ));
+            if upkeep.failures >= policy.give_up_after {
+                say(format!(
+                    "the signer of node {} keeps failing; leaving it stopped, so that node cannot vote on",
+                    node.number
+                ));
+                *gone = true;
+                continue;
+            }
+            thread::sleep(policy.wait_after(upkeep.failures));
+            match spawn_signer(node, config, options.signer_exe) {
+                Ok(mut fresh) => {
+                    match wait_for_signer(&config.signer_socket, &mut fresh, node.number) {
+                        Ok(()) => {
+                            say(format!("the signer of node {} started again", node.number));
+                            *signer = fresh;
+                            upkeep.started = Instant::now();
+                        }
+                        Err(error) => {
+                            say(format!(
+                                "the signer of node {} did not come back: {error}",
+                                node.number
+                            ));
+                            *signer = fresh;
+                        }
+                    }
+                }
+                Err(error) => {
                     say(format!(
-                        "the signer of node {} exited with {status}; that node cannot vote on",
+                        "the signer of node {} could not be started again: {error}",
                         node.number
                     ));
-                    *gone = true;
                 }
             }
         }

@@ -13,9 +13,9 @@ rollouts were done), `thry-names.md` (the names service), `release-signing.md`.
 | | |
 |---|---|
 | Host | A small VPS at `157.230.10.32` (its hostname looks like a DigitalOcean default), Ubuntu 24.04, x86_64 |
-| Size | **1 vCPU, 961 MB RAM, no swap**, 24 GB disk (about 16 GB free) |
+| Size | **1 vCPU, 961 MB RAM, 2 GB swap (`/swapfile`, permanent, in `/etc/fstab`)**, 24 GB disk (about 16 GB free) |
 | Access | `ssh -i ~/.ssh/id_ed25519_thrylos_alpha root@157.230.10.32` (the default key is refused) |
-| Memory | Runs at **about 75 MB free**. Anything that builds needs the temporary swapfile first (below). |
+| Memory | Runs close to full (the four nodes use about 170 MB each while starting). The swapfile is what stops a busy moment becoming an outage; see the 2026-09-25 incident below. |
 
 Everything is public only through one Cloudflare Tunnel; nothing listens on a
 public address. All services bind `127.0.0.1`.
@@ -129,9 +129,8 @@ return a height.
 
 Follow `rollout-batch-2.md`; in short:
 
-1. **Swap on** (a build can otherwise be killed by the memory limit, and take a
-   validator with it): `fallocate -l 2G /swapfile && chmod 600 /swapfile &&
-   mkswap /swapfile && swapon /swapfile`.
+1. **Check swap is on** (`swapon --show` lists `/swapfile`; it is permanent now). A
+   build without it can be killed by the memory limit and take a validator with it.
 2. From the Mac, `rsync -a --exclude target --exclude .git --exclude .DS_Store ./
    root@157.230.10.32:/root/thrylos-rust/`. Check the commit (`git rev-parse HEAD`,
    clean `git status`).
@@ -149,7 +148,7 @@ Follow `rollout-batch-2.md`; in short:
    answers; then start the faucet and explorer. About 3 minutes of downtime.
    For the faucet, explorer or names alone: copy the binary and restart just
    that unit.
-6. Swap off (`swapoff /swapfile && rm /swapfile`) and delete `target-new`.
+6. Delete `target-new`. **Leave the swapfile on.**
 
 ### The wallet and the landing page
 
@@ -232,10 +231,57 @@ ruled out. A restore has never been rehearsed on Linux.
 - **No monitoring or alerts.** Alerting was considered and declined. Nothing
   notices the chain halting except someone looking.
 - **The restore path is untested** (above).
-- **Memory is about 75 MB free with no swap,** and the static pages are served by
+- **Memory is tight** (a 1 GB machine running the chain, the faucet, the explorer, the names service and the tunnel), and the static pages are served by
   Python's `http.server`. That is fine for the alpha; a traffic spike on
   `thrylos.org` reaches the same machine as the chain. Moving the landing page
   to a static host (Cloudflare Pages) is the easy fix.
 - **Not verified live:** the faucet's payout-plus-name path, sending to a `.thry`
   name from a second wallet, and the names service's refusals from real Discord
   accounts (see `thry-names.md`).
+
+## Incident: the chain halted for about nine hours (2026-09-24 23:50 to 2026-09-25 09:08 UTC)
+
+**What happened.** At about 23:51 and 23:52 nodes 4 and 2 stopped themselves with
+"the signer refused to sign, so the node stopped rather than risk signing twice: the
+signer process is unavailable". Their signers were still running. The machine was
+under heavy memory pressure at that moment (journald logged "under memory pressure"
+dozens of times) while two of Ubuntu's routine timers ran on a one-CPU box with no
+swap: `fwupd-refresh` (32 s of CPU) and `sysstat-collect` (11 s). The nodes' calls to
+their signers timed out, and a node that cannot reach its signer halts by design
+rather than sign twice. The signer for node 2 finished recording its mark two seconds
+after the node gave up, which is why a restart is safe: the node replays what it had
+signed. With two of four validators down the network had no quorum (it needs three),
+so blocks stopped at 114,568. The explorer showed "unhealthy: 4 problems" for nine
+hours before anyone looked.
+
+**Why it stayed down.** `chain-node devnet start` noticed that nodes 2 and 4 had exited
+(it logged it) but kept running for the two that were left, and systemd saw a healthy
+unit, so nothing restarted them.
+
+**Recovery.** A backup of the halted state, then `systemctl restart thrylos-validators`,
+then the two services stopped for it. The nodes restored, replayed their signed
+logs and resumed at 114,568 with no lost or forked blocks. On the way, free memory
+fell to 6 MB while the four nodes restored, so a 2 GB swapfile was added and made
+permanent.
+
+**What was changed so it does not repeat.**
+
+- **Swap is permanent** (2 GB), so a burst of memory use slows things down instead of
+  stopping them.
+- **The supervisor now restarts a node or signer that dies** when the network runs as
+  a service (`launch.rs`, `RestartPolicy::service`): after 5 s, doubling to 60 s, and
+  giving up on a node only if it fails straight after starting eight times in a row
+  (a run of two minutes forgets earlier failures). A node that stops itself over its
+  signer is exactly what a restart is the recovery for. Tested with real signer
+  processes in `crates/node/tests/launch_restart.rs`.
+
+**Still open.**
+
+- Nobody is told when the chain stops. Alerting was considered and declined; this is
+  the cost of that. A passive check from outside the machine (any uptime monitor that
+  emails on a failed request to `https://rpc.thrylos.org`) would have caught it in
+  minutes, and needs no access to Discord or the server.
+- The routine timers (`fwupd-refresh`, `sysstat-collect`) are still enabled. On a VPS
+  they add nothing and they were the trigger. Disabling `fwupd-refresh.timer` is
+  reasonable; not done yet.
+- A larger machine (2 GB) removes the underlying squeeze.

@@ -63,7 +63,7 @@ use chain_node::config::DEFAULT_BLOCK_INTERVAL_MS;
 use chain_node::devnet::{generate, DEFAULT_BASE_PORT};
 use chain_node::event_loop::committed_line;
 use chain_node::health;
-use chain_node::launch::{launch, LaunchOptions};
+use chain_node::launch::{launch, LaunchOptions, RestartPolicy};
 use chain_node::{run_node, NodeConfig, NodeEvent};
 use chain_types::BlockHeight;
 
@@ -579,6 +579,9 @@ fn devnet_start(dir: &str, flags: &[&str]) -> ExitCode {
         node_exe: &node_exe,
         signer_exe: &signer_exe,
         until_height,
+        // Run to a height, a node that stops is left stopped (the run is a test);
+        // run as a service, one that stops is started again.
+        restart: until_height.is_none().then(RestartPolicy::service),
     };
     match launch(Path::new(dir), options, &mut |line| println!("{line}")) {
         Ok(()) => ExitCode::SUCCESS,
