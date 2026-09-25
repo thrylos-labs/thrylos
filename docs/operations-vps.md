@@ -181,8 +181,8 @@ create a wallet while it is down. `names.secret` is shared with the faucet's
 
 | What | Undo |
 |---|---|
-| Chain binaries | Stop the three units, `cp -a /root/releases/batch1/* /root/thrylos-rust/target/release/` (the set from before batch 2; `prev` is the pre-audit set), start them, wait for the RPC. |
-| Faucet binary | `cp -a /root/releases/batch2/chain-faucet /root/thrylos-rust/target/release/chain-faucet`, and `faucet.json.bak-before-names` if the names settings are the problem, then restart it. |
+| Chain binaries | Stop the three units, `cp -a /root/releases/batch3-before/* /root/thrylos-rust/target/release/` (the set from before the 2026-09-25 deploy: names and faucet fixes, the restarting supervisor; `batch1` is the set before batch 2 and `prev` is the pre-audit set), start them, wait for the RPC. |
+| Faucet or names binary | `cp -a /root/releases/batch3-before/chain-faucet` (or `chain-names`) back over `/root/thrylos-rust/target/release/`, then restart that unit. `faucet.json.bak-before-names` if the names settings are the problem. |
 | Tunnel routes | Copy the relevant `config.yml.bak-*` back and restart `thrylos-tunnel`. The backups are, in order: `before-names`, `before-internal-block`, `before-site`, `before-www-redirect`. |
 | Wallet or site | Re-run the deploy script from the previous commit. |
 
@@ -275,13 +275,14 @@ permanent.
   signer is exactly what a restart is the recovery for. Tested with real signer
   processes in `crates/node/tests/launch_restart.rs`.
 
+**Deployed 2026-09-25 09:23 to 09:39.** The restarting supervisor, the names fixes and the faucet fixes went out together; the `fwupd-refresh` timer was disabled (`systemctl disable --now fwupd-refresh.timer`). The restart took **about six to seven minutes** of downtime (blocks stopped at 115,325 and the RPC first answered about five minutes later), up from three minutes a week earlier: each node restores and checks its whole chain on start, and that grows with the chain. Plan for that when announcing a restart. The restart of a *single* dead node is not yet timed on this machine: the supervisor's tests use real signers and stand-in nodes, but a real node killed on the live box has not been tried, because a restore uses most of the one CPU and could starve the other three nodes.
+
 **Still open.**
 
 - Nobody is told when the chain stops. Alerting was considered and declined; this is
   the cost of that. A passive check from outside the machine (any uptime monitor that
   emails on a failed request to `https://rpc.thrylos.org`) would have caught it in
   minutes, and needs no access to Discord or the server.
-- The routine timers (`fwupd-refresh`, `sysstat-collect`) are still enabled. On a VPS
-  they add nothing and they were the trigger. Disabling `fwupd-refresh.timer` is
-  reasonable; not done yet.
+- `sysstat-collect` and the apt timers are still enabled (`fwupd-refresh`, the
+  larger of the two that ran at the time, is now off).
 - A larger machine (2 GB) removes the underlying squeeze.
