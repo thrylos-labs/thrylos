@@ -15,6 +15,7 @@ members = [
     "crates/genesis",
     "crates/node",
     "crates/text",
+    "crates/movetools",
 ]
 
 [workspace.package]

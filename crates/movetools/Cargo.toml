@@ -1,0 +1,19 @@
+[package]
+name = "chain-movetools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Developer tooling for Move packages: build, test and scaffold, against the chain's own system packages"
+
+[dependencies]
+chain-exec = { path = "../exec", version = "0.1.0" }
+chain-state = { path = "../state", version = "0.1.0" }
+chain-types = { path = "../types", version = "0.1.0" }
+move-binary-format.workspace = true
+move-compiler.workspace = true
+move-core-types.workspace = true
+move-vm-runtime.workspace = true
+smallvec = "1"
+tempfile.workspace = true

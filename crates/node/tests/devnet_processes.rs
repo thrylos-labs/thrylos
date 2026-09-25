@@ -1509,3 +1509,137 @@ fn a_package_published_with_the_cli_is_called_with_the_cli_on_a_four_node_networ
     let height = (0..4).map(|i| network.height(i)).min().unwrap();
     assert_one_chain(&network.nodes, height.saturating_sub(1));
 }
+
+#[test]
+fn a_package_written_with_the_tools_and_one_that_depends_on_it_run_on_a_network() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 2);
+    let dir = network.dir.to_str().unwrap().to_owned();
+    let scratch = tempfile::tempdir().unwrap();
+    let wallet = scratch.path().join("wallet.key");
+    let rpc = NodeConfig::load(&network.nodes[1].config())
+        .unwrap()
+        .rpc_listen
+        .unwrap()
+        .to_string();
+    let cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_thrylos"))
+            .args(args)
+            .args(["--rpc", &rpc, "--wallet"])
+            .arg(&wallet)
+            .arg("--yes")
+            .current_dir(scratch.path())
+            .output()
+            .unwrap()
+    };
+
+    let made = Command::new(env!("CARGO_BIN_EXE_thrylos"))
+        .args(["setup", "--wallet"])
+        .arg(&wallet)
+        .output()
+        .unwrap();
+    let address = stdout(&made)
+        .lines()
+        .find_map(|line| line.strip_prefix("Address: ").map(str::to_owned))
+        .unwrap();
+    let funded = run(&[
+        "devnet",
+        "fund",
+        &dir,
+        &address,
+        "--node",
+        "1",
+        "--account",
+        "1",
+        "--amount",
+        "50",
+    ]);
+    assert_eq!(
+        funded.status.code(),
+        Some(0),
+        "{}{}",
+        stdout(&funded),
+        stderr(&funded)
+    );
+
+    // A package made, tested, built and published entirely with the tools.
+    assert!(cli(&["move", "new", "hello"]).status.success());
+    let tested = cli(&["move", "test", "hello"]);
+    assert!(
+        tested.status.success(),
+        "{}{}",
+        stdout(&tested),
+        stderr(&tested)
+    );
+    let built = cli(&["move", "build", "hello"]);
+    assert!(
+        built.status.success(),
+        "{}{}",
+        stdout(&built),
+        stderr(&built)
+    );
+    let published = cli(&["move", "publish", "hello"]);
+    assert!(
+        published.status.success(),
+        "{}{}",
+        stdout(&published),
+        stderr(&published)
+    );
+    let hello = stdout(&published)
+        .lines()
+        .find_map(|line| line.strip_prefix("Package address: ").map(str::to_owned))
+        .unwrap();
+    let ok = cli(&["move", "call", &hello, "hello", "check", "u64:4", "u64:6"]);
+    assert!(ok.status.success(), "{}{}", stdout(&ok), stderr(&ok));
+
+    // A second package that imports the first, by the address it got.
+    std::fs::create_dir_all(scratch.path().join("app/sources")).unwrap();
+    std::fs::write(
+        scratch.path().join("app/sources/app.move"),
+        "module pkg::app;
+         use hello_dep::hello;
+         entry fun run(x: u64) { assert!(hello::add(x, x) == 10, 1); }
+         #[test] fun doubles() { run(5); }",
+    )
+    .unwrap();
+    let with_dep = |verb: &str| {
+        cli(&[
+            "move",
+            verb,
+            "app",
+            "--dep",
+            &format!("hello_dep=hello@{hello}"),
+        ])
+    };
+    let tested = with_dep("test");
+    assert!(
+        tested.status.success(),
+        "{}{}",
+        stdout(&tested),
+        stderr(&tested)
+    );
+    let built = with_dep("build");
+    assert!(
+        built.status.success(),
+        "{}{}",
+        stdout(&built),
+        stderr(&built)
+    );
+    let published = cli(&["move", "publish", "app"]);
+    assert!(
+        published.status.success(),
+        "{}{}",
+        stdout(&published),
+        stderr(&published)
+    );
+    let app = stdout(&published)
+        .lines()
+        .find_map(|line| line.strip_prefix("Package address: ").map(str::to_owned))
+        .unwrap();
+    let good = cli(&["move", "call", &app, "app", "run", "u64:5"]);
+    assert!(good.status.success(), "{}{}", stdout(&good), stderr(&good));
+    let bad = cli(&["move", "call", &app, "app", "run", "u64:4"]);
+    assert!(!bad.status.success());
+    assert!(stderr(&bad).contains("ExecutionFailed"), "{}", stderr(&bad));
+}

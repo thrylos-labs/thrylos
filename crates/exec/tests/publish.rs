@@ -262,3 +262,46 @@ fn a_chain_with_publishing_switched_off_refuses_every_publish() {
     assert_eq!(chain.run(publisher.publish(vec![module])), REFUSED);
     assert!(chain.package(id_of(&publisher, 0)).is_none());
 }
+
+#[test]
+fn a_module_compiled_in_test_mode_cannot_be_published() {
+    // The compiler marks test-mode output as not for publishing; the chain
+    // refuses to read that mark.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.move");
+    std::fs::write(
+        &path,
+        "module 0x0::t { #[test_only] fun helper() {} public fun f(): u64 { 1 } }",
+    )
+    .unwrap();
+    // Test mode needs the library and its test-only `unit_test` as dependencies.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../move");
+    let mut deps = Vec::new();
+    for package in ["stdlib", "test-support"] {
+        for entry in std::fs::read_dir(root.join(package).join("sources")).unwrap() {
+            deps.push(entry.unwrap().path().to_str().unwrap().to_string());
+        }
+    }
+    let mut one = [0u8; 32];
+    one[31] = 1;
+    let addresses = std::collections::BTreeMap::from([(
+        "std".to_string(),
+        move_compiler::shared::NumericalAddress::new(one, move_compiler::shared::NumberFormat::Hex),
+    )]);
+    let (_, units) = move_compiler::Compiler::from_files(
+        None,
+        vec![path.to_str().unwrap().to_string()],
+        deps,
+        addresses,
+    )
+    .set_flags(move_compiler::shared::Flags::testing())
+    .build_and_report()
+    .unwrap();
+    let mut bytes = Vec::new();
+    let module = units.into_iter().next().unwrap().named_module.module;
+    module
+        .serialize_with_version(module.version, &mut bytes)
+        .unwrap();
+    let (mut chain, mut publisher) = rich();
+    assert_eq!(chain.run(publisher.publish(vec![bytes])), REFUSED);
+}

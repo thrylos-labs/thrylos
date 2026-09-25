@@ -19,6 +19,7 @@ chain-engine-api = { path = "../engine-api", version = "0.1.0" }
 chain-exec = { path = "../exec", version = "0.1.0" }
 chain-genesis = { path = "../genesis", version = "0.1.0" }
 chain-mempool = { path = "../mempool", version = "0.1.0" }
+chain-movetools = { path = "../movetools", version = "0.1.0" }
 chain-modules = { path = "../modules", version = "0.1.0" }
 chain-p2p = { path = "../p2p", version = "0.1.0" }
 chain-rpc = { path = "../rpc", version = "0.1.0" }

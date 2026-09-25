@@ -1334,6 +1334,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "chain-movetools"
+version = "0.1.0"
+dependencies = [
+ "chain-exec",
+ "chain-state",
+ "chain-types",
+ "move-binary-format",
+ "move-compiler",
+ "move-core-types",
+ "move-vm-runtime",
+ "smallvec",
+ "tempfile",
+]
+
+[[package]]
 name = "chain-node"
 version = "0.1.0"
 dependencies = [
@@ -1348,6 +1363,7 @@ dependencies = [
  "chain-genesis",
  "chain-mempool",
  "chain-modules",
+ "chain-movetools",
  "chain-p2p",
  "chain-rpc",
  "chain-signer",

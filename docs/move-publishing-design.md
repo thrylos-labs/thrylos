@@ -118,6 +118,8 @@ migrated deliberately). It is an alpha and this is acceptable, but it must be sa
 out loud, not discovered.
 
 ### D5. Dependencies
+**Status: stage 1 shipped `0x1`/`0x2` only; stage 3 added dependencies on published user packages** (at most 16 packages needed in all, counting the system ones; the linkage is completed transitively when a package is loaded). The original reasoning follows.
+
 **Stage 1: a package may depend only on `0x1` (and `0x2`).** No dependencies on
 other users' packages yet. That removes linkage-graph attacks, dependency-depth
 limits and version questions while the verifier path is new. Allow dependencies on
@@ -172,7 +174,7 @@ four-node test), no compiler in consensus (bytecode only), and documented limits
 **Stage 2: state.** The S1 storage layer, designed in its own document first.
 This is the point at which developers can build applications.
 
-**Stage 3: tooling.** `thrylos move build` and `test`, package dependencies on
+**Stage 3: tooling (done 2026-09-25).** `thrylos move build` and `test`, package dependencies on
 user packages, docs and examples.
 
 ## Risks
@@ -209,3 +211,13 @@ user packages, docs and examples.
 3. **Package address by derivation** from sender and sequence number?
 4. **Dependencies on `0x1` and `0x2` only** in stage 1?
 5. **The kill switch** as a governed parameter?
+
+## Status, 2026-09-25
+
+Stage 1 is live on the reset testnet (`rollout-move-reset.md`). Stage 3 is built:
+`thrylos move new`, `build` and `test` (crate `chain-movetools`, which compiles
+against the chain's own system sources and runs tests in the chain's own runtime),
+publishing from a package directory with a local pre-check that says why the network
+would refuse it, and dependencies on published user packages. The guide is
+`move-developer-guide.md`. Stage 2, storage, is not started and is the reason developers
+cannot yet build applications.

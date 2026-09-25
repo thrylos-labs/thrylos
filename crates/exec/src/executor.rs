@@ -25,7 +25,6 @@ use move_core_types::language_storage::ModuleId;
 use move_vm_runtime::dev_utils::gas_schedule::{Gas, GasStatus, INITIAL_COST_SCHEDULE};
 use move_vm_runtime::execution::interpreter::locals::BaseHeap;
 use move_vm_runtime::execution::values::{Struct, Value};
-use move_vm_runtime::natives::functions::NativeFunctions;
 use move_vm_runtime::runtime::MoveRuntime;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
 
@@ -431,13 +430,7 @@ impl Executor {
     /// The Move runtime every executor uses, however it was made: the same
     /// configuration for a chain that is starting and one that is restarting.
     fn new_runtime() -> Result<MoveRuntime, ExecutorError> {
-        let natives = NativeFunctions::new(crate::framework::native_table()).map_err(|err| {
-            ExecutorError::Runtime(format!("failed to build native function table: {err}"))
-        })?;
-        // Explicit and fixed (`crate::move_config`): the dependency's own
-        // constructors are for tests, and its defaults leave most verifier
-        // limits unbounded.
-        Ok(MoveRuntime::new(natives, crate::move_config::vm_config()))
+        crate::framework::new_runtime().map_err(ExecutorError::Runtime)
     }
 
     /// Rebuilds the executor of a chain that was already running, from the

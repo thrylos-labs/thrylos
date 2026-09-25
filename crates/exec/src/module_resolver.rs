@@ -11,12 +11,20 @@
 //!
 //! Packages are immutable and have no upgrade path, so a package's version
 //! is always 0 and its original id is its own address.
+//!
+//! A package's linkage covers every package it needs, not only the ones its
+//! modules import directly: the VM requires the whole set. It is completed
+//! here by reading each dependency's own linkage. Dependencies must already be
+//! published, and an address is derived from a hash, so a package cannot come
+//! to depend on itself and the walk always ends; [`MAX_LINK_DEPTH`] only bounds
+//! it against damaged state.
 
 use std::collections::BTreeMap;
 
 use chain_types::codec::decode_exact;
 
 use chain_state::{StateKey, StateValue};
+use move_binary_format::binary_config::BinaryConfig;
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
 use move_core_types::resolver::{ModuleResolver, SerializedPackage};
@@ -35,13 +43,30 @@ impl core::fmt::Display for ResolverError {
 
 impl std::error::Error for ResolverError {}
 
+/// How deep a dependency chain is followed when completing a linkage.
+const MAX_LINK_DEPTH: usize = 32;
+
 pub struct ChainStateModuleResolver<'a> {
     state: &'a BTreeMap<StateKey, StateValue>,
+    binary: BinaryConfig,
 }
 
 impl<'a> ChainStateModuleResolver<'a> {
-    pub const fn new(state: &'a BTreeMap<StateKey, StateValue>) -> Self {
-        Self { state }
+    pub fn new(state: &'a BTreeMap<StateKey, StateValue>) -> Self {
+        Self {
+            state,
+            binary: crate::move_config::binary_config(),
+        }
+    }
+
+    /// A resolver that also reads modules compiled in test mode, which carry a
+    /// mark saying they are not for publishing and are otherwise refused. Only
+    /// for running a package's own tests; a chain never uses it.
+    pub fn allowing_test_modules(state: &'a BTreeMap<StateKey, StateValue>) -> Self {
+        Self {
+            state,
+            binary: BinaryConfig::new_unpublishable(),
+        }
     }
 
     /// The package published at `address`, if there is one.
@@ -49,23 +74,60 @@ impl<'a> ChainStateModuleResolver<'a> {
         &self,
         address: AccountAddress,
     ) -> Result<Option<SerializedPackage>, ResolverError> {
-        self.load_package(address)
+        self.load_package(address, 0)
+    }
+
+    /// The package `modules` would make at `id`, linked to everything it needs
+    /// as published in this state.
+    pub fn linked_package(
+        &self,
+        id: AccountAddress,
+        modules: Vec<CompiledModule>,
+    ) -> Result<SerializedPackage, ResolverError> {
+        self.link_dependencies(build_package(id, modules)?, 0)
+    }
+
+    /// `package` with the linkage of every package it depends on, all the way
+    /// down, added to its own.
+    fn link_dependencies(
+        &self,
+        mut package: SerializedPackage,
+        depth: usize,
+    ) -> Result<SerializedPackage, ResolverError> {
+        if depth >= MAX_LINK_DEPTH {
+            return Err(ResolverError);
+        }
+        let dependencies: Vec<AccountAddress> = package
+            .linkage_table
+            .keys()
+            .copied()
+            .filter(|address| *address != package.version_id)
+            .collect();
+        for dependency in dependencies {
+            if let Some(found) = self.load_package(dependency, depth.saturating_add(1))? {
+                package.linkage_table.extend(found.linkage_table);
+            }
+        }
+        Ok(package)
     }
 
     fn load_package(
         &self,
         address: AccountAddress,
+        depth: usize,
     ) -> Result<Option<SerializedPackage>, ResolverError> {
-        let config = crate::move_config::binary_config();
+        let config = &self.binary;
         if let Some(value) = self.state.get(&package_key(address)) {
             let module_bytes: Vec<Vec<u8>> =
                 decode_exact(value.as_bytes()).map_err(|_| ResolverError)?;
             let modules = module_bytes
                 .iter()
-                .map(|bytes| CompiledModule::deserialize_with_config(bytes, &config))
+                .map(|bytes| CompiledModule::deserialize_with_config(bytes, config))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| ResolverError)?;
-            return build_package(address, modules).map(Some);
+            return self
+                .link_dependencies(build_package(address, modules)?, depth)
+                .map(Some);
         }
         let Some(value) = self.state.get(&module_key(address)) else {
             return Ok(None);
@@ -121,7 +183,7 @@ impl ModuleResolver for ChainStateModuleResolver<'_> {
     ) -> Result<[Option<SerializedPackage>; N], Self::Error> {
         let mut result: [Option<SerializedPackage>; N] = std::array::from_fn(|_| None);
         for (slot, id) in result.iter_mut().zip(ids.iter()) {
-            *slot = self.load_package(*id)?;
+            *slot = self.load_package(*id, 0)?;
         }
         Ok(result)
     }
@@ -130,6 +192,6 @@ impl ModuleResolver for ChainStateModuleResolver<'_> {
         &self,
         ids: impl ExactSizeIterator<Item = &'b AccountAddress>,
     ) -> Result<Vec<Option<SerializedPackage>>, Self::Error> {
-        ids.map(|id| self.load_package(*id)).collect()
+        ids.map(|id| self.load_package(*id, 0)).collect()
     }
 }

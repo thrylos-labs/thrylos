@@ -22,11 +22,12 @@ use move_core_types::gas_algebra::{InternalGas, InternalGasPerByte, NumBytes};
 use move_vm_runtime::execution::values::Value;
 use move_vm_runtime::natives::extensions::NativeExtensionMarker;
 use move_vm_runtime::natives::functions::{
-    make_table, NativeFunction, NativeFunctionTable, NativeResult,
+    make_table, NativeFunction, NativeFunctionTable, NativeFunctions, NativeResult,
 };
 use move_vm_runtime::natives::move_stdlib::{
     bcs, hash, signer, stdlib_native_function_table, string, type_name, vector, GasParameters,
 };
+use move_vm_runtime::runtime::MoveRuntime;
 use smallvec::smallvec;
 
 /// Where the standard library is published.
@@ -163,4 +164,13 @@ pub fn native_table() -> NativeFunctionTable {
         .map(|(name, native)| ("signer".to_string(), name, native)),
     ));
     table
+}
+
+/// The Move runtime every executor, and every local test run, is made with:
+/// the same natives and the same fixed configuration, so a package behaves the
+/// same in `thrylos move test` as on the chain.
+pub fn new_runtime() -> Result<MoveRuntime, String> {
+    let natives = NativeFunctions::new(native_table())
+        .map_err(|error| format!("failed to build native function table: {error}"))?;
+    Ok(MoveRuntime::new(natives, crate::move_config::vm_config()))
 }

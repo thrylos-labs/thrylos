@@ -35,7 +35,7 @@ use std::rc::Rc;
 use crate::accounting::read_supply;
 use crate::effects::{BlockCtx, CallEffects, CallError};
 use crate::keys::{package_key, supply_key};
-use crate::module_resolver::{build_package, ChainStateModuleResolver};
+use crate::module_resolver::ChainStateModuleResolver;
 use crate::move_config::{
     binary_config, verifier_config, verifier_meter, MAX_MODULES_PER_PACKAGE, MAX_MODULE_BYTES,
     MAX_PACKAGE_BYTES,
@@ -58,9 +58,15 @@ pub const PUBLISH_GAS_PER_BYTE: u64 = 10;
 /// 128 KiB package holds 1.28 THRY of state for good.
 pub const PUBLISH_DEPOSIT_PER_KIB: u128 = 10_000_000;
 
-/// The packages a published package may import in this stage: the frozen
-/// standard library and the Thrylos framework.
-pub const ALLOWED_DEPENDENCIES: [AccountAddress; 2] = [AccountAddress::ONE, AccountAddress::TWO];
+/// The system packages every package may import: the frozen standard library
+/// and the Thrylos framework. Any other import must be a package already
+/// published on this chain.
+pub const SYSTEM_DEPENDENCIES: [AccountAddress; 2] = [AccountAddress::ONE, AccountAddress::TWO];
+
+/// The most packages, counting the standard library and framework and every
+/// package those need in turn, a package may depend on. Bounds what loading
+/// and linking one package can cost.
+pub const MAX_DEPENDENCY_PACKAGES: usize = 16;
 
 /// Whether the call is addressed to the publish package.
 pub(crate) fn is_publish_call(tx: &Transaction) -> bool {
@@ -90,6 +96,171 @@ fn deposit(total_bytes: usize) -> u128 {
         .saturating_add(NEW_ENTRY_STORAGE_DEPOSIT)
 }
 
+/// Why a package cannot be published. Only a person reads this (the chain
+/// itself just refuses), so the wording is for them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublishError {
+    NoModules,
+    TooManyModules {
+        found: usize,
+    },
+    ModuleTooLarge {
+        index: usize,
+        bytes: usize,
+    },
+    PackageTooLarge {
+        bytes: usize,
+    },
+    Malformed {
+        index: usize,
+        reason: String,
+    },
+    NotAtZero {
+        module: String,
+        address: AccountAddress,
+    },
+    DuplicateName {
+        module: String,
+    },
+    UnknownDependency {
+        module: String,
+        address: AccountAddress,
+    },
+    Verification {
+        module: String,
+        reason: String,
+    },
+}
+
+impl core::fmt::Display for PublishError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoModules => f.write_str("a package needs at least one module"),
+            Self::TooManyModules { found } => write!(
+                f,
+                "a package has at most {MAX_MODULES_PER_PACKAGE} modules; this has {found}"
+            ),
+            Self::ModuleTooLarge { index, bytes } => write!(
+                f,
+                "module {} is {bytes} bytes; the most allowed is {MAX_MODULE_BYTES}",
+                index.saturating_add(1)
+            ),
+            Self::PackageTooLarge { bytes } => write!(
+                f,
+                "the modules total {bytes} bytes; the most allowed is {MAX_PACKAGE_BYTES}"
+            ),
+            Self::Malformed { index, reason } => write!(
+                f,
+                "module {} is not valid compiled Move: {reason}",
+                index.saturating_add(1)
+            ),
+            Self::NotAtZero { module, address } => write!(
+                f,
+                "module {module} is at address {address}; modules to publish are written at 0x0 \
+                 (the network fills in the package's address)"
+            ),
+            Self::DuplicateName { module } => write!(f, "two modules are both called {module}"),
+            Self::UnknownDependency { module, address } => write!(
+                f,
+                "module {module} imports {address}, which is not the standard library (0x1), the \
+                 framework (0x2) or a published package"
+            ),
+            Self::Verification { module, reason } => {
+                write!(f, "module {module} failed bytecode verification: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PublishError {}
+
+/// Everything about a package that can be decided without running it: sizes
+/// and counts, the module format, each module at `0x0` (rewritten to `id`),
+/// unique names, imports only from packages `is_published` accepts (or the
+/// system ones or the package itself), and the bytecode verifier under its
+/// work meter. What the chain does first, and what `thrylos move build` checks
+/// so a mistake shows up before a fee is paid.
+pub fn prepare(
+    raw: &[Vec<u8>],
+    id: AccountAddress,
+    is_published: impl Fn(&AccountAddress) -> bool,
+) -> Result<Vec<CompiledModule>, PublishError> {
+    if raw.is_empty() {
+        return Err(PublishError::NoModules);
+    }
+    if raw.len() > MAX_MODULES_PER_PACKAGE {
+        return Err(PublishError::TooManyModules { found: raw.len() });
+    }
+    let mut total = 0usize;
+    for (index, module) in raw.iter().enumerate() {
+        if module.len() > MAX_MODULE_BYTES {
+            return Err(PublishError::ModuleTooLarge {
+                index,
+                bytes: module.len(),
+            });
+        }
+        total = total.saturating_add(module.len());
+    }
+    if total > MAX_PACKAGE_BYTES {
+        return Err(PublishError::PackageTooLarge { bytes: total });
+    }
+
+    let config = binary_config();
+    let mut modules = Vec::with_capacity(raw.len());
+    let mut names = BTreeSet::new();
+    for (index, bytes) in raw.iter().enumerate() {
+        let mut module =
+            CompiledModule::deserialize_with_config(bytes, &config).map_err(|error| {
+                PublishError::Malformed {
+                    index,
+                    reason: error.to_string(),
+                }
+            })?;
+        let name = module.self_id().name().to_string();
+        // Every module names `0x0` as its own package; the chain fills in
+        // the real address. Anything else is a package that means to live
+        // somewhere it cannot.
+        if *module.self_id().address() != AccountAddress::ZERO {
+            return Err(PublishError::NotAtZero {
+                module: name,
+                address: *module.self_id().address(),
+            });
+        }
+        for address in &mut module.address_identifiers {
+            if *address == AccountAddress::ZERO {
+                *address = id;
+            }
+        }
+        if !names.insert(name.clone()) {
+            return Err(PublishError::DuplicateName { module: name });
+        }
+        for dependency in module.immediate_dependencies() {
+            let address = *dependency.address();
+            // Already published (packages are immutable, so what it imports
+            // now is what it will always import), or one of the system ones.
+            if address != id && !SYSTEM_DEPENDENCIES.contains(&address) && !is_published(&address) {
+                return Err(PublishError::UnknownDependency {
+                    module: name,
+                    address,
+                });
+            }
+        }
+        modules.push(module);
+    }
+
+    let verifier = verifier_config();
+    let mut meter = verifier_meter();
+    for module in &modules {
+        verify_module_with_config_metered(&verifier, module, &mut meter).map_err(|error| {
+            PublishError::Verification {
+                module: module.self_id().name().to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+    }
+    Ok(modules)
+}
+
 fn refused() -> CallError {
     AbortReason::PublishRefused.into()
 }
@@ -116,65 +287,25 @@ pub(crate) fn call(
     }
 
     let raw = call.arguments.as_slice();
-    if raw.is_empty() || raw.len() > MAX_MODULES_PER_PACKAGE {
-        return Err(refused());
-    }
-    let mut total_bytes = 0usize;
-    for module in raw {
-        if module.len() > MAX_MODULE_BYTES {
-            return Err(refused());
-        }
-        total_bytes = total_bytes.saturating_add(module.len());
-    }
-    if total_bytes > MAX_PACKAGE_BYTES {
-        return Err(refused());
-    }
-    // Charged before any work is done on the bytes.
-    let gas = publish_gas(total_bytes);
-    if gas > tx.body.gas_limit.0 {
-        return Err(refused());
-    }
-
     let sender = tx.sender_address();
     let id = package_address(&sender, tx.body.sequence_number.0);
     if state.contains_key(&package_key(id)) {
         return Err(CallError::Internal);
     }
-
-    let config = binary_config();
-    let mut modules = Vec::with_capacity(raw.len());
-    let mut names = BTreeSet::new();
-    for bytes in raw {
-        let mut module =
-            CompiledModule::deserialize_with_config(bytes, &config).map_err(|_| refused())?;
-        // Every module names `0x0` as its own package; the chain fills in
-        // the real address. Anything else is a package that means to live
-        // somewhere it cannot.
-        if *module.self_id().address() != AccountAddress::ZERO {
-            return Err(refused());
-        }
-        for address in &mut module.address_identifiers {
-            if *address == AccountAddress::ZERO {
-                *address = id;
-            }
-        }
-        if !names.insert(module.self_id().name().to_owned()) {
-            return Err(refused());
-        }
-        for dependency in module.immediate_dependencies() {
-            let address = *dependency.address();
-            if address != id && !ALLOWED_DEPENDENCIES.contains(&address) {
-                return Err(refused());
-            }
-        }
-        modules.push(module);
+    // The size checks come first and the gas is checked before any work is
+    // done on the bytes: `prepare` does the rest in a fixed order.
+    let total_bytes = raw.iter().map(Vec::len).fold(0usize, usize::saturating_add);
+    if raw.len() <= MAX_MODULES_PER_PACKAGE
+        && total_bytes <= MAX_PACKAGE_BYTES
+        && publish_gas(total_bytes) > tx.body.gas_limit.0
+    {
+        return Err(refused());
     }
-
-    let verifier = verifier_config();
-    let mut meter = verifier_meter();
-    for module in &modules {
-        verify_module_with_config_metered(&verifier, module, &mut meter).map_err(|_| refused())?;
-    }
+    let modules = prepare(raw, id, |address| {
+        state.contains_key(&package_key(*address))
+    })
+    .map_err(|_| refused())?;
+    let gas = publish_gas(total_bytes);
 
     // Sorted by name, so the stored bytes do not depend on the order the
     // publisher listed the modules in.
@@ -182,18 +313,18 @@ pub(crate) fn call(
         .iter()
         .map(|module| (module.self_id().name().to_owned(), module))
         .collect();
-    let package = build_package(id, by_name.values().map(|m| (*m).clone()).collect())
+    let resolver = ChainStateModuleResolver::new(state);
+    let package = resolver
+        .linked_package(id, by_name.values().map(|m| (*m).clone()).collect())
         .map_err(|_| refused())?;
+    // Everything this package needs, other than itself.
+    if package.linkage_table.len().saturating_sub(1) > MAX_DEPENDENCY_PACKAGES {
+        return Err(refused());
+    }
     let mut unmetered = GasStatus::new_unmetered();
     let extensions = Rc::new(RefCell::new(NativeContextExtensions::default()));
     runtime
-        .validate_package(
-            ChainStateModuleResolver::new(state),
-            id,
-            package,
-            &mut unmetered,
-            extensions,
-        )
+        .validate_package(resolver, id, package, &mut unmetered, extensions)
         .map_err(|_| refused())?;
 
     let mut stored = Vec::new();

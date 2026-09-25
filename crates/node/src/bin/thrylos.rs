@@ -30,7 +30,10 @@ Usage:
   thrylos balance [address]
   thrylos send <amount> <address> [--yes]
   thrylos tx <hash>
-  thrylos move publish <module.mv>... [--yes]
+  thrylos move new <dir> [--name <module>]
+  thrylos move build [dir] [--dep <name>=<dir>@<thry1...>]...
+  thrylos move test [dir] [--dep <name>=<dir>@<thry1...>]... [--filter <text>] [--gas <n>]
+  thrylos move publish <package dir | module.mv...> [--yes]
   thrylos move call <package> <module> <function> [type:value ...] [--gas <n>] [--yes]
   thrylos status
   thrylos network add <name> <rpc>
@@ -46,7 +49,13 @@ Options:
   --wallet <file>     wallet key (default ~/.thrylos/wallet.key or THRYLOS_WALLET)
   --yes               send without the confirmation prompt
   --gas <n>           with `move call`, the most gas the call may use
-                       (default 200000; only what is used is charged)
+                       (default 200000; only what is used is charged); with
+                       `move test`, the most a test may use
+  --dep <n>=<dir>@<a> with `move build`/`test`, a package already published at
+                       address <a>, whose sources are in <dir>; this package
+                       refers to it as <n>::module (repeatable)
+  --filter <text>     with `move test`, only tests whose name contains this
+  --name <module>     with `move new`, the first module's name
   --hex               with `address`, print the raw public key instead
                        (what a genesis allocation or validator entry needs;
                        an address cannot be turned back into one)
@@ -61,7 +70,10 @@ Examples:
   thrylos network add testnet-alpha https://rpc.testnet.example
   thrylos network use testnet-alpha
   thrylos balance
-  thrylos move publish build/hello.mv
+  thrylos move new hello
+  thrylos move test hello
+  thrylos move build hello
+  thrylos move publish hello
   thrylos move call thry1... hello answer
   thrylos move call thry1... counter add u64:2 u64:3
 
@@ -74,6 +86,9 @@ struct Options {
     wallet: PathBuf,
     yes: bool,
     gas: Option<u64>,
+    deps: Vec<String>,
+    filter: Option<String>,
+    name: Option<String>,
     hex: bool,
     positional: Vec<String>,
 }
@@ -108,6 +123,9 @@ fn parse_options() -> Result<Options, String> {
     let mut wallet = chain_node::wallet::default_path().map_err(|error| error.to_string())?;
     let mut yes = false;
     let mut gas = None;
+    let mut deps = Vec::new();
+    let mut filter = None;
+    let mut name = None;
     let mut hex_flag = false;
     let mut positional = Vec::new();
 
@@ -123,6 +141,9 @@ fn parse_options() -> Result<Options, String> {
                         .map_err(|_| format!("--gas needs a whole number, not {text:?}"))?,
                 );
             }
+            "--dep" => deps.push(option_value("--dep", &mut args)?),
+            "--filter" => filter = Some(option_value("--filter", &mut args)?),
+            "--name" => name = Some(option_value("--name", &mut args)?),
             "--hex" => hex_flag = true,
             flag if flag.starts_with("--") && flag != "--help" && flag != "--version" => {
                 return Err(format!("unknown option {flag:?}"));
@@ -138,6 +159,9 @@ fn parse_options() -> Result<Options, String> {
         hex: hex_flag,
         yes,
         gas,
+        deps,
+        filter,
+        name,
         positional,
     })
 }
@@ -387,8 +411,20 @@ fn move_publish(options: &Options, files: &[String]) -> Result<(), String> {
     use chain_exec::publish::{package_address, publish_gas, PUBLISH_DEPOSIT_PER_KIB};
 
     if files.is_empty() {
-        return Err("usage: thrylos move publish <module.mv>... [--yes]".into());
+        return Err("usage: thrylos move publish <package dir | module.mv...> [--yes]".into());
     }
+    // A package directory means its last build.
+    let from_build: Vec<String>;
+    let files = match files {
+        [dir] if Path::new(dir).is_dir() => {
+            from_build = chain_movetools::built_files(Path::new(dir))?
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            &from_build[..]
+        }
+        _ => files,
+    };
     if files.len() > MAX_MODULES_PER_PACKAGE {
         return Err(format!(
             "a package has at most {MAX_MODULES_PER_PACKAGE} modules; {} were given",
@@ -413,6 +449,10 @@ fn move_publish(options: &Options, files: &[String]) -> Result<(), String> {
             "the package is {total} bytes; the most allowed is {MAX_PACKAGE_BYTES}"
         ));
     }
+
+    // What the network would say, before a fee is at stake.
+    chain_movetools::check_bytes(&modules)
+        .map_err(|reason| format!("the network would refuse this package: {reason}"))?;
 
     let wallet = load_wallet(&options.wallet)?;
     let at = position(&options.rpc, wallet.address())?;
@@ -457,6 +497,112 @@ fn move_publish(options: &Options, files: &[String]) -> Result<(), String> {
     submit_and_wait(&options.rpc, &transaction)?;
     println!("Package address: {}", format_address(&id));
     Ok(())
+}
+
+/// The package directory a `move` subcommand works on: the one argument, or
+/// the current directory.
+fn package_dir(rest: &[String], form: &str) -> Result<std::path::PathBuf, String> {
+    match rest {
+        [] => Ok(std::path::PathBuf::from(".")),
+        [dir] => Ok(std::path::PathBuf::from(dir)),
+        _ => Err(format!("usage: {form}")),
+    }
+}
+
+fn movetools_options(
+    options: &Options,
+    dir: std::path::PathBuf,
+) -> Result<chain_movetools::Options, String> {
+    let mut deps = Vec::new();
+    for text in &options.deps {
+        let form = "--dep wants <name>=<dir>@<thry1...>";
+        let (name, rest) = text
+            .split_once('=')
+            .ok_or_else(|| format!("{form}, not {text:?}"))?;
+        let (dep_dir, address) = rest
+            .rsplit_once('@')
+            .ok_or_else(|| format!("{form}, not {text:?}"))?;
+        let address = parse_address(address).map_err(|error| format!("--dep {name}: {error}"))?;
+        deps.push(chain_movetools::Dependency {
+            name: name.to_owned(),
+            dir: std::path::PathBuf::from(dep_dir),
+            address: chain_movetools::AccountAddress::new(*address.as_bytes()),
+        });
+    }
+    Ok(chain_movetools::Options { dir, deps })
+}
+
+fn move_new(options: &Options, rest: &[String]) -> Result<(), String> {
+    let [dir] = rest else {
+        return Err("usage: thrylos move new <dir> [--name <module>]".into());
+    };
+    let path = std::path::Path::new(dir);
+    let name = match &options.name {
+        Some(name) => name.clone(),
+        None => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("hello")
+            .replace('-', "_")
+            .to_lowercase(),
+    };
+    chain_movetools::new_package(path, &name)?;
+    println!("Made {dir} with one module, {name}, and two tests.");
+    println!("Next: thrylos move test {dir}");
+    Ok(())
+}
+
+fn move_build(options: &Options, rest: &[String]) -> Result<(), String> {
+    let dir = package_dir(rest, "thrylos move build [dir]")?;
+    let built = chain_movetools::build(&movetools_options(options, dir.clone())?)?;
+    chain_movetools::check(&built)
+        .map_err(|reason| format!("built, but the network would refuse this package: {reason}"))?;
+    let out = chain_movetools::write_build(&dir, &built)?;
+    println!(
+        "Built {} module(s), {} bytes, into {}:",
+        built.modules.len(),
+        built.total_bytes(),
+        out.display()
+    );
+    for (name, bytes) in &built.modules {
+        println!("  {name}.mv  {} bytes", bytes.len());
+    }
+    println!(
+        "The network's checks pass. Publish it with: thrylos move publish {}",
+        dir.display()
+    );
+    Ok(())
+}
+
+fn move_test(options: &Options, rest: &[String]) -> Result<(), String> {
+    let dir = package_dir(rest, "thrylos move test [dir]")?;
+    let gas = options.gas.unwrap_or(chain_movetools::DEFAULT_TEST_GAS);
+    let report = chain_movetools::run_tests(
+        &movetools_options(options, dir)?,
+        options.filter.as_deref(),
+        gas,
+    )?;
+    for result in &report.results {
+        match &result.outcome {
+            chain_movetools::Outcome::Passed => println!("[ PASS ] {}", result.name),
+            chain_movetools::Outcome::Failed(why) => println!("[ FAIL ] {}: {why}", result.name),
+            chain_movetools::Outcome::Skipped(why) => println!("[ SKIP ] {}: {why}", result.name),
+        }
+    }
+    println!(
+        "{} passed, {} failed, {} skipped",
+        report.passed(),
+        report.failed(),
+        report.skipped()
+    );
+    if report.results.is_empty() {
+        println!("No tests found. A test is a function marked #[test].");
+    }
+    if report.ok() {
+        Ok(())
+    } else {
+        Err(format!("{} test(s) failed", report.failed()))
+    }
 }
 
 fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
@@ -649,9 +795,12 @@ fn run(options: &Options) -> Result<(), String> {
             send(options, amount, recipient)
         }
         "move" => match rest.split_first() {
+            Some((sub, tail)) if sub == "new" => move_new(options, tail),
+            Some((sub, tail)) if sub == "build" => move_build(options, tail),
+            Some((sub, tail)) if sub == "test" => move_test(options, tail),
             Some((sub, tail)) if sub == "publish" => move_publish(options, tail),
             Some((sub, tail)) if sub == "call" => move_call(options, tail),
-            _ => Err("usage: thrylos move <publish <module.mv>... | call <package> <module> <function> [type:value ...]>".into()),
+            _ => Err("usage: thrylos move <new | build | test | publish | call> ...  (thrylos --help lists each)".into()),
         },
         "tx" => {
             let values = exactly(rest, 1, "thrylos tx <hash>")?;
