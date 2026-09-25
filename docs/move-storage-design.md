@@ -263,8 +263,15 @@ Acceptance:
 1. **The spike (done, passed):** a native that serialises and deserialises a `Value` from
    its type argument, reading and writing through an extension, and the `key` ability
    question.
-2. Keys, the state value format, the overlay, and the deposit calculation, with tests that
-   need no VM.
+2. **Keys, the state value format, the overlay, and the deposit calculation, with tests that
+   need no VM (done):** `crates/exec/src/drawer.rs` and `keys::drawer_key`. The key is
+   `KeyTag::Drawer` (`KEY_TAG + 11`), the owner, the slot big-endian and a domain-separated
+   hash of the type name (`DomainTag::MoveDrawerTypeV1`), always 73 bytes. `DrawerOverlay`
+   is the one place the rules live: owner access, the 64-operation and 16-drawer limits, the
+   16 KiB value limit, never overwriting, reads that see the call's own writes, changes that
+   leave out writes ending where they began, and the deposit from the state before to the
+   state after. Checked against a plain model over 2,000 random calls, and by breaking each
+   rule in turn.
 3. The four natives and their gas; the `thrylos::store` source; regenerate the framework
    bundle.
 4. The D7 pass in `prepare`, with its bypass tests.

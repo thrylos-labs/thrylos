@@ -25,6 +25,7 @@ enum KeyTag {
     TimeCheckpoint = chain_state::account::KEY_TAG + 8,
     RewardClock = chain_state::account::KEY_TAG + 9,
     Package = chain_state::account::KEY_TAG + 10,
+    Drawer = chain_state::account::KEY_TAG + 11,
 }
 
 fn tagged_key(tag: KeyTag, address: AccountAddress) -> StateKey {
@@ -44,6 +45,29 @@ pub fn module_key(address: AccountAddress) -> StateKey {
 /// module of the package, in one entry.
 pub fn package_key(address: AccountAddress) -> StateKey {
     tagged_key(KeyTag::Package, address)
+}
+
+/// Where a Move drawer lives: its owner, its slot and its type (see
+/// `crate::drawer`). Always `1 + 32 + 8 + 32` bytes, so it cannot be mistaken
+/// for, or made to collide with, an entry of any other kind: the tag byte comes
+/// first, and every other kind's keys are a different length or a different tag.
+pub fn drawer_key(owner: AccountAddress, slot: u64, type_name: &str) -> StateKey {
+    let mut bytes = vec![KeyTag::Drawer as u8];
+    bytes.extend_from_slice(&owner.to_vec());
+    bytes.extend_from_slice(&slot.to_be_bytes());
+    bytes.extend_from_slice(
+        chain_types::hash_with_domain(
+            chain_types::DomainTag::MoveDrawerTypeV1,
+            type_name.as_bytes(),
+        )
+        .as_bytes(),
+    );
+    StateKey::new(bytes)
+}
+
+/// The tag byte every drawer key starts with.
+pub fn drawer_tag() -> u8 {
+    KeyTag::Drawer as u8
 }
 
 /// Where a Move object's data lives, keyed by its address.

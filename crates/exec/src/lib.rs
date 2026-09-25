@@ -106,6 +106,7 @@
 #![forbid(unsafe_code)]
 
 pub mod accounting;
+pub mod drawer;
 mod effects;
 pub mod entry;
 pub mod executor;

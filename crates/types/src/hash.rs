@@ -85,6 +85,9 @@ pub enum DomainTag {
     /// and the sequence number of the publishing transaction, so it cannot
     /// be chosen and cannot repeat.
     MovePackageV1 = 13,
+    /// The part of a Move drawer's state key that stands for its type: a
+    /// fixed-size stand-in for a type's canonical name of any length.
+    MoveDrawerTypeV1 = 14,
 }
 
 /// Hash `payload` under `tag`'s domain-separation prefix.
@@ -115,6 +118,7 @@ mod tests {
         assert_eq!(DomainTag::TrieKeyPathV2 as u8, 11);
         assert_eq!(DomainTag::TrieRootV2 as u8, 12);
         assert_eq!(DomainTag::MovePackageV1 as u8, 13);
+        assert_eq!(DomainTag::MoveDrawerTypeV1 as u8, 14);
     }
 
     #[test]
@@ -135,6 +139,7 @@ mod tests {
             DomainTag::TrieKeyPathV2,
             DomainTag::TrieRootV2,
             DomainTag::MovePackageV1,
+            DomainTag::MoveDrawerTypeV1,
         ];
         let hashes: std::collections::BTreeSet<Hash> = tags
             .into_iter()
