@@ -91,8 +91,13 @@ Three names are always defined:
 
 A transaction can call a function that is `entry`, has no type parameters and returns
 nothing. Every other parameter must be a `bool`, `u8` to `u256`, an `address`, or a
-vector of those (up to three deep). A struct, a reference or an object cannot be passed.
-A function that does not fit is simply not callable, and the call aborts.
+vector of those (up to three deep). A struct, a reference or an object cannot be passed,
+**and that includes `std::string::String`**: take a `vector<u8>` and make the `String` inside
+(`string::utf8(bytes)`, which aborts on text that is not valid UTF-8), as the guestbook example does.
+A view cannot return a `String` either; return its bytes (`*s.as_bytes()`), and `thrylos move view`
+shows a byte list that reads as text with the words beside it.
+A function that does not fit is simply not callable, and the call aborts (with
+`UnknownFunction`, which is the network's only way to say it).
 
 Arguments are written `type:value`:
 

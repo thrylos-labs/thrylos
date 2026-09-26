@@ -14,8 +14,8 @@ pub mod sources;
 pub mod testing;
 
 pub use compile::{
-    build, build_is_stale, built_files, check, check_bytes, source_files, write_build, Built,
-    Dependency, Options, BUILD_DIR,
+    build, build_is_stale, built_files, check, check_bytes, source_files, warnings, write_build,
+    Built, Dependency, Options, BUILD_DIR,
 };
 pub use move_core_types::account_address::AccountAddress;
 pub use scaffold::new_package;

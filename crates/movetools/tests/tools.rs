@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use chain_movetools::{
-    build, build_is_stale, check, new_package, run_tests, write_build, Dependency, Options, Outcome,
+    build, build_is_stale, check, new_package, run_tests, warnings, write_build, Dependency,
+    Options, Outcome,
 };
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
@@ -305,4 +306,33 @@ fn a_package_needs_building_until_it_is_built_and_again_when_its_sources_change(
     let built = build(&options(dir.path())).unwrap();
     write_build(dir.path(), &built).unwrap();
     assert!(!build_is_stale(dir.path()), "built again");
+}
+
+#[test]
+fn an_entry_function_no_transaction_can_call_is_warned_about_not_silently_built() {
+    let dir = package(
+        "module pkg::m;
+         use std::string::String;
+         entry fun fine(_a: u64, _b: vector<u8>, _c: address) {}
+         entry fun takes_text(_s: String) {}
+         entry fun generic<T>(_x: u64) {}
+         public fun not_entry(_s: String) {}",
+    );
+    let built = build(&options(dir.path())).unwrap();
+    // It still builds and the chain still accepts it: the function just cannot be called.
+    check(&built).unwrap();
+    let found = warnings(&built);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|line| line.starts_with("m::takes_text") && line.contains("parameter 1")),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|line| line.starts_with("m::generic") && line.contains("type parameters")),
+        "{found:?}"
+    );
 }

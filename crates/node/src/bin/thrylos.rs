@@ -738,7 +738,8 @@ fn move_resource(options: &Options, rest: &[String]) -> Result<(), String> {
     match found.get("value").filter(|value| !value.is_null()) {
         Some(value) => println!(
             "Value: {}",
-            serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(&chain_node::move_client::with_strings_as_text(value))
+                .map_err(|error| error.to_string())?
         ),
         None => println!("Value: (its type could not be read; the raw bytes are below)"),
     }
@@ -795,8 +796,11 @@ fn move_view(options: &Options, rest: &[String]) -> Result<(), String> {
     println!("The call would succeed, using {gas} gas.");
     let returns = answer["returns"].as_array().cloned().unwrap_or_default();
     for (index, value) in returns.iter().enumerate() {
+        let text = chain_node::move_client::as_text(value)
+            .map(|text| format!("   (as text: {text:?})"))
+            .unwrap_or_default();
         println!(
-            "Returns[{index}]: {}",
+            "Returns[{index}]: {}{text}",
             serde_json::to_string(value).map_err(|error| error.to_string())?
         );
     }

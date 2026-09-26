@@ -231,6 +231,51 @@ pub fn encode_argument(spec: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+/// A returned value that could be text: a non-empty list of decimal numbers each
+/// under 256 whose bytes are readable UTF-8 (letters, digits, punctuation, spaces and
+/// newlines). A `vector<u8>` comes back as such a list, and a person reading a view
+/// wants the words; the node does not say which width a vector is, so this is a
+/// reading aid, shown beside the list and never instead of it.
+pub fn as_text(value: &serde_json::Value) -> Option<String> {
+    let items = value.as_array().filter(|items| !items.is_empty())?;
+    let bytes = items
+        .iter()
+        .map(|item| item.as_str()?.parse::<u8>().ok())
+        .collect::<Option<Vec<u8>>>()?;
+    let text = String::from_utf8(bytes).ok()?;
+    text.chars()
+        .all(|c| !c.is_control() || c == '\n' || c == '\t')
+        .then_some(text)
+}
+
+/// A decoded stored value with every `std::string::String` in it shown as its text
+/// instead of as a struct holding a list of byte numbers. Anything that is not a
+/// readable string is left as it was.
+pub fn with_strings_as_text(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(fields) => {
+            let is_string = fields
+                .get("_type")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.ends_with("::string::String"));
+            if is_string {
+                if let Some(text) = fields.get("bytes").and_then(as_text) {
+                    return Value::String(text);
+                }
+            }
+            Value::Object(
+                fields
+                    .iter()
+                    .map(|(name, field)| (name.clone(), with_strings_as_text(field)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(with_strings_as_text).collect()),
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
@@ -354,5 +399,39 @@ mod tests {
         assert_eq!(tx.body.call.function_name, b"run");
         assert_eq!(tx.body.call.arguments, vec![vec![1u8]]);
         assert!(tx.verify_signature().is_ok());
+    }
+
+    #[test]
+    fn a_list_of_bytes_that_reads_as_text_is_shown_as_text_and_nothing_else_is() {
+        use serde_json::json;
+        assert_eq!(as_text(&json!(["72", "105"])).as_deref(), Some("Hi"));
+        assert_eq!(
+            as_text(&json!(["104", "195", "169"])).as_deref(),
+            Some("h\u{e9}")
+        );
+        assert_eq!(as_text(&json!([])), None, "nothing to read");
+        assert_eq!(as_text(&json!(["300"])), None, "not a byte");
+        assert_eq!(as_text(&json!(["1", "2"])), None, "control characters");
+        assert_eq!(as_text(&json!(["255", "254"])), None, "not UTF-8");
+        assert_eq!(as_text(&json!("72")), None, "not a list");
+        assert_eq!(as_text(&json!([["72"]])), None, "a list of lists");
+    }
+
+    #[test]
+    fn a_string_inside_a_stored_value_is_shown_as_its_text() {
+        use serde_json::json;
+        let stored = json!({
+            "_type": "0x9::guestbook::Entry",
+            "author": "thry1abc",
+            "message": {"_type": "0x1::string::String", "bytes": ["72", "105"]},
+            "others": [{"_type": "0x1::string::String", "bytes": ["79", "75"]}],
+        });
+        let shown = with_strings_as_text(&stored);
+        assert_eq!(shown["message"], json!("Hi"));
+        assert_eq!(shown["others"][0], json!("OK"));
+        assert_eq!(shown["author"], json!("thry1abc"));
+        // Bytes that are not text stay as they were.
+        let odd = json!({"_type": "0x1::string::String", "bytes": ["1"]});
+        assert_eq!(with_strings_as_text(&odd), odd);
     }
 }

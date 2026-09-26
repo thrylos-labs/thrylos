@@ -154,6 +154,46 @@ pub(crate) fn signature(
     Some(Signature { params, returns })
 }
 
+/// The `entry` functions of `module` that no transaction can ever call, each with
+/// the reason, so a developer's build can say so: the chain answers such a call
+/// only with "unknown function", which does not say what is wrong.
+pub fn uncallable_entry_functions(module: &CompiledModule) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for definition in module.function_defs() {
+        if !definition.is_entry {
+            continue;
+        }
+        let handle = module.function_handle_at(definition.function);
+        let name = module.identifier_at(handle.name).to_string();
+        if signature(module, &name, Callable::Entry).is_some() {
+            continue;
+        }
+        let tokens = &module.signature_at(handle.parameters).0;
+        let reason = if !handle.type_parameters.is_empty() {
+            "it has type parameters, and a transaction cannot name types".to_owned()
+        } else if tokens.len() > MAX_ARGUMENTS {
+            format!("it takes more than {MAX_ARGUMENTS} parameters")
+        } else if let Some(at) = tokens.iter().position(|token| param(token).is_none()) {
+            format!(
+                "parameter {} has a type a transaction cannot supply (only bool, integers, \
+                 address, and vectors of them; pass text as vector<u8>)",
+                at.saturating_add(1)
+            )
+        } else if tokens
+            .iter()
+            .skip(1)
+            .any(|token| matches!(param(token), Some(Param::Signer | Param::SignerRef)))
+        {
+            "only the first parameter may be the signer".to_owned()
+        } else {
+            "it returns values, and an entry function called by a transaction returns nothing"
+                .to_owned()
+        };
+        found.push((name, reason));
+    }
+    found
+}
+
 /// The values a call's parameters take: the sender where a `signer` is asked
 /// for, and each argument decoded by its layout otherwise. `heap` must outlive
 /// the call, since a `&signer` points into it.

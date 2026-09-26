@@ -24,3 +24,15 @@ the chain. Listed in the order they were met, with what would fix it. **Fixed th
    id lives at slot = id, so the first read of the token example, on the public chain, said nothing
    was there. *Fix:* on an empty slot, say which slots of that type the owner does hold (the node
    already keeps the drawers by owner).
+8. **A `String` parameter makes the function "not exist".** Entry functions cannot take `String`
+   (only numbers, addresses and vectors of them), and the network's only answer for a function it
+   cannot call is `UnknownFunction`: "the call names a module or function that does not exist", which
+   sends a developer looking for a typo. Met while writing `examples/guestbook`. The guide now says
+   so. *Fix:* `thrylos move build` could warn about an `entry` function whose signature cannot be
+   called (it already checks the package against the publish rules, and this is a static check on
+   the same bytecode); the chain's reason cannot be made richer without changing consensus.
+9. **(Fixed.) A `vector<u8>` view printed as a list of decimal strings** (`["72","105"]`). The node
+   does not say what width a vector is, so `thrylos move view` now shows a list that reads as UTF-8
+   text with the words beside it, and leaves the list as it was.
+10. **(Fixed.) A `String` inside a stored value printed as a struct holding a list of byte numbers**
+    (`move resource` on a guestbook entry). It now prints as the text.

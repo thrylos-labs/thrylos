@@ -353,6 +353,26 @@ pub fn built_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
+/// Things that are not errors but that a developer would want to know: an `entry`
+/// function no transaction can call, and why. One line each.
+pub fn warnings(built: &Built) -> Vec<String> {
+    let mut lines = Vec::new();
+    for bytes in built.modules.values() {
+        let Ok(module) =
+            move_binary_format::file_format::CompiledModule::deserialize_with_defaults(bytes)
+        else {
+            continue;
+        };
+        for (function, reason) in chain_exec::entry::uncallable_entry_functions(&module) {
+            lines.push(format!(
+                "{}::{function} can never be called by a transaction: {reason}",
+                module.self_id().name()
+            ));
+        }
+    }
+    lines
+}
+
 /// What the chain would say about `built`, before any fee is paid: the same
 /// checks, in the same order, as publishing (`chain_exec::publish::prepare`).
 /// Imports of packages other than the system ones cannot be checked here (only
