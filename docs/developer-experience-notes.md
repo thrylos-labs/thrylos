@@ -18,3 +18,8 @@ the chain. Listed in the order they were met, with what would fix it.
    `move resource` reads the same values anywhere.
 6. **A token creator pays two deposits** (0.04 THRY) and the first receiver's drawer is paid by the
    sender; this is by design, and is written up in the example's README so it is not a surprise.
+7. **`move resource` reads slot 0 unless told otherwise**, and when the drawer is empty the answer
+   ("no ... is stored in slot 0") does not hint that another slot may hold it. A token keyed by an
+   id lives at slot = id, so the first read of the token example, on the public chain, said nothing
+   was there. *Fix:* on an empty slot, say which slots of that type the owner does hold (the node
+   already keeps the drawers by owner).

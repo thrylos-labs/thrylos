@@ -28,6 +28,17 @@ by someone else are refused.
 
 ## On the testnet
 
+It is published on the public testnet (chain `20260927`) at
+`thry1f5a2kfvgd5ua68vq7eqsgrmqqqt5uup8ujwg2jsxha40z9pzmdeqhk0hgh`, with token 1 created (1,000,000 units, 250 of them sent to another address).
+Read it yourself:
+
+```
+thrylos move resource thry1z32r7w9myt0t7l3t8zyucrgsjxplysn6c6rc4knx9yr0whqjmj4s5qpffk \
+  thry1f5a2kfvgd5ua68vq7eqsgrmqqqt5uup8ujwg2jsxha40z9pzmdeqhk0hgh::token::Supply --slot 1 --rpc https://rpc.thrylos.org
+```
+
+To publish your own copy:
+
 ```
 thrylos move test examples/token
 thrylos move build examples/token
