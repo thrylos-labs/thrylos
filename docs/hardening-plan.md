@@ -17,7 +17,7 @@ Written 2026-09-26, from a read-only look at the VPS that day (nothing was chang
 |---|---|---|---|
 | **Outside uptime monitor** | none | An outage is found by someone noticing | **Done in the repository**: `.github/workflows/uptime.yml`. No VPS change. |
 | **The chain, faucet, explorer, names and tunnel run as root** | `User=` unset | A bug in any of them (they parse network input) is a bug with root's reach; the chain and faucet hold the keys | Medium. Needs a downtime of about a minute and a rehearsal. |
-| **Backups are unencrypted and on the same disk** | `/root/backups`, 14 daily archives, 400 MB each | They contain the operator and faucet keys, and a disk failure loses the chain and its backups together | Small to medium; needs a decision on where they go (below). |
+| **Backups are unencrypted and on the same disk** | **Done 2026-09-26**: encrypted with `age` as they are written; the Mac pulls the newest 5 every day (`operations-vps.md`, "Backups") | They contain the operator and faucet keys, and a disk failure loses the chain and its backups together | Done. Still not done: a restore has never been rehearsed on Linux. |
 | **No firewall** | `ufw` inactive, `iptables` accept-all | Today only port 22 listens, so it changes little; it is a guard against a service one day binding to `0.0.0.0` by mistake | Small. A wrong rule locks us out of SSH (the provider's console is the way back). |
 | **No fail2ban** | inactive | With key-only login there is nothing to guess; it only quietens the logs | Skip unless the logs become a nuisance. |
 | **The names registry rewrite (N-7)** | a code item | See the audit notes | Code, not the box. |

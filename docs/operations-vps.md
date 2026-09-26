@@ -226,13 +226,28 @@ so going back to older binaries does not need the database changed.
 ## Backups
 
 `/root/backup.sh` (`scripts/backup-vps.sh` in the repo) runs from cron at **03:17** every day and writes
-`/root/backups/thrylos-alpha-<UTC timestamp>.tar.gz` of `/root/.thrylos-alpha`,
-keeping the newest 14. `tar` reporting "file changed as we read it" is expected:
-the database is copy-on-write and is copied while running. Take one by hand
-before any change to the chain: `/root/backup.sh`.
+`/root/backups/thrylos-alpha-<UTC timestamp>.tar.gz.age`: `/root/.thrylos-alpha` archived, compressed and
+**encrypted with `age` to the operator's public key** (`/root/backup-recipient.txt`) as it is written, so the
+plain archive never touches the disk and nothing on the VPS can read what it wrote. It keeps the newest 14.
+`tar` reporting "file changed as we read it" is expected: the database is copy-on-write and is copied while
+running. Take one by hand before any change to the chain: `/root/backup.sh`.
 
-The archives hold every key on the machine, so the script makes them private to root
-whatever the caller's umask. They are still unencrypted and on the same disk.
+**The private key is only on the operator's Mac** (`~/.config/thrylos/backup-key.txt`, mode 0600), and **a copy
+of it must be kept somewhere else** (a password manager): if it is lost, every backup is unreadable.
+
+**Off the box.** `scripts/pull-backups.sh` copies the newest archives to `~/thrylos-backups` on the Mac (still
+encrypted, only reading from the VPS) and keeps the newest 5 there. It runs every day at 04:30 through a
+launchd job (`~/Library/LaunchAgents/com.thrylos.backup-pull.plist`, which runs a copy of the script at
+`~/.local/bin/thrylos-pull-backups.sh`, because a launchd job cannot read `~/Documents`; copy the script
+again after changing it) and logs to `~/thrylos-backups/pull.log`. A Mac that is asleep at 04:30 runs it when
+it wakes.
+
+**To read one:** `age -d -i ~/.config/thrylos/backup-key.txt <archive>.age | tar tzf -` lists it;
+`... | tar xzf - -C <dir>` extracts it. Checked on 2026-09-26: an archive pulled to the Mac decrypts and lists
+with the key, and so does one of the older ones that were encrypted after the fact.
+
+The archives were made private to root (directory 0700, files 0600) before, and still are. The plaintext
+archives that existed on 2026-09-26 (12 of them) were encrypted to the same key and the plaintext removed.
 
 **These have not been restored.** A copy of one made on 2026-09-24 would not start
 on a Mac (the pre-audit binaries failed on it the same way), which most likely
