@@ -61,15 +61,43 @@ pub fn diff(
     old: &BTreeMap<StateKey, StateValue>,
     new: &BTreeMap<StateKey, StateValue>,
 ) -> StateDiff {
+    // One walk down both maps together, in key order: the cost is the size of
+    // the state, once, with no lookups. (Values that are the same allocation are
+    // recognised without reading them; see `StateValue`.)
     let mut changed = BTreeMap::new();
-    for (key, new_value) in new {
-        if old.get(key) != Some(new_value) {
-            changed.insert(key.clone(), StateChange::Put(new_value.clone()));
-        }
-    }
-    for key in old.keys() {
-        if !new.contains_key(key) {
-            changed.insert(key.clone(), StateChange::Delete);
+    let mut old_entries = old.iter().peekable();
+    let mut new_entries = new.iter().peekable();
+    loop {
+        match (old_entries.peek(), new_entries.peek()) {
+            (None, None) => break,
+            (Some((key, _)), None) => {
+                changed.insert((*key).clone(), StateChange::Delete);
+                old_entries.next();
+            }
+            (None, Some((key, value))) => {
+                changed.insert((*key).clone(), StateChange::Put((*value).clone()));
+                new_entries.next();
+            }
+            (Some((old_key, old_value)), Some((new_key, new_value))) => {
+                match old_key.cmp(new_key) {
+                    core::cmp::Ordering::Less => {
+                        changed.insert((*old_key).clone(), StateChange::Delete);
+                        old_entries.next();
+                    }
+                    core::cmp::Ordering::Greater => {
+                        changed.insert((*new_key).clone(), StateChange::Put((*new_value).clone()));
+                        new_entries.next();
+                    }
+                    core::cmp::Ordering::Equal => {
+                        if old_value != new_value {
+                            changed
+                                .insert((*new_key).clone(), StateChange::Put((*new_value).clone()));
+                        }
+                        old_entries.next();
+                        new_entries.next();
+                    }
+                }
+            }
         }
     }
     StateDiff(changed)

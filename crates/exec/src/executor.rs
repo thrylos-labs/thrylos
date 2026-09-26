@@ -31,7 +31,7 @@ use move_vm_runtime::runtime::MoveRuntime;
 use move_vm_runtime::shared::linkage_context::LinkageContext;
 
 use crate::accounting::{
-    audit_supply, check_block_conservation, read_supply, write_supply, AccountingError,
+    audit_supply, check_conservation_of, read_supply, write_supply, AccountingError,
 };
 use crate::effects::{BlockCtx, CallEffects, CallError};
 use crate::genesis::{
@@ -789,7 +789,7 @@ impl Executor {
         &self,
         state: &mut BTreeMap<StateKey, StateValue>,
         block: &Block,
-    ) -> Result<(u64, Vec<TransactionOutcome>), BlockRejected> {
+    ) -> Result<(u64, Vec<TransactionOutcome>, StateDiff), BlockRejected> {
         let (parent_height, parent_timestamp) = read_head(state).ok_or(BlockRejected {
             transaction_index: None,
             reason: RejectionReason::Rejected,
@@ -862,11 +862,14 @@ impl Executor {
             fault(state);
         }
 
-        check_block_conservation(&self.state, state).map_err(|err| BlockRejected {
+        // What the block changed, worked out once: the conservation check and the
+        // executed block both need it, and finding it costs the size of the state.
+        let changes = chain_state::diff(&self.state, state);
+        check_conservation_of(&self.state, state, &changes).map_err(|err| BlockRejected {
             transaction_index: None,
             reason: rejection_for(err),
         })?;
-        Ok((gas_used, outcomes))
+        Ok((gas_used, outcomes, changes))
     }
 
     /// One transaction, in two distinct phases with distinct failure
@@ -1449,14 +1452,13 @@ impl Engine for Executor {
         }
 
         let mut scratch = self.state.clone();
-        let (gas_used, outcomes) = self.apply_block(&mut scratch, block)?;
+        let (gas_used, outcomes, state_diff) = self.apply_block(&mut scratch, block)?;
         if !state_within_limits(&scratch) {
             return Err(BlockRejected {
                 transaction_index: None,
                 reason: RejectionReason::MalformedBlock,
             });
         }
-        let state_diff = chain_state::diff(&self.state, &scratch);
         let mut state_root = self.trie.prepare(&state_diff).root();
         // A check on the maintained root against the definition of it, on every
         // block in a debug build and on one in 64 otherwise. If they ever
@@ -1770,10 +1772,25 @@ mod tests {
             let root = best(Box::new(|| {
                 let _ = compute_root(&executor.state);
             }));
+            let scratch_after = {
+                let mut scratch = executor.state.clone();
+                let _ = executor.apply_block(&mut scratch, &block).unwrap();
+                scratch
+            };
+            let diff = best(Box::new(|| {
+                let _ = chain_state::diff(&executor.state, &scratch_after);
+            }));
+            let limits_check = best(Box::new(|| {
+                let _ = state_within_limits(&scratch_after);
+            }));
+            let apply = best(Box::new(|| {
+                let mut scratch = executor.state.clone();
+                let _ = executor.apply_block(&mut scratch, &block).unwrap();
+            }));
             let audit = best(Box::new(|| executor.audit().unwrap()));
             println!(
-                "entries {:>7}  value {:>3} B | propose {:>8.1} ms | execute {:>8.1} ms | (clone {:>7.1}, root {:>7.1}) | audit {:>7.1} ms",
-                executor.state.len(), value_bytes, propose, execute, clone, root, audit
+                "entries {:>7}  value {:>3} B | propose {:>6.1} | execute {:>6.1} ms | clone {:>5.1}, clone+apply {:>5.1}, diff {:>5.1}, limits {:>4.1}, full root {:>6.1} | audit {:>5.1}",
+                executor.state.len(), value_bytes, propose, execute, clone, apply, diff, limits_check, root, audit
             );
         }
     }

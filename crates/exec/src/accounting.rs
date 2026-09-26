@@ -94,6 +94,17 @@ fn held_by(key: &StateKey, value: &StateValue) -> Result<u128, AccountingError> 
 /// the changed entries' holdings moved by. Reads only the entries that
 /// differ. `old` must itself have been balanced.
 pub fn check_block_conservation(old: &State, new: &State) -> Result<(), AccountingError> {
+    check_conservation_of(old, new, &chain_state::diff(old, new))
+}
+
+/// [`check_block_conservation`] for a caller that already has the difference
+/// between `old` and `new`: finding it is the part that costs the size of the
+/// state.
+pub fn check_conservation_of(
+    old: &State,
+    new: &State,
+    changes: &chain_state::StateDiff,
+) -> Result<(), AccountingError> {
     let supply_old = read_supply(old).ok_or(AccountingError::SupplyUnreadable)?;
     let supply_new = read_supply(new).ok_or(AccountingError::SupplyUnreadable)?;
 
@@ -101,7 +112,7 @@ pub fn check_block_conservation(old: &State, new: &State) -> Result<(), Accounti
     // entries, rearranged so nothing can go below zero.
     let mut held_old = 0u128;
     let mut held_new = 0u128;
-    for (key, change) in chain_state::diff(old, new).iter() {
+    for (key, change) in changes.iter() {
         if let Some(before) = old.get(key) {
             held_old = held_old
                 .checked_add(held_by(key, before)?)

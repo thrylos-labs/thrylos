@@ -142,11 +142,27 @@ after:
 | 99,900 | 8 B | 133 ms | 45 ms |
 | 99,900 | 640 B | 361 ms | **58 ms** |
 
-The root no longer shows up. What is left is also O(state): cloning the state to execute on it,
-comparing it with the result to find what changed (`chain_state::diff`), and the state-limit check
-(about 45 to 60 ms at the cap on the Mac). Removing those means executing against an overlay of
-writes instead of a copy, a larger change to the executor; it is not needed for correctness and can
-wait for a measurement on the VPS.
+The root no longer shows up. What was left was also O(state), and is now gone too (same day):
+
+- **The difference between the old state and the new was worked out twice per block**, once for the
+  supply check and once for the executed block, each by looking up every entry of one map in the other.
+  It is now worked out once, by one walk down both maps together.
+- **The copy the block is executed on** copied every key and value byte for byte. Keys and values now
+  share their bytes (`Arc<[u8]>` in `chain_state::StateKey` and `StateValue`), so a copy costs a
+  reference count for each entry, and an entry a block did not touch is recognised as unchanged by
+  comparing pointers.
+
+Same benchmark, after all three:
+
+| Entries in state | Value size | Execute a block, at the start | after |
+|---:|---:|---:|---:|
+| 25,000 | 8 B | 31 ms | 0.7 ms |
+| 99,900 | 8 B | 133 ms | 2.4 ms |
+| 99,900 | 640 B | 361 ms | **8.8 ms** |
+
+Of the last, 5 ms is the copy of the map's own nodes. A block now costs what it changed, not the size of
+the state, to within a few milliseconds at the cap. Memory: sharing adds a 16-byte header to each key
+and value (about 3 MB at 100,000 entries).
 
 **Also not yet measured:** the same run on the VPS.
 
@@ -279,10 +295,8 @@ minutes), and a full block of them, at most about 0.3 second.
 
 ### What is still open
 
-- **The per-block cost that is not gas.** With the state at its cap a block still costs 45 to 60 ms on
-  the Mac (several times that on the VPS) before anything runs: cloning the state, finding what changed,
-  and the limits check (see "what a block costs as the state grows"). That needs executing against an
-  overlay of writes instead of a copy.
+- **The per-block cost that is not gas** is now about 9 ms on the Mac at the state cap (see "what a
+  block costs as the state grows"). It has not been measured on the VPS.
 - **Widths.** `u128` and `u256` arithmetic costs more than `u64`, and the VM's opcodes do not say which
   is being used, so all arithmetic is priced at the widest. Ordinary `u64` arithmetic is priced at about
   three times its cost. Nobody will notice at these prices.
