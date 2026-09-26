@@ -1,0 +1,58 @@
+name: Uptime
+
+# An outside check on the public testnet, from somewhere that is not the VPS or
+# its tunnel: is the chain making blocks, and do the public pages answer? A red
+# run is the alert (GitHub emails the repository's watchers about failed
+# scheduled runs). It uses no third-party actions and no secrets: it only reads
+# what the public endpoints already serve.
+#
+# Scheduled workflows are switched off by GitHub after 60 days without a commit
+# to the repository; a commit (or "Enable workflow" in the Actions tab) turns it
+# back on.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  testnet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The chain is making blocks
+        run: |
+          set -euo pipefail
+          status() {
+            curl -fsS -m 15 -X POST https://rpc.thrylos.org \
+              -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"status"}'
+          }
+          field() { python3 -c "import json,sys; d=json.load(sys.stdin)['result']; print($1)"; }
+          first=$(status)
+          echo "chain id:  $(echo "$first" | field "d['chainId']")"
+          h1=$(echo "$first" | field "d['latest']['height']")
+          halted=$(echo "$first" | field "d['halted']")
+          peers=$(echo "$first" | field "d['peers']")
+          sleep 20
+          h2=$(status | field "d['latest']['height']")
+          echo "height:    $h1 -> $h2 (peers $peers, halted $halted)"
+          [ "$halted" = "None" ] || { echo "::error::the chain reports itself halted: $halted"; exit 1; }
+          [ "$h2" -gt "$h1" ] || { echo "::error::no new block in 20 seconds (height $h1 -> $h2)"; exit 1; }
+          [ "$peers" -ge 2 ] || { echo "::error::a validator sees only $peers peers"; exit 1; }
+      - name: The public pages answer
+        run: |
+          set -u
+          bad=0
+          for url in \
+            https://explorer.thrylos.org/ \
+            https://wallet.thrylos.org/ \
+            https://names.thrylos.org/names/available/uptimecheck \
+            https://thrylos.org/; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "$url" || echo 000)
+            echo "$code $url"
+            [ "$code" = "200" ] || { echo "::error::$url answered $code"; bad=1; }
+          done
+          exit $bad
