@@ -194,6 +194,23 @@ allocation, a wallet was funded through the faucet's offline path, published a p
 importing the standard library, and called it. `scripts/reset-testnet.sh` is how to do
 it again. Rolling back to the old chain is in `rollout-move-reset.md`.
 
+## The 2026-09-26 reset (gas recalibration, storage, reading state)
+
+At about 07:38 UTC on 2026-09-26 the chain was **started over again**, to ship the gas
+recalibration, storage, reading state and the stage-3 tooling (`rollout-third-reset.md`).
+New chain id `20260927` (was `20260926`); the old chain ended at
+height 58,060 (state root `8025a3bb…`). Nothing carried over except the operator wallets, the faucet
+key and settings, and the names configuration; every balance, name, faucet record and published
+package was wiped. The old chain is at `/root/.thrylos-alpha/network.old-20260926-20260926T073754Z`,
+the old binaries (the gas-hotfix build) in `/root/releases/gas-before/`, and the backup taken just
+before is `thrylos-alpha-20260926T073705Z.tar.gz`. The new binaries were built in
+`/root/thrylos-main` (commit `cd7b42c`, checksums in `/root/new-binaries-4.sha256`) and copied over the
+running ones. Checked on the live chain afterwards: a wallet funded through the faucet's offline path
+published a package that keeps state, called it twice **over the public path** (`rpc.thrylos.org`) and
+read the stored value back (`n = 2`); explorer, wallet, names, site and redirect answered; all eight
+services active; four validators, 3 peers each. Still on the VPS, to delete once nothing needs them:
+`/root/thrylos-hotfix`, `/root/thrylos-old`, `/root/thrylos-rust/target-new` if present.
+
 ## Rolling back
 
 | What | Undo |

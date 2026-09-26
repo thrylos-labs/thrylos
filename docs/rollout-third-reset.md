@@ -1,6 +1,6 @@
 # Rollout: the third testnet reset (gas recalibration, storage, reading state, tooling)
 
-Status: **rehearsed locally, not run on the VPS.** Written 2026-09-26. The mechanics are those of
+Status: **done, 2026-09-26 about 07:38 UTC** (chain id `20260927`; see `operations-vps.md`). Written 2026-09-26. The mechanics are those of
 `rollout-move-reset.md` (read it first; this only says what is different). The reset script
 (`scripts/reset-testnet.sh`) is unchanged and the local rehearsal (`scripts/rehearse-reset.sh`) has been
 extended to cover what this reset brings.
@@ -78,7 +78,7 @@ The same four as `rollout-move-reset.md`, with these differences.
 
 ### 1. Prepare (no downtime)
 
-- Sync the tree to the VPS and build **all six binaries** into a copy (`target-new`), at low priority, one
+- Sync the tree to the VPS (it was built in `/root/thrylos-main`, not `target-new`) and build **all six binaries**, at low priority, one
   job. The last full build on the VPS took **24 minutes** from a copy of an older `target`; expect about
   that, and do it in the hours before, not in the window. `cp -a target target-new` first, as in the last
   rollout; the disk has room (about 11 GB free at the last look).

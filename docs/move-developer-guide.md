@@ -1,15 +1,15 @@
 # Writing and publishing Move on the Thrylos testnet
 
 A guide for someone who wants to put a Move package on the alpha testnet. It is
-accurate for the code as of 2026-09-25 and says plainly what does not work yet.
+accurate for the code as of 2026-09-26 and says plainly what does not work yet.
 
-**Where things stand.** Packages can be published, called, tested, and now can **keep
-state**: they store values in *drawers* (see "Storing things") and you can read them back.
-**That part is built and tested in the repository but is not on the public testnet yet:**
-the public testnet is on an earlier build where packages compute but remember nothing, and
-the storage goes live with the next testnet reset (which will delete published packages, as
-every reset does). To try storage today, run a local network (see "Try it on your own
-machine"). The testnet's coin has no value and it is reset whenever a change needs it.
+**Where things stand.** Packages can be published, called, tested, and can **keep state**:
+they store values in *drawers* (see "Storing things") and you can read them back. All of it is
+live on the public testnet since the reset of 2026-09-26 (chain id `20260927`); the testnet's
+coin has no value and it is reset whenever a change needs it, and a reset deletes every published
+package. Two limits to know: a transaction may use at most 75,000 gas, and the public nodes have
+`simulate` off, so `thrylos move view` works on a local network (see "Try it on your own machine")
+and not yet on the public one. `thrylos move resource` works everywhere.
 
 ## Get started
 
