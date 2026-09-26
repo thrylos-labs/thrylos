@@ -21,10 +21,16 @@ The five targets correspond to the audit boundaries in `docs/spec.md`:
   biased toward larger elapsed-time-per-gas ratios and a hard ceiling.
 
 CI smoke-fuzzes every target on every change and runs longer scheduled jobs.
-The metering ceiling defaults to `1,000,000 ns/gas` and can be tightened with
-`THRYLOS_MAX_NS_PER_GAS` after reference hardware is named and calibrated. It
-is deliberately described as provisional evidence, not a production gas
-schedule.
+The metering ceiling is `50,000 ns/gas` and can be changed with
+`THRYLOS_MAX_NS_PER_GAS`. Gas is priced at about 1,000 ns a unit
+(`docs/gas-calibration.md`), so this is fifty times that. It was set from
+`measure_ratio` (a few thousand random protocol calls, release build with debug
+assertions): 13 ns/gas median, 311 at the 99th percentile and 593 at worst on the
+development Mac. The CI runner is several times slower and the sanitizer and
+coverage instrumentation several times slower again, which puts the worst case
+near 10,000 there: the ceiling leaves about five times that. It has not been
+measured on the CI runner itself; if the job reports a finding that is only slow
+hardware, read the number in it and raise the ceiling, do not remove it.
 
 Run a target locally with nightly Rust and `cargo-fuzz`:
 

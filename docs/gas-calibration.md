@@ -303,8 +303,9 @@ minutes), and a full block of them, at most about 0.3 second.
 - **The node-local stopgap** (`policy.rs`, the 20,000-gas mempool cap and the proposer's per-block
   budget) is still in the tree. With this change it is redundant, since the chain's own limits now bound
   what it bounded. Removing it is a decision for the operator, not something to do in passing.
-- **The fuzz job's ceiling** (`THRYLOS_MAX_NS_PER_GAS`, 1,000,000 in CI) is a placeholder that fits none
-  of this; it should be set from a measurement in that environment.
+- **The fuzz job's ceiling** (`THRYLOS_MAX_NS_PER_GAS`) is now 50,000 ns/gas, fifty times the ruler, set
+  from a measurement of random protocol calls on the Mac (worst 593) scaled for the CI runner and the
+  sanitizer. It has not been measured on the CI runner itself (`fuzz/README.md`).
 - **Every gas figure in the tests** was moved to the new scale, and the genesis golden vectors changed
   (recorded in `compatibility-vectors.md`).
 

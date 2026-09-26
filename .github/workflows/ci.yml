@@ -74,7 +74,7 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly
       CARGO_FUZZ_VERSION: 0.12.0
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && 600 || 30 }}
-      THRYLOS_MAX_NS_PER_GAS: 1000000
+      THRYLOS_MAX_NS_PER_GAS: 50000
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly

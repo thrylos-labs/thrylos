@@ -12,7 +12,7 @@ fn limit_ns_per_gas() -> u128 {
         std::env::var("THRYLOS_MAX_NS_PER_GAS")
             .ok()
             .and_then(|value| value.parse().ok())
-            .unwrap_or(1_000_000)
+            .unwrap_or(50_000)
     })
 }
 

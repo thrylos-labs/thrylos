@@ -56,3 +56,10 @@ path = "fuzz_targets/move_publish.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "measure_ratio"
+path = "fuzz_targets/measure_ratio.rs"
+test = false
+doc = false
+bench = false

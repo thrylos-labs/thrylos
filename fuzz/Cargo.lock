@@ -755,6 +755,7 @@ dependencies = [
 name = "chain-exec"
 version = "0.1.0"
 dependencies = [
+ "bcs",
  "better_any",
  "blake3",
  "chain-engine-api",
