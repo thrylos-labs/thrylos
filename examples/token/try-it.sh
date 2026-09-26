@@ -31,25 +31,25 @@ alice=$("$bin/thrylos" address --wallet "$root/alice.key")
 bob=$("$bin/thrylos" address --wallet "$root/bob.key")
 t() { who=$1; shift; "$bin/thrylos" "$@" --yes --rpc "$rpc" --wallet "$root/$who.key"; }
 
-step "test and publish the package"
+step "test and publish the package (publish builds it first)"
 "$bin/thrylos" move test "$here/examples/token" | tail -1
-"$bin/thrylos" move build "$here/examples/token" | tail -1
+rm -rf "$here/examples/token/build"
 out=$(t alice move publish "$here/examples/token")
 token=$(echo "$out" | sed -n 's/^Package address: //p')
 echo "package $token"
 
 step "alice makes token 1 with 1,000 units and sends 250 to bob"
 t alice move call "$token" token create u64:1 u64:1000 | tail -1
-t alice move call "$token" token transfer u64:1 "address:$bob" u64:250 --input "$bob" | tail -1
+t alice move call "$token" token transfer u64:1 "address:$bob" u64:250 | tail -1
 
 step "reading it back"
 view() { sleep 1.2; "$bin/thrylos" move view "$token" token "$@" --rpc "$rpc" --wallet "$root/alice.key" | sed -n 's/^Returns\[0\]: //p'; }
-echo "alice holds $(view balance_of "address:$alice" u64:1 --input "$alice")"
-echo "bob holds   $(view balance_of "address:$bob" u64:1 --input "$bob")"
-echo "supply      $(view total_supply "address:$alice" u64:1 --input "$alice")"
+echo "alice holds $(view balance_of "address:$alice" u64:1)"
+echo "bob holds   $(view balance_of "address:$bob" u64:1)"
+echo "supply      $(view total_supply "address:$alice" u64:1)"
 
 step "what should not work"
-if t alice move call "$token" token transfer u64:1 "address:$bob" u64:100000 --input "$bob" >"$root/big.out" 2>&1; then echo "an overdraft succeeded"; exit 1; fi
+if t alice move call "$token" token transfer u64:1 "address:$bob" u64:100000 >"$root/big.out" 2>&1; then echo "an overdraft succeeded"; exit 1; fi
 grep -q "abort\|Aborted\|ExecutionFailed" "$root/big.out" && echo "sending more than alice has aborts (code 2), as it should"
 if t bob move call "$token" token burn u64:1 u64:10 >"$root/burn.out" 2>&1; then echo "bob burned"; exit 1; fi
 echo "bob cannot burn: only the creator holds the supply record"

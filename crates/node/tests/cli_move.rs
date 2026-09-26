@@ -22,7 +22,7 @@ fn err(o: &Output) -> String {
 }
 
 #[test]
-fn a_new_package_tests_and_builds_and_publish_says_when_it_is_not_built() {
+fn a_new_package_tests_and_builds_and_publish_builds_it_when_it_is_not_built() {
     let root = tempfile::tempdir().unwrap();
     let made = thrylos(&["move", "new", "hello"], root.path());
     assert!(made.status.success(), "{}", err(&made));
@@ -41,17 +41,20 @@ fn a_new_package_tests_and_builds_and_publish_says_when_it_is_not_built() {
         out(&tested)
     );
 
-    // Not built yet.
+    // Not built yet: publish builds it first, and then gets as far as needing a network.
     let early = thrylos(
         &["move", "publish", "hello", "--yes", "--rpc", "127.0.0.1:1"],
         root.path(),
     );
     assert!(!early.status.success());
     assert!(
-        err(&early).contains("has not been built"),
-        "{}",
+        out(&early).contains("building it first"),
+        "{}{}",
+        out(&early),
         err(&early)
     );
+    assert!(root.path().join("hello/build/hello.mv").is_file());
+    assert!(err(&early).contains("could not reach"), "{}", err(&early));
 
     let built = thrylos(&["move", "build", "hello"], root.path());
     assert!(built.status.success(), "{}{}", out(&built), err(&built));

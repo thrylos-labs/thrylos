@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use chain_movetools::{
-    build, check, new_package, run_tests, write_build, Dependency, Options, Outcome,
+    build, build_is_stale, check, new_package, run_tests, write_build, Dependency, Options, Outcome,
 };
 use move_binary_format::file_format::CompiledModule;
 use move_core_types::account_address::AccountAddress;
@@ -282,4 +282,27 @@ fn tests_can_use_the_store_and_each_starts_with_empty_drawers() {
     );
     let report = run_tests(&options(dir.path()), None, GAS).unwrap();
     assert!(report.ok() && report.passed() == 3, "{report:?}");
+}
+
+#[test]
+fn a_package_needs_building_until_it_is_built_and_again_when_its_sources_change() {
+    let dir = package("module pkg::m; public fun one(): u64 { 1 }");
+    assert!(build_is_stale(dir.path()), "never built");
+
+    let built = build(&options(dir.path())).unwrap();
+    write_build(dir.path(), &built).unwrap();
+    assert!(!build_is_stale(dir.path()), "just built");
+
+    // A source written after the build makes it stale.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    write(
+        dir.path(),
+        "m.move",
+        "module pkg::m; public fun one(): u64 { 2 }",
+    );
+    assert!(build_is_stale(dir.path()), "a source changed");
+
+    let built = build(&options(dir.path())).unwrap();
+    write_build(dir.path(), &built).unwrap();
+    assert!(!build_is_stale(dir.path()), "built again");
 }

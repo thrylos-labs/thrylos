@@ -438,6 +438,11 @@ fn move_publish(options: &Options, files: &[String]) -> Result<(), String> {
     let from_build: Vec<String>;
     let files = match files {
         [dir] if Path::new(dir).is_dir() => {
+            if chain_movetools::build_is_stale(Path::new(dir)) {
+                println!("{dir} has not been built since its sources changed; building it first.");
+                move_build(options, std::slice::from_ref(dir))?;
+                println!();
+            }
             from_build = chain_movetools::built_files(Path::new(dir))?
                 .iter()
                 .map(|path| path.display().to_string())
@@ -671,6 +676,39 @@ fn move_resources(options: &Options, rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// For a read of an empty drawer: the slots the owner does hold that type in, or how
+/// much else they hold, so the answer is not just "nothing".
+fn other_slots(options: &Options, owner: &chain_types::Address, type_name: &str) -> String {
+    let Ok(found) = options
+        .rpc
+        .call("move_resources", &json!({ "owner": format_address(owner) }))
+    else {
+        return String::new();
+    };
+    let list = found["resources"].as_array().cloned().unwrap_or_default();
+    let wanted = canonical_type(type_name);
+    let slots: Vec<String> = list
+        .iter()
+        .filter(|drawer| drawer["type"].as_str() == Some(wanted.as_str()))
+        .map(|drawer| drawer["slot"].to_string())
+        .collect();
+    if !slots.is_empty() {
+        format!(
+            "
+It does hold this type in slot {}: use --slot.",
+            slots.join(", ")
+        )
+    } else if list.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "
+It holds {} other stored value(s); `thrylos move resources` lists them.",
+            list.len()
+        )
+    }
+}
+
 fn move_resource(options: &Options, rest: &[String]) -> Result<(), String> {
     let [owner, type_name] = rest else {
         return Err("usage: thrylos move resource <owner> <type> [--slot <n>]".into());
@@ -686,7 +724,14 @@ fn move_resource(options: &Options, rest: &[String]) -> Result<(), String> {
                 "slot": options.slot.unwrap_or(0),
             }),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let message = error.to_string();
+            if message.contains("is stored in slot") {
+                format!("{message}{}", other_slots(options, &address, type_name))
+            } else {
+                message
+            }
+        })?;
     println!("Type: {}", found["type"].as_str().unwrap_or("?"));
     println!("Slot: {}", found["slot"]);
     println!("At height: {}", found["height"]);
@@ -717,12 +762,8 @@ fn move_view(options: &Options, rest: &[String]) -> Result<(), String> {
         .iter()
         .map(|argument| chain_node::move_client::encode_argument(argument))
         .collect::<Result<Vec<_>, _>>()?;
-    let declared = options
-        .inputs
-        .iter()
-        .map(|text| parse_address(text).map_err(|error| format!("--input {text}: {error}")))
-        .collect::<Result<Vec<_>, _>>()?;
     let wallet = load_wallet(&options.wallet)?;
+    let declared = declared_inputs(options, arguments, &wallet.address())?;
     let at = position(&options.rpc, wallet.address())?;
     let transaction = chain_node::move_client::signed_call(
         wallet.signing_key(),
@@ -774,6 +815,30 @@ fn move_view(options: &Options, rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The addresses a call declares: every `--input`, and every `address:` argument
+/// (a call that names an address as an argument nearly always touches its drawers,
+/// and forgetting to declare it aborts the call). The sender needs no declaring.
+fn declared_inputs(
+    options: &Options,
+    arguments: &[String],
+    sender: &chain_types::Address,
+) -> Result<Vec<chain_types::Address>, String> {
+    let mut declared: Vec<chain_types::Address> = Vec::new();
+    for text in &options.inputs {
+        declared.push(parse_address(text).map_err(|error| format!("--input {text}: {error}"))?);
+    }
+    for argument in arguments {
+        if let Some(text) = argument.strip_prefix("address:") {
+            if let Ok(address) = parse_address(text) {
+                if &address != sender && !declared.contains(&address) {
+                    declared.push(address);
+                }
+            }
+        }
+    }
+    Ok(declared)
+}
+
 fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
     let [package, module, function, arguments @ ..] = rest else {
         return Err(
@@ -816,11 +881,7 @@ fn move_call(options: &Options, rest: &[String]) -> Result<(), String> {
             arguments.join(" ")
         }
     );
-    let declared = options
-        .inputs
-        .iter()
-        .map(|text| parse_address(text).map_err(|error| format!("--input {text}: {error}")))
-        .collect::<Result<Vec<_>, _>>()?;
+    let declared = declared_inputs(options, arguments, &wallet.address())?;
     for address in &declared {
         println!("Also touches: {}", format_address(address));
     }

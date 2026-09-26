@@ -306,6 +306,30 @@ pub fn write_build(dir: &Path, built: &Built) -> Result<PathBuf, String> {
     Ok(out)
 }
 
+/// Whether `dir` needs building before it can be published: it has no build, or a
+/// source file is newer than the newest built module.
+pub fn build_is_stale(dir: &Path) -> bool {
+    fn newest(path: &Path) -> Option<std::time::SystemTime> {
+        let meta = std::fs::metadata(path).ok()?;
+        if meta.is_dir() {
+            std::fs::read_dir(path)
+                .ok()?
+                .filter_map(Result::ok)
+                .filter_map(|entry| newest(&entry.path()))
+                .max()
+        } else {
+            meta.modified().ok()
+        }
+    }
+    let built = newest(&dir.join(BUILD_DIR));
+    let sources = newest(&dir.join("sources"));
+    match (built, sources) {
+        (None, _) => true,
+        (Some(built), Some(sources)) => sources > built,
+        (Some(_), None) => false,
+    }
+}
+
 /// The `.mv` files of a package directory's last build, in name order.
 pub fn built_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let out = dir.join(BUILD_DIR);

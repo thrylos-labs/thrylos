@@ -21,7 +21,7 @@ in Discord; publishing costs a fraction of a THRY, see "What it costs").
 thrylos move new hello        # a package with one module and two tests
 thrylos move test hello       # run its tests
 thrylos move build hello      # compile it, and check what the network will check
-thrylos move publish hello    # publish it; prints the package address
+thrylos move publish hello    # publish it (building first if needed); prints the package address
 thrylos move call <address> hello check u64:4 u64:6
 ```
 
@@ -228,13 +228,16 @@ parameter (`store::put(o, 0, Wrapper<T> { v })`) is fine, since `Wrapper` is you
 
 ### Whose drawers a call may touch
 
-A call may touch only drawers owned by its **sender**, and by addresses it **declares**. Say
-which ones when you call:
+A call may touch only drawers owned by its **sender**, and by addresses it **declares**. The
+`thrylos` command declares for you every address you pass as an `address:` argument (it prints
+`Also touches: ...`), so this is enough:
 
 ```
-thrylos move call <package> ledger bump_for address:thry1... --input thry1...
+thrylos move call <package> ledger bump_for address:thry1...
 ```
 
+An address the call reaches some other way (found in a stored value, say) is declared with
+`--input`, once for each: `... --input thry1...`.
 A call that touches any other owner aborts. This lets everything that watches the chain know
 what a transaction touches before it runs. (Tests run by `thrylos move test` are the exception:
 they may touch any address's drawers, since there is no transaction.)
@@ -264,7 +267,8 @@ thrylos move view <package> <module> <function> [type:value ...] [--input <addre
 ```
 
 `resource` prints a stored value decoded into its fields (numbers as text, addresses as
-`thry1…`) and its raw bytes. The explorer shows the same on an account's page.
+`thry1…`) and its raw bytes. The explorer shows the same on an account's page. It reads slot 0
+unless you say `--slot`; if that slot is empty but the owner holds the type in another, it says which.
 
 `view` asks a node what a call **would** do without sending it, so it costs nothing and
 changes nothing. It can call any `public` function, not only `entry` ones, and prints what it

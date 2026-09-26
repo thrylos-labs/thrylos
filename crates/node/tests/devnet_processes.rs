@@ -1779,22 +1779,20 @@ fn a_package_that_remembers_keeps_its_state_on_four_nodes_across_a_node_restart(
     let wrong = call(&network, 2, "check", &["u64:4"]);
     assert!(!wrong.status.success(), "a wrong expectation must fail");
 
-    // Someone else's drawer needs declaring.
+    // Someone else's drawer needs declaring. The chain's rule is tested by naming the
+    // address as raw bytes, which the command does not declare for you...
     let other = chain_text::format_address(&chain_types::Address::from_bytes([61; 32]));
     let arg = format!("address:{other}");
-    let undeclared = call(&network, 1, "init_for", &[arg.as_str()]);
+    let raw = format!("raw:0x{}", "3d".repeat(32));
+    let undeclared = call(&network, 1, "init_for", &[raw.as_str()]);
     assert!(!undeclared.status.success());
     assert!(
         stderr(&undeclared).contains("ExecutionFailed"),
         "{}",
         stderr(&undeclared)
     );
-    ok(&call(
-        &network,
-        1,
-        "init_for",
-        &[arg.as_str(), "--input", other.as_str()],
-    ));
+    // ...while an `address:` argument is declared for you, and `--input` still works.
+    ok(&call(&network, 1, "init_for", &[arg.as_str()]));
     ok(&call(
         &network,
         2,

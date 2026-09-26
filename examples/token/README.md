@@ -10,7 +10,7 @@ One package holds many tokens: a token is a number (its `id`), and a balance is 
 | Function | What it does |
 |---|---|
 | `create(id, total)` | make token `id`, all of it held by the caller |
-| `transfer(id, to, amount)` | send from the caller to `to` (**declare `to` with `--input`**) |
+| `transfer(id, to, amount)` | send from the caller to `to` (the command declares `to` for you) |
 | `register(id)` | make an empty balance for yourself (pay for your own drawer) |
 | `burn(id, amount)` | the creator destroys some of their own units |
 | `balance_of(owner, id)` | a view: what `owner` holds |
@@ -41,10 +41,9 @@ To publish your own copy:
 
 ```
 thrylos move test examples/token
-thrylos move build examples/token
-thrylos move publish examples/token --rpc https://rpc.thrylos.org
+thrylos move publish examples/token --rpc https://rpc.thrylos.org      # builds it first
 thrylos move call <package> token create u64:1 u64:1000 --rpc https://rpc.thrylos.org
-thrylos move call <package> token transfer u64:1 address:<friend> u64:250 --input <friend> --rpc https://rpc.thrylos.org
+thrylos move call <package> token transfer u64:1 address:<friend> u64:250 --rpc https://rpc.thrylos.org
 thrylos move resource <friend> <package>::token::Balance --slot 1 --rpc https://rpc.thrylos.org
 ```
 
