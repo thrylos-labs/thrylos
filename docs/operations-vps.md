@@ -249,10 +249,36 @@ with the key, and so does one of the older ones that were encrypted after the fa
 The archives were made private to root (directory 0700, files 0600) before, and still are. The plaintext
 archives that existed on 2026-09-26 (12 of them) were encrypted to the same key and the plaintext removed.
 
-**These have not been restored.** A copy of one made on 2026-09-24 would not start
-on a Mac (the pre-audit binaries failed on it the same way), which most likely
-means a Linux database does not open under macOS, though a torn snapshot is not
-ruled out. A restore has never been rehearsed on Linux.
+**Restoring, and checking that a backup restores.** A chain database written on the VPS (Linux) does not
+open on the Mac (a different page size), so a restore is checked on the VPS. `chain-node verify
+<node.json>` opens a node's data from disk exactly as a starting node would (the whole state read
+back, hashed and checked against the root recorded with the last block, the supply audited) and prints the
+height, tip block and state root, with no network and no signer. It needs the `verify` command, which is in
+builds from 2026-09-26 on (`/root/thrylos-main/target/release/chain-node`; the running binary gets it at
+the next swap). It may write to the data directory, so run it on a copy:
+
+```
+# on the Mac: decrypt and stream the newest backup into a scratch directory on the VPS
+age -d -i ~/.config/thrylos/backup-key.txt ~/thrylos-backups/<archive>.age | \
+  ssh root@157.230.10.32 'mkdir -p /root/restore-test && tar xzf - -C /root/restore-test .thrylos-alpha/network --exclude="*.sock"'
+# on the VPS: each node
+chain-node verify /root/restore-test/.thrylos-alpha/network/node1/node.json
+# then delete the scratch directory (it holds the keys)
+```
+
+**Rehearsed 2026-09-26.** The 15:04 backup was pulled, decrypted on the Mac and streamed to a scratch
+directory on the VPS, and all four nodes verified: heights 22875 to 22878 (the four snapshots are taken a
+few milliseconds apart), and for each one **the state root and tip block hash equal the live chain's block at
+that height** (`block` RPC), so the restored data is the chain's own, not just a database that opens. Damaged
+data is refused: a test (`verify_opens_a_stopped_nodes_data_and_refuses_damaged_data`) flips bits in a
+node's database and `verify` reports that the state no longer hashes to the recorded root.
+
+**Restoring for real** (a disk lost, or a bad change): stop the services, put the extracted
+`.thrylos-alpha` back at `/root/.thrylos-alpha` (the operators, faucet and names directories are in the
+archive too), start the validators, and wait for the RPC (about 2.5 minutes). All four nodes come back at
+their own heights and catch up with each other. Not rehearsed: starting a network from the restored data
+(only opening it), and restoring onto a new server, which also needs the units, the tunnel's credentials and
+DNS.
 
 ## Things that have gone wrong
 

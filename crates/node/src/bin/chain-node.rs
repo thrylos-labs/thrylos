@@ -209,8 +209,13 @@ fn run(path: &str, until: Option<BlockHeight>, stop_when_stdin_closes: bool) -> 
     }
     match run_node(&config, until, &stop, &mut |event| describe(&event)) {
         Ok(()) => ExitCode::SUCCESS,
-        // A halt was already described as it happened.
-        Err(chain_node::node::RunError::Halted(_)) => ExitCode::FAILURE,
+        // A halt reached through the running event loop already had its reason printed
+        // (`NodeEvent::Halted`, by `describe` above), so this repeats it; harmless, and the
+        // alternative is worse. One reached before the event loop ever started (a bad
+        // genesis, an unreadable chain, a consensus log that does not agree with the state
+        // — see `HaltReason`) was never printed at all until this line existed: exiting 1
+        // with nothing said once cost a restore rehearsal an hour finding that the real
+        // reason was "no beacon seed is recorded for the next height".
         Err(error) => fail(error),
     }
 }

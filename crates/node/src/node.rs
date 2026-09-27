@@ -148,6 +148,36 @@ impl TransactionSource for NoTransactions {
     fn committed(&mut self, _block: &Block) {}
 }
 
+/// What a node's data on disk holds, as [`verify_data`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataReport {
+    pub chain_id: u64,
+    pub height: u64,
+    pub tip_block_hash: String,
+    pub state_root: String,
+    pub entries: usize,
+}
+
+/// Open the chain `config` describes from the data on disk, exactly as a node starting
+/// would, and say what is there: the whole state is read back, hashed, and checked against
+/// the root recorded with the last block, and the supply is audited (`Executor::restore`).
+/// It starts no network and no signer and needs neither, so it is how to check that a
+/// backup restores without running anything. It may write to the data directory (the
+/// database is opened for writing), so run it on a copy.
+pub fn verify_data(config: &NodeConfig) -> Result<DataReport, RunError> {
+    let genesis = chain_genesis::load(&config.genesis)
+        .map_err(|error| RunError::Genesis(error.to_string()))?;
+    let engine = DurableEngine::open(&config.data_dir, &genesis)?;
+    let executor = engine.executor();
+    Ok(DataReport {
+        chain_id: genesis.chain_id().0,
+        height: executor.head_height().unwrap_or(0),
+        tip_block_hash: executor.tip_block_hash().to_string(),
+        state_root: executor.state_root().as_hash().to_string(),
+        entries: executor.state_entries().count(),
+    })
+}
+
 /// Runs the node `config` describes until `stop` is set, the host halts, or (if
 /// given) the chain reaches `stop_at`. `report` hears of blocks committed,
 /// equivocation witnessed and a halt as they happen.

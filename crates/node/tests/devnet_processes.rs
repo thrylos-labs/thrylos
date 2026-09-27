@@ -479,6 +479,91 @@ fn a_network_started_again_from_its_disks_waits_for_fresh_blocks_not_the_old_log
     assert_one_chain(&network.nodes, HEIGHT);
 }
 
+// `chain-node verify` opens a node's data from disk as a starting node would, and says
+// what is there, without a network or a signer: how a backup is checked. It agrees with the
+// running chain about what is on disk, and refuses data that has been damaged.
+#[test]
+fn verify_opens_a_stopped_nodes_data_and_refuses_damaged_data() {
+    let mut network = Network::generate(4);
+    network.start_all(u64::MAX);
+    network.await_height(0, 8);
+    let node = 1;
+    network.kill_node(node);
+    network.kill_signer(node);
+    let stopped_at = network.height(node);
+
+    let config = network.nodes[node].config();
+    let verified = Command::new(NODE)
+        .arg("verify")
+        .arg(&config)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&verified.stdout).into_owned();
+    assert!(
+        verified.status.success(),
+        "{}{}",
+        text,
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(text.contains("the data restores"), "{text}");
+    let height: u64 = text
+        .lines()
+        .find_map(|line| line.strip_prefix("height:"))
+        .and_then(|rest| rest.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no height in {text}"));
+    assert!(
+        height >= stopped_at,
+        "{height} is behind the {stopped_at} the node had reached"
+    );
+    assert!(text.contains("state root:"), "{text}");
+
+    // Damage the database: the data must not be taken for a chain.
+    let data = network.nodes[node].dir.join("data");
+    let mut damaged = 0;
+    for entry in walk(&data) {
+        if entry.extension().is_some_and(|ext| ext == "dat")
+            || entry.file_name().is_some_and(|name| name == "data.mdb")
+        {
+            let bytes = std::fs::read(&entry).unwrap();
+            if bytes.len() > 4096 {
+                std::fs::write(&entry, &bytes[..bytes.len() / 2]).unwrap();
+                damaged += 1;
+            }
+        }
+    }
+    assert!(
+        damaged > 0,
+        "found no database file to damage in {}",
+        data.display()
+    );
+    let refused = Command::new(NODE)
+        .arg("verify")
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success(), "damaged data was accepted");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("does not restore"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(walk(&path));
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
 // A kill at a random moment, of the node alone and then of the node and its
 // signer together, while the other three carry on. (The signer of a node killed
 // between recording a signature and the node recording it gives the same
