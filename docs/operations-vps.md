@@ -34,6 +34,7 @@ Eight systemd units, all enabled at boot.
 | `thrylos-wallet` | static wallet page (`python3 -m http.server`), **as `thrylos-web`** | `8082` | `wallet.thrylos.org` |
 | `thrylos-site` | static landing page (`python3 -m http.server`), **as `thrylos-web`** | `8084` | `thrylos.org` |
 | `thrylos-redirect` | `deploy/www-redirect.py`, redirects to the apex, **as `thrylos-web`** | `8085` | `www.thrylos.org` |
+| `thrylos-docs` | static docs site (mdBook, `docs-site/`), **as `thrylos-web`** | `8086` | `docs.thrylos.org` |
 | `thrylos-tunnel` | `cloudflared`, the tunnel that publishes all of the above | none | |
 
 **Least privilege, so far:** only the three static units run as an unprivileged
@@ -85,6 +86,7 @@ names.thrylos.org  path ^/internal -> http_status:404      (the faucet-only rout
 names.thrylos.org      -> 127.0.0.1:8083
 thrylos.org            -> 127.0.0.1:8084
 www.thrylos.org        -> 127.0.0.1:8085
+docs.thrylos.org       -> 127.0.0.1:8086
 (anything else)        -> http_status:404
 ```
 
@@ -99,9 +101,25 @@ www.thrylos.org        -> 127.0.0.1:8085
   replace an existing record** that is not a tunnel CNAME (that is what
   happened with `www`); for those, edit the record in the Cloudflare dashboard
   to a proxied CNAME to `535bd282-9ab2-40da-846a-d41cdafe8910.cfargotunnel.com`.
-- `thrylos.org` also carries **email** (Fastmail MX and an SPF TXT record) and
-  `docs.thrylos.org` is a separate site. None of those are touched by anything
-  here; do not delete records you did not add.
+- `thrylos.org` also carries **email** (Fastmail MX and an SPF TXT record); do not
+  delete records you did not add.
+
+## The docs site (docs.thrylos.org)
+
+Self-hosted since 2026-09-27, replacing an old GitBook site (deleted, along with its DNS
+record, before this was set up). Built with [mdBook](https://rust-lang.github.io/mdBook/)
+from `docs-site/` — a curated, external-facing subset of the developer guide, not the
+internal engineering docs in `docs/`. Deploy with:
+
+```
+cargo install mdbook --locked   # once
+scripts/deploy-docs.sh
+```
+
+which builds and rsyncs `docs-site/book/` to `/srv/thrylos/docs` (`--delete`, so a page
+removed from `docs-site/src/SUMMARY.md` is removed on the server too) and fixes ownership
+to root, same as the wallet and landing page. The systemd unit and tunnel ingress route
+are `thrylos-docs` / port `8086`, set up the same way as any other static page above.
 
 ## Checking on it
 

@@ -1,0 +1,62 @@
+/* Thrylos docs: reskins mdBook's built-in "navy" theme to the site's own dark
+   teal palette (deploy/site/site.css), so the docs read as the same product. */
+
+.navy {
+  --bg: #071014;
+  --fg: #eaf5f6;
+  --sidebar-bg: #091419;
+  --sidebar-fg: #8ca4a9;
+  --sidebar-non-existant: #4a5a5e;
+  --sidebar-active: #2aa9be;
+  --sidebar-spacer: #1b343c;
+  --scrollbar: #1b343c;
+  --icons: #8ca4a9;
+  --icons-hover: #eaf5f6;
+  --links: #2aa9be;
+  --inline-code-color: #93bdc5;
+  --theme-popup-bg: #0c191e;
+  --theme-popup-border: #1b343c;
+  --theme-hover: #102229;
+  --quote-bg: #0c191e;
+  --quote-border: #2aa9be;
+  --table-border-color: #1b343c;
+  --table-header-bg: #102229;
+  --table-alternate-bg: #0c191e;
+  --searchbar-bg: #0c191e;
+  --searchbar-fg: #eaf5f6;
+  --searchbar-shadow-color: #071014;
+  --searchresults-header-fg: #8ca4a9;
+  --searchresults-border-color: #1b343c;
+  --searchresults-li-bg: #0c191e;
+  --search-mark-bg: #2aa9be;
+  --border-color: #1b343c;
+  --warning-border: #e5b65e;
+}
+
+.navy code {
+  color: var(--inline-code-color);
+}
+
+.navy pre,
+.navy pre > code {
+  background: #0c191e;
+}
+
+.navy .menu-title {
+  color: var(--fg);
+}
+
+.navy #sidebar .sidebar-scrollbox a.active {
+  color: var(--sidebar-active);
+}
+
+.navy a {
+  text-decoration: none;
+}
+.navy .content a:hover {
+  text-decoration: underline;
+}
+
+:root {
+  --sans-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}

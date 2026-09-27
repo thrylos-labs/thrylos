@@ -1,0 +1,17 @@
+[book]
+title = "Thrylos docs"
+description = "Developer documentation for the Thrylos alpha testnet"
+src = "src"
+language = "en"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/thrylos-labs/thrylos-rust"
+additional-css = ["theme/thrylos.css"]
+site-url = "/"
+input-404 = "404.md"
+
+[output.html.fold]
+enable = true
+level = 1
