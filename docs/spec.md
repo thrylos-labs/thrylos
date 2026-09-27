@@ -1,6 +1,6 @@
 # Thrylos — technical spec
 
-Last amended 2026-09-25
+Last amended 2026-09-27
 
 Implementation status and evidence are tracked separately in
 [`spec-conformance.md`](spec-conformance.md). This document defines the
@@ -82,6 +82,8 @@ BFT proof-of-stake with single-slot deterministic finality: a committed block is
 | Min self-stake | Non-zero, clamped in code | Prevents zero-cost validator spam |
 
 Proposer selection uses a VRF seeded by the previous block's certificate: each validator can verify the winner after the fact, but nobody can compute the schedule ahead of time. A deterministic round-robin over a public validator set is a targeting list, and that is the whole reason for the extra complexity here.
+
+**Known risk, not yet mitigated: beacon withholding.** "Nobody can compute the schedule ahead of time" is true for every outside observer, but not for the proposer itself. The current beacon (`crates/types/src/beacon.rs`) chains a single BLS signature per height — the decided block's proposer signs `(height, seed)`, and that signature alone becomes the next seed (`next_seed`). The selected proposer can therefore compute its own reveal, and so the exact next seed, *before* deciding whether to propose at all — and can withhold selectively when the resulting schedule is unfavourable to it. This is the standard last-revealer bias of RANDAO-style beacons; it is not closed by "the reveal does not depend on block contents" (true, but irrelevant to this lever) and is understated by the code's own framing of withholding as an ordinary liveness lever "at the price of its round" — an ordinary offline leader does not know what it is giving up, and this one does. There is currently no penalty for it: `jail_for_downtime` (`crates/modules/src/registry.rs`) is unwired, and the only halt/liveness detector in the tree (`chain-node`'s `devnet check`) is a manual operational check, not an automatic on-chain one. Not exploitable for profit today (one operator holds every validator key, and there is no stake or reward riding on proposer timing yet), but tracked here because both of those change before mainnet. The proper fix is threshold randomness (no single validator, including the proposer, ever able to compute a seed alone — a real DKG and threshold-BLS design, not attempted here on purpose: see "Open decisions before genesis"); a cheaper interim step, pricing rather than removing the bias, is penalizing a proposer that fails to propose in its own round, which needs the decided round (currently a `chain-consensus` type, `crates/consensus/src/types.rs`) to become part of the canonical block the executor sees (`crates/engine-api/src/block.rs`'s `Block` carries no round today), so that every validator can independently re-derive and agree on the same penalty — a real protocol extension, not a config change, and one that needs its own design note before it is built.
 
 Signatures are BLS12-381 with proof-of-possession. A certificate carries one signature and validator identity per participant; entry order has no meaning. Every public key is checked for subgroup membership on registration; verification resolves every identity against the canonical validator set, rejects duplicates and outsiders, verifies each validator-specific signed message, and totals canonical voting power. The certificate never supplies public keys or voting power.
 
@@ -428,6 +430,7 @@ Each of these changes the spec materially and none has a defensible default.
 - [ ] **MEV policy.** Public mempool with an explicit "we do not prevent this", an in-protocol builder slot, or encrypted ordering. Not deciding means the market decides for you, usually badly.
 - [x] **First-testnet validator entry.** Permissioned and fixed in genesis, matching the static authenticated peer allowlist.
 - [ ] **Post-testnet validator admission.** Publish a transport/key-rotation design before enabling on-chain entry; the bootstrap call must not silently become that mechanism.
+- [ ] **Threshold randomness for the beacon**, gated to the same milestone as the item above, not to a date: today one operator holds every validator key, so no single-party bias is real yet. Build it before any validator operator who is not the current operator is admitted. See "Consensus", "Known risk, not yet mitigated: beacon withholding".
 - [ ] **Token and inflation schedule.** Drives the security budget and therefore the cost of attacking the chain.
 - [ ] **Bridge design and value cap.** The single largest historical loss category. Needs its own document.
 - [ ] **Emergency powers.** Is there a pause, who holds it, and does it expire? A pause that never expires is a permanent trust assumption; no pause at all means the first live incident is unrecoverable.
