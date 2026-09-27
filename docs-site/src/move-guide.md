@@ -185,7 +185,7 @@ thrylos move view <package> <module> <function> [type:value ...] [--input <addre
 
 `view` asks a node what a call **would** do without sending it, so it costs nothing and changes nothing. It can call any `public` function, not only `entry` ones, and prints what it returns (numbers, addresses, booleans and vectors of them). For a call that would change something it says how many stored values and what deposit. If the call would fail it says why: `the call would fail: aborted with code 1 in 0x2::store`.
 
-`view` uses the node's `simulate` method, which runs Move code on the node's own thread. A node serves it only if its configuration turns it on, it is capped at 75,000 gas, and a node answers one a second. A local network has it on; the public testnet's nodes have it off unless said otherwise on the Discord.
+`view` uses the node's `simulate` method, which runs Move code on the node's own thread. A node serves it only if its configuration turns it on, it is capped at 75,000 gas, and a node answers one a second. A local network has it on; the public testnet's nodes have it off unless said otherwise on the [Discord](https://discord.gg/nT2Xcy4QB6).
 
 ## What it costs
 

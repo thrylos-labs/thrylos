@@ -1,7 +1,7 @@
 # Developer Q&A
 
 **How do I get testnet coins?**
-Ask `/faucet` in the Discord with your wallet address. It pays out a fixed, small amount, limited per day.
+Ask `/faucet` in the [Discord](https://discord.gg/nT2Xcy4QB6) with your wallet address. It pays out a fixed, small amount, limited per day.
 
 **How do I write a Move package?**
 `thrylos move new myapp` scaffolds one with a test. Then `thrylos move test`, `thrylos move publish` (builds first if needed), and `thrylos move call`. See [Getting started](./getting-started.md) and [Writing Move on Thrylos](./move-guide.md).
@@ -25,4 +25,4 @@ No. See [About Thrylos](./about.md#no-token-no-sale).
 [github.com/thrylos-labs/thrylos-rust](https://github.com/thrylos-labs/thrylos-rust). The full technical spec is [`docs/spec.md`](https://github.com/thrylos-labs/thrylos-rust/blob/main/docs/spec.md) in the repo.
 
 **Something's broken or confusing — where do I say so?**
-The Discord. Rough edges found this way get fixed; several already have.
+The [Discord](https://discord.gg/nT2Xcy4QB6). Rough edges found this way get fixed; several already have.

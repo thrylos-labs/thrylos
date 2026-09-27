@@ -6,7 +6,7 @@ Thrylos is a Move-based proof-of-stake L1, written in Rust, currently running as
 
 ## Get started
 
-1. **Get testnet coins** — ask `/faucet` in the [Discord](https://discord.gg/).
+1. **Get testnet coins** — ask `/faucet` in the [Discord](https://discord.gg/nT2Xcy4QB6).
 2. **Make a wallet** — `thrylos setup`, from the [GitHub repo](https://github.com/thrylos-labs/thrylos-rust).
 3. **Write your first Move package** — the [developer guide](./move-guide.md) walks through publishing, calling, and storing state.
 

@@ -12,7 +12,7 @@ Then make a wallet and get some test THRY:
 thrylos setup                                  # makes ~/.thrylos/wallet.key
 ```
 
-Ask `/faucet` in the Discord with the address it prints. Publishing and calling a package cost a fraction of a THRY — see [What it costs](./move-guide.md#what-it-costs).
+Ask `/faucet` in the [Discord](https://discord.gg/nT2Xcy4QB6) with the address it prints. Publishing and calling a package cost a fraction of a THRY — see [What it costs](./move-guide.md#what-it-costs).
 
 Point the command at the public testnet once:
 
