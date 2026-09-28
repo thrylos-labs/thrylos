@@ -85,10 +85,10 @@ pub use clock::SystemClock;
 pub use commit_log::FileCommitLog;
 pub use config::{ConfigError, NodeConfig, PeerSpec};
 pub use disk::{FileStorage, NodeDisk};
-pub use durable_engine::{DurableEngine, OpenError};
+pub use durable_engine::{DurableEngine, OpenError, VerifiedData};
 pub use event_loop::{DiscardTransactions, EventLoop, NodeEvent, TransactionIntake};
 pub use mark_store::{FileMarkStore, MarkError};
-pub use node::{run_node, NoTransactions, RunError};
+pub use node::{run_node, verify_data, DataReport, NoTransactions, RunError};
 pub use peer_network::{
     Inbound, NetworkStats, PeerLink, PeerNetwork, PeerNetworkConfig, SendReport,
 };

@@ -3,6 +3,7 @@
 //! ```text
 //! chain-node run <config.json> [--until-height <n>] [--stop-when-stdin-closes]
 //!                                                     run the node
+//! chain-node verify <config.json>                      check stopped node data
 //! chain-node network-key <file>                       make a transport key
 //! chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
 //!                          [--block-interval-ms <ms>] write a local network
@@ -64,11 +65,12 @@ use chain_node::devnet::{generate, DEFAULT_BASE_PORT};
 use chain_node::event_loop::committed_line;
 use chain_node::health;
 use chain_node::launch::{launch, LaunchOptions, RestartPolicy};
-use chain_node::{run_node, NodeConfig, NodeEvent};
+use chain_node::{run_node, verify_data, NodeConfig, NodeEvent};
 use chain_types::BlockHeight;
 
 const USAGE: &str = "usage:
   chain-node run <config.json> [--until-height <n>] [--stop-when-stdin-closes]
+  chain-node verify <config.json>
   chain-node network-key <file>
   chain-node devnet init <dir> [--validators <n>] [--base-port <port>]
                           [--block-interval-ms <ms>]
@@ -104,6 +106,12 @@ The commands:
   chain-node run <config.json> [--until-height <n>] [--stop-when-stdin-closes]
       Run one node from its configuration file. It keeps running until it is
       stopped, or until its chain reaches the height given.
+
+  chain-node verify <config.json>
+      Open a stopped node's data from disk as it would starting up — no
+      network, no signer, nothing written — and say what is there: its
+      height and state root, or why it refuses to restore. This is how to
+      check a backup before trusting it.
 
   chain-node network-key <file>
       Make a node's network key, and print the public key its peers must list.
@@ -249,6 +257,33 @@ fn run_command(path: &str, flags: &[&str]) -> ExitCode {
         }
     }
     run(path, until, stop_when_stdin_closes)
+}
+
+/// Opens a stopped node's data and says what is there — nothing is written,
+/// no network, no signer. `verify_data` opens read-only and does every check
+/// that matters (the state hashes to its recorded root, the chain head is
+/// there and agrees with the tip block); this only reports the result. The
+/// wording ("does not restore") is
+/// deliberately not "the data is damaged": corruption is one way to fail
+/// this, a node still mid-write is another, and a stopped node's own data
+/// should never fail it at all.
+fn verify(path: &str) -> ExitCode {
+    let config = match NodeConfig::load(&PathBuf::from(path)) {
+        Ok(config) => config,
+        Err(error) => return fail(error),
+    };
+    match verify_data(&config) {
+        Ok(report) => {
+            println!("the data restores");
+            println!("chain id: {}", report.chain_id);
+            println!("height: {}", report.height);
+            println!("tip block hash: {}", report.tip_block_hash);
+            println!("state root: {}", report.state_root);
+            println!("state entries: {}", report.entries);
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(format!("does not restore: {error}")),
+    }
 }
 
 fn network_key(path: &str) -> ExitCode {
@@ -607,6 +642,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         ["run", path, flags @ ..] => run_command(path, flags),
+        ["verify", path] => verify(path),
         ["network-key", path] => network_key(path),
         ["devnet", "init", dir, flags @ ..] => devnet_init(dir, flags),
         ["testnet", "init", dir, flags @ ..] => testnet_init(dir, flags),

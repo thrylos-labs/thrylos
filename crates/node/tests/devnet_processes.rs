@@ -526,7 +526,10 @@ fn verify_opens_a_stopped_nodes_data_and_refuses_damaged_data() {
         {
             let bytes = std::fs::read(&entry).unwrap();
             if bytes.len() > 4096 {
-                std::fs::write(&entry, &bytes[..bytes.len() / 2]).unwrap();
+                // Leave only one page. Halving a sparsely used MDBX file can
+                // remove nothing but unused growth room, which is a valid
+                // database rather than corruption.
+                std::fs::write(&entry, &bytes[..4096]).unwrap();
                 damaged += 1;
             }
         }

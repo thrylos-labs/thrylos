@@ -158,23 +158,22 @@ pub struct DataReport {
     pub entries: usize,
 }
 
-/// Open the chain `config` describes from the data on disk, exactly as a node starting
-/// would, and say what is there: the whole state is read back, hashed, and checked against
-/// the root recorded with the last block, and the supply is audited (`Executor::restore`).
-/// It starts no network and no signer and needs neither, so it is how to check that a
-/// backup restores without running anything. It may write to the data directory (the
-/// database is opened for writing), so run it on a copy.
+/// Open the chain `config` describes from the data on disk and say what is
+/// there: the whole state is read back, hashed, checked against the root
+/// recorded with the last block, and supply-audited (`Executor::restore`).
+/// It opens the database read-only, starts no network or signer, and refuses
+/// an absent chain rather than creating one, so it can safely verify a stopped
+/// node or a backup in place.
 pub fn verify_data(config: &NodeConfig) -> Result<DataReport, RunError> {
     let genesis = chain_genesis::load(&config.genesis)
         .map_err(|error| RunError::Genesis(error.to_string()))?;
-    let engine = DurableEngine::open(&config.data_dir, &genesis)?;
-    let executor = engine.executor();
+    let verified = DurableEngine::verify(&config.data_dir, &genesis)?;
     Ok(DataReport {
         chain_id: genesis.chain_id().0,
-        height: executor.head_height().unwrap_or(0),
-        tip_block_hash: executor.tip_block_hash().to_string(),
-        state_root: executor.state_root().as_hash().to_string(),
-        entries: executor.state_entries().count(),
+        height: verified.height,
+        tip_block_hash: verified.tip_block_hash.to_string(),
+        state_root: verified.state_root.as_hash().to_string(),
+        entries: verified.entries,
     })
 }
 

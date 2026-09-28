@@ -1,30 +1,33 @@
-//! Limits a node applies to the Move calls it *accepts and proposes*, that are
-//! **not** rules of the chain. `docs/gas-calibration.md` (option C).
+//! Defence-in-depth limits a node applies to the Move calls it *accepts and
+//! proposes*. They are operator policy, **not** rules of the chain. See
+//! `docs/gas-calibration.md` ("What is still open").
 //!
-//! Measured on the alpha VPS, a unit of gas spent on plain Move instructions costs
-//! 8 to 11 microseconds, so a transaction allowed 15,000,000 gas (a quarter of the
-//! block limit) can hold every validator for minutes. The proper fix is
-//! recalibrating gas, which changes consensus and waits for the next reset. Until
-//! then each validator refuses to take such a call into its mempool and stops
-//! packing a block with Move work once enough has been done.
+//! The consensus gas schedule has since been recalibrated to roughly one
+//! microsecond per gas. Genesis limits a transaction to 75,000 gas and a block
+//! to 300,000 gas (governance may raise those only within their clamps), so the
+//! minutes-scale exposure that originally motivated this stopgap no longer
+//! exists. The lower local limits remain as an intentionally conservative
+//! operator choice.
 //!
 //! Nothing here is checked when a block is *executed*: a block that carries a call
 //! over these limits is still a valid block, and every honest validator still runs
-//! it. That is the price of not forking, and why this is a stopgap: it protects
-//! the network from users, not from a validator that proposes such a block.
-//! Removing it needs no fork either.
+//! it, bounded by the consensus transaction and block gas limits. These checks
+//! protect a node's own ingress and proposer; they are not Byzantine-proposer
+//! protection. Removing or changing them needs no fork.
 
 use chain_types::Transaction;
 
 /// The most gas a call to a user's package may declare, for a node to take it into
-/// its mempool. At the worst rate measured this is about 0.2 seconds of a
-/// validator's time. A legitimate call uses tens to a few thousand gas.
+/// its mempool. At the calibration ruler this is about 20 milliseconds of a
+/// validator's time, though actual workloads vary. A legitimate call uses tens
+/// to a few thousand gas.
 pub const MOVE_CALL_GAS_LIMIT: u64 = 20_000;
 
 /// The most gas of Move calls a node's proposer will let one block hold, by what
 /// the calls actually used when it tried them. Once the total reaches it the
 /// proposer leaves the rest for later blocks. A call that used its whole limit can
-/// take the total past this by at most one call's worth.
+/// take the total past this by at most one call's worth. At the calibration
+/// ruler the budget is about 60 milliseconds of Move work.
 pub const MOVE_GAS_PER_PROPOSED_BLOCK: u64 = 60_000;
 
 /// Whether `tx` calls a package a user published (as opposed to the chain's own

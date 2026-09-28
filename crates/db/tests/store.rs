@@ -129,6 +129,39 @@ fn reopening_the_same_path_sees_everything_already_committed() {
     );
 }
 
+#[test]
+fn read_only_open_reads_an_existing_database_and_refuses_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let genesis = entries(&[(b"a", b"1")]);
+    {
+        let db = Db::open(dir.path()).unwrap();
+        db.initialise(GENESIS_HASH, GENESIS_ROOT, &genesis).unwrap();
+    }
+
+    let db = Db::open_read_only(dir.path()).unwrap();
+    assert_eq!(db.genesis_hash().unwrap(), Some(GENESIS_HASH));
+    assert_eq!(db.load_state().unwrap(), genesis);
+    assert!(
+        db.commit_block(
+            &block_at(1),
+            Hash::from_bytes([3; 32]),
+            &diff_with(&[]),
+            &[],
+        )
+        .is_err(),
+        "a read-only verification handle accepted a write"
+    );
+}
+
+#[test]
+fn read_only_open_does_not_create_a_missing_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing");
+
+    assert!(Db::open_read_only(&missing).is_err());
+    assert!(!missing.exists(), "read-only open created the missing path");
+}
+
 /// A diff that deletes the keys named by `keys`, recovered the same way
 /// [`diff_with`] recovers one: by diffing a state that has them against
 /// one that doesn't.

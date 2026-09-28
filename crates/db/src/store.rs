@@ -59,13 +59,29 @@ impl Db {
     /// this guarantee for throughput — a choice this crate is not
     /// making silently.
     pub fn open(path: &Path) -> Result<Self, DbError> {
+        Self::open_with_mode(
+            path,
+            Mode::ReadWrite {
+                sync_mode: SyncMode::Durable,
+            },
+        )
+    }
+
+    /// Opens an environment that must already exist, and can never be
+    /// written to or created: MDBX's own `MDBX_RDONLY` refuses a path with
+    /// no valid environment already at it rather than making one, which is
+    /// exactly what a tool that only *checks* a node's data — never starts
+    /// one — must never do by accident. For `chain-node verify`.
+    pub fn open_read_only(path: &Path) -> Result<Self, DbError> {
+        Self::open_with_mode(path, Mode::ReadOnly)
+    }
+
+    fn open_with_mode(path: &Path, mode: Mode) -> Result<Self, DbError> {
         let mut builder = Environment::builder();
         builder
             .set_max_dbs(6)
             .set_flags(EnvironmentFlags {
-                mode: Mode::ReadWrite {
-                    sync_mode: SyncMode::Durable,
-                },
+                mode,
                 ..Default::default()
             })
             .set_geometry(Geometry {

@@ -46,6 +46,10 @@ pub enum AccountError {
     /// `gas_limit * max_fee_per_gas` — the worst case, since the real
     /// cost isn't known until execution finishes — exceeds `balance`.
     InsufficientBalance,
+    /// The account has used every usable sequence number and can never
+    /// transact again. See [`EXHAUSTED_SEQUENCE_NUMBER`] for why the final
+    /// `u64` value is reserved as this marker.
+    SequenceNumbersExhausted,
 }
 
 impl core::fmt::Display for AccountError {
@@ -60,11 +64,34 @@ impl core::fmt::Display for AccountError {
             Self::InsufficientBalance => {
                 f.write_str("balance is below the worst-case fee, gas limit times max fee per gas")
             }
+            Self::SequenceNumbersExhausted => f.write_str(
+                "the account has used every usable sequence number and can never transact again",
+            ),
         }
     }
 }
 
 impl std::error::Error for AccountError {}
+
+/// The one sequence number `Account::check` never accepts, however it is
+/// offered: it is not a valid next nonce, it is the marker that every valid
+/// one has already been used.
+///
+/// A `u64` counter that only ever increments by one needs about 2⁶⁴
+/// transactions from one sender to reach its top — around 584,000 years at a
+/// million transactions a second, so this is not a practical way to spend an
+/// account. It is still a real edge, and the wrong one to let `saturating_add`
+/// paper over: without this constant, once `next_sequence_number` reached
+/// `u64::MAX` it would *stay* there forever, and "the next valid nonce is
+/// `u64::MAX`" (true the first time) and "every nonce, including `u64::MAX`,
+/// has already been used" (true from then on) would be the same stored
+/// value — the one thing sequence numbers exist to rule out, replaying an
+/// executed transaction, would become possible again. Reserving `u64::MAX`
+/// as a dedicated "exhausted" marker instead of a usable nonce closes that:
+/// the highest sequence number an account may actually use is `u64::MAX - 1`,
+/// and using it advances `next_sequence_number` to this constant, after
+/// which [`Account::check`] refuses everything, unconditionally, forever.
+pub const EXHAUSTED_SEQUENCE_NUMBER: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Account {
@@ -83,6 +110,9 @@ impl Account {
         gas_limit: GasAmount,
         max_fee_per_gas: GasPrice,
     ) -> Result<(), AccountError> {
+        if self.next_sequence_number.0 == EXHAUSTED_SEQUENCE_NUMBER {
+            return Err(AccountError::SequenceNumbersExhausted);
+        }
         if sequence_number < self.next_sequence_number {
             return Err(AccountError::SequenceNumberTooLow);
         }
@@ -110,6 +140,13 @@ impl Account {
     /// account was already checked to afford — `saturating_sub` is
     /// defensive, not a substitute for that check, and never panics
     /// even if a caller violates it.
+    ///
+    /// The sequence number's `saturating_add` is the same kind of
+    /// backstop, not the mechanism: [`Self::check`] never lets a
+    /// transaction reach here once `next_sequence_number` is
+    /// [`EXHAUSTED_SEQUENCE_NUMBER`], so `self.next_sequence_number.0`
+    /// is always `EXHAUSTED_SEQUENCE_NUMBER - 1` at most when this
+    /// runs, and the add cannot actually saturate.
     pub fn apply_transaction(&self, gas_used: GasAmount, price_per_gas: GasPrice) -> Self {
         let fee = u128::from(gas_used.0).saturating_mul(u128::from(price_per_gas.0));
         Self {
@@ -297,6 +334,64 @@ mod tests {
         let after = account.apply_transaction(GasAmount(100), GasPrice(100));
         assert_eq!(after.balance, 0);
     }
+
+    #[test]
+    fn the_last_usable_nonce_is_one_below_the_exhausted_marker() {
+        let account = Account {
+            balance: 1_000_000,
+            next_sequence_number: SequenceNumber(EXHAUSTED_SEQUENCE_NUMBER - 1),
+        };
+        // Still an ordinary, acceptable transaction.
+        assert_eq!(
+            account.check(
+                SequenceNumber(EXHAUSTED_SEQUENCE_NUMBER - 1),
+                GasAmount(1),
+                GasPrice(1)
+            ),
+            Ok(())
+        );
+        // Applying it reaches the marker exactly, by ordinary addition —
+        // nothing saturates to get there.
+        let after = account.apply_transaction(GasAmount(1), GasPrice(1));
+        assert_eq!(
+            after.next_sequence_number,
+            SequenceNumber(EXHAUSTED_SEQUENCE_NUMBER)
+        );
+    }
+
+    #[test]
+    fn an_exhausted_account_refuses_every_sequence_number_including_the_marker_itself() {
+        let account = Account {
+            balance: 1_000_000,
+            next_sequence_number: SequenceNumber(EXHAUSTED_SEQUENCE_NUMBER),
+        };
+        // Offering the marker back, as a stale signed transaction from
+        // before exhaustion would, does not succeed: this is the replay
+        // saturation would have allowed.
+        assert_eq!(
+            account.check(
+                SequenceNumber(EXHAUSTED_SEQUENCE_NUMBER),
+                GasAmount(1),
+                GasPrice(1)
+            ),
+            Err(AccountError::SequenceNumbersExhausted)
+        );
+        // Nor does any other sequence number, or a request that would
+        // otherwise pass on its own terms.
+        assert_eq!(
+            account.check(SequenceNumber(0), GasAmount(1), GasPrice(1)),
+            Err(AccountError::SequenceNumbersExhausted)
+        );
+        assert_eq!(
+            account.check(
+                SequenceNumber(EXHAUSTED_SEQUENCE_NUMBER),
+                GasAmount(u64::MAX),
+                GasPrice(u64::MAX)
+            ),
+            Err(AccountError::SequenceNumbersExhausted),
+            "exhaustion is checked before balance, not instead of it mattering less"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -327,6 +422,7 @@ mod display_tests {
             AccountError::SequenceNumberTooLow,
             AccountError::SequenceNumberTooHigh,
             AccountError::InsufficientBalance,
+            AccountError::SequenceNumbersExhausted,
         ]);
     }
 }

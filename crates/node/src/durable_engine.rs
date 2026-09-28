@@ -96,6 +96,15 @@ pub struct DurableEngine {
     last_storage_error: Option<DbError>,
 }
 
+/// The checked facts a read-only verification recovered from a node's chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifiedData {
+    pub height: u64,
+    pub tip_block_hash: Hash,
+    pub state_root: StateRoot,
+    pub entries: usize,
+}
+
 impl DurableEngine {
     /// Starts the chain `config` describes in `dir`, or restores the one
     /// already there. See the module docs.
@@ -111,6 +120,37 @@ impl DurableEngine {
             executor,
             db,
             last_storage_error: None,
+        })
+    }
+
+    /// Checks a stopped node's data without ever writing to it: not a
+    /// smaller [`Self::open`], a different one. `open` is right for a node
+    /// starting up, where "nothing here yet" correctly means "make a fresh
+    /// chain" — but that is also, byte for byte, what "there was a chain
+    /// here and its one record of having started is gone" looks like. A
+    /// tool whose entire purpose is telling those two apart must never be
+    /// the thing capable of turning the second into the first. So this
+    /// opens the database [`Db::open_read_only`] — which cannot create an
+    /// environment, only find one already there — and refuses outright if
+    /// there is no recorded genesis, rather than falling back to
+    /// [`Self::start`] the way `open` does.
+    ///
+    /// Returns a report about what it found, once every check
+    /// [`Self::restore`] makes has passed.
+    pub fn verify(dir: &Path, config: &GenesisConfig) -> Result<VerifiedData, OpenError> {
+        let path = dir.join(DATABASE_DIRECTORY);
+        let db = Db::open_read_only(&path)?;
+        let Some(stored) = db.genesis_hash()? else {
+            return Err(OpenError::Damaged(
+                "no chain has ever been started here, or its record of having started is gone",
+            ));
+        };
+        let executor = Self::restore(&db, config, stored)?;
+        Ok(VerifiedData {
+            height: executor.head_height().unwrap_or_default(),
+            tip_block_hash: executor.tip_block_hash(),
+            state_root: executor.state_root(),
+            entries: executor.state_entries().count(),
         })
     }
 
