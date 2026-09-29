@@ -37,6 +37,7 @@ chain-types = { path = "../types", version = "0.1.0" }
 blake3.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
+malachite-core-types.workspace = true
 
 [dev-dependencies]
 blst.workspace = true

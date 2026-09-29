@@ -14,12 +14,20 @@
 //!   "peers": [
 //!     { "address": "10.0.0.2:26656", "public_key": "<64 hex digits>", "validator": "thry1…" }
 //!   ],
-//!   "rpc": { "listen": "127.0.0.1:26657" }
+//!   "rpc": { "listen": "127.0.0.1:26657" },
+//!   "trusted_checkpoint": {
+//!     "height": 100000,
+//!     "block_hash": "<64 hex digits>",
+//!     "state_root": "<64 hex digits>"
+//!   }
 //! }
 //! ```
 //!
-//! `rpc` is optional: without it the node serves no RPC. Its address must be a
-//! loopback one (the RPC is local only; see `chain-rpc`).
+//! `rpc` and `trusted_checkpoint` are optional. Without `rpc` the node serves
+//! no RPC; its address must be loopback-only. A trusted checkpoint is a
+//! weak-subjectivity anchor distributed through the operator's authenticated
+//! configuration channel. A node refuses stored or newly synced history that
+//! disagrees with either hash at that height.
 //!
 //! The file names secrets and never holds one: the transport key and the
 //! signer's credential are files of their own, refused unless only their owner
@@ -40,7 +48,7 @@ use std::time::Duration;
 use chain_genesis::hex;
 use chain_p2p::{NetworkIdentity, MAX_CONNECTED_PEERS};
 use chain_text::parse_address;
-use chain_types::Address;
+use chain_types::{Address, BlockHeight, Hash};
 use serde::Deserialize;
 
 use crate::peer_network::PeerNetworkConfig;
@@ -98,8 +106,20 @@ struct RawConfig {
     signer: RawSigner,
     peers: Vec<RawPeer>,
     rpc: Option<RawRpc>,
+    /// An operator-distributed weak-subjectivity checkpoint. The node config
+    /// is the trust channel; the values are checked against local and synced
+    /// history before the node can pass this height.
+    trusted_checkpoint: Option<RawCheckpoint>,
     #[serde(default)]
     tuning: RawTuning,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCheckpoint {
+    height: u64,
+    block_hash: String,
+    state_root: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +167,15 @@ pub struct PeerSpec {
     pub validator: Option<Address>,
 }
 
+/// A weak-subjectivity anchor obtained through the same authenticated
+/// operator channel as the node configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustedCheckpoint {
+    pub height: BlockHeight,
+    pub block_hash: Hash,
+    pub state_root: Hash,
+}
+
 /// A checked configuration, with paths resolved.
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
@@ -164,6 +193,7 @@ pub struct NodeConfig {
     pub rpc_listen: Option<SocketAddr>,
     /// Whether the RPC serves `simulate` (`rpc.simulate`; off by default).
     pub rpc_simulate: bool,
+    pub trusted_checkpoint: Option<TrustedCheckpoint>,
     pub network: PeerNetworkConfig,
     /// How long a peer may take over a handshake or a stalled frame.
     pub io_timeout: Duration,
@@ -185,6 +215,12 @@ fn resolve(base: &Path, path: PathBuf) -> PathBuf {
 
 fn address_field(field: &str, text: &str) -> Result<Address, ConfigError> {
     parse_address(text).map_err(|error| invalid(field, error.to_string()))
+}
+
+fn hash_field(field: &str, text: &str) -> Result<Hash, ConfigError> {
+    hex::decode::<32>(text)
+        .map(Hash::from_bytes)
+        .map_err(|error| invalid(field, format!("expected 64 hex digits: {error}")))
 }
 
 impl NodeConfig {
@@ -281,6 +317,29 @@ impl NodeConfig {
             }
         };
 
+        let trusted_checkpoint = raw
+            .trusted_checkpoint
+            .map(|checkpoint| {
+                if checkpoint.height == 0 {
+                    return Err(invalid(
+                        "trusted_checkpoint.height",
+                        "must be greater than zero; genesis is already pinned separately",
+                    ));
+                }
+                Ok(TrustedCheckpoint {
+                    height: BlockHeight(checkpoint.height),
+                    block_hash: hash_field(
+                        "trusted_checkpoint.block_hash",
+                        &checkpoint.block_hash,
+                    )?,
+                    state_root: hash_field(
+                        "trusted_checkpoint.state_root",
+                        &checkpoint.state_root,
+                    )?,
+                })
+            })
+            .transpose()?;
+
         let millis = |field: &str, value: Option<u64>, default: Duration| match value {
             None => Ok(default),
             Some(0) => Err(invalid(field, "must not be zero")),
@@ -330,6 +389,7 @@ impl NodeConfig {
             peers,
             rpc_listen,
             rpc_simulate,
+            trusted_checkpoint,
             network,
             io_timeout: millis(
                 "tuning.io_timeout_ms",
@@ -487,6 +547,37 @@ mod tests {
             r#", "rpc": { "listen": "127.0.0.1:9100", "simulate": "yes" }"#
         ))
         .is_err());
+    }
+
+    #[test]
+    fn a_trusted_checkpoint_is_optional_strict_and_fully_parsed() {
+        assert_eq!(
+            parse(&config_with("", "")).unwrap().trusted_checkpoint,
+            None
+        );
+        let text = config_with(
+            "",
+            &format!(
+                r#", "trusted_checkpoint": {{ "height": 42, "block_hash": "{}", "state_root": "{}" }}"#,
+                "11".repeat(32),
+                "22".repeat(32)
+            ),
+        );
+        assert_eq!(
+            parse(&text).unwrap().trusted_checkpoint,
+            Some(TrustedCheckpoint {
+                height: BlockHeight(42),
+                block_hash: Hash::from_bytes([0x11; 32]),
+                state_root: Hash::from_bytes([0x22; 32]),
+            })
+        );
+
+        let zero = text.replace("\"height\": 42", "\"height\": 0");
+        assert!(refused(&zero).contains("greater than zero"));
+        let short = text.replace(&"11".repeat(32), "11");
+        assert!(refused(&short).contains("64 hex digits"));
+        let extra = text.replace("\"state_root\":", "\"unknown\": true, \"state_root\":");
+        assert!(refused(&extra).contains("unknown"));
     }
 
     #[test]

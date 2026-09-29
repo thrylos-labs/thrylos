@@ -16,11 +16,12 @@
 //! Messages that failed verification are never written: what a peer can
 //! make this log hold is limited to what only a validator could have signed.
 
+use chain_engine_api::Block;
 use chain_types::codec::{CodecError, Decode, Encode};
-use chain_types::Hash;
+use chain_types::{BlsSignature, Hash};
 use malachite_core_types::Round;
 
-use super::messages::{Message, ProposedBlock};
+use super::messages::Message;
 use crate::types::round_as_u64;
 use crate::wire::{decode_message, decode_timeout, encode_message, encode_timeout};
 
@@ -35,7 +36,8 @@ pub(super) enum Entry {
     Timeout(malachite_core_types::Timeout),
     OwnBlock {
         round: Round,
-        proposed: ProposedBlock,
+        block: Block,
+        reveal: BlsSignature,
     },
     Invalid(Hash),
 }
@@ -52,10 +54,15 @@ impl Entry {
                 TIMEOUT.encode(&mut out);
                 out.extend_from_slice(&encode_timeout(*timeout));
             }
-            Self::OwnBlock { round, proposed } => {
+            Self::OwnBlock {
+                round,
+                block,
+                reveal,
+            } => {
                 OWN_BLOCK.encode(&mut out);
                 round_as_u64(*round).encode(&mut out);
-                out.extend_from_slice(&encode_message(&Message::Block(proposed.clone())));
+                block.encode(&mut out);
+                reveal.encode(&mut out);
             }
             Self::Invalid(id) => {
                 INVALID.encode(&mut out);
@@ -78,10 +85,24 @@ impl Entry {
                     Round::new(u32::try_from(round).map_err(|_| CodecError::InvalidValue)?)
                 };
                 let after = rest.get(used..).ok_or(CodecError::UnexpectedEof)?;
-                match decode_message(after)? {
-                    Message::Block(proposed) => Ok(Self::OwnBlock { round, proposed }),
-                    _ => Err(CodecError::InvalidValue),
+                let (block, block_used) = Block::decode(after)?;
+                let reveal_at = used
+                    .checked_add(block_used)
+                    .ok_or(CodecError::LengthTooLarge)?;
+                let (reveal, reveal_used) =
+                    BlsSignature::decode(rest.get(reveal_at..).ok_or(CodecError::UnexpectedEof)?)?;
+                if reveal_at
+                    .checked_add(reveal_used)
+                    .ok_or(CodecError::LengthTooLarge)?
+                    != rest.len()
+                {
+                    return Err(CodecError::TrailingBytes);
                 }
+                Ok(Self::OwnBlock {
+                    round,
+                    block,
+                    reveal,
+                })
             }
             INVALID => Ok(Self::Invalid(chain_types::codec::decode_exact(rest)?)),
             _ => Err(CodecError::InvalidValue),
@@ -98,11 +119,16 @@ mod tests {
     use chain_types::bls::{BlsSignature, DST_VOTE};
     use chain_types::{Address, BlockHeight, ChainId};
     use malachite_core_consensus::SignedConsensusMsg;
-    use malachite_core_types::{NilOrVal, SignedVote, Timeout, TimeoutKind, VoteType};
+    use malachite_core_types::{
+        NilOrVal, SignedProposal, SignedVote, Timeout, TimeoutKind, VoteType,
+    };
     use std::time::Duration;
 
     use super::*;
-    use crate::types::{ConsensusAddress, ConsensusHeight, ConsensusVote};
+    use crate::host::ProposedBlock;
+    use crate::types::{
+        ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValue, ConsensusVote,
+    };
 
     fn signature() -> BlsSignature {
         let secret = SecretKey::key_gen(&[3; 32], &[]).unwrap();
@@ -110,15 +136,27 @@ mod tests {
     }
 
     fn proposed() -> ProposedBlock {
+        let block = Block {
+            parent_block_hash: Hash::from_bytes([2; 32]),
+            height: BlockHeight(4),
+            timestamp_millis: 1_700_000_000_004,
+            transactions: Vec::new(),
+        };
         ProposedBlock {
             proposer: Address::from_bytes([1; 32]),
-            block: Block {
-                parent_block_hash: Hash::from_bytes([2; 32]),
-                height: BlockHeight(4),
-                timestamp_millis: 1_700_000_000_004,
-                transactions: Vec::new(),
-            },
+            block: block.clone(),
             reveal: signature(),
+            proposal: SignedProposal::new(
+                ConsensusProposal {
+                    chain_id: ChainId(1),
+                    height: ConsensusHeight(block.height),
+                    round: Round::new(1),
+                    value: ConsensusValue(block.hash()),
+                    pol_round: Round::Nil,
+                    validator_address: ConsensusAddress(Address::from_bytes([1; 32])),
+                },
+                signature(),
+            ),
         }
     }
 
@@ -146,11 +184,13 @@ mod tests {
             }),
             Entry::OwnBlock {
                 round: Round::new(2),
-                proposed: proposed(),
+                block: proposed().block,
+                reveal: signature(),
             },
             Entry::OwnBlock {
                 round: Round::Nil,
-                proposed: proposed(),
+                block: proposed().block,
+                reveal: signature(),
             },
             Entry::Invalid(Hash::from_bytes([9; 32])),
         ]

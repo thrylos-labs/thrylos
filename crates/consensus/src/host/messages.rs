@@ -7,22 +7,24 @@ use chain_engine_api::{Block, ExecutedBlock};
 use chain_signer::{HighWaterMark, SignerError};
 use chain_types::{Address, BlockHeight, BlsSignature, DuplicateVoteEvidence, Hash};
 use malachite_core_consensus::{LivenessMsg, SignedConsensusMsg};
-use malachite_core_types::{CommitCertificate, Timeout};
+use malachite_core_types::{CommitCertificate, SignedProposal, Timeout};
 
 use crate::context::ThrylosContext;
 
-/// A block, with what its proposer contributes to the randomness beacon.
+/// A block, its authenticated proposal, and what its proposer contributes to
+/// the randomness beacon.
 ///
 /// Consensus decides on a block's *hash*; the block itself travels on its
-/// own, and this is how. `reveal` is `proposer`'s signature over the
-/// height and seed (`chain_types::beacon`): the host checks it on arrival
-/// and drops the message if it is not the proposer's, so a forged reveal
-/// can never displace a real one.
+/// own, and this is how. `proposal` is the normal consensus proposal signed
+/// under `DST_VOTE`; it binds the proposer to this exact block hash, height,
+/// round and chain. `reveal` is a separate signature over the height and
+/// beacon seed. Both are checked before the payload is retained or logged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProposedBlock {
     pub proposer: Address,
     pub block: Block,
     pub reveal: BlsSignature,
+    pub proposal: SignedProposal<ThrylosContext>,
 }
 
 impl ProposedBlock {

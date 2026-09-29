@@ -34,6 +34,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chain_consensus::host::{Message, ProposedBlock};
+use chain_consensus::types::{
+    ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValue,
+};
 use chain_consensus::wire::encode_message;
 use chain_engine_api::{Block, MAX_BLOCK_SIZE_BYTES};
 use chain_node::block_relay::{BlockRelay, PendingTransactions, Received};
@@ -45,6 +48,7 @@ use chain_types::{
     SequenceNumber, Signature, Transaction, TransactionBody,
 };
 use ed25519_dalek::{Signer, SigningKey};
+use malachite_core_types::{Round, SignedProposal};
 
 /// The most validators a proposer is measured feeding: half the peers the
 /// transport allows.
@@ -122,6 +126,16 @@ fn build_full_block() -> ProposedBlock {
         "the running sum is the block's size"
     );
     let secret = blst::min_pk::SecretKey::key_gen(&[5; 32], &[]).unwrap();
+    let proposal_message = ConsensusProposal {
+        chain_id: ChainId(1337),
+        height: ConsensusHeight(block.height),
+        round: Round::new(0),
+        value: ConsensusValue(block.hash()),
+        pol_round: Round::Nil,
+        validator_address: ConsensusAddress(validator(1)),
+    };
+    let mut proposal_bytes = Vec::new();
+    proposal_message.encode(&mut proposal_bytes);
     ProposedBlock {
         proposer: validator(1),
         block,
@@ -131,6 +145,15 @@ fn build_full_block() -> ProposedBlock {
                 .to_bytes(),
         )
         .unwrap(),
+        proposal: SignedProposal::new(
+            proposal_message,
+            BlsSignature::from_bytes(
+                secret
+                    .sign(&proposal_bytes, chain_types::bls::DST_VOTE, &[])
+                    .to_bytes(),
+            )
+            .unwrap(),
+        ),
     }
 }
 

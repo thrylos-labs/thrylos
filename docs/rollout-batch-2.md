@@ -11,7 +11,7 @@ Consensus rules (one restart of all four validators, as before):
 
 | Change | What is visible |
 |---|---|
-| A validator's operator has 7 unbonding slots reserved beyond the shared 512 | Nothing at alpha scale: the queue is nowhere near full. |
+| A validator's operator has 7 unbonding slots reserved beyond the shared 512 | Historical behavior for this rollout. Superseded by the 2026-09 medium-finding remediation: one exit per pair and admission-time capacity reservation for every share holder, with no extra operator-only slots. |
 | Canonical `BTreeMap` decoding (keys strictly ascending) | Nothing for honest data: everything is written in ascending order. Rehearsed, see below. |
 
 Node-local (take effect when the process restarts):

@@ -383,21 +383,48 @@ mod tests {
     }
 
     fn block(height: u64, count: u64) -> ProposedBlock {
+        use chain_consensus::types::{
+            ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValue,
+        };
+        use chain_types::{ChainId, Encode};
+        use malachite_core_types::{Round, SignedProposal};
+
         let secret = blst::min_pk::SecretKey::key_gen(&[5; 32], &[]).unwrap();
+        let proposer = proposer();
+        let block = Block {
+            parent_block_hash: Hash::from_bytes([3; 32]),
+            height: BlockHeight(height),
+            timestamp_millis: 1_700_000_000_000 + height,
+            transactions: (0..count).map(tx).collect(),
+        };
+        let proposal_message = ConsensusProposal {
+            chain_id: ChainId(1),
+            height: ConsensusHeight(block.height),
+            round: Round::new(0),
+            value: ConsensusValue(block.hash()),
+            pol_round: Round::Nil,
+            validator_address: ConsensusAddress(proposer),
+        };
+        let mut proposal_bytes = Vec::new();
+        proposal_message.encode(&mut proposal_bytes);
         ProposedBlock {
-            proposer: proposer(),
-            block: Block {
-                parent_block_hash: Hash::from_bytes([3; 32]),
-                height: BlockHeight(height),
-                timestamp_millis: 1_700_000_000_000 + height,
-                transactions: (0..count).map(tx).collect(),
-            },
+            proposer,
+            block,
             reveal: BlsSignature::from_bytes(
                 secret
                     .sign(b"r", chain_types::bls::DST_VOTE, &[])
                     .to_bytes(),
             )
             .unwrap(),
+            proposal: SignedProposal::new(
+                proposal_message,
+                BlsSignature::from_bytes(
+                    secret
+                        .sign(&proposal_bytes, chain_types::bls::DST_VOTE, &[])
+                        .to_bytes(),
+                )
+                .unwrap(),
+            ),
         }
     }
 

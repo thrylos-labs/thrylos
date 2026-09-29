@@ -184,26 +184,11 @@ pub struct HostConfig {
     /// **A choice.** The most transactions asked of the source for one
     /// block; the block's gas limit is what actually bounds it.
     pub max_transactions: usize,
-    /// **A choice.** How many heights ahead a block message is held for,
-    /// so a peer that is slightly ahead is not made to resend.
-    pub max_future_heights: u64,
-    /// **A choice.** The most block messages held per future height, and
-    /// (with the same cap) the most distinct blocks and proposals kept for
-    /// the height being run: everything a peer can make this node hold is
-    /// bounded.
+    /// **A choice.** The most block messages and proposals kept for the
+    /// height being run. Every retained peer block
+    /// carries a verified proposal signature, and at most one is retained
+    /// for each proposer/round.
     pub max_pending_per_height: usize,
-    /// **A choice.** The most blocks one proposer may have held that no
-    /// verified proposal names yet, per height. A block message is only
-    /// vouched for by its proposer's reveal, which does not cover the
-    /// block's contents, so any validator can mint as many distinct blocks
-    /// as it likes; without this one of them could fill every slot
-    /// `max_pending_per_height` allows and the real proposer's block would
-    /// be dropped, height after height. A block a verified proposal from
-    /// the drawn proposer names is exempt: it is always kept, making room
-    /// by dropping unvouched ones. An honest proposer builds one block per
-    /// round, and a height needs only a few rounds, so a handful is room to
-    /// spare.
-    pub max_unvouched_blocks_per_proposer: usize,
     /// **A choice.** How long a validator has to be seen working past this
     /// node's height before it asks for what it missed. Peers a moment ahead
     /// are the normal case at every height boundary; a node that is still
@@ -257,9 +242,7 @@ impl Default for HostConfig {
             },
             threshold: ThresholdParams::default(),
             max_transactions: 10_000,
-            max_future_heights: 2,
             max_pending_per_height: 64,
-            max_unvouched_blocks_per_proposer: 4,
             sync_grace_ms: 1_000,
             sync_retry_ms: 3_000,
             sync_batch: 16,
@@ -276,6 +259,14 @@ struct Verdict {
     validity: Validity,
     /// The result of executing it, if it was valid: kept for the commit.
     executed: Option<ExecutedBlock>,
+}
+
+/// A locally built block can be persisted before its consensus proposal is
+/// signed. The signed proposal is attached only when the engine publishes it.
+#[derive(Debug, Clone)]
+struct OwnBlock {
+    block: Block,
+    reveal: BlsSignature,
 }
 
 /// A proposal seen for the height, waiting for its block.
@@ -338,14 +329,12 @@ struct Env<X, T, C, K: ConsensusSigner, L, D> {
 
     // Per height.
     blocks: BTreeMap<Hash, Block>,
-    /// Which proposer sent each held block that no verified proposal names
-    /// yet. A block is in `blocks` and here until such a proposal arrives
-    /// (then only in `blocks`); this node's own blocks are never here.
-    unvouched: BTreeMap<Hash, Address>,
     reveals: BTreeMap<Address, BlsSignature>,
     verdicts: BTreeMap<Hash, Verdict>,
     props: BTreeMap<(Hash, Address), Prop>,
-    announced: BTreeSet<Hash>,
+    /// The signed proposal sent with each locally announced block. Keeping
+    /// the proof also lets a restream resend an authenticated payload.
+    announced: BTreeMap<Hash, SignedProposal<ThrylosContext>>,
 
     /// The write-ahead log's entries for this height, as written, so that
     /// replaying one does not write it a second time.
@@ -355,7 +344,7 @@ struct Env<X, T, C, K: ConsensusSigner, L, D> {
     wal_dirty: bool,
     /// Blocks this validator built, by round, so it never builds a second
     /// for a round it already has one for.
-    own_blocks: BTreeMap<u64, ProposedBlock>,
+    own_blocks: BTreeMap<u64, OwnBlock>,
     /// Blocks the log says this node judged invalid.
     judged_invalid: BTreeSet<Hash>,
 
@@ -365,7 +354,6 @@ struct Env<X, T, C, K: ConsensusSigner, L, D> {
     /// When the next height starts, if the pace has it waiting to.
     next_height_at_ms: Option<u64>,
     lag: Lag,
-    future_blocks: BTreeMap<u64, Vec<ProposedBlock>>,
     queue: VecDeque<Input<ThrylosContext>>,
     outbox: Outbox,
     halted: Option<HaltReason>,
@@ -473,11 +461,10 @@ where
                 seed,
                 seed_after: None,
                 blocks: BTreeMap::new(),
-                unvouched: BTreeMap::new(),
                 reveals: BTreeMap::new(),
                 verdicts: BTreeMap::new(),
                 props: BTreeMap::new(),
-                announced: BTreeSet::new(),
+                announced: BTreeMap::new(),
                 logged: BTreeSet::new(),
                 logged_count: 0,
                 wal_dirty: false,
@@ -486,7 +473,6 @@ where
                 awaiting_sync: false,
                 next_height_at_ms: None,
                 lag: Lag::default(),
-                future_blocks: BTreeMap::new(),
                 queue: VecDeque::new(),
                 outbox: Outbox::default(),
                 halted: None,
@@ -737,9 +723,18 @@ where
     fn remember(&mut self, entry: &Entry, bytes: Vec<u8>) {
         self.logged_count = self.logged_count.saturating_add(1);
         match entry {
-            Entry::OwnBlock { round, proposed } => {
-                self.own_blocks
-                    .insert(round_as_u64(*round), proposed.clone());
+            Entry::OwnBlock {
+                round,
+                block,
+                reveal,
+            } => {
+                self.own_blocks.insert(
+                    round_as_u64(*round),
+                    OwnBlock {
+                        block: block.clone(),
+                        reveal: *reveal,
+                    },
+                );
             }
             Entry::Invalid(id) => {
                 self.judged_invalid.insert(*id);
@@ -826,7 +821,7 @@ where
                     // with the block, since the next seed is built from the
                     // decided round's proposer's.
                     if proposal.message.validator_address == self.me {
-                        self.announce_own(proposal.message.value.0)?;
+                        self.announce_own(proposal.clone())?;
                     }
                 }
                 self.outbox.messages.push(Message::Consensus(message));
@@ -1010,6 +1005,16 @@ where
             return;
         }
         let key = (proposal.value.0, proposal.validator_address.0);
+        // One authenticated payload per proposer/round. A Byzantine
+        // proposer can sign conflicting proposals, but it cannot turn that
+        // equivocation into an unbounded block cache.
+        if self.props.iter().any(|((value, proposer), known)| {
+            *proposer == proposal.validator_address.0
+                && known.round == proposal.round
+                && *value != proposal.value.0
+        }) {
+            return;
+        }
         if !self.props.contains_key(&key) && self.props.len() >= self.config.max_pending_per_height
         {
             return;
@@ -1019,10 +1024,6 @@ where
             pol_round: proposal.pol_round,
             fed: false,
         });
-        // A block held on nothing but its proposer's reveal is now named by
-        // a verified proposal from the drawn proposer: no longer only as
-        // good as its sender's quota.
-        self.unvouched.remove(&proposal.value.0);
         self.feed_ready();
     }
 
@@ -1034,26 +1035,6 @@ where
         let height = pb.block.height.0;
         if height == self.height.0 {
             self.accept_block(pb);
-        } else if height > self.height.0
-            && height <= self.height.0.saturating_add(self.config.max_future_heights)
-        {
-            // Not checked against a seed yet, so the little that can be
-            // checked is: a stranger's blocks are not held at all, and one
-            // proposer cannot take every slot for a height.
-            if self
-                .validators
-                .get_by_address(&ConsensusAddress(pb.proposer))
-                .is_none()
-            {
-                return;
-            }
-            let held = self.future_blocks.entry(height).or_default();
-            let from_this_proposer = held.iter().filter(|b| b.proposer == pb.proposer).count();
-            if held.len() < self.config.max_pending_per_height
-                && from_this_proposer < self.config.max_unvouched_blocks_per_proposer
-            {
-                held.push(pb);
-            }
         }
     }
 
@@ -1061,37 +1042,50 @@ where
     /// reveal from a validator, so a forged one can never displace the real
     /// thing.
     fn accept_block(&mut self, pb: ProposedBlock) {
+        let proposal = &pb.proposal;
+        if proposal.message.chain_id != self.ctx.chain_id()
+            || proposal.message.height.0 != pb.block.height
+            || proposal.message.value.0 != pb.id()
+            || proposal.message.validator_address.0 != pb.proposer
+        {
+            return;
+        }
         let Some(validator) = self
             .validators
             .get_by_address(&ConsensusAddress(pb.proposer))
         else {
             return;
         };
+        let chosen = self.ctx.select_proposer(
+            &self.validators,
+            proposal.message.height,
+            proposal.message.round,
+        );
+        if chosen.address() != &proposal.message.validator_address
+            || verify_aggregate(
+                &[validator.public_key()],
+                &encoded(&proposal.message),
+                DST_VOTE,
+                &proposal.signature,
+            )
+            .is_err()
+        {
+            return;
+        }
         if verify_reveal(validator.public_key(), self.height, &self.seed, &pb.reveal).is_err() {
             return;
         }
         let id = pb.id();
+        self.note_proposal(&proposal.message);
+        if !self
+            .props
+            .contains_key(&(id, proposal.message.validator_address.0))
+        {
+            return;
+        }
         let held = self.blocks.contains_key(&id);
-        let vouched = self.props.keys().any(|(value, _)| *value == id);
-        if !held {
-            let full = self.blocks.len() >= self.config.max_pending_per_height;
-            if vouched {
-                // A verified proposal from the drawn proposer names it: it
-                // is kept whatever else is held, by giving up an unvouched
-                // block's place if there is no other.
-                if full && !self.evict_one_unvouched() {
-                    return;
-                }
-            } else {
-                let from_this_proposer = self
-                    .unvouched
-                    .values()
-                    .filter(|proposer| **proposer == pb.proposer)
-                    .count();
-                if full || from_this_proposer >= self.config.max_unvouched_blocks_per_proposer {
-                    return;
-                }
-            }
+        if !held && self.blocks.len() >= self.config.max_pending_per_height {
+            return;
         }
         // Written before it is used.
         if self
@@ -1103,37 +1097,12 @@ where
         self.reveals.entry(pb.proposer).or_insert(pb.reveal);
         if !held {
             self.blocks.insert(id, pb.block);
-            if !vouched {
-                self.unvouched.insert(id, pb.proposer);
-            }
         }
+        // The payload's proof is a real consensus proposal in its own right.
+        // Feeding it to the engine means the block remains usable even if the
+        // separately broadcast proposal frame was lost.
+        self.queue.push_back(Input::Proposal(pb.proposal));
         self.feed_ready();
-    }
-
-    /// Drops one block that no verified proposal names, taking it from
-    /// whichever proposer has the most held, and says whether there was one.
-    /// What makes room for a block that *is* named when the shared slots
-    /// are full of the other kind.
-    fn evict_one_unvouched(&mut self) -> bool {
-        let mut counts: BTreeMap<Address, usize> = BTreeMap::new();
-        for proposer in self.unvouched.values() {
-            let count = counts.entry(*proposer).or_default();
-            *count = count.saturating_add(1);
-        }
-        let Some((heaviest, _)) = counts.into_iter().max_by_key(|(_, count)| *count) else {
-            return false;
-        };
-        let Some(id) = self
-            .unvouched
-            .iter()
-            .find(|(_, proposer)| **proposer == heaviest)
-            .map(|(id, _)| *id)
-        else {
-            return false;
-        };
-        self.unvouched.remove(&id);
-        self.blocks.remove(&id);
-        true
     }
 
     /// Tells the engine about every proposal whose block and proposer's
@@ -1232,11 +1201,10 @@ where
         // replaying it — is proposed again as it was: proposing a different
         // one would be signing two proposals for the round.
         if let Some(proposed) = self.own_blocks.get(&round_as_u64(round)).cloned() {
-            let id = proposed.id();
+            let id = proposed.block.hash();
             self.blocks.entry(id).or_insert(proposed.block);
             self.reveals.entry(self.me.0).or_insert(proposed.reveal);
             self.verdict(id)?;
-            self.announce_own(id)?;
             self.queue
                 .push_back(Input::Propose(LocallyProposedValue::new(
                     height,
@@ -1305,11 +1273,8 @@ where
         self.log(
             &Entry::OwnBlock {
                 round,
-                proposed: ProposedBlock {
-                    proposer: self.me.0,
-                    block: block.clone(),
-                    reveal,
-                },
+                block: block.clone(),
+                reveal,
             },
             false,
         )?;
@@ -1321,7 +1286,6 @@ where
                 executed: Some(executed),
             },
         );
-        self.announce_own(id)?;
         self.queue
             .push_back(Input::Propose(LocallyProposedValue::new(
                 height,
@@ -1345,18 +1309,12 @@ where
         }
     }
 
-    /// Sends block `id` to everyone under this validator's name and reveal,
-    /// once.
-    fn announce_own(&mut self, id: Hash) -> Result<(), HostError> {
-        if self.announced.contains(&id) {
+    /// Sends the block named by this validator's signed proposal, once.
+    fn announce_own(&mut self, proposal: SignedProposal<ThrylosContext>) -> Result<(), HostError> {
+        let id = proposal.message.value.0;
+        if self.announced.contains_key(&id) {
             return Ok(());
         }
-        self.resend_block(id)?;
-        self.announced.insert(id);
-        Ok(())
-    }
-
-    fn resend_block(&mut self, id: Hash) -> Result<(), HostError> {
         let Some(block) = self.blocks.get(&id).cloned() else {
             return Ok(());
         };
@@ -1365,6 +1323,25 @@ where
             proposer: self.me.0,
             block,
             reveal,
+            proposal: proposal.clone(),
+        }));
+        self.announced.insert(id, proposal);
+        Ok(())
+    }
+
+    fn resend_block(&mut self, id: Hash) -> Result<(), HostError> {
+        let Some(block) = self.blocks.get(&id).cloned() else {
+            return Ok(());
+        };
+        let Some(proposal) = self.announced.get(&id).cloned() else {
+            return Ok(());
+        };
+        let reveal = self.my_reveal()?;
+        self.outbox.messages.push(Message::Block(ProposedBlock {
+            proposer: self.me.0,
+            block,
+            reveal,
+            proposal,
         }));
         Ok(())
     }
@@ -1514,12 +1491,10 @@ where
         self.seed = seed;
         self.validators = ConsensusValidatorSet::from_infos(&infos, seed);
         self.blocks.clear();
-        self.unvouched.clear();
         self.reveals.clear();
         self.verdicts.clear();
         self.props.clear();
         self.announced.clear();
-        self.future_blocks.retain(|height, _| *height >= next.0);
         self.awaiting_sync = false;
         self.logged.clear();
         self.logged_count = 0;
@@ -1547,15 +1522,6 @@ where
             None,
             VoteExtensionPolicy::default(),
         ));
-        // Blocks that peers sent while this node was still on the last
-        // height, now checked against this height's seed.
-        for pb in self
-            .future_blocks
-            .remove(&self.height.0)
-            .unwrap_or_default()
-        {
-            self.accept_block(pb);
-        }
     }
 
     // ---- catching up -----------------------------------------------------------

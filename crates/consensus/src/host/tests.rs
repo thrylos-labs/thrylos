@@ -427,14 +427,39 @@ fn genuine<D: Storage>(host: &HostWith<D>, height: u64, variant: u64) -> Propose
 /// could have made — so a block that is junk in every way but that one.
 fn genuine_from<D: Storage>(host: &HostWith<D>, n: u8, height: u64, variant: u64) -> ProposedBlock {
     let head = host.env.exec.head().unwrap();
+    let proposer = Address::from_public_key(&operator(n));
+    let block = Block {
+        parent_block_hash: head.block_hash,
+        height: BlockHeight(height),
+        timestamp_millis: head.timestamp_ms + 1 + variant,
+        transactions: Vec::new(),
+    };
+    let round = (0..1_000)
+        .map(Round::new)
+        .find(|round| {
+            host.env
+                .ctx
+                .select_proposer(
+                    &host.env.validators,
+                    ConsensusHeight(BlockHeight(height)),
+                    *round,
+                )
+                .address()
+                .0
+                == proposer
+        })
+        .unwrap();
+    let proposal_message = ConsensusProposal {
+        chain_id: ChainId(1),
+        height: ConsensusHeight(block.height),
+        round,
+        value: ConsensusValue(block.hash()),
+        pol_round: Round::Nil,
+        validator_address: ConsensusAddress(proposer),
+    };
     ProposedBlock {
-        proposer: Address::from_public_key(&operator(n)),
-        block: Block {
-            parent_block_hash: head.block_hash,
-            height: BlockHeight(height),
-            timestamp_millis: head.timestamp_ms + 1 + variant,
-            transactions: Vec::new(),
-        },
+        proposer,
+        block,
         reveal: BlsSignature::from_bytes(
             secret_for(n)
                 .sign(
@@ -445,6 +470,15 @@ fn genuine_from<D: Storage>(host: &HostWith<D>, n: u8, height: u64, variant: u64
                 .to_bytes(),
         )
         .unwrap(),
+        proposal: SignedProposal::new(
+            proposal_message.clone(),
+            BlsSignature::from_bytes(
+                secret_for(n)
+                    .sign(&encoded(&proposal_message), DST_VOTE, &[])
+                    .to_bytes(),
+            )
+            .unwrap(),
+        ),
     }
 }
 
@@ -473,152 +507,51 @@ fn a_block_from_someone_who_is_not_a_validator_is_dropped() {
     assert!(host.env.blocks.is_empty());
 }
 
-/// The validator the draw picks to propose round 0 of height 1, as its
-/// number (1 or 2) and the other one's.
-fn drawn_and_other(host: &TestHost) -> (u8, u8) {
-    let drawn = host.env.ctx.select_proposer(
-        &host.env.validators,
-        ConsensusHeight(BlockHeight(1)),
-        Round::new(0),
-    );
-    if drawn.address().0 == Address::from_public_key(&operator(1)) {
-        (1, 2)
-    } else {
-        (2, 1)
-    }
-}
-
-/// A verified proposal from the drawn proposer naming `id`, as
-/// `verify_signature` hands one to `note_proposal`.
-fn vouch_for(host: &mut TestHost, id: Hash) {
-    let drawn = host
-        .env
-        .ctx
-        .select_proposer(
-            &host.env.validators,
-            ConsensusHeight(BlockHeight(1)),
-            Round::new(0),
-        )
-        .address();
-    host.env.note_proposal(&ConsensusProposal {
-        chain_id: ChainId(1),
-        height: ConsensusHeight(BlockHeight(1)),
-        round: Round::new(0),
-        value: ConsensusValue(id),
-        pol_round: Round::Nil,
-        validator_address: *drawn,
-    });
-}
-
 #[test]
-fn one_proposer_cannot_take_the_slots_the_real_proposer_needs() {
-    // Reveals do not cover a block's contents, so a validator can sign
-    // endless distinct blocks under its own genuine reveal. Held first come,
-    // first served that filled every slot, and the drawn proposer's real
-    // block was then dropped at every honest node — for this height, and
-    // after a restart (they were logged), and the next.
+fn one_signed_payload_per_proposer_round_is_retained() {
     let mut host = host(GENESIS_TIME + 1);
-    let (drawn, other) = drawn_and_other(&host);
-    let quota = host.env.config.max_unvouched_blocks_per_proposer;
     for variant in 0..u64::try_from(host.env.config.max_pending_per_height + 10).unwrap() {
-        host.handle_message(Message::Block(genuine_from(&host, other, 1, variant)));
-    }
-    assert_eq!(host.env.blocks.len(), quota, "only its share is held");
-
-    // The real proposer's block still gets in.
-    let real = genuine_from(&host, drawn, 1, 1_000);
-    let real_id = real.id();
-    host.handle_message(Message::Block(real));
-    assert!(host.env.blocks.contains_key(&real_id));
-    assert_eq!(host.env.blocks.len(), quota + 1);
-}
-
-#[test]
-fn the_shared_slots_are_still_capped_across_proposers() {
-    let mut host = host(GENESIS_TIME + 1);
-    host.env.config.max_pending_per_height = 5;
-    // Distinct blocks throughout: the proposer is not part of a block's
-    // hash, so the same variant from both would be one block.
-    for variant in 0..4 {
         host.handle_message(Message::Block(genuine_from(&host, 1, 1, variant)));
-        host.handle_message(Message::Block(genuine_from(&host, 2, 1, 100 + variant)));
     }
-    assert_eq!(host.env.blocks.len(), 5);
+    assert_eq!(host.env.blocks.len(), 1);
+    assert_eq!(host.env.props.len(), 1);
 }
 
 #[test]
-fn a_block_a_verified_proposal_names_is_kept_even_when_the_slots_are_full() {
+fn a_block_hash_or_signature_that_does_not_match_its_proposal_is_dropped() {
     let mut host = host(GENESIS_TIME + 1);
-    host.env.config.max_pending_per_height = 3;
-    let (drawn, other) = drawn_and_other(&host);
-    for variant in 0..3 {
-        host.handle_message(Message::Block(genuine_from(&host, other, 1, variant)));
-    }
-    assert_eq!(host.env.blocks.len(), 3);
+    let mut wrong_hash = genuine(&host, 1, 0);
+    wrong_hash.block.timestamp_millis += 1;
+    host.handle_message(Message::Block(wrong_hash));
+    assert!(host.env.blocks.is_empty());
 
-    // Nothing has vouched for the real block, and there is no room.
-    let real = genuine_from(&host, drawn, 1, 1_000);
-    let real_id = real.id();
-    host.handle_message(Message::Block(real.clone()));
-    assert!(!host.env.blocks.contains_key(&real_id));
-
-    // Once the drawn proposer's signed proposal names it, it is kept, in
-    // the place of one of the unvouched blocks.
-    vouch_for(&mut host, real_id);
-    host.handle_message(Message::Block(real));
-    assert!(host.env.blocks.contains_key(&real_id));
-    assert_eq!(host.env.blocks.len(), 3);
-    assert_eq!(host.env.unvouched.len(), 2);
-}
-
-#[test]
-fn a_proposal_arriving_after_its_block_lifts_the_block_out_of_its_senders_quota() {
-    let mut host = host(GENESIS_TIME + 1);
-    let (drawn, _) = drawn_and_other(&host);
-    let real = genuine_from(&host, drawn, 1, 7);
-    let id = real.id();
-    host.handle_message(Message::Block(real));
-    assert!(host.env.unvouched.contains_key(&id));
-
-    vouch_for(&mut host, id);
-    assert!(!host.env.unvouched.contains_key(&id));
-    assert!(host.env.blocks.contains_key(&id), "still held");
-}
-
-#[test]
-fn blocks_for_later_heights_are_held_up_to_a_cap_and_a_window() {
-    let mut host = host(GENESIS_TIME + 1);
-    host.env.config.max_pending_per_height = 5;
-    let window = host.env.config.max_future_heights;
-    for variant in 0..4 {
-        host.handle_message(Message::Block(genuine_from(&host, 1, 2, variant)));
-        host.handle_message(Message::Block(genuine_from(&host, 2, 2, variant)));
-    }
-    assert_eq!(host.env.future_blocks[&2].len(), 5);
-
-    // Inside the window, kept; beyond it, and behind the chain, dropped.
-    host.handle_message(Message::Block(genuine(&host, 1 + window, 0)));
-    assert!(host.env.future_blocks.contains_key(&(1 + window)));
-    host.handle_message(Message::Block(genuine(&host, 2 + window, 0)));
-    assert!(!host.env.future_blocks.contains_key(&(2 + window)));
-    host.handle_message(Message::Block(genuine(&host, 0, 0)));
-    assert!(!host.env.future_blocks.contains_key(&0));
+    let mut wrong_signature = genuine(&host, 1, 1);
+    wrong_signature.proposal.signature = BlsSignature::from_bytes(
+        secret_for(2)
+            .sign(b"not this proposal", DST_VOTE, &[])
+            .to_bytes(),
+    )
+    .unwrap();
+    host.handle_message(Message::Block(wrong_signature));
     assert!(host.env.blocks.is_empty());
 }
 
 #[test]
-fn one_proposer_cannot_fill_a_later_height_and_a_stranger_cannot_use_it_at_all() {
+fn a_block_proof_is_also_fed_to_consensus() {
     let mut host = host(GENESIS_TIME + 1);
-    let quota = host.env.config.max_unvouched_blocks_per_proposer;
-    for variant in 0..u64::try_from(host.env.config.max_pending_per_height + 10).unwrap() {
-        host.handle_message(Message::Block(genuine_from(&host, 2, 2, variant)));
-    }
-    assert_eq!(host.env.future_blocks[&2].len(), quota);
+    let proposed = genuine(&host, 1, 7);
+    let id = proposed.id();
+    host.handle_message(Message::Block(proposed));
+    assert!(host.env.blocks.contains_key(&id));
+    assert!(host.env.props.keys().any(|(value, _)| *value == id));
+}
 
-    let mut stranger = genuine(&host, 3, 0);
-    stranger.proposer = Address::from_public_key(&operator(7));
-    host.handle_message(Message::Block(stranger));
-    assert!(!host.env.future_blocks.contains_key(&3));
+#[test]
+fn payloads_outside_the_current_height_are_not_retained() {
+    let mut host = host(GENESIS_TIME + 1);
+    host.handle_message(Message::Block(genuine(&host, 2, 0)));
+    host.handle_message(Message::Block(genuine(&host, 0, 0)));
+    assert!(host.env.blocks.is_empty());
 }
 
 // ---- adopting what a peer says was decided ---------------------------------------
@@ -879,14 +812,14 @@ fn a_log_that_fails_when_a_new_height_begins_halts_the_host() {
 fn what_peers_can_make_the_log_hold_is_capped_but_what_the_host_holds_is_not() {
     let mut host = host(GENESIS_TIME + 1);
     host.env.config.max_wal_entries = 2;
-    // From both validators, so it is the log's cap that is being measured
-    // and not one proposer's share of the slots.
+    // Each validator can contribute one authenticated proposal for its first
+    // selected round; later equivocations for that round are not retained.
     for variant in 0..5 {
         let proposer = 1 + u8::try_from(variant % 2).unwrap();
         host.handle_message(Message::Block(genuine_from(&host, proposer, 1, variant)));
     }
     assert_eq!(host.env.storage.wal.len(), 2);
-    assert_eq!(host.env.blocks.len(), 5);
+    assert_eq!(host.env.blocks.len(), 2);
 }
 
 /// A host that has committed block 1: the chain, what it kept, and the seed

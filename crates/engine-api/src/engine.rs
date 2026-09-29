@@ -136,6 +136,9 @@ pub enum FinaliseErrorReason {
     /// The durable store did not commit the block. The in-memory canonical
     /// state must remain at its previous head when this is returned.
     StorageUnavailable,
+    /// The block or resulting state disagrees with an operator-supplied
+    /// weak-subjectivity checkpoint. It must never become canonical.
+    TrustedCheckpointMismatch,
 }
 
 impl core::fmt::Display for FinaliseErrorReason {
@@ -148,6 +151,9 @@ impl core::fmt::Display for FinaliseErrorReason {
                 f.write_str("the block's parent is not the current chain head")
             }
             Self::StorageUnavailable => f.write_str("the durable store did not commit the block"),
+            Self::TrustedCheckpointMismatch => {
+                f.write_str("the block disagrees with the trusted checkpoint")
+            }
         }
     }
 }
@@ -446,6 +452,7 @@ mod display_tests {
             FinaliseErrorReason::StateRootMismatch,
             FinaliseErrorReason::NotOnCanonicalChain,
             FinaliseErrorReason::StorageUnavailable,
+            FinaliseErrorReason::TrustedCheckpointMismatch,
         ]);
         readable(&[
             RejectionReason::WrongChainId,

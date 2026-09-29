@@ -83,7 +83,7 @@ pub mod wallet;
 
 pub use clock::SystemClock;
 pub use commit_log::FileCommitLog;
-pub use config::{ConfigError, NodeConfig, PeerSpec};
+pub use config::{ConfigError, NodeConfig, PeerSpec, TrustedCheckpoint};
 pub use disk::{FileStorage, NodeDisk};
 pub use durable_engine::{DurableEngine, OpenError, VerifiedData};
 pub use event_loop::{DiscardTransactions, EventLoop, NodeEvent, TransactionIntake};

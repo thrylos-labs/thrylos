@@ -26,7 +26,9 @@ use chain_consensus::host::{
     Clock, CommitRecord, Committed, HaltReason, Host, HostConfig, MemorySignedLog, MemoryStorage,
     Message, Ports, StorageError, SyncRequest, SyncResponse, TimerCommand, TransactionSource,
 };
-use chain_consensus::types::{ConsensusAddress, ConsensusHeight, ConsensusValidatorSet};
+use chain_consensus::types::{
+    ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValidatorSet, ConsensusValue,
+};
 use chain_consensus::wire::{decode_message, encode_message};
 use chain_engine_api::{
     Block, BlockLimits, BlockRejected, ChainView, ChainViewError, Engine, ExecutedBlock,
@@ -50,7 +52,7 @@ use chain_types::{
     TransactionBody,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
-use malachite_core_types::{Context as _, Timeout};
+use malachite_core_types::{Context as _, Round as ConsensusRound, SignedProposal, Timeout};
 
 const GENESIS_TIME: u64 = 1_700_000_000_000;
 const MIN: u128 = GENESIS_PARAM_VALUES.min_self_stake;
@@ -1413,20 +1415,41 @@ fn a_forged_reveal_in_the_real_proposers_name_cannot_steer_the_seed() {
     // to choose.
     let mut sim = Sim::new(Options::new(4));
     let proposer = first_proposer(4);
+    let proposer_seed = u8::try_from(proposer).unwrap() + 1;
+    let block = Block {
+        parent_block_hash: sim.config.hash(),
+        height: BlockHeight(1),
+        timestamp_millis: GENESIS_TIME + 500,
+        transactions: Vec::new(),
+    };
+    let proposal_message = ConsensusProposal {
+        chain_id: ChainId(1),
+        height: ConsensusHeight(block.height),
+        round: ConsensusRound::new(0),
+        value: ConsensusValue(block.hash()),
+        pol_round: ConsensusRound::Nil,
+        validator_address: ConsensusAddress(operator_address(proposer_seed)),
+    };
+    let mut proposal_bytes = Vec::new();
+    proposal_message.encode(&mut proposal_bytes);
     let forged = Message::Block(chain_consensus::host::ProposedBlock {
-        proposer: operator_address(u8::try_from(proposer).unwrap() + 1),
-        block: Block {
-            parent_block_hash: sim.config.hash(),
-            height: BlockHeight(1),
-            timestamp_millis: GENESIS_TIME + 500,
-            transactions: Vec::new(),
-        },
+        proposer: operator_address(proposer_seed),
+        block,
         reveal: BlsSignature::from_bytes(
             bls_secret(9)
                 .sign(b"not a reveal", chain_types::bls::DST_BEACON, &[])
                 .to_bytes(),
         )
         .unwrap(),
+        proposal: SignedProposal::new(
+            proposal_message,
+            BlsSignature::from_bytes(
+                bls_secret(proposer_seed)
+                    .sign(&proposal_bytes, chain_types::bls::DST_VOTE, &[])
+                    .to_bytes(),
+            )
+            .unwrap(),
+        ),
     });
     for node in &mut sim.nodes {
         node.handle_message(forged.clone());

@@ -38,6 +38,8 @@ use chain_exec::{Executor, ExecutorError};
 use chain_state::StateRoot;
 use chain_types::{BlockHeight, Hash, Transaction};
 
+use crate::config::TrustedCheckpoint;
+
 /// Where the database lives inside the node's directory.
 const DATABASE_DIRECTORY: &str = "chain";
 
@@ -53,6 +55,15 @@ pub enum OpenError {
     Executor(ExecutorError),
     /// The database holds a chain that started from a different genesis.
     WrongGenesis { stored: Hash, given: Hash },
+    /// Stored history has crossed the trusted checkpoint at another block or
+    /// state root, so it may be a long-range fork.
+    CheckpointMismatch {
+        height: BlockHeight,
+        expected_block: Hash,
+        actual_block: Hash,
+        expected_state: Hash,
+        actual_state: Hash,
+    },
     /// The database does not hold a chain that adds up.
     Damaged(&'static str),
 }
@@ -66,6 +77,17 @@ impl core::fmt::Display for OpenError {
             Self::WrongGenesis { stored, given } => write!(
                 f,
                 "this database belongs to a different chain: it was made from genesis {stored}, but the genesis given is {given}"
+            ),
+            Self::CheckpointMismatch {
+                height,
+                expected_block,
+                actual_block,
+                expected_state,
+                actual_state,
+            } => write!(
+                f,
+                "trusted checkpoint at height {} does not match this chain: block {actual_block} (expected {expected_block}), state {actual_state} (expected {expected_state})",
+                height.0
             ),
             Self::Damaged(reason) => write!(f, "the chain database is damaged: {reason}"),
         }
@@ -91,6 +113,7 @@ impl From<ExecutorError> for OpenError {
 pub struct DurableEngine {
     executor: Executor,
     db: Db,
+    trusted_checkpoint: Option<TrustedCheckpoint>,
     /// The last thing the database refused, kept because the engine
     /// contract can only say "storage unavailable".
     last_storage_error: Option<DbError>,
@@ -109,6 +132,17 @@ impl DurableEngine {
     /// Starts the chain `config` describes in `dir`, or restores the one
     /// already there. See the module docs.
     pub fn open(dir: &Path, config: &GenesisConfig) -> Result<Self, OpenError> {
+        Self::open_with_checkpoint(dir, config, None)
+    }
+
+    /// Open a chain and pin it to `trusted_checkpoint`. If stored history has
+    /// already crossed the checkpoint it is checked before the engine is
+    /// returned; if not, finalisation refuses the first mismatching block.
+    pub fn open_with_checkpoint(
+        dir: &Path,
+        config: &GenesisConfig,
+        trusted_checkpoint: Option<TrustedCheckpoint>,
+    ) -> Result<Self, OpenError> {
         let path = dir.join(DATABASE_DIRECTORY);
         fs::create_dir_all(&path).map_err(OpenError::Io)?;
         let db = Db::open(&path)?;
@@ -116,11 +150,14 @@ impl DurableEngine {
             None => Self::start(&db, config)?,
             Some(stored) => Self::restore(&db, config, stored)?,
         };
-        Ok(Self {
+        let engine = Self {
             executor,
             db,
+            trusted_checkpoint,
             last_storage_error: None,
-        })
+        };
+        engine.verify_trusted_checkpoint()?;
+        Ok(engine)
     }
 
     /// Checks a stopped node's data without ever writing to it: not a
@@ -138,6 +175,16 @@ impl DurableEngine {
     /// Returns a report about what it found, once every check
     /// [`Self::restore`] makes has passed.
     pub fn verify(dir: &Path, config: &GenesisConfig) -> Result<VerifiedData, OpenError> {
+        Self::verify_with_checkpoint(dir, config, None)
+    }
+
+    /// Read-only verification with the same weak-subjectivity anchor used by
+    /// [`Self::open_with_checkpoint`].
+    pub fn verify_with_checkpoint(
+        dir: &Path,
+        config: &GenesisConfig,
+        trusted_checkpoint: Option<TrustedCheckpoint>,
+    ) -> Result<VerifiedData, OpenError> {
         let path = dir.join(DATABASE_DIRECTORY);
         let db = Db::open_read_only(&path)?;
         let Some(stored) = db.genesis_hash()? else {
@@ -146,6 +193,7 @@ impl DurableEngine {
             ));
         };
         let executor = Self::restore(&db, config, stored)?;
+        Self::verify_checkpoint_in(&db, trusted_checkpoint)?;
         Ok(VerifiedData {
             height: executor.head_height().unwrap_or_default(),
             tip_block_hash: executor.tip_block_hash(),
@@ -236,6 +284,42 @@ impl DurableEngine {
     pub const fn last_storage_error(&self) -> Option<&DbError> {
         self.last_storage_error.as_ref()
     }
+
+    fn verify_trusted_checkpoint(&self) -> Result<(), OpenError> {
+        Self::verify_checkpoint_in(&self.db, self.trusted_checkpoint)
+    }
+
+    fn verify_checkpoint_in(
+        db: &Db,
+        trusted_checkpoint: Option<TrustedCheckpoint>,
+    ) -> Result<(), OpenError> {
+        let Some(checkpoint) = trusted_checkpoint else {
+            return Ok(());
+        };
+        let Some(tip) = db.tip_height()? else {
+            return Ok(());
+        };
+        if tip < checkpoint.height {
+            return Ok(());
+        }
+        let block = db.get_block(checkpoint.height)?.ok_or(OpenError::Damaged(
+            "the trusted checkpoint block is missing",
+        ))?;
+        let state = db.get_root(checkpoint.height)?.ok_or(OpenError::Damaged(
+            "the trusted checkpoint state root is missing",
+        ))?;
+        let actual_block = block.hash();
+        if actual_block != checkpoint.block_hash || state != checkpoint.state_root {
+            return Err(OpenError::CheckpointMismatch {
+                height: checkpoint.height,
+                expected_block: checkpoint.block_hash,
+                actual_block,
+                expected_state: checkpoint.state_root,
+                actual_state: state,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Engine for DurableEngine {
@@ -276,6 +360,15 @@ impl Engine for DurableEngine {
         block: &Block,
         executed: &ExecutedBlock,
     ) -> Result<(), FinaliseError> {
+        if self.trusted_checkpoint.is_some_and(|checkpoint| {
+            checkpoint.height == block.height
+                && (checkpoint.block_hash != block.hash()
+                    || checkpoint.state_root != executed.state_root.as_hash())
+        }) {
+            return Err(FinaliseError {
+                reason: FinaliseErrorReason::TrustedCheckpointMismatch,
+            });
+        }
         let prepared = self.executor.prepare_finalisation(block, executed)?;
         if let Err(error) = self.db.commit_block(
             block,

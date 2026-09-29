@@ -285,6 +285,22 @@ fn put_signed_proposal(out: &mut Vec<u8>, proposal: &SignedProposal<ThrylosConte
     proposal.signature.encode(out);
 }
 
+/// Canonical bytes for a signed proposal embedded in another authenticated
+/// transport object, such as a compact block announcement.
+pub fn encode_signed_proposal(proposal: &SignedProposal<ThrylosContext>) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_signed_proposal(&mut out, proposal);
+    out
+}
+
+/// Decode exactly one signed proposal embedded in another transport object.
+pub fn decode_signed_proposal(input: &[u8]) -> Result<SignedProposal<ThrylosContext>, CodecError> {
+    let mut reader = Reader::new(input);
+    let proposal = reader.signed_proposal()?;
+    reader.finish()?;
+    Ok(proposal)
+}
+
 fn put_commit_certificate(out: &mut Vec<u8>, certificate: &CommitCertificate<ThrylosContext>) {
     put_height(out, certificate.height);
     put_round(out, certificate.round);
@@ -361,6 +377,7 @@ pub fn encode_message(message: &Message) -> Vec<u8> {
             block.proposer.encode(&mut out);
             block.block.encode(&mut out);
             block.reveal.encode(&mut out);
+            put_signed_proposal(&mut out, &block.proposal);
         }
         Message::SyncRequest(request) => {
             SYNC_REQUEST.encode(&mut out);
@@ -396,6 +413,7 @@ pub fn decode_message(input: &[u8]) -> Result<Message, CodecError> {
             proposer: reader.take::<Address>()?,
             block: reader.take::<Block>()?,
             reveal: reader.take::<BlsSignature>()?,
+            proposal: reader.signed_proposal()?,
         }),
         SYNC_REQUEST => Message::SyncRequest(SyncRequest {
             requester: reader.take::<Address>()?,
@@ -548,6 +566,26 @@ mod tests {
         }
     }
 
+    fn proposed_block(height: u64) -> ProposedBlock {
+        let block = block(height);
+        ProposedBlock {
+            proposer: Address::from_bytes([4; 32]),
+            block: block.clone(),
+            reveal: signature(4),
+            proposal: SignedProposal::new(
+                ConsensusProposal {
+                    chain_id: ChainId(7),
+                    height: ConsensusHeight(block.height),
+                    round: Round::new(2),
+                    value: ConsensusValue(block.hash()),
+                    pol_round: Round::Nil,
+                    validator_address: address(4),
+                },
+                signature(4),
+            ),
+        }
+    }
+
     /// One of every kind of message, with the awkward values in: a nil
     /// vote, a nil proof-of-lock round, an empty and a full certificate.
     fn messages() -> Vec<Message> {
@@ -619,11 +657,7 @@ mod tests {
                 cert_type: RoundCertificateType::Precommit,
                 round_signatures: Vec::new(),
             })),
-            Message::Block(ProposedBlock {
-                proposer: Address::from_bytes([4; 32]),
-                block: block(7),
-                reveal: signature(4),
-            }),
+            Message::Block(proposed_block(7)),
             Message::SyncRequest(SyncRequest {
                 requester: Address::from_bytes([5; 32]),
                 from: BlockHeight(12),

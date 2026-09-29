@@ -21,7 +21,7 @@ use chain_exec::genesis::{SYSTEM_FUNCTION_NAME, SYSTEM_MODULE_NAME, SYSTEM_PACKA
 use chain_exec::genesis_config::GenesisConfig;
 use chain_exec::native::{STAKE, STAKING_MODULE_NAME, STAKING_PACKAGE_ADDRESS};
 use chain_exec::{Executor, ExecutorError};
-use chain_node::{DurableEngine, OpenError};
+use chain_node::{DurableEngine, OpenError, TrustedCheckpoint};
 use chain_state::{StateDiff, StateKey, StateValue};
 use chain_types::{
     Address, BlockHeight, ChainId, Encode, GasAmount, GasPrice, Hash, MoveCall, PublicKey,
@@ -162,6 +162,92 @@ fn a_new_directory_starts_from_genesis_and_reopening_finds_the_same_chain() {
     assert_eq!(head.block_hash, hash);
     assert_eq!(head.height, BlockHeight(0));
     engine.executor().audit().unwrap();
+}
+
+#[test]
+fn a_future_trusted_checkpoint_is_enforced_before_finalisation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (block, executed) = {
+        let engine = open(dir.path());
+        let block = next_block(&engine, history()[0].clone());
+        let executed = engine
+            .execute_block(engine.head().unwrap().state_root, &block)
+            .unwrap();
+        (block, executed)
+    };
+    let checkpoint = TrustedCheckpoint {
+        height: block.height,
+        block_hash: block.hash(),
+        state_root: executed.state_root.as_hash(),
+    };
+    let mut matching =
+        DurableEngine::open_with_checkpoint(dir.path(), &config(), Some(checkpoint)).unwrap();
+    let matching_execution = matching
+        .execute_block(matching.head().unwrap().state_root, &block)
+        .unwrap();
+    assert_eq!(matching_execution.state_root, executed.state_root);
+    matching
+        .finalise_block(&block, &matching_execution)
+        .unwrap();
+    assert_eq!(matching.head().unwrap().height, BlockHeight(1));
+
+    let other = tempfile::tempdir().unwrap();
+    let mut refusing = DurableEngine::open_with_checkpoint(
+        other.path(),
+        &config(),
+        Some(TrustedCheckpoint {
+            block_hash: Hash::from_bytes([9; 32]),
+            ..checkpoint
+        }),
+    )
+    .unwrap();
+    let other_block = next_block(&refusing, history()[0].clone());
+    let other_executed = refusing
+        .execute_block(refusing.head().unwrap().state_root, &other_block)
+        .unwrap();
+    let error = refusing
+        .finalise_block(&other_block, &other_executed)
+        .unwrap_err();
+    assert_eq!(error.reason, FinaliseErrorReason::TrustedCheckpointMismatch);
+    assert_eq!(refusing.head().unwrap().height, BlockHeight(0));
+    assert_eq!(refusing.database().tip_height().unwrap(), None);
+}
+
+#[test]
+fn history_past_a_mismatching_trusted_checkpoint_is_refused_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let checkpoint = {
+        let mut engine = open(dir.path());
+        let block = next_block(&engine, history()[0].clone());
+        let executed = commit(&mut engine, &block);
+        TrustedCheckpoint {
+            height: block.height,
+            block_hash: block.hash(),
+            state_root: executed.state_root.as_hash(),
+        }
+    };
+    assert!(DurableEngine::open_with_checkpoint(dir.path(), &config(), Some(checkpoint)).is_ok());
+
+    let error = refused(DurableEngine::open_with_checkpoint(
+        dir.path(),
+        &config(),
+        Some(TrustedCheckpoint {
+            state_root: Hash::from_bytes([7; 32]),
+            ..checkpoint
+        }),
+    ));
+    assert!(matches!(error, OpenError::CheckpointMismatch { .. }));
+    assert!(matches!(
+        DurableEngine::verify_with_checkpoint(
+            dir.path(),
+            &config(),
+            Some(TrustedCheckpoint {
+                state_root: Hash::from_bytes([7; 32]),
+                ..checkpoint
+            })
+        ),
+        Err(OpenError::CheckpointMismatch { .. })
+    ));
 }
 
 #[test]

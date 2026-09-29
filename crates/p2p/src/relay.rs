@@ -20,11 +20,14 @@
 //! does not check again: what comes out is an ordinary full block, and goes to
 //! the host exactly as one received whole would.
 
+use chain_consensus::context::ThrylosContext;
 use chain_consensus::host::ProposedBlock;
+use chain_consensus::wire::{decode_signed_proposal, encode_signed_proposal};
 use chain_engine_api::Block;
 use chain_types::bls::BlsSignature;
 use chain_types::codec::{decode_field, CodecError};
 use chain_types::{Address, BlockHeight, Decode, Encode, Hash, Transaction};
+use malachite_core_types::SignedProposal;
 
 /// Bytes in a short transaction identifier.
 pub const SHORT_ID_BYTES: usize = 8;
@@ -50,6 +53,8 @@ pub type ShortId = [u8; SHORT_ID_BYTES];
 pub struct CompactBlock {
     pub proposer: Address,
     pub reveal: BlsSignature,
+    /// The consensus signature binding `proposer` to `block_hash`.
+    pub proposal: SignedProposal<ThrylosContext>,
     /// The hash of the whole block, which whatever is assembled must match.
     pub block_hash: Hash,
     pub parent_block_hash: Hash,
@@ -117,6 +122,7 @@ impl CompactBlock {
         Self {
             proposer: proposed.proposer,
             reveal: proposed.reveal,
+            proposal: proposed.proposal.clone(),
             block_hash: block.hash(),
             parent_block_hash: block.parent_block_hash,
             height: block.height,
@@ -156,6 +162,7 @@ impl CompactBlock {
             proposer: self.proposer,
             block,
             reveal: self.reveal,
+            proposal: self.proposal.clone(),
         })
     }
 }
@@ -164,6 +171,7 @@ impl Encode for CompactBlock {
     fn encode(&self, out: &mut Vec<u8>) {
         self.proposer.encode(out);
         self.reveal.encode(out);
+        encode_signed_proposal(&self.proposal).encode(out);
         self.block_hash.encode(out);
         self.parent_block_hash.encode(out);
         self.height.encode(out);
@@ -182,6 +190,8 @@ impl Decode for CompactBlock {
     fn decode(input: &[u8]) -> Result<(Self, usize), CodecError> {
         let (proposer, offset) = decode_field::<Address>(input, 0)?;
         let (reveal, offset) = decode_field::<BlsSignature>(input, offset)?;
+        let (proposal_bytes, offset) = decode_field::<Vec<u8>>(input, offset)?;
+        let proposal = decode_signed_proposal(&proposal_bytes)?;
         let (block_hash, offset) = decode_field::<Hash>(input, offset)?;
         let (parent_block_hash, offset) = decode_field::<Hash>(input, offset)?;
         let (height, offset) = decode_field::<BlockHeight>(input, offset)?;
@@ -215,6 +225,7 @@ impl Decode for CompactBlock {
             Self {
                 proposer,
                 reveal,
+                proposal,
                 block_hash,
                 parent_block_hash,
                 height,
@@ -320,15 +331,42 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn proposed(count: u64) -> ProposedBlock {
+        use chain_consensus::types::{
+            ConsensusAddress, ConsensusHeight, ConsensusProposal, ConsensusValue,
+        };
+        use malachite_core_types::{Round, SignedProposal};
+
+        let secret = blst::min_pk::SecretKey::key_gen(&[5; 32], &[]).unwrap();
+        let proposer = Address::from_bytes([7; 32]);
+        let block = Block {
+            parent_block_hash: Hash::from_bytes([3; 32]),
+            height: BlockHeight(12),
+            timestamp_millis: 1_700_000_000_123,
+            transactions: (0..count).map(transaction).collect(),
+        };
+        let proposal_message = ConsensusProposal {
+            chain_id: ChainId(1),
+            height: ConsensusHeight(block.height),
+            round: Round::new(0),
+            value: ConsensusValue(block.hash()),
+            pol_round: Round::Nil,
+            validator_address: ConsensusAddress(proposer),
+        };
+        let mut proposal_bytes = Vec::new();
+        proposal_message.encode(&mut proposal_bytes);
         ProposedBlock {
-            proposer: Address::from_bytes([7; 32]),
-            block: Block {
-                parent_block_hash: Hash::from_bytes([3; 32]),
-                height: BlockHeight(12),
-                timestamp_millis: 1_700_000_000_123,
-                transactions: (0..count).map(transaction).collect(),
-            },
+            proposer,
+            block,
             reveal: BlsSignature::from_bytes(reveal_bytes()).unwrap(),
+            proposal: SignedProposal::new(
+                proposal_message,
+                BlsSignature::from_bytes(
+                    secret
+                        .sign(&proposal_bytes, chain_types::bls::DST_VOTE, &[])
+                        .to_bytes(),
+                )
+                .unwrap(),
+            ),
         }
     }
 
@@ -349,9 +387,11 @@ pub(crate) mod tests {
 
         let mut bytes = Vec::new();
         compact.encode(&mut bytes);
-        // Header fields and eight bytes a transaction, not the transactions.
+        // Header fields (the signed proposal — message plus its BLS signature,
+        // length-prefixed — is the 200 among them) and eight bytes a
+        // transaction, not the transactions.
         assert!(
-            bytes.len() < 32 + 96 + 32 + 32 + 8 + 8 + 8 + 4 + 50 * 8 + 16,
+            bytes.len() < 32 + 96 + 200 + 32 + 32 + 8 + 8 + 8 + 4 + 50 * 8 + 20,
             "{}",
             bytes.len()
         );

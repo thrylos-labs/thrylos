@@ -10,7 +10,8 @@ const CLAIM_TAG = new TextEncoder().encode("thrylos-name-claim-v1");
 const STORAGE_KEY = "thrylos-testnet-seed-hex";
 const ENCRYPTED_KEY = "thrylos-testnet-seed-encrypted";
 const PBKDF2_ITERATIONS = 600000;
-const MIN_PASSWORD_LENGTH = 8;
+const MIN_PASSWORD_LENGTH = 12;
+const AUTO_LOCK_MS = 5 * 60 * 1000;
 const BASE_UNITS_PER_THRY = 1000000000n;
 // Matches crates/exec/src/native.rs and crates/node/src/client.rs exactly.
 const COIN_PACKAGE_ADDRESS = new Uint8Array(32).fill(6);
@@ -78,6 +79,7 @@ const sendStatus = document.getElementById("send-status");
 
 let ed, blake3, bytesToHex, hexToBytes;
 let pollTimer = null;
+let autoLockTimer = null;
 let currentSeed = null;
 let currentAddress = null;
 
@@ -559,6 +561,7 @@ function checkPassword(password) {
 }
 
 async function showWallet(seed) {
+  if (currentSeed && currentSeed !== seed) currentSeed.fill(0);
   emptyState.hidden = true;
   walletState.hidden = false;
   currentSeed = seed;
@@ -587,16 +590,34 @@ async function showWallet(seed) {
     // A name waiting for Discord is checked as often as the balance.
     if (nameState.status === "pending" || nameState.status === "unknown") refreshNameState();
   }, 10000);
+  scheduleAutoLock();
+}
+
+function clearCurrentSeed() {
+  if (currentSeed) currentSeed.fill(0);
+  currentSeed = null;
+  privateKeyText.textContent = "";
+  keyBlock.hidden = true;
+  revealBtn.textContent = "Show private key";
+}
+
+function scheduleAutoLock() {
+  if (autoLockTimer) clearTimeout(autoLockTimer);
+  autoLockTimer = null;
+  if (currentSeed && loadEncrypted() !== null) {
+    autoLockTimer = setTimeout(lockWallet, AUTO_LOCK_MS);
+  }
 }
 
 function lockWallet() {
   if (pollTimer) clearInterval(pollTimer);
-  currentSeed = null;
+  pollTimer = null;
+  if (autoLockTimer) clearTimeout(autoLockTimer);
+  autoLockTimer = null;
+  clearCurrentSeed();
   currentAddress = null;
   reservedNameThisSession = null;
   nameState = { status: "unknown" };
-  keyBlock.hidden = true;
-  privateKeyText.textContent = "";
   walletState.hidden = true;
   emptyState.hidden = true;
   lockState.hidden = false;
@@ -671,7 +692,10 @@ resetBtn.addEventListener("click", () => {
     localStorage.removeItem(ENCRYPTED_KEY);
   } catch {}
   if (pollTimer) clearInterval(pollTimer);
-  currentSeed = null;
+  pollTimer = null;
+  if (autoLockTimer) clearTimeout(autoLockTimer);
+  autoLockTimer = null;
+  clearCurrentSeed();
   currentAddress = null;
   walletState.hidden = true;
   emptyState.hidden = false;
@@ -706,6 +730,7 @@ revealBtn.addEventListener("click", () => {
   const showing = !keyBlock.hidden;
   if (showing) {
     keyBlock.hidden = true;
+    privateKeyText.textContent = "";
     revealBtn.textContent = "Show private key";
     return;
   }
@@ -1008,6 +1033,26 @@ protectBtn.addEventListener("click", async () => {
 });
 
 lockBtn.addEventListener("click", lockWallet);
+
+// An encrypted wallet is useful only while its owner is actively using this
+// page. Backgrounding it locks immediately; ordinary interaction restarts a
+// short inactivity window. Clearing the Uint8Array cannot erase copies a JS
+// engine may have made internally, but it removes the application's live
+// reference and the private-key text from the DOM.
+for (const eventName of ["pointerdown", "keydown", "touchstart"]) {
+  document.addEventListener(eventName, scheduleAutoLock, {passive: true});
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && currentSeed && loadEncrypted() !== null) lockWallet();
+});
+window.addEventListener("pagehide", clearCurrentSeed);
+window.addEventListener("pageshow", (event) => {
+  // A page restored from the back/forward cache keeps its DOM but not the
+  // secret we deliberately erased on pagehide. Reload so init reconstructs
+  // the correct locked (or legacy-wallet) state instead of showing a wallet
+  // that no longer has its signing key.
+  if (event.persisted && !currentSeed) window.location.reload();
+});
 
 (async function init() {
   // Crypto must be loaded before anything in storage can be decoded, so this

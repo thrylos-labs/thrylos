@@ -119,27 +119,15 @@ pub const MAX_ACTIVE_VALIDATORS: usize = 65;
 /// without bound.
 pub const MAX_REGISTERED_VALIDATORS: usize = MAX_ACTIVE_VALIDATORS;
 
-/// **A choice** (Cosmos' own): how many unbonding entries one staker can
-/// have open against one validator at once.
-pub const MAX_UNBONDING_ENTRIES_PER_PAIR: usize = 7;
+/// One open exit per staker/validator pair. A staker can withdraw all of its
+/// shares in that entry; keeping this at one lets delegation admission reserve
+/// an exit slot for every current share holder.
+pub const MAX_UNBONDING_ENTRIES_PER_PAIR: usize = 1;
 
 /// The most open unbonding entries one validator may have across all
 /// stakers. Evidence processing reads and may rewrite every one of them, so
 /// the per-pair cap alone is not a sufficient work bound.
 pub const MAX_UNBONDING_ENTRIES_PER_VALIDATOR: usize = 512;
-
-/// Extra room, beyond [`MAX_UNBONDING_ENTRIES_PER_VALIDATOR`], that only the
-/// validator's own operator can use. Anyone able to fill the shared queue
-/// (stake locked in every slot for the unbonding period) could otherwise also
-/// stop the operator leaving or reducing their own stake, and a validator that
-/// cannot exit is a worse failure than one that cannot take new delegators'
-/// exits. It is one staker's whole per-validator allowance, which is all the
-/// operator can use. The evidence path scans up to the sum, so it is still
-/// bounded.
-pub const OPERATOR_RESERVED_UNBONDING_ENTRIES: usize = MAX_UNBONDING_ENTRIES_PER_PAIR;
-
-const MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE: usize =
-    MAX_UNBONDING_ENTRIES_PER_VALIDATOR + OPERATOR_RESERVED_UNBONDING_ENTRIES;
 
 /// **A choice.** The most entries [`StakingRegistry::process`] matures in
 /// one call; the rest wait for the next.
@@ -291,6 +279,9 @@ pub enum RegistryError {
     /// The validator was convicted of equivocation; nobody may stake
     /// with it any more (staking already there can still leave).
     ValidatorTombstoned,
+    /// This validator cannot accept another distinct share holder while
+    /// preserving one bounded unbonding slot for everyone already staked.
+    TooManyDelegators,
     TooManyUnbondingEntries,
     UnbondingSequenceExhausted,
     Staking(StakingError),
@@ -316,6 +307,7 @@ impl core::fmt::Display for RegistryError {
             Self::SelfStakeBelowMinimum => f.write_str("the self-stake is below the minimum"),
             Self::UnknownValidator => f.write_str("no such validator"),
             Self::ValidatorTombstoned => f.write_str("the validator was convicted of equivocation and cannot take new stake"),
+            Self::TooManyDelegators => f.write_str("the validator has reached its delegator limit"),
             Self::TooManyUnbondingEntries => f.write_str("too many open unbonding entries"),
             Self::UnbondingSequenceExhausted => f.write_str("the unbonding sequence counter is exhausted"),
             Self::Staking(error) => write!(f, "staking: {error}"),
@@ -739,9 +731,9 @@ impl<S: ReadStore> StakingRegistry<S> {
     ) -> Result<(Vec<(u64, UnbondingEntry)>, u128), Corrupt> {
         let indexed = self.store.scan_prefix(
             &by_validator_prefix(id),
-            MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE + 1,
+            MAX_UNBONDING_ENTRIES_PER_VALIDATOR + 1,
         );
-        if indexed.len() > MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE {
+        if indexed.len() > MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
             return Err(Corrupt);
         }
         let mut entries = Vec::new();
@@ -870,11 +862,30 @@ impl<S: Store> StakingRegistry<S> {
             return Err(RegistryError::ValidatorTombstoned);
         }
         let mut validator = self.validator(id)?.ok_or(RegistryError::UnknownValidator)?;
+        let existing = self.shares_of(id, &staker)?;
+        if existing == 0 {
+            // Count current share holders and open exits conservatively. A
+            // partially unbonding holder appears in both counts, which may
+            // stop admission early but can never over-admit. Therefore each
+            // holder present now can always create its one exit entry even if
+            // every other holder does so first.
+            let holders = self
+                .store
+                .scan_prefix(&shares_prefix(id), MAX_UNBONDING_ENTRIES_PER_VALIDATOR + 1)
+                .len();
+            let exits = self
+                .store
+                .scan_prefix(
+                    &by_validator_prefix(id),
+                    MAX_UNBONDING_ENTRIES_PER_VALIDATOR + 1,
+                )
+                .len();
+            if holders.saturating_add(exits) >= MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
+                return Err(RegistryError::TooManyDelegators);
+            }
+        }
         let minted = validator.pool.deposit(amount)?;
-        let held = self
-            .shares_of(id, &staker)?
-            .checked_add(minted)
-            .ok_or(StakingError::Overflow)?;
+        let held = existing.checked_add(minted).ok_or(StakingError::Overflow)?;
         save(&mut self.store, shares_key(id, &staker), &held);
         save(&mut self.store, validator_key(id), &validator);
         Ok(minted)
@@ -948,13 +959,9 @@ impl<S: Store> StakingRegistry<S> {
         if usize::try_from(open).map_or(true, |open| open >= MAX_UNBONDING_ENTRIES_PER_PAIR) {
             return Err(RegistryError::TooManyUnbondingEntries);
         }
-        // The shared queue's limit, or, for the validator's own operator,
-        // that plus the room kept back for them.
-        let limit = if staker == validator.operator {
-            MAX_UNBONDING_ENTRIES_INCLUDING_RESERVE
-        } else {
-            MAX_UNBONDING_ENTRIES_PER_VALIDATOR
-        };
+        // Delegation admission reserves one of these slots for every current
+        // share holder, so reaching this bound cannot lock existing stake.
+        let limit = MAX_UNBONDING_ENTRIES_PER_VALIDATOR;
         if self
             .store
             .scan_prefix(&by_validator_prefix(id), limit)
@@ -1616,50 +1623,56 @@ mod tests {
     }
 
     #[test]
-    fn the_operator_can_still_unstake_when_others_have_filled_the_queue_but_only_so_far() {
+    fn every_admitted_share_holder_can_exit_even_at_the_delegator_limit() {
         let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
-        for seq in 0..MAX_UNBONDING_ENTRIES_PER_VALIDATOR {
-            reg.store.put(
-                by_validator_key(&id_of(1), u64::try_from(seq).unwrap()),
-                Vec::new(),
-            );
-        }
-        // Someone else is refused, as before.
-        reg.delegate(&id_of(1), staker(1), 100).unwrap();
-        assert_eq!(
-            reg.begin_unstake(&params(), &id_of(1), staker(1), 1, T0),
-            Err(RegistryError::TooManyUnbondingEntries)
-        );
-        // The operator still gets in, up to the room kept for them (which is
-        // one staker's whole per-validator allowance).
-        for _ in 0..OPERATOR_RESERVED_UNBONDING_ENTRIES {
-            let entered = reg.begin_unstake(&params(), &id_of(1), operator_of(1), 1, T0);
-            assert!(entered.is_ok(), "{entered:?}");
+        let distinct = |n: usize| {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&u64::try_from(n).unwrap().to_le_bytes());
+            Address::from_bytes(bytes)
+        };
+        let mut admitted = Vec::new();
+        // Registration already admitted the operator, leaving 511 places.
+        for n in 0..(MAX_UNBONDING_ENTRIES_PER_VALIDATOR - 1) {
+            let staker = distinct(n);
+            reg.delegate(&id_of(1), staker, 1).unwrap();
+            admitted.push(staker);
         }
         assert_eq!(
-            reg.begin_unstake(&params(), &id_of(1), operator_of(1), 1, T0),
-            Err(RegistryError::TooManyUnbondingEntries)
+            reg.delegate(&id_of(1), distinct(MAX_UNBONDING_ENTRIES_PER_VALIDATOR), 1),
+            Err(RegistryError::TooManyDelegators)
         );
+        for staker in admitted {
+            reg.begin_unstake(&params(), &id_of(1), staker, 1, T0)
+                .unwrap();
+        }
+        reg.begin_unstake(&params(), &id_of(1), operator_of(1), 1, T0)
+            .unwrap();
+        assert_eq!(
+            reg.unbonding_entry_count(),
+            MAX_UNBONDING_ENTRIES_PER_VALIDATOR
+        );
+        reg.assert_invariants().unwrap();
     }
 
     #[test]
     fn maturing_is_bounded_per_call_and_the_rest_wait() {
         let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
-        // 40 stakers x 7 entries = 280 entries, more than one call's worth.
-        for n in 0..40u8 {
-            reg.delegate(&id_of(1), staker(n), 100).unwrap();
-            for _ in 0..MAX_UNBONDING_ENTRIES_PER_PAIR {
-                reg.begin_unstake(&params(), &id_of(1), staker(n), 1, T0)
-                    .unwrap();
-            }
+        // 257 distinct exits, one more than a call processes.
+        for n in 0..257usize {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&u64::try_from(n).unwrap().to_le_bytes());
+            let staker = Address::from_bytes(bytes);
+            reg.delegate(&id_of(1), staker, 100).unwrap();
+            reg.begin_unstake(&params(), &id_of(1), staker, 100, T0)
+                .unwrap();
         }
-        assert_eq!(reg.unbonding_entry_count(), 280);
+        assert_eq!(reg.unbonding_entry_count(), 257);
 
         let due = T0 + MIN_UNBONDING_PERIOD_MS;
         assert_eq!(reg.process(due).unwrap().len(), MAX_MATURING_PER_CALL);
-        assert_eq!(reg.process(due).unwrap().len(), 280 - MAX_MATURING_PER_CALL);
+        assert_eq!(reg.process(due).unwrap().len(), 1);
         assert_eq!(reg.unbonding_entry_count(), 0);
         reg.assert_invariants().unwrap();
     }
@@ -2546,9 +2559,10 @@ mod tests {
         let mut reg = new_registry();
         register(&mut reg, 1, 5_000);
         reg.delegate(&id_of(1), staker(1), 100).unwrap();
+        reg.delegate(&id_of(1), staker(2), 100).unwrap();
         reg.begin_unstake(&params(), &id_of(1), staker(1), 10, T0)
             .unwrap();
-        reg.begin_unstake(&params(), &id_of(1), staker(1), 10, T0)
+        reg.begin_unstake(&params(), &id_of(1), staker(2), 10, T0)
             .unwrap();
         let mut reg = tampered(reg, |store| {
             store.put(unbonding_key(1), vec![0xFF]);
@@ -2649,6 +2663,7 @@ mod display_tests {
             RegistryError::SelfStakeBelowMinimum,
             RegistryError::UnknownValidator,
             RegistryError::ValidatorTombstoned,
+            RegistryError::TooManyDelegators,
             RegistryError::TooManyUnbondingEntries,
             RegistryError::UnbondingSequenceExhausted,
             RegistryError::Staking(StakingError::ZeroAmount),

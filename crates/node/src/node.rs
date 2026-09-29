@@ -167,7 +167,11 @@ pub struct DataReport {
 pub fn verify_data(config: &NodeConfig) -> Result<DataReport, RunError> {
     let genesis = chain_genesis::load(&config.genesis)
         .map_err(|error| RunError::Genesis(error.to_string()))?;
-    let verified = DurableEngine::verify(&config.data_dir, &genesis)?;
+    let verified = DurableEngine::verify_with_checkpoint(
+        &config.data_dir,
+        &genesis,
+        config.trusted_checkpoint,
+    )?;
     Ok(DataReport {
         chain_id: genesis.chain_id().0,
         height: verified.height,
@@ -205,7 +209,11 @@ pub fn run_node(
     )?;
     // The chain is shared with the transaction pool, which reads the accounts
     // and the base fee that transactions are checked and chosen against.
-    let engine = SharedEngine::new(DurableEngine::open(&config.data_dir, &genesis)?);
+    let engine = SharedEngine::new(DurableEngine::open_with_checkpoint(
+        &config.data_dir,
+        &genesis,
+        config.trusted_checkpoint,
+    )?);
     let pool = NodeMempool::new(engine.clone(), genesis.chain_id());
     let disk = NodeDisk::open(&config.data_dir).map_err(RunError::Storage)?;
     let ports = disk.into_ports(pool.clone(), SystemClock, signer);
