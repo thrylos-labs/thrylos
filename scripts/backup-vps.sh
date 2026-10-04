@@ -144,6 +144,6 @@ if [ "$TAR_STATUS" -gt 1 ] || [ "${STATUSES[1]}" -ne 0 ] || [ "${STATUSES[2]}" -
 fi
 chmod 600 "$OUT"
 
-# Keep the 14 most recent backups, drop older ones.
-ls -1t "$BACKUPS"/thrylos-alpha-*.tar.gz.age 2>/dev/null | tail -n +15 | xargs -r rm --
+# Keep the 3 most recent backups, drop older ones (each is ~1.5 GB and the disk is 24 GB).
+ls -1t "$BACKUPS"/thrylos-alpha-*.tar.gz.age 2>/dev/null | tail -n +4 | xargs -r rm --
 echo "backup written: $OUT ($(du -h "$OUT" | cut -f1), encrypted)"

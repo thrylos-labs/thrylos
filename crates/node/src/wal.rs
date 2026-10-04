@@ -25,7 +25,10 @@ impl FileWal {
 
 impl Wal for FileWal {
     fn append(&mut self, height: BlockHeight, entry: &[u8]) -> Result<(), StorageError> {
-        self.log.append(height.0, entry).map_err(storage)
+        self.log
+            .append(height.0, entry)
+            .map(|_| ())
+            .map_err(storage)
     }
 
     fn flush(&mut self) -> Result<(), StorageError> {

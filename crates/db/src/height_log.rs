@@ -218,13 +218,130 @@ impl HeightLog {
         })
     }
 
-    /// Adds an entry for `height`. It survives a crash only after
-    /// [`Self::flush`].
-    pub fn append(&mut self, height: u64, entry: &[u8]) -> Result<(), LogError> {
+    /// Adds an entry for `height`, and returns where its record begins (for
+    /// [`Self::read_at`]). It survives a crash only after [`Self::flush`].
+    pub fn append(&mut self, height: u64, entry: &[u8]) -> Result<u64, LogError> {
         let record = encode(height, entry)?;
+        let at = self.file.metadata()?.len();
         // One write, so a crash tears at most this record.
         self.file.write_all(&record)?;
+        Ok(at)
+    }
+
+    /// Reads the whole log once, record by record, without holding it in
+    /// memory, and calls `visit(height, offset, entry)` for each, `offset`
+    /// being where the record begins. Checks exactly what
+    /// [`Self::retain_from`] does: a torn final record is dropped (the file is
+    /// cut back to the last whole record), damage anywhere else is an error.
+    /// Nothing is forgotten — for a log that keeps every height, and is too
+    /// large to read into memory to open.
+    pub fn scan(
+        &mut self,
+        mut visit: impl FnMut(u64, u64, &[u8]) -> Result<(), LogError>,
+    ) -> Result<(), LogError> {
+        let total = self.file.metadata()?.len();
+        let mut reader = std::io::BufReader::with_capacity(1 << 20, File::open(&self.path)?);
+        let mut header = vec![0u8; HEADER.len()];
+        if reader.read_exact(&mut header).is_err() || header != HEADER {
+            return Err(LogError::BadHeader);
+        }
+        let mut at = HEADER.len() as u64;
+        let mut entry = Vec::new();
+        let whole = loop {
+            if at == total {
+                break at;
+            }
+            let mut head = [0u8; RECORD_HEAD];
+            let remaining = total.saturating_sub(at);
+            if remaining < RECORD_HEAD as u64 {
+                // The file ends inside a record's head: torn.
+                break at;
+            }
+            reader.read_exact(&mut head)?;
+            let corrupt = || LogError::Corrupt {
+                offset: usize::try_from(at).unwrap_or(usize::MAX),
+            };
+            let (Some(length), Some(height), Some(check), Some(stored)) = (
+                head.get(..4).and_then(|b| <[u8; 4]>::try_from(b).ok()),
+                head.get(4..12).and_then(|b| <[u8; 8]>::try_from(b).ok()),
+                head.get(12..ENTRY_CHECK_AT),
+                head.get(ENTRY_CHECK_AT..RECORD_HEAD),
+            ) else {
+                return Err(corrupt());
+            };
+            if head_check(length, height) != check {
+                // The length cannot be believed: only a tail of nothing but
+                // zeros (a file extended and never written) is torn.
+                let mut rest = head.to_vec();
+                reader.read_to_end(&mut rest)?;
+                if rest.iter().all(|byte| *byte == 0) {
+                    break at;
+                }
+                return Err(corrupt());
+            }
+            let size = usize::try_from(u32::from_le_bytes(length)).unwrap_or(usize::MAX);
+            if size > MAX_ENTRY {
+                return Err(corrupt());
+            }
+            let end = at
+                .saturating_add(RECORD_HEAD as u64)
+                .saturating_add(size as u64);
+            if end > total {
+                // The file ends inside the entry: torn.
+                break at;
+            }
+            entry.clear();
+            entry.resize(size, 0);
+            reader.read_exact(&mut entry)?;
+            if entry_check(length, height, &entry) != stored {
+                if end == total {
+                    // The last record, whose contents never reached the disk.
+                    break at;
+                }
+                return Err(corrupt());
+            }
+            visit(u64::from_le_bytes(height), at, &entry)?;
+            at = end;
+        };
+        if whole < total {
+            self.file.set_len(whole)?;
+            self.file.sync_all()?;
+        }
         Ok(())
+    }
+
+    /// The entry of the record that begins at `offset` (as [`Self::scan`] or
+    /// [`Self::append`] gave it), with the height it was filed under. Checked
+    /// as everything read from the log is.
+    pub fn read_at(&self, offset: u64) -> Result<(u64, Vec<u8>), LogError> {
+        use std::os::unix::fs::FileExt;
+        let corrupt = || LogError::Corrupt {
+            offset: usize::try_from(offset).unwrap_or(usize::MAX),
+        };
+        let mut head = [0u8; RECORD_HEAD];
+        self.file.read_exact_at(&mut head, offset)?;
+        let (Some(length), Some(height), Some(check), Some(stored)) = (
+            head.get(..4).and_then(|b| <[u8; 4]>::try_from(b).ok()),
+            head.get(4..12).and_then(|b| <[u8; 8]>::try_from(b).ok()),
+            head.get(12..ENTRY_CHECK_AT),
+            head.get(ENTRY_CHECK_AT..RECORD_HEAD),
+        ) else {
+            return Err(corrupt());
+        };
+        if head_check(length, height) != check {
+            return Err(corrupt());
+        }
+        let size = usize::try_from(u32::from_le_bytes(length)).unwrap_or(usize::MAX);
+        if size > MAX_ENTRY {
+            return Err(corrupt());
+        }
+        let mut entry = vec![0u8; size];
+        self.file
+            .read_exact_at(&mut entry, offset.saturating_add(RECORD_HEAD as u64))?;
+        if entry_check(length, height, &entry) != stored {
+            return Err(corrupt());
+        }
+        Ok((u64::from_le_bytes(height), entry))
     }
 
     /// Makes everything appended so far survive a crash.
@@ -294,7 +411,8 @@ mod tests {
     #![allow(
         clippy::unwrap_used,
         clippy::indexing_slicing,
-        clippy::arithmetic_side_effects
+        clippy::arithmetic_side_effects,
+        clippy::panic
     )]
 
     use super::*;
@@ -306,6 +424,89 @@ mod tests {
 
     fn entries(log: &mut HeightLog, height: u64) -> Vec<Vec<u8>> {
         log.start_height(height).unwrap()
+    }
+
+    fn scanned(path: &Path) -> Result<Vec<(u64, Vec<u8>)>, LogError> {
+        let mut log = HeightLog::open(path)?;
+        let mut found = Vec::new();
+        log.scan(|height, _, entry| {
+            found.push((height, entry.to_vec()));
+            Ok(())
+        })?;
+        Ok(found)
+    }
+
+    #[test]
+    fn a_scan_agrees_with_reading_the_whole_log_at_every_cut_and_every_flipped_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut log, path) = log_in(&dir);
+        for (height, entry) in [
+            (1, b"one".as_slice()),
+            (2, b""),
+            (2, b"three"),
+            (5, b"four!"),
+        ] {
+            log.append(height, entry).unwrap();
+        }
+        log.flush().unwrap();
+        drop(log);
+        let whole = std::fs::read(&path).unwrap();
+
+        let mut variants = Vec::new();
+        for cut in 0..=whole.len() {
+            variants.push(whole[..cut].to_vec());
+        }
+        for at in HEADER.len()..whole.len() {
+            let mut flipped = whole.clone();
+            flipped[at] ^= 0x55;
+            variants.push(flipped);
+        }
+        let mut zeros = whole.clone();
+        zeros.extend_from_slice(&[0u8; 40]);
+        variants.push(zeros);
+
+        for (n, bytes) in variants.iter().enumerate() {
+            let one = dir.path().join(format!("one-{n}.log"));
+            let two = dir.path().join(format!("two-{n}.log"));
+            std::fs::write(&one, bytes).unwrap();
+            std::fs::write(&two, bytes).unwrap();
+            let by_scan = scanned(&one);
+            let by_reading = HeightLog::open(&two).and_then(|mut log| log.retain_from(0));
+            match (by_scan, by_reading) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a, b, "variant {n}");
+                    assert_eq!(
+                        std::fs::read(&one).unwrap(),
+                        std::fs::read(&two).unwrap(),
+                        "variant {n} is left the same on disk"
+                    );
+                }
+                (Err(_), Err(_)) => {}
+                (a, b) => panic!("variant {n}: scan {a:?}, reading {b:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_record_is_read_back_where_it_was_appended_or_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut log, path) = log_in(&dir);
+        let first = log.append(3, b"first").unwrap();
+        let second = log.append(4, b"").unwrap();
+        log.flush().unwrap();
+        assert_eq!(log.read_at(first).unwrap(), (3, b"first".to_vec()));
+        assert_eq!(log.read_at(second).unwrap(), (4, Vec::new()));
+        assert!(log.read_at(first + 1).is_err());
+        drop(log);
+
+        let mut log = HeightLog::open(&path).unwrap();
+        let mut at = Vec::new();
+        log.scan(|height, offset, _| {
+            at.push((height, offset));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(at, vec![(3, first), (4, second)]);
     }
 
     #[test]

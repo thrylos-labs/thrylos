@@ -2,9 +2,13 @@
 //!
 //! Each record is the seed the block led to, then the block with its proof
 //! (`chain_consensus::wire`). Every height is retained for the first testnet,
-//! so a peer can catch up from genesis without snapshots or warp sync. The
-//! records are held in memory as well as on disk; pruning belongs with a
-//! future snapshot and sync design, not with this log in isolation.
+//! so a peer can catch up from genesis without snapshots or warp sync. Only an
+//! index is held in memory — where each record is in the file, and the seed it
+//! led to — and a record is read back when a peer asks for it. (Holding every
+//! record in memory made a node's memory grow with the chain, and a node's
+//! start read the whole log twice over: at about half a million blocks four
+//! nodes no longer fitted a 1 GB machine.) Pruning belongs with a future
+//! snapshot and sync design, not with this log in isolation.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -19,10 +23,41 @@ use crate::storage;
 /// The seed ‖ the record.
 const SEED: usize = 32;
 
+/// How many of the newest records are decoded when the log is opened. The log
+/// checks every record's bytes as it is read, so damage anywhere fails the
+/// open; decoding is what would catch a record that is whole but is not a
+/// commit record, and every record in the file was written by `record` below,
+/// so the newest few are enough to say the format is the one this build
+/// reads. (Decoding all of them took minutes of processor time at half a
+/// million blocks.)
+const DECODED_AT_OPEN: usize = 64;
+
+/// Where a record is, and the seed the block led to.
+struct Located {
+    offset: u64,
+    seed: Hash,
+}
+
 /// A [`CommitLog`] in a file.
 pub struct FileCommitLog {
     log: HeightLog,
-    records: BTreeMap<u64, (CommitRecord, Hash)>,
+    index: BTreeMap<u64, Located>,
+}
+
+fn unreadable() -> StorageError {
+    StorageError("a commit record cannot be read".into())
+}
+
+/// The record in `bytes` (a seed, then the record), which must be filed at
+/// `height`.
+fn parse(height: u64, bytes: &[u8]) -> Result<(CommitRecord, Hash), StorageError> {
+    let (seed, rest) = bytes.split_at_checked(SEED).ok_or_else(unreadable)?;
+    let seed: [u8; SEED] = seed.try_into().map_err(|_| unreadable())?;
+    let record = decode_commit_record(rest).map_err(|_| unreadable())?;
+    if record.block.height.0 != height {
+        return Err(unreadable());
+    }
+    Ok((record, Hash::from_bytes(seed)))
 }
 
 impl FileCommitLog {
@@ -30,18 +65,45 @@ impl FileCommitLog {
     /// fails here, not later.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         let mut log = HeightLog::open(path).map_err(storage)?;
-        let mut records = BTreeMap::new();
-        for (height, bytes) in log.retain_from(0).map_err(storage)? {
-            let unreadable = || StorageError("a commit record cannot be read".into());
-            let (seed, rest) = bytes.split_at_checked(SEED).ok_or_else(unreadable)?;
-            let seed: [u8; SEED] = seed.try_into().map_err(|_| unreadable())?;
-            let record = decode_commit_record(rest).map_err(|_| unreadable())?;
-            if record.block.height.0 != height {
+        let mut index = BTreeMap::new();
+        log.scan(|height, offset, bytes| {
+            let (seed, _) =
+                bytes
+                    .split_at_checked(SEED)
+                    .ok_or_else(|| chain_db::LogError::Corrupt {
+                        offset: usize::try_from(offset).unwrap_or(usize::MAX),
+                    })?;
+            let seed: [u8; SEED] = seed.try_into().map_err(|_| chain_db::LogError::Corrupt {
+                offset: usize::try_from(offset).unwrap_or(usize::MAX),
+            })?;
+            index.insert(
+                height,
+                Located {
+                    offset,
+                    seed: Hash::from_bytes(seed),
+                },
+            );
+            Ok(())
+        })
+        .map_err(storage)?;
+        let this = Self { log, index };
+        for (height, located) in this.index.iter().rev().take(DECODED_AT_OPEN) {
+            let (filed, bytes) = this.log.read_at(located.offset).map_err(storage)?;
+            if filed != *height {
                 return Err(unreadable());
             }
-            records.insert(height, (record, Hash::from_bytes(seed)));
+            parse(*height, &bytes)?;
         }
-        Ok(Self { log, records })
+        Ok(this)
+    }
+
+    fn read(&self, height: u64) -> Option<CommitRecord> {
+        let located = self.index.get(&height)?;
+        let (filed, bytes) = self.log.read_at(located.offset).ok()?;
+        if filed != height {
+            return None;
+        }
+        parse(height, &bytes).ok().map(|(record, _)| record)
     }
 }
 
@@ -49,12 +111,18 @@ impl CommitLog for FileCommitLog {
     fn record(&mut self, record: &CommitRecord, seed_after: Hash) -> Result<(), StorageError> {
         let mut bytes = seed_after.as_bytes().to_vec();
         bytes.extend_from_slice(&encode_commit_record(record));
-        self.log
+        let offset = self
+            .log
             .append(record.block.height.0, &bytes)
             .map_err(storage)?;
         self.log.flush().map_err(storage)?;
-        self.records
-            .insert(record.block.height.0, (record.clone(), seed_after));
+        self.index.insert(
+            record.block.height.0,
+            Located {
+                offset,
+                seed: seed_after,
+            },
+        );
         Ok(())
     }
 
@@ -62,10 +130,10 @@ impl CommitLog for FileCommitLog {
         let mut out = Vec::new();
         let mut next = from.0;
         while out.len() < max {
-            let Some((record, _)) = self.records.get(&next) else {
+            let Some(record) = self.read(next) else {
                 break;
             };
-            out.push(record.clone());
+            out.push(record);
             let Some(after) = next.checked_add(1) else {
                 break;
             };
@@ -75,7 +143,7 @@ impl CommitLog for FileCommitLog {
     }
 
     fn seed_after(&self, height: BlockHeight) -> Option<Hash> {
-        self.records.get(&height.0).map(|(_, seed)| *seed)
+        self.index.get(&height.0).map(|located| located.seed)
     }
 }
 
@@ -124,7 +192,7 @@ mod tests {
     }
 
     fn heights(log: &FileCommitLog) -> Vec<u64> {
-        log.records.keys().copied().collect()
+        log.index.keys().copied().collect()
     }
 
     #[test]
