@@ -30,6 +30,10 @@ const TIMEOUT: u8 = 1;
 const OWN_BLOCK: u8 = 2;
 const INVALID: u8 = 3;
 
+// A log entry lives only long enough to be encoded and written (or, on replay,
+// decoded and routed), so the size of its largest variant costs nothing; boxing
+// `Message` would only add an allocation to every logged message.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub(super) enum Entry {
     Message(Message),

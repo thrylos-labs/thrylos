@@ -44,6 +44,17 @@ use crate::config::TrustedCheckpoint;
 const DATABASE_DIRECTORY: &str = "chain";
 
 /// Why a node's chain could not be started or restored.
+/// What a stored chain has where a trusted checkpoint says something else.
+/// Boxed in [`OpenError::CheckpointMismatch`] so that the error stays small.
+#[derive(Debug)]
+pub struct CheckpointDifference {
+    pub height: BlockHeight,
+    pub expected_block: Hash,
+    pub actual_block: Hash,
+    pub expected_state: Hash,
+    pub actual_state: Hash,
+}
+
 #[derive(Debug)]
 pub enum OpenError {
     /// The directory for the database could not be made.
@@ -57,13 +68,7 @@ pub enum OpenError {
     WrongGenesis { stored: Hash, given: Hash },
     /// Stored history has crossed the trusted checkpoint at another block or
     /// state root, so it may be a long-range fork.
-    CheckpointMismatch {
-        height: BlockHeight,
-        expected_block: Hash,
-        actual_block: Hash,
-        expected_state: Hash,
-        actual_state: Hash,
-    },
+    CheckpointMismatch(Box<CheckpointDifference>),
     /// The database does not hold a chain that adds up.
     Damaged(&'static str),
 }
@@ -78,16 +83,14 @@ impl core::fmt::Display for OpenError {
                 f,
                 "this database belongs to a different chain: it was made from genesis {stored}, but the genesis given is {given}"
             ),
-            Self::CheckpointMismatch {
-                height,
-                expected_block,
-                actual_block,
-                expected_state,
-                actual_state,
-            } => write!(
+            Self::CheckpointMismatch(difference) => write!(
                 f,
-                "trusted checkpoint at height {} does not match this chain: block {actual_block} (expected {expected_block}), state {actual_state} (expected {expected_state})",
-                height.0
+                "trusted checkpoint at height {} does not match this chain: block {} (expected {}), state {} (expected {})",
+                difference.height.0,
+                difference.actual_block,
+                difference.expected_block,
+                difference.actual_state,
+                difference.expected_state
             ),
             Self::Damaged(reason) => write!(f, "the chain database is damaged: {reason}"),
         }
@@ -310,13 +313,15 @@ impl DurableEngine {
         ))?;
         let actual_block = block.hash();
         if actual_block != checkpoint.block_hash || state != checkpoint.state_root {
-            return Err(OpenError::CheckpointMismatch {
-                height: checkpoint.height,
-                expected_block: checkpoint.block_hash,
-                actual_block,
-                expected_state: checkpoint.state_root,
-                actual_state: state,
-            });
+            return Err(OpenError::CheckpointMismatch(Box::new(
+                CheckpointDifference {
+                    height: checkpoint.height,
+                    expected_block: checkpoint.block_hash,
+                    actual_block,
+                    expected_state: checkpoint.state_root,
+                    actual_state: state,
+                },
+            )));
         }
         Ok(())
     }

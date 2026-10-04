@@ -6,9 +6,11 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 fn thrylos(args: &[&str], dir: &Path) -> Output {
+    // Never the machine's own wallet: whatever a test needs is made in `dir`.
     Command::new(env!("CARGO_BIN_EXE_thrylos"))
         .args(args)
         .current_dir(dir)
+        .env("THRYLOS_WALLET", dir.join("wallet.key"))
         .output()
         .unwrap()
 }
@@ -40,6 +42,10 @@ fn a_new_package_tests_and_builds_and_publish_builds_it_when_it_is_not_built() {
         "{}",
         out(&tested)
     );
+
+    // Publishing signs, so it needs a wallet: a fresh one, made here.
+    let wallet = thrylos(&["setup"], root.path());
+    assert!(wallet.status.success(), "{}", err(&wallet));
 
     // Not built yet: publish builds it first, and then gets as far as needing a network.
     let early = thrylos(
