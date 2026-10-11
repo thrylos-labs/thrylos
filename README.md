@@ -4,10 +4,6 @@
 
 ![Thrylos Explorer showing a healthy four-validator local testnet and a funded account](docs/assets/thrylos-explorer.png)
 
-## Join the community
-
-💬 **Discord:** https://discord.gg/nT2Xcy4QB6
-
 Thrylos is an experimental Layer 1 blockchain built around a simple idea:
 
 > Keep the consensus-critical surface small enough that developers can reason about it, test it, and audit it.
